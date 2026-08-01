@@ -9,6 +9,7 @@
 ### Prerequisites
 - Python 3.10+ 
 - Windows 10/11 (for full feature support)
+- Node.js 18+ (for the dashboard)
 - Ollama Cloud API key ([get one free](https://ollama.com))
 
 ### 1. Configure Environment
@@ -27,10 +28,21 @@ EOF
 ### 2. Install Dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install -r backend/requirements.txt
+cd frontend && npm install
 ```
 
-### 3. Run Backend
+### 3. Run Everything (one command)
+
+```bat
+start_jarvis.cmd
+```
+
+This starts the backend and dashboard, waits for the backend to be healthy,
+and opens the dashboard in your browser. Logs are written to
+`%USERPROFILE%\.jarvis\jarvis.log`.
+
+### 3b. Run manually (backend)
 
 ```bash
 cd jarvis
@@ -42,16 +54,28 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 > file from `backend/`. If you don't have a `.env` file, set the API key
 > inline first (PowerShell: `$env:JARVIS_OLLAMA_API_KEY="your_key"`).
 
+### 3c. Run manually (frontend dashboard)
+
+```bash
+cd jarvis/frontend
+npm run dev
+```
+
+Then open http://localhost:3000.
+
 ### 4. Test It
 
 ```bash
 # Health check
-curl http://127.0.0.1:8000/api/health
+curl http://127.0.0.1:8000/api/v1/health
 
-# Create a task
-curl -X POST http://127.0.0.1:8000/api/tasks \
+# Create a task via the API
+curl -X POST http://127.0.0.1:8000/api/v1/tasks \
   -H "Content-Type: application/json" \
   -d '{"original_request": "What time is it?"}'
+
+# Or use the CLI (requires backend running)
+python cli.py "what time is it"
 ```
 
 ---

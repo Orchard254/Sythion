@@ -14,6 +14,14 @@ import time
 import urllib.request
 import urllib.error
 
+# Force UTF-8 output so model responses with emoji/symbols don't crash on
+# Windows consoles that default to cp1252.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 BASE_URL = "http://127.0.0.1:8000/api/v1"
 TERMINAL_STATES = {"completed", "failed", "cancelled", "interrupted"}
 
