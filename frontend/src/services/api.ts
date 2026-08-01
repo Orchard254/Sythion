@@ -77,7 +77,8 @@ export const voiceService = {
 
   transcribeAudio: async (audioData: Uint8Array): Promise<{ text: string }> => {
     // Convert to blob and send to backend
-    const blob = new Blob([audioData], { type: 'audio/wav' });
+    const copy = Uint8Array.from(audioData);
+    const blob = new Blob([copy], { type: 'audio/wav' });
     const formData = new FormData();
     formData.append('audio', blob, 'recording.wav');
 
