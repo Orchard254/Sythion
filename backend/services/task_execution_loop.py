@@ -231,7 +231,7 @@ class TaskExecutionLoop:
         params: Dict[str, Any]
     ) -> bool:
         """Mark task as completed."""
-        summary = params.get('summary', 'Task completed successfully')
+        summary = params.get('result') or params.get('summary', 'Task completed successfully')
         warnings = params.get('warnings', [])
         
         await self.runner.transition_state(
@@ -256,7 +256,7 @@ class TaskExecutionLoop:
     ) -> bool:
         """Fail task based on model decision."""
         code = params.get('code', 'UNKNOWN_ERROR')
-        user_message = params.get('user_message', 'Task failed')
+        user_message = params.get('reason') or params.get('user_message', 'Task failed')
         
         await self._fail_task(task_id, code, user_message)
         return True

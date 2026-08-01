@@ -1,5 +1,4 @@
 """Services module for JARVIS backend."""
-from .ollama_adapter import OllamaAdapter, OllamaConfig, ChatMessage, get_ollama_adapter
 from .voice_service import (
     VoiceProcessor, 
     VoiceConfig, 
@@ -14,10 +13,6 @@ from .voice_service import (
 )
 
 __all__ = [
-    "OllamaAdapter",
-    "OllamaConfig", 
-    "ChatMessage",
-    "get_ollama_adapter",
     "VoiceProcessor",
     "VoiceConfig",
     "VADState",

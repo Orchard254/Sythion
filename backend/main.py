@@ -15,6 +15,7 @@ import uuid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from .core.config import settings, generate_control_token
+from .core.logging_config import configure_logging
 from .core.db_manager import init_database, DatabaseManager
 from .models.database import set_db_manager
 from .core.auth import create_auth_dependency
@@ -23,6 +24,11 @@ from .api.routes import router as api_router
 from .tools.executor import ToolExecutor
 from .tools.system_tools import create_system_tools
 from .services.skills_system import initialize_default_skills
+
+import logging
+
+logger = logging.getLogger(__name__)
+configure_logging()
 
 
 # Global instances
@@ -38,7 +44,7 @@ async def lifespan(app: FastAPI):
     
     # Startup
     control_token = generate_control_token()
-    print(f"JARVIS starting with control token: {control_token[:8]}...")
+    logger.info(f"JARVIS starting with control token: {control_token[:8]}...")
     
     # Initialize database
     db_path = settings.database_path or os.path.join(
@@ -48,7 +54,7 @@ async def lifespan(app: FastAPI):
     )
     db_manager = init_database(db_path)
     set_db_manager(db_manager)
-    print(f"Database initialized at: {db_path}")
+    logger.info(f"Database initialized at: {db_path}")
     
     # Initialize tool executor
     tool_executor = ToolExecutor()
@@ -68,16 +74,16 @@ async def lifespan(app: FastAPI):
     for tool in create_package_tools():
         tool_executor.register_tool(tool)
         
-    print(f"Registered {len(tool_executor.list_tools())} tools")
+    logger.info(f"Registered {len(tool_executor.list_tools())} tools")
     
     # Initialize skills system
     initialize_default_skills()
-    print("Skills system initialized")
+    logger.info("Skills system initialized")
     
     yield
     
     # Shutdown
-    print("JARVIS shutting down...")
+    logger.info("JARVIS shutting down...")
 
 
 app = FastAPI(
