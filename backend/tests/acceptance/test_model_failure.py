@@ -139,3 +139,90 @@ async def test_budget_exhaustion_fails_without_further_actions(db_session, task_
     assert decision_calls["n"] <= 3
     await task_runner.release_lease()
 
+
+@pytest.mark.asyncio
+async def test_cloud_outage_fails_honestly(db_session, task_runner):
+    """A persistent Cloud outage fails the task after bounded repairs, no mutation."""
+    await task_runner.acquire_lease()
+    task = await task_runner.create_task("Fetch something")
+    await task_runner.transition_state(task.id, TaskState.RUNNING, "task.execution_started", {})
+
+    loop = TaskExecutionLoop(db_session, task_runner, tool_executor=None)
+    executed = {"ran": False}
+
+    async def _cloud_out(*args, **kwargs):
+        raise ModelDecisionError("CLOUD_ERROR", "Ollama Cloud request failed: connection refused")
+
+    async def _tool(*args, **kwargs):
+        executed["ran"] = True
+        return None
+
+    loop.model_engine.make_decision = _cloud_out
+    loop._execute_decision = _tool
+
+    await loop.execute_task(task.id)
+
+    task = await task_runner.get_task(task.id)
+    assert task.state == TaskState.FAILED.value
+    assert _failed_code(db_session, task.id) == "CLOUD_ERROR"
+    assert executed["ran"] is False
+    await task_runner.release_lease()
+
+
+@pytest.mark.asyncio
+async def test_retired_model_fails_honestly(db_session, task_runner):
+    """A retired/unavailable model fails the task, never a local fallback."""
+    await task_runner.acquire_lease()
+    task = await task_runner.create_task("Use the model")
+    await task_runner.transition_state(task.id, TaskState.RUNNING, "task.execution_started", {})
+
+    loop = TaskExecutionLoop(db_session, task_runner, tool_executor=None)
+    executed = {"ran": False}
+
+    async def _retired(*args, **kwargs):
+        raise ModelDecisionError("MODEL_UNAVAILABLE", "Selected model is unavailable")
+
+    async def _tool(*args, **kwargs):
+        executed["ran"] = True
+        return None
+
+    loop.model_engine.make_decision = _retired
+    loop._execute_decision = _tool
+
+    await loop.execute_task(task.id)
+
+    task = await task_runner.get_task(task.id)
+    assert task.state == TaskState.FAILED.value
+    assert _failed_code(db_session, task.id) == "MODEL_UNAVAILABLE"
+    assert executed["ran"] is False
+    await task_runner.release_lease()
+
+
+@pytest.mark.asyncio
+async def test_malformed_decision_fails_honestly(db_session, task_runner):
+    """A persistently malformed decision fails the task after bounded repairs."""
+    await task_runner.acquire_lease()
+    task = await task_runner.create_task("Malformed task")
+    await task_runner.transition_state(task.id, TaskState.RUNNING, "task.execution_started", {})
+
+    loop = TaskExecutionLoop(db_session, task_runner, tool_executor=None)
+    executed = {"ran": False}
+
+    async def _malformed(*args, **kwargs):
+        raise ModelDecisionError("INVALID_JSON", "Failed to parse arguments")
+
+    async def _tool(*args, **kwargs):
+        executed["ran"] = True
+        return None
+
+    loop.model_engine.make_decision = _malformed
+    loop._execute_decision = _tool
+
+    await loop.execute_task(task.id)
+
+    task = await task_runner.get_task(task.id)
+    assert task.state == TaskState.FAILED.value
+    assert _failed_code(db_session, task.id) == "INVALID_JSON"
+    assert executed["ran"] is False
+    await task_runner.release_lease()
+
