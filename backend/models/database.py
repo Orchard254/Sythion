@@ -47,6 +47,7 @@ class Task(Base):
     
     id = Column(String, primary_key=True)
     original_request = Column(Text, nullable=False)
+    idempotency_key = Column(String, unique=True, nullable=True)
     normalized_goal = Column(Text)
     state = Column(String, nullable=False)
     version = Column(Integer, default=1)

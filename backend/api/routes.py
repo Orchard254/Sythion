@@ -321,34 +321,6 @@ async def get_task_events(task_id: str, db: Session = Depends(get_db)):
     }
 
 
-@router.post("/tools/execute", response_model=ToolExecutionResponse)
-async def execute_tool(
-    request: ToolExecutionRequest,
-    tool_executor: ToolExecutor = Depends(get_tool_executor)
-):
-    """Execute a tool directly (for testing/manual execution)."""
-    try:
-        result = await tool_executor.execute_tool(
-            tool_name=request.tool_name,
-            params=request.params
-        )
-        
-        return ToolExecutionResponse(
-            success=result.success,
-            output=result.data,
-            error=result.error,
-            evidence=result.evidence
-        )
-    except Exception as e:
-        logger.error(f"Tool execution failed: {e}")
-        return ToolExecutionResponse(
-            success=False,
-            output=None,
-            error=str(e),
-            evidence=None
-        )
-
-
 @router.get("/tools", response_model=Dict[str, List[Dict[str, Any]]])
 async def list_tools(tool_executor: ToolExecutor = Depends(get_tool_executor)):
     """List all available tools."""

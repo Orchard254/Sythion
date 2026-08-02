@@ -258,23 +258,16 @@ Always think step-by-step and prefer observation before action."""
             tool_calls = message.get('tool_calls', [])
             
             if not tool_calls:
-                # Model didn't use tools - might be thinking or confused
                 content = message.get('content', '')
                 if content:
-                    # A direct text answer is valid for simple/completed tasks.
-                    # Treat it as an implicit complete_task so the user gets the answer.
-                    logger.info(
-                        f"Model returned text instead of tool call; treating as completion: {content[:200]}"
-                    )
-                    return DecisionType.COMPLETE_TASK, {
-                        "summary": content,
-                        "warnings": [],
-                    }
-                else:
                     raise ModelDecisionError(
-                        code="EMPTY_MESSAGE",
-                        message="Model returned empty response"
+                        code="MISSING_CONTROL_CALL",
+                        message="Model returned text without a required control or action call"
                     )
+                raise ModelDecisionError(
+                    code="EMPTY_MESSAGE",
+                    message="Model returned empty response"
+                )
             
             # We expect exactly ONE tool call
             if len(tool_calls) > 1:

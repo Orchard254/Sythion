@@ -5,7 +5,16 @@ const API_BASE_URL = '/api/v1';
 
 // Get control token from sessionStorage (set by Tauri on launch)
 const getControlToken = () => {
-  return sessionStorage.getItem('jarvis_control_token') || '';
+  const desktopToken = sessionStorage.getItem('jarvis_control_token');
+  if (desktopToken) {
+    return desktopToken;
+  }
+
+  if (import.meta.env.DEV) {
+    return import.meta.env.VITE_JARVIS_CONTROL_TOKEN || '';
+  }
+
+  return '';
 };
 
 // Create axios instance with authentication

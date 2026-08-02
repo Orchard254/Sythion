@@ -8,7 +8,7 @@ import os
 import tempfile
 import shutil
 
-from tools.executor import ToolExecutor, BaseTool, ToolOutput
+from tools.executor import PolicyContext, ToolExecutor, BaseTool, ToolOutput
 from pydantic import BaseModel
 
 
@@ -31,6 +31,13 @@ class MockTool(BaseTool):
     
     def get_policy_requirements(self) -> dict:
         return {"risk_level": "low", "requires_confirmation": False}
+
+
+class MutatingMockTool(MockTool):
+    name = "mutating_mock_tool"
+
+    def get_policy_requirements(self) -> dict:
+        return {"risk_level": "medium", "requires_confirmation": True}
 
 
 class TestToolExecutor:
@@ -69,6 +76,22 @@ class TestToolExecutor:
         result = await executor.execute_tool("mock_tool", {})
         
         assert result.success is True  # Mock tool succeeds with empty input
+
+    @pytest.mark.asyncio
+    async def test_mutating_tool_requires_trusted_direct_instruction(self, executor):
+        tool = MutatingMockTool()
+        executor.register_tool(tool)
+
+        denied = await executor.execute_tool("mutating_mock_tool", {"value": "test"})
+        allowed = await executor.execute_tool(
+            "mutating_mock_tool",
+            {"value": "test"},
+            policy_context=PolicyContext(direct_user_instruction=True),
+        )
+
+        assert denied.success is False
+        assert denied.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+        assert allowed.success is True
     
     @pytest.mark.asyncio
     async def test_list_tools(self, executor):

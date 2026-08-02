@@ -4,7 +4,7 @@ Core configuration and constants for JARVIS backend.
 
 from pydantic_settings import BaseSettings
 from typing import List
-import uuid
+import secrets
 import os
 
 
@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     
     # Security
     control_token: str = ""  # Set per-launch by Tauri
+    development_mode: bool = False  # Enables the Vite dashboard only; never for packaged releases
     
     # Database
     database_path: str = ""  # Set to user's local app data on Windows
@@ -51,8 +52,8 @@ settings = Settings()
 
 
 def generate_control_token() -> str:
-    """Generate a random per-launch control token."""
-    return str(uuid.uuid4())
+    """Use the trusted launcher token or generate a cryptographically random one."""
+    return settings.control_token or secrets.token_urlsafe(32)
 
 
 def validate_startup_config():

@@ -31,6 +31,13 @@ popd
 
 :deps_done
 
+REM Development-only bridge. Production starts the sidecar from the Tauri shell.
+for /f %%i in ('python -c "import secrets; print(secrets.token_urlsafe(32))"') do set "JARVIS_CONTROL_TOKEN=%%i"
+set "JARVIS_DEVELOPMENT_MODE=true"
+set "VITE_JARVIS_CONTROL_TOKEN=%JARVIS_CONTROL_TOKEN%"
+if not exist "%USERPROFILE%\.jarvis" mkdir "%USERPROFILE%\.jarvis" >nul 2>&1
+> "%USERPROFILE%\.jarvis\control_token" echo %JARVIS_CONTROL_TOKEN%
+
 REM ---------- Start backend ----------
 echo Starting JARVIS backend on http://127.0.0.1:%BACKEND_PORT% ...
 start "JARVIS Backend" cmd /c "python -m uvicorn backend.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
@@ -52,7 +59,7 @@ goto wait_backend
 
 :check_health
 set "HEALTHY=0"
-powershell -NoProfile -Command "$r=Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:%BACKEND_PORT%/api/v1/health' -TimeoutSec 2; if($r.StatusCode -eq 200){exit 0}else{exit 1}" >nul 2>&1
+powershell -NoProfile -Command "$r=Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:%BACKEND_PORT%/api/v1/health' -Headers @{'X-Control-Token'='%JARVIS_CONTROL_TOKEN%'} -TimeoutSec 2; if($r.StatusCode -eq 200){exit 0}else{exit 1}" >nul 2>&1
 if not errorlevel 1 set "HEALTHY=1"
 exit /b 0
 
@@ -67,11 +74,11 @@ ping -n 3 127.0.0.1 >nul
 start "" "http://localhost:%FRONTEND_PORT%"
 
 echo.
-echo JARVIS is running.
+echo JARVIS development environment is running.
 echo   Dashboard : http://localhost:%FRONTEND_PORT%
 echo   Backend   : http://127.0.0.1:%BACKEND_PORT%
 echo   Logs      : %USERPROFILE%\.jarvis\jarvis.log
-echo   CLI       : python cli.py "what time is it"
+echo   Mode      : development-only; use the packaged Tauri app for production
 echo.
 echo The backend and frontend each run in their own console window. Close
 echo those windows (or press Ctrl+C inside them) to stop JARVIS. This

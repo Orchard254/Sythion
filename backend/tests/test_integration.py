@@ -5,12 +5,13 @@ Tests the model decision engine, task execution loop, and API integration.
 
 import pytest
 import asyncio
+from datetime import datetime, timedelta
 from typing import Dict, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from backend.models.database import Base, get_db
+from backend.models.database import Base, RunnerLease, TaskEvent, get_db
 from backend.tools.executor import ToolExecutor
 from backend.services.task_runner import TaskRunner
 from backend.services.model_engine import ModelDecisionEngine, ModelDecisionError, DecisionType
@@ -169,6 +170,17 @@ class TestModelDecisionEngine:
         
         assert exc_info.value.code == "EMPTY_RESPONSE"
 
+    def test_parse_decision_plain_text_is_rejected(self, db_session, tool_executor):
+        """Free-form model text must never be promoted to task completion."""
+        engine = ModelDecisionEngine(db_session, tool_executor)
+
+        with pytest.raises(ModelDecisionError) as exc_info:
+            engine._parse_decision({
+                "choices": [{"message": {"content": "The task is complete."}}]
+            })
+
+        assert exc_info.value.code == "MISSING_CONTROL_CALL"
+
 
 class TestTaskExecutionLoop:
     """Tests for the task execution loop."""
@@ -198,6 +210,80 @@ class TestTaskExecutionLoop:
             mock_transition.assert_called_once()
         
         await task_runner.release_lease()
+
+    @pytest.mark.asyncio
+    async def test_complete_task_rejects_failed_tool_evidence(self, db_session, task_runner, tool_executor):
+        """A model cannot narrate success after a recorded failed action."""
+        await task_runner.acquire_lease()
+        task = await task_runner.create_task("Test task")
+        await task_runner.transition_state(
+            task.id,
+            TaskState.RUNNING,
+            "task.execution_started",
+            {},
+        )
+        await task_runner.transition_state(
+            task.id,
+            TaskState.RUNNING,
+            "tool.executed",
+            {"tool_name": "file_write", "success": False, "mutating": True, "verification": "failed"},
+        )
+        loop = TaskExecutionLoop(db_session, task_runner, tool_executor)
+
+        result = await loop._complete_task(task.id, {"summary": "Done"})
+
+        assert result is False
+        assert (await task_runner.get_task(task.id)).state == TaskState.RUNNING.value
+        await task_runner.release_lease()
+
+
+class TestTaskLedgerInvariants:
+    """Regression tests for durable task ownership and recovery rules."""
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_replays_only_its_original_request(self, task_runner):
+        await task_runner.acquire_lease()
+
+        original = await task_runner.create_task("Check the time", "request-123")
+        replay = await task_runner.create_task("Check the time", "request-123")
+
+        assert replay.id == original.id
+        with pytest.raises(ValueError, match="different request"):
+            await task_runner.create_task("Check the battery", "request-123")
+        await task_runner.release_lease()
+
+    @pytest.mark.asyncio
+    async def test_terminal_task_cannot_transition_back_to_running(self, task_runner):
+        await task_runner.acquire_lease()
+        task = await task_runner.create_task("Test state machine")
+        await task_runner.transition_state(task.id, TaskState.RUNNING, "task.started", {})
+        await task_runner.transition_state(task.id, TaskState.COMPLETED, "task.completed", {})
+
+        with pytest.raises(RuntimeError, match="Invalid task state transition"):
+            await task_runner.transition_state(task.id, TaskState.RUNNING, "task.restarted", {})
+        await task_runner.release_lease()
+
+    @pytest.mark.asyncio
+    async def test_stale_lease_marks_active_action_uncertain(self, db_session):
+        owner = TaskRunner(db_session)
+        await owner.acquire_lease()
+        task = await owner.create_task("Create a file")
+        await owner.transition_state(task.id, TaskState.RUNNING, "task.started", {})
+        await owner.record_action_started(task.id, "attempt-1", "file_create", ["path", "content"])
+
+        lease = db_session.query(RunnerLease).filter_by(id=1).first()
+        lease.expires_at = datetime.utcnow() - timedelta(seconds=1)
+        db_session.commit()
+
+        replacement = TaskRunner(db_session)
+        assert await replacement.acquire_lease(task.id) is True
+
+        recovered = await replacement.get_task(task.id)
+        events = db_session.query(TaskEvent).filter_by(task_id=task.id).order_by(TaskEvent.sequence_num).all()
+        assert recovered.state == TaskState.INTERRUPTED.value
+        assert recovered.active_action_id is None
+        assert [event.event_type for event in events][-2:] == ["action.uncertain", "task.interrupted"]
+        await replacement.release_lease()
     
     @pytest.mark.asyncio
     async def test_execute_decision_fail_task(self, db_session, task_runner, tool_executor):

@@ -18,7 +18,7 @@ from .core.config import settings, generate_control_token
 from .core.logging_config import configure_logging
 from .core.db_manager import init_database, DatabaseManager
 from .models.database import set_db_manager
-from .core.auth import create_auth_dependency
+from .core.auth import LocalControlBoundaryMiddleware, control_origins, create_auth_dependency
 from .api.schemas import HealthResponse, ErrorResponse
 from .api.routes import router as api_router
 from .tools.executor import ToolExecutor
@@ -98,13 +98,19 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+app.add_middleware(
+    LocalControlBoundaryMiddleware,
+    token_provider=lambda: control_token,
+    allowed_origins=control_origins(settings.development_mode),
+)
+
 # Include API routes
 app.include_router(api_router, prefix="/api/v1")
 
 # CORS middleware - only allow local origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=list(control_origins(settings.development_mode)),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

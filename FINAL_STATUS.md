@@ -2,6 +2,11 @@
 
 ## Executive Summary
 
+> **Historical record only:** This status report predates the safety audit and
+> must not be used to claim Phase 3 or release readiness. The authoritative
+> baseline is [`docs/architecture.md`](docs/architecture.md), with required
+> gates in [`docs/acceptance-test-map.md`](docs/acceptance-test-map.md).
+
 **JARVIS** is a Windows 10/11 desktop assistant with LLM-powered task execution, tool use, GUI automation, and a voice pipeline abstraction. The project has achieved **Phase 3 Complete** status with a working backend, browser dashboard, and 74 passing tests. Note: voice STT/TTS run in stub mode unless the optional Whisper/SAPI5 components are installed, and a Tauri desktop shell is planned but not yet built.
 
 ---

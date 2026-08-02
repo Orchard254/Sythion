@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -26,9 +27,23 @@ PASS = 0
 FAIL = 1
 
 
+def load_control_token():
+    token = os.environ.get("JARVIS_CONTROL_TOKEN", "")
+    if token:
+        return token
+    try:
+        with open(os.path.join(os.path.expanduser("~"), ".jarvis", "control_token"), encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
 def api(path, method="GET", data=None, timeout=30):
     url = BASE_URL + path
     req = urllib.request.Request(url, method=method)
+    token = load_control_token()
+    if token:
+        req.add_header("X-Control-Token", token)
     if data is not None:
         req.add_header("Content-Type", "application/json")
         req.data = json.dumps(data).encode("utf-8")

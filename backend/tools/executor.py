@@ -4,6 +4,7 @@ Executes typed tools with policy evaluation and verification.
 """
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Type, Dict, Any, Optional
 from pydantic import BaseModel
 import time
@@ -34,6 +35,13 @@ class BaseTool(ABC):
             ToolOutput with success/failure status and evidence
         """
         pass
+
+
+@dataclass(frozen=True)
+class PolicyContext:
+    """Trusted execution context supplied by the task runner, never the model."""
+
+    direct_user_instruction: bool = False
     
     @abstractmethod
     async def verify(self, input_data: BaseModel, output: ToolOutput) -> bool:
@@ -94,7 +102,8 @@ class ToolExecutor:
     async def execute_tool(
         self,
         tool_name: str,
-        input_data: Dict[str, Any]
+        input_data: Dict[str, Any],
+        policy_context: Optional[PolicyContext] = None,
     ) -> ToolOutput:
         """Execute a tool with validated input.
         
@@ -114,6 +123,14 @@ class ToolExecutor:
                 success=False,
                 error={"code": "TOOL_NOT_FOUND", "message": f"Tool '{tool_name}' not found"},
                 duration_ms=0
+            )
+
+        policy_error = self._policy_error(tool, policy_context)
+        if policy_error:
+            return ToolOutput(
+                success=False,
+                error=policy_error,
+                duration_ms=0,
             )
         
         # Validate input
@@ -148,3 +165,24 @@ class ToolExecutor:
                 error={"code": "EXECUTION_ERROR", "message": str(e)},
                 duration_ms=duration_ms
             )
+
+    @staticmethod
+    def _policy_error(
+        tool: BaseTool,
+        policy_context: Optional[PolicyContext],
+    ) -> Optional[Dict[str, str]]:
+        """Apply non-bypassable, deterministic policy before a tool executes."""
+        requirements = tool.get_policy_requirements()
+        if requirements.get("requires_admin"):
+            return {
+                "code": "ELEVATION_NOT_ALLOWED",
+                "message": "JARVIS only performs standard-user actions",
+            }
+        if requirements.get("requires_confirmation") and not (
+            policy_context and policy_context.direct_user_instruction
+        ):
+            return {
+                "code": "DIRECT_INSTRUCTION_REQUIRED",
+                "message": "A mutating action requires a direct user instruction",
+            }
+        return None

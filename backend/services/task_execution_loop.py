@@ -6,6 +6,7 @@ Integrates model decisions, tool execution, and state management.
 import asyncio
 import json
 import logging
+import uuid
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from sqlalchemy.orm import Session
@@ -13,7 +14,7 @@ from sqlalchemy.orm import Session
 from backend.services.task_runner import TaskRunner
 from backend.services.model_engine import ModelDecisionEngine, ModelDecisionError, DecisionType
 from backend.services.skills_system import get_registry, SkillResult
-from backend.tools.executor import ToolExecutor, ToolOutput
+from backend.tools.executor import PolicyContext, ToolExecutor, ToolOutput
 from backend.models.database import Task, TaskEvent
 from backend.api.schemas import TaskState
 
@@ -264,7 +265,12 @@ class TaskExecutionLoop:
         task_id: str,
         params: Dict[str, Any]
     ) -> bool:
-        """Mark task as completed."""
+        """Mark a task completed only when durable evidence permits it."""
+        completion_error = self._completion_precondition_error(task_id)
+        if completion_error:
+            logger.warning("Refusing completion for task %s: %s", task_id, completion_error)
+            return False
+
         summary = params.get('result') or params.get('summary', 'Task completed successfully')
         warnings = params.get('warnings', [])
         
@@ -282,6 +288,27 @@ class TaskExecutionLoop:
         
         logger.info(f"Task {task_id} completed: {summary}")
         return True
+
+    def _completion_precondition_error(self, task_id: str) -> Optional[str]:
+        """Return why evidence does not permit a successful completion."""
+        task = self.db.query(Task).filter_by(id=task_id).first()
+        if not task:
+            return "Task no longer exists"
+        if task.state == TaskState.CANCELLED.value:
+            return "Task cancellation was accepted"
+
+        for event in self._get_event_history(task_id):
+            event_type = event["event_type"]
+            event_data = event["event_data"]
+            if event_type in {"action.uncertain", "task.interrupted"}:
+                return "An action outcome is uncertain"
+            if event_type == "tool.executed":
+                if not event_data.get("success", False):
+                    return "A tool action failed and has no recorded resolution"
+                if event_data.get("mutating") and event_data.get("verification") != "passed":
+                    return "A mutating action has no confirmed verification"
+
+        return None
     
     async def _fail_task_from_model(
         self,
@@ -405,11 +432,28 @@ class TaskExecutionLoop:
         if not tool_name:
             logger.error("execute_tool called without tool_name")
             return False
+
+        tool = self.tool_executor.get_tool(tool_name)
+        policy = tool.get_policy_requirements() if tool else {}
+        mutating = bool(policy.get("mutating") or policy.get("destructive") or
+                        policy.get("risk_level") in {"medium", "high"})
+        action_id = str(uuid.uuid4()) if mutating else None
+        if action_id:
+            await self.runner.record_action_started(
+                task_id=task_id,
+                action_id=action_id,
+                tool_name=tool_name,
+                parameter_keys=list(tool_params.keys()),
+            )
         
         # Execute tool
+        task = await self.runner.get_task(task_id)
+        if not task:
+            raise RuntimeError(f"Task {task_id} not found")
         result: ToolOutput = await self.tool_executor.execute_tool(
             tool_name=tool_name,
-            input_data=tool_params
+            input_data=tool_params,
+            policy_context=PolicyContext(direct_user_instruction=bool(task.original_request.strip())),
         )
         
         # Record event
@@ -423,8 +467,11 @@ class TaskExecutionLoop:
                 "output": result.data or result.output if hasattr(result, 'output') else result.data,
                 "error": result.error,
                 "evidence": result.evidence,
-                "duration_ms": result.duration_ms
-            }
+                "duration_ms": result.duration_ms,
+                "mutating": mutating,
+                "verification": "passed" if result.success else "failed",
+            },
+            active_action_id=None,
         )
         
         if result.success:
@@ -456,7 +503,7 @@ async def run_task(db_session: Session, task_id: str, tool_executor: ToolExecuto
 
     try:
         # Acquire lease
-        if not await runner.acquire_lease():
+        if not await runner.acquire_lease(task_id=task_id):
             raise RuntimeError("Another task runner is currently active")
 
         loop = TaskExecutionLoop(session, runner, tool_executor)

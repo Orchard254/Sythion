@@ -8,12 +8,24 @@ import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.models.database import Task, TaskEvent, RunnerLease
 from backend.api.schemas import TaskState
 
 logger = logging.getLogger(__name__)
+
+
+ALLOWED_TRANSITIONS = {
+    TaskState.CREATED.value: {TaskState.RUNNING.value, TaskState.CANCELLED.value, TaskState.INTERRUPTED.value},
+    TaskState.RUNNING.value: {TaskState.WAITING_FOR_USER.value, TaskState.COMPLETED.value, TaskState.FAILED.value, TaskState.CANCELLED.value, TaskState.INTERRUPTED.value},
+    TaskState.WAITING_FOR_USER.value: {TaskState.RUNNING.value, TaskState.CANCELLED.value, TaskState.INTERRUPTED.value},
+    TaskState.INTERRUPTED.value: {TaskState.RUNNING.value},
+    TaskState.COMPLETED.value: set(),
+    TaskState.FAILED.value: set(),
+    TaskState.CANCELLED.value: set(),
+}
 
 
 class TaskRunner:
@@ -121,34 +133,46 @@ class TaskRunner:
             task_id: ID of the task that was running
         """
         task = self.db.query(Task).filter_by(id=task_id).first()
-        if task and task.state == TaskState.RUNNING.value:
+        if task and task.state in {TaskState.CREATED.value, TaskState.RUNNING.value, TaskState.WAITING_FOR_USER.value}:
+            if task.active_action_id:
+                self._append_event(
+                    task_id,
+                    "action.uncertain",
+                    {
+                        "action_id": task.active_action_id,
+                        "reason": "runner_crash_or_restart",
+                    },
+                )
             # Mark task as interrupted
             task.state = TaskState.INTERRUPTED.value
+            task.active_action_id = None
             task.version += 1
             task.updated_at = datetime.utcnow()
             
-            # Get next sequence number
-            last_event = self.db.query(TaskEvent).filter_by(task_id=task_id).order_by(
-                TaskEvent.sequence_num.desc()
-            ).first()
-            next_seq = (last_event.sequence_num + 1) if last_event else 1
-            
-            # Append interruption event
-            import json
-            event = TaskEvent(
-                task_id=task_id,
-                event_type="task.interrupted",
-                event_data=json.dumps({
+            self._append_event(task_id, "task.interrupted", {
                     "reason": "runner_crash_or_restart",
                     "detected_at": datetime.utcnow().isoformat(),
                     "note": "Task was running when runner lease expired. Resume will re-observe before continuing."
-                }),
-                sequence_num=next_seq,
-                created_at=datetime.utcnow(),
-            )
-            self.db.add(event)
+                })
             self.db.commit()
             logger.info(f"Marked task {task_id} as interrupted due to stale lease")
+
+    def _append_event(self, task_id: str, event_type: str, event_data: Dict[str, Any]) -> TaskEvent:
+        """Append the next immutable event while the caller owns the transaction."""
+        import json
+
+        last_event = self.db.query(TaskEvent).filter_by(task_id=task_id).order_by(
+            TaskEvent.sequence_num.desc()
+        ).first()
+        event = TaskEvent(
+            task_id=task_id,
+            event_type=event_type,
+            event_data=json.dumps(event_data),
+            sequence_num=(last_event.sequence_num + 1) if last_event else 1,
+            created_at=datetime.utcnow(),
+        )
+        self.db.add(event)
+        return event
 
     def _verify_lease(self) -> bool:
         """Verify we still hold the lease."""
@@ -176,16 +200,17 @@ class TaskRunner:
 
         # Check idempotency
         if idempotency_key:
-            existing = self.db.query(Task).filter(
-                Task.original_request == original_request
-            ).first()
+            existing = self.db.query(Task).filter_by(idempotency_key=idempotency_key).first()
             if existing:
+                if existing.original_request != original_request:
+                    raise ValueError("Idempotency key is already bound to a different request")
                 return existing
 
         task_id = str(uuid.uuid4())
         task = Task(
             id=task_id,
             original_request=original_request,
+            idempotency_key=idempotency_key,
             state=TaskState.CREATED.value,
             version=1,
             created_at=datetime.utcnow(),
@@ -194,15 +219,17 @@ class TaskRunner:
         self.db.add(task)
 
         # Append creation event
-        event = TaskEvent(
-            task_id=task_id,
-            event_type="task.created",
-            event_data='{"original_request": "' + original_request.replace('"', '\\"') + '"}',
-            sequence_num=1,
-            created_at=datetime.utcnow(),
-        )
-        self.db.add(event)
-        self.db.commit()
+        self._append_event(task_id, "task.created", {"original_request": original_request})
+        try:
+            self.db.commit()
+        except IntegrityError:
+            self.db.rollback()
+            if not idempotency_key:
+                raise
+            existing = self.db.query(Task).filter_by(idempotency_key=idempotency_key).first()
+            if existing and existing.original_request == original_request:
+                return existing
+            raise
         self.db.refresh(task)
 
         return task
@@ -237,8 +264,11 @@ class TaskRunner:
         if not task:
             raise RuntimeError(f"Task {task_id} not found")
 
-        # Update state
         old_state = task.state
+        if new_state.value != old_state and new_state.value not in ALLOWED_TRANSITIONS.get(old_state, set()):
+            raise RuntimeError(f"Invalid task state transition: {old_state} -> {new_state.value}")
+
+        # Update state
         task.state = new_state.value
         task.version += 1
         task.updated_at = datetime.utcnow()
@@ -247,26 +277,36 @@ class TaskRunner:
         for key, value in updates.items():
             setattr(task, key, value)
 
-        # Get next sequence number
-        last_event = self.db.query(TaskEvent).filter_by(task_id=task_id).order_by(
-            TaskEvent.sequence_num.desc()
-        ).first()
-        next_seq = (last_event.sequence_num + 1) if last_event else 1
-
-        # Append event
-        import json
-        event = TaskEvent(
-            task_id=task_id,
-            event_type=event_type,
-            event_data=json.dumps(event_data),
-            sequence_num=next_seq,
-            created_at=datetime.utcnow(),
-        )
-        self.db.add(event)
+        self._append_event(task_id, event_type, event_data)
         self.db.commit()
         self.db.refresh(task)
 
         return task
+
+    async def record_action_started(
+        self,
+        task_id: str,
+        action_id: str,
+        tool_name: str,
+        parameter_keys: List[str],
+    ) -> None:
+        """Durably record a mutating attempt before the operating-system call."""
+        lease = self.db.query(RunnerLease).filter_by(id=1).first()
+        if not lease or lease.owner_nonce != self._lease_nonce:
+            raise RuntimeError("Runner lease not held")
+        lease.last_task_id = task_id
+        self._current_task_id = task_id
+        await self.transition_state(
+            task_id=task_id,
+            new_state=TaskState.RUNNING,
+            event_type="action.started",
+            event_data={
+                "action_id": action_id,
+                "tool_name": tool_name,
+                "parameter_keys": sorted(parameter_keys),
+            },
+            active_action_id=action_id,
+        )
 
     async def get_task(self, task_id: str) -> Optional[Task]:
         """Get a task by ID."""

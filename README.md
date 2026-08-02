@@ -1,5 +1,12 @@
 # JARVIS - Windows 10/11 Personal Desktop Assistant
 
+> **Architecture gate:** This repository contains an exploratory prototype,
+> not a production-ready Phase 3 release. The current source of truth is the
+> Phase -1 decision record in [`docs/architecture.md`](docs/architecture.md)
+> and its required verification plan in
+> [`docs/acceptance-test-map.md`](docs/acceptance-test-map.md). No milestone
+> beyond Phase A is accepted until those gates are implemented and pass.
+
 [![Tests](https://img.shields.io/badge/tests-74%20passed-green)]()
 [![Phase](https://img.shields.io/badge/phase-3%20complete-blue)]()
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F%2F11-lightgrey)]()

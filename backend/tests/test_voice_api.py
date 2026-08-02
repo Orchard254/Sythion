@@ -43,13 +43,22 @@ def client(db_session):
         finally:
             pass
     
-    from backend.api.routes import router
-    from fastapi import Depends
-    
+    import backend.main as backend_main
+
     app.dependency_overrides[get_db] = override_get_db
-    client = TestClient(app)
-    yield client
-    app.dependency_overrides.clear()
+    previous_token = backend_main.control_token
+    backend_main.control_token = "voice-test-control-token"
+    try:
+        yield TestClient(
+            app,
+            headers={
+                "Origin": "tauri://localhost",
+                "X-Control-Token": "voice-test-control-token",
+            },
+        )
+    finally:
+        backend_main.control_token = previous_token
+        app.dependency_overrides.clear()
 
 
 class TestVoiceEndpoints:

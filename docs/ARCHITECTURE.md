@@ -1,222 +1,79 @@
 # JARVIS Architecture Decision Record
 
-## Overview
-This document captures the architectural decisions for the JARVIS Windows 10/11 personal desktop assistant.
+**Status:** Phase -1 decision record — implementation direction accepted; Phase A remediation in progress.
 
-## System Architecture
+## Decision
 
-### Core Components
+JARVIS v1 is a Windows 10/11, standard-user personal desktop assistant. It is
+a visible, single-task application: the owner submits a typed or in-window
+voice request, watches durable events, can stop the work, and receives only
+verified outcomes or an explicit failure/uncertainty.
 
-1. **Frontend (React + Vite, browser dashboard)**
-   - Dashboard with task timeline, task cards, settings
-   - Voice mode toggle and microphone control
-   - Runs at http://localhost:3000, proxies `/api` to the backend
-   - A Tauri desktop shell is planned but not yet implemented (no Rust
-     toolchain installed); `start_jarvis.cmd` launches backend + browser
-   - No direct Windows automation capabilities
+The product is not an autonomous agent, browser agent, shell, service, remote
+control system, scheduler, background listener, or self-modifying system.
 
-2. **Backend (Python FastAPI Sidecar)**
-   - Local API (127.0.0.1 only)
-   - Task application service with single runner lease
-   - Tool executor with typed actions
-   - SQLite database manager
-   - Ollama Cloud adapter
+## Approved target shape
 
-3. **Task Application Service**
-   - Single durable task runner
-   - State machine management
-   - Event sourcing via immutable task_events
-   - Cancellation and recovery handling
+1. A packaged Tauri desktop application hosts the React dashboard and starts
+   exactly one fixed Python/FastAPI sidecar.
+2. Tauri creates a fresh random control token, passes it only to that sidecar,
+   and receives its ephemeral loopback port through a startup handshake.
+3. The sidecar binds only to `127.0.0.1`, validates the control token and the
+   packaged-app origin for every HTTP and WebSocket request, and owns the
+   task runner, SQLite ledger, policy, model adapter, and tool executor.
+4. The task runner alone changes task state and appends immutable events. A
+   profile-wide lease allows one `running` task and supports safe recovery.
+5. The model can select exactly one validated control or policy-filtered tool
+   call per turn. It cannot execute actions, override policy, or claim success
+   without recorded verification.
+6. Tools make one bounded action with typed inputs/outputs, deterministic
+   policy, fresh verification, cancellation handling, and recovery guidance.
+7. Voice capture exists only while the visible dashboard is open and voice
+   mode is enabled. VAD, STT, stop detection, and final-result TTS are local.
 
-4. **Domain Layer**
-   - Policy engine for action authorization
-   - Context management
-   - Skill registry and execution
+## Deliberate boundaries
 
-5. **Tool Executors**
-   - System read tools (time, battery, disk, processes, active window)
-   - File tools (scoped to approved roots)
-   - Application tools (launch/focus/close via registered identity)
-   - Package tools (winget operations)
-   - GUI interaction tools (UIA primary, OCR fallback)
+- The frontend has no shell, process, generic filesystem, or automation
+  capability. Tauri's fixed sidecar launch is the only child process.
+- Only `winget`, using fixed arguments, exact package IDs, and approved
+  sources, may be a command-line subprocess tool.
+- GUI work targets only visible, foreground, medium-integrity native Windows
+  applications. UI Automation runs on one dedicated COM MTA worker; OCR and
+  coordinates are tightly bounded fallback mechanisms.
+- Persistent data is in user-local application data with user-only Windows
+  ACLs. Secrets use Windows Credential Manager or equivalent DPAPI-backed
+  storage; they never enter `.env`, SQLite, normal logs, task events, exports,
+  or model context.
+- Skills are validated declarative workflows over registered tools. They have
+  no executable code, expressions, loops, branches, secrets, or automatic
+  enablement.
 
-## Data Model
+## Current implementation assessment
 
-### SQLite Schema
+The checked-in prototype is **not eligible to claim Phase 3 completion** and
+must be re-baselined to Phase -1/A remediation. It contains useful exploratory
+components, but these gaps prevent a safe milestone gate:
 
-```sql
--- Tasks table (current state projection)
-CREATE TABLE tasks (
-    id TEXT PRIMARY KEY,
-    original_request TEXT NOT NULL,
-    normalized_goal TEXT,
-    state TEXT NOT NULL CHECK(state IN ('created', 'running', 'waiting_for_user', 'completed', 'failed', 'cancelled', 'interrupted')),
-    version INTEGER DEFAULT 1,
-    active_action_id TEXT,
-    selected_skill_version TEXT,
-    pending_question TEXT,
-    final_result TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    terminal_reason TEXT
-);
+| Finding | Consequence | Required remediation |
+| --- | --- | --- |
+| No Tauri project or packaged sidecar handshake | Browser dashboard is not the required local trust boundary | Build and test the Tauri shell before enabling mutation tools |
+| No packaged token handshake exists yet | The authenticated API boundary now rejects missing/wrong tokens and untrusted origins, but the browser launcher cannot securely supply a per-launch token | Build the Tauri shell and startup handshake before production use |
+| API keys are documented/configured via `.env` | Production secret-handling policy is violated | Replace with Credential Manager-backed write-only secret storage |
+| Fallback database/log directory is `~/.jarvis` | Required LocalAppData location and ACL policy are not enforced | Move storage, create user-only ACLs, and test failure handling |
+| Cross-platform app and GUI subprocess paths exist | v1 Windows-only and `winget`-only subprocess boundary is violated | Remove or isolate non-Windows paths; register Windows apps by identity only |
+| GUI fallbacks use generic input simulation | No proven UIA MTA ownership, target freshness, integrity, or one-action safety | Rebuild GUI adapter around a dedicated UIA worker and fixture-only tests |
+| Optional/stub voice components and unpinned downloads | Voice lifecycle, local-only processing, and asset integrity are unproven | Select, pin, checksum, and explicitly install assets before voice milestone |
+| Documentation reports conflicting phase/test counts | The release status is not reliable | Replace Phase claims only after the listed gates are executed |
 
--- Task events (immutable audit log)
-CREATE TABLE task_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id TEXT NOT NULL,
-    event_type TEXT NOT NULL,
-    event_data TEXT NOT NULL,
-    sequence_num INTEGER NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (task_id) REFERENCES tasks(id)
-);
+## Milestone gate
 
--- Runner lease (single instance enforcement)
-CREATE TABLE runner_lease (
-    id INTEGER PRIMARY KEY CHECK(id = 1),
-    owner_nonce TEXT NOT NULL,
-    process_id INTEGER NOT NULL,
-    heartbeat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMP NOT NULL
-);
+No feature work beyond Phase A may proceed until the owner approves this
+record and the acceptance-test map. Existing prototype code remains a source
+of implementation lessons, not proof of acceptance.
 
--- Skills registry
-CREATE TABLE skills (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    description TEXT,
-    state TEXT DEFAULT 'enabled',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+## References
 
-CREATE TABLE skill_versions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    skill_id TEXT NOT NULL,
-    version TEXT NOT NULL,
-    definition TEXT NOT NULL,
-    validation_result TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (skill_id) REFERENCES skills(id)
-);
-
--- Settings (non-secret only)
-CREATE TABLE settings_metadata (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-## Task State Machine
-
-```
-created -> running -> waiting_for_user -> running
-created -> running -> completed
-created -> running -> failed
-created -> running -> cancelled
-created/running/waiting_for_user -> interrupted (on crash/restart)
-interrupted -> running (on explicit resume)
-```
-
-## Security Model
-
-1. **Local Boundary**
-   - API binds only to 127.0.0.1
-   - `ControlTokenSecurity` middleware exists but is NOT wired onto routes;
-     requests currently require no auth token (enforcement is a TODO)
-   - No shell/process execution from frontend
-
-2. **Data Protection**
-   - SQLite in user's local app data directory
-   - User-only Windows ACLs
-   - Secrets in Windows Credential Manager (not SQLite)
-   - WAL mode for concurrent reads
-
-3. **Action Policy**
-   - All actions require policy approval
-   - Model cannot override policy
-   - Verification required for all mutating operations
-   - Cancellation checks before OS calls
-
-## API Contract
-
-### Authentication
-- `ControlTokenSecurity` in `backend/core/auth.py` validates `X-Control-Token`
-  (or `Authorization: Bearer`) against a per-launch token
-- **Status: implemented but not enforced** — no route currently applies the
-  dependency, so API calls work without a token while the app is local-only
-
-### Endpoints
-
-```
-POST /tasks - Create new task
-GET /tasks - List tasks
-GET /tasks/{id} - Get task details
-POST /tasks/{id}/reply - Reply to waiting_for_user task
-POST /tasks/{id}/cancel - Cancel task
-POST /tasks/{id}/resume - Resume interrupted task
-
-GET /settings - Get settings
-PUT /settings - Update settings
-
-POST /voice/start - Start voice session
-POST /voice/stop - Stop voice session
-POST /voice/audio - Stream audio frames
-
-GET /health - Health check
-GET /models - List available models
-```
-
-## Voice Processing
-
-1. Dashboard controls microphone permission
-2. Audio streamed as PCM frames to sidecar
-3. VAD detects speech segments (energy-based `SimpleVAD`; PyAudio/WebRTC
-   VAD used when `use_windows_audio=True`)
-4. STT transcribes segments (Whisper when installed; otherwise a stub that
-   returns a placeholder — real transcription is not active out of the box)
-5. Editable transcript shown in UI
-6. "Stop" phrase detected locally
-7. Raw audio deleted after transcription (unless recording enabled)
-
-## Tool Execution Rules
-
-1. **System Tools**: Direct OS APIs, no shell parsing
-2. **File Tools**: 
-   - Scoped to configured roots only
-   - No symlinks/junctions/wildcards
-   - Recycle Bin for deletions
-   - Recheck target before mutation
-3. **Application Tools**:
-   - Registered application identity only
-   - No arbitrary paths/command lines
-   - Handle unsaved-work prompts as waiting_for_user
-4. **Package Tools**:
-   - winget only, fixed argument arrays
-   - Exact package ID required
-   - No auto-accept of agreements
-5. **GUI Tools**:
-   - UI Automation first, OCR fallback
-   - One interaction per call
-   - Re-observe after each action
-   - No elevated/secure desktop targets
-
-## Error Handling
-
-1. **Model Decisions**: Max 2 repair attempts, then fail
-2. **Cloud Outage**: Honest failure, no silent fallback
-3. **Cancellation**: Immediate for observations, between items for batches
-4. **Crash Recovery**: Mark action as uncertain, re-observe state
-5. **Invalid Input**: Structured error responses with redacted evidence
-
-## Constraints
-
-- Windows 10/11 only
-- Standard user privileges (no elevation)
-- No browser automation
-- No background daemon/tray
-- No ambient listening
-- Single task execution
-- No vector memory systems
-- No cross-device control
+- Product requirements and non-negotiable safety rules:
+  `C:\Ai\JARVIS_FINAL_HANDOFF_BRIEF.md`
+- Executable verification plan:
+  `C:\Ai\jarvis\docs\acceptance-test-map.md`

@@ -9,6 +9,7 @@ Usage:
 """
 
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -24,11 +25,32 @@ except Exception:
 
 BASE_URL = "http://127.0.0.1:8000/api/v1"
 TERMINAL_STATES = {"completed", "failed", "cancelled", "interrupted"}
+CONTROL_TOKEN = os.environ.get("JARVIS_CONTROL_TOKEN", "")
+DEVELOPMENT_MODE = os.environ.get("JARVIS_DEVELOPMENT_MODE", "").lower() in {"1", "true", "yes"}
+
+
+def _load_control_token():
+    if CONTROL_TOKEN:
+        return CONTROL_TOKEN
+    try:
+        with open(os.path.join(os.path.expanduser("~"), ".jarvis", "control_token"), encoding="utf-8") as f:
+            token = f.read().strip()
+        return token
+    except Exception:
+        return ""
 
 
 def api(path, method="GET", data=None):
     url = BASE_URL + path
     req = urllib.request.Request(url, method=method)
+    token = _load_control_token()
+    if not token:
+        raise SystemExit(
+            "No control token found. Start JARVIS with start_jarvis.cmd, then run the CLI "
+            "from a terminal where JARVIS_CONTROL_TOKEN is set (or read ~/.jarvis/control_token)."
+        )
+    req.add_header("X-Control-Token", token)
+    req.add_header("Origin", "http://localhost:3000" if DEVELOPMENT_MODE else "tauri://localhost")
     if data is not None:
         req.add_header("Content-Type", "application/json")
         req.data = json.dumps(data).encode("utf-8")

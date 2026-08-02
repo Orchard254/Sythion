@@ -2,7 +2,7 @@
 Database connection and session management.
 """
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
 import os
@@ -27,13 +27,13 @@ class DatabaseManager:
         )
         
         # Enable WAL mode for concurrent reads
-        from sqlalchemy import text
         with self.engine.connect() as conn:
             conn.execute(text("PRAGMA journal_mode=WAL"))
             conn.commit()
         
-        # Create tables
+        # Create the baseline schema, then apply additive SQLite migrations.
         Base.metadata.create_all(self.engine)
+        self._apply_migrations()
         
         # Session factory
         self.SessionLocal = sessionmaker(
@@ -41,6 +41,24 @@ class DatabaseManager:
             autoflush=False,
             bind=self.engine
         )
+
+    def _apply_migrations(self) -> None:
+        """Apply small, transactional, forward-only SQLite schema updates."""
+        with self.engine.begin() as conn:
+            task_columns = {
+                row[1] for row in conn.execute(text("PRAGMA table_info(tasks)"))
+            }
+            if "idempotency_key" not in task_columns:
+                conn.execute(text("ALTER TABLE tasks ADD COLUMN idempotency_key VARCHAR"))
+
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_idempotency_key "
+                "ON tasks (idempotency_key) WHERE idempotency_key IS NOT NULL"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_task_events_task_sequence "
+                "ON task_events (task_id, sequence_num)"
+            ))
     
     @contextmanager
     def get_session(self) -> Session:

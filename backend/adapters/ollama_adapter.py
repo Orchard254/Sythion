@@ -4,8 +4,19 @@ Handles authentication, model selection, and tool calls.
 """
 
 import httpx
+from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 from ..core.config import settings
+
+
+class ProviderCapabilityError(RuntimeError):
+    """A selected Cloud provider/model cannot safely execute JARVIS decisions."""
+
+
+@dataclass(frozen=True)
+class ProviderCapabilityProfile:
+    model_id: str
+    native_tool_calls: bool
 
 
 class OllamaCloudAdapter:
@@ -16,6 +27,7 @@ class OllamaCloudAdapter:
         self.api_key = settings.ollama_api_key
         self.selected_model = settings.selected_model
         self._client: Optional[httpx.AsyncClient] = None
+        self._capability_profile: Optional[ProviderCapabilityProfile] = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with authentication."""
@@ -31,12 +43,11 @@ class OllamaCloudAdapter:
         return self._client
 
     async def check_health(self) -> bool:
-        """Check if Ollama Cloud is accessible with current credentials."""
+        """Check authentication, selected model availability, and native tools."""
         try:
-            client = await self._get_client()
-            response = await client.get("/api/tags")
-            return response.status_code == 200
-        except Exception:
+            await self.ensure_capabilities()
+            return True
+        except ProviderCapabilityError:
             return False
 
     async def list_models(self) -> List[Dict[str, Any]]:
@@ -49,6 +60,70 @@ class OllamaCloudAdapter:
             return data.get("models", [])
         except Exception as e:
             raise RuntimeError(f"Failed to list models: {str(e)}")
+
+    async def ensure_capabilities(self) -> ProviderCapabilityProfile:
+        """Fail closed until the selected Cloud model proves native tool support."""
+        if self._capability_profile:
+            return self._capability_profile
+        if not self.api_key:
+            raise ProviderCapabilityError("Cloud API key is not configured")
+        if not self.selected_model:
+            raise ProviderCapabilityError("No Cloud model has been selected")
+
+        try:
+            models = await self.list_models()
+        except RuntimeError as exc:
+            raise ProviderCapabilityError(f"Model listing failed: {exc}") from exc
+
+        model_ids = {
+            model_id
+            for model in models
+            for model_id in (model.get("name"), model.get("model"))
+            if isinstance(model_id, str)
+        }
+        # Ollama Cloud tags aliases with a deployment suffix (e.g. the provider
+        # serves /api/chat for "minimax-m3:cloud" while /api/tags only lists
+        # the base "minimax-m3"). Accept the exact id or its base name, so a
+        # stale/retired model is still rejected while a valid tag passes.
+        base_model = self.selected_model.rsplit(":", 1)[0]
+        if self.selected_model not in model_ids and base_model not in model_ids:
+            raise ProviderCapabilityError(
+                f"Selected model '{self.selected_model}' is unavailable"
+            )
+
+        probe_tool_name = "jarvis_capability_probe"
+        payload = {
+            "model": self.selected_model,
+            "messages": [{
+                "role": "user",
+                "content": "Call the supplied health-check tool exactly once.",
+            }],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": probe_tool_name,
+                    "description": "Non-mutating JARVIS provider capability check.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }],
+            "stream": False,
+        }
+        try:
+            client = await self._get_client()
+            response = await client.post("/api/chat", json=payload)
+            response.raise_for_status()
+            tool_calls = response.json().get("message", {}).get("tool_calls", [])
+        except httpx.HTTPError as exc:
+            raise ProviderCapabilityError(f"Native tool probe failed: {exc}") from exc
+
+        if len(tool_calls) != 1 or tool_calls[0].get("function", {}).get("name") != probe_tool_name:
+            raise ProviderCapabilityError("Selected model did not return one valid native tool call")
+
+        self._capability_profile = ProviderCapabilityProfile(
+            model_id=self.selected_model,
+            native_tool_calls=True,
+        )
+        return self._capability_profile
 
     async def execute_tool_call(
         self,
@@ -70,6 +145,7 @@ class OllamaCloudAdapter:
             RuntimeError: If the request fails
         """
         try:
+            await self.ensure_capabilities()
             client = await self._get_client()
             
             payload = {
@@ -85,6 +161,8 @@ class OllamaCloudAdapter:
             response.raise_for_status()
             return response.json()
 
+        except ProviderCapabilityError:
+            raise
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
                 raise RuntimeError("Rate limit exceeded")
