@@ -254,7 +254,22 @@ Always think step-by-step and prefer observation before action."""
         })
         
         return messages
-    
+
+    _REASONING_FIELDS = frozenset({
+        "reasoning", "reasoning_content", "thinking", "thought", "chain_of_thought",
+        "rationale", "internal_thoughts",
+    })
+
+    def _redact_reasoning_fields(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        """Discard model reasoning/thinking fields before any further handling.
+
+        Reasoning traces are private and unbounded; they must never reach
+        task events, decision history, logs, or a later model request.
+        """
+        if not isinstance(message, dict):
+            return message
+        return {k: v for k, v in message.items() if k.lower() not in self._REASONING_FIELDS}
+
     def _parse_decision(self, response: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         """
         Parse model response into decision type and parameters.
@@ -278,7 +293,9 @@ Always think step-by-step and prefer observation before action."""
                 message = choices[0].get('message', {})
             else:
                 message = response.get('message', {})
-            
+
+            message = self._redact_reasoning_fields(message)
+
             if not message:
                 raise ModelDecisionError(
                     code="EMPTY_RESPONSE",

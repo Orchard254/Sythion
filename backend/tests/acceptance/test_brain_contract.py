@@ -121,3 +121,50 @@ def test_decision_input_schemas_are_pydantic(db_session, full_tool_executor):
     for tool in engine._decision_tools():
         schema = tool["input_schema"]
         assert hasattr(schema, "model_fields")
+
+
+def test_reasoning_fields_discarded_from_model_response(db_session, full_tool_executor):
+    """Model reasoning/thinking traces are stripped before decision parsing."""
+    engine = ModelDecisionEngine(db_session, full_tool_executor)
+
+    response = {
+        "message": {
+            "role": "assistant",
+            "content": "I need to think about this",
+            "reasoning": "user wants the time, call system_time...",
+            "reasoning_content": "more private reasoning",
+            "thinking": "step by step reasoning trace",
+            "tool_calls": [{
+                "function": {"name": "system_time", "arguments": "{}"},
+            }],
+        },
+        "usage": {"total_tokens": 10},
+    }
+
+    decision_type, params = engine._parse_decision(response)
+
+    assert decision_type == "execute_tool"
+    assert params == {"tool_name": "system_time", "params": {}}
+    # The reasoning/thinking fields must never survive into the decision.
+    assert "reasoning" not in str(engine.decision_history)
+    assert "thinking" not in str(engine.decision_history)
+
+
+def test_redaction_removes_all_reasoning_variants(db_session, full_tool_executor):
+    engine = ModelDecisionEngine(db_session, full_tool_executor)
+    message = {
+        "content": "ok",
+        "reasoning": "a",
+        "reasoning_content": "b",
+        "thinking": "c",
+        "thought": "d",
+        "chain_of_thought": "e",
+        "rationale": "f",
+        "internal_thoughts": "g",
+        "tool_calls": [],
+    }
+    redacted = engine._redact_reasoning_fields(message)
+    for field in ("reasoning", "reasoning_content", "thinking", "thought",
+                  "chain_of_thought", "rationale", "internal_thoughts"):
+        assert field not in redacted
+    assert redacted["content"] == "ok"
