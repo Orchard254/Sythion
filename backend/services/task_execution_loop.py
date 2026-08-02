@@ -17,6 +17,7 @@ from backend.services.skills_system import get_registry, SkillResult
 from backend.tools.executor import PolicyContext, ToolExecutor, ToolOutput
 from backend.models.database import Task, TaskEvent
 from backend.api.schemas import TaskState
+from backend.core.budgets import TaskBudget, BudgetExceededError
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ class TaskExecutionLoop:
         
         repair_attempts = 0
         action_count = 0
+        budget = TaskBudget()
         
         # Start a lease heartbeat so long LLM calls don't let the lease
         # expire mid-task (30s expiry). Without this, a second request can
@@ -82,6 +84,15 @@ class TaskExecutionLoop:
                 )
             
             while True:
+                # Enforce budgets before each iteration: a task must fail
+                # honestly (never retry, mutate, or fall back locally) once any
+                # per-task budget is exhausted.
+                try:
+                    budget.check_elapsed()
+                except BudgetExceededError as e:
+                    await self._fail_task(task_id, code=e.code, message=e.message)
+                    break
+
                 # Check action limit
                 if action_count >= self.MAX_ACTIONS_PER_TASK:
                     await self._fail_task(
@@ -114,12 +125,19 @@ class TaskExecutionLoop:
                         event_history=events,
                         current_state=task.state,
                         pending_question=task.pending_question,
-                        repair_context=repair_context
+                        repair_context=repair_context,
+                        budget=budget,
                     )
                     repair_attempts = 0  # Reset on successful decision
                     
+                except BudgetExceededError as e:
+                    # Budget exhaustion is terminal: fail honestly, never repair.
+                    logger.warning(f"Task {task_id} exceeded budget {e.code}: {e.message}")
+                    await self._fail_task(task_id, code=e.code, message=e.message)
+                    break
                 except ModelDecisionError as e:
                     repair_attempts += 1
+                    budget.record_repair()
                     logger.warning(f"Model decision error (attempt {repair_attempts}): {e.message}")
                     
                     if repair_attempts > self.MAX_REPAIR_ATTEMPTS:
@@ -147,6 +165,7 @@ class TaskExecutionLoop:
 
                 # Execute the decision
                 action_count += 1
+                budget.record_action()
                 success = await self._execute_decision(
                     task_id=task_id,
                     decision_type=decision_type,
@@ -166,6 +185,7 @@ class TaskExecutionLoop:
                     TaskState.WAITING_FOR_USER.value
                 ]:
                     logger.info(f"Task {task_id} reached state: {task.state}")
+                    await self._record_budget_snapshot(task_id, budget)
                     break
                     
         except Exception as e:
@@ -182,6 +202,17 @@ class TaskExecutionLoop:
                 await heartbeat
             except (asyncio.CancelledError, Exception):
                 pass
+
+    async def _record_budget_snapshot(self, task_id: str, budget: TaskBudget) -> None:
+        """Record an evidence-safe summary of per-task budget usage."""
+        try:
+            await self.runner.record_event(
+                task_id=task_id,
+                event_type="task.budget",
+                event_data=budget.snapshot(),
+            )
+        except Exception as e:  # pragma: no cover - evidence is best-effort
+            logger.warning(f"Could not record budget snapshot for task {task_id}: {e}")
 
     async def _heartbeat_lease(self, task_id: str) -> None:
         """Renew the runner lease every few seconds during execution."""

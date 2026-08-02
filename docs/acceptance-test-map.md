@@ -22,6 +22,7 @@ milestone can be accepted.
 | Brain contract | Model-visible tools are the policy-filtered read-only subset exposed directly (no `execute_tool` wrapper); tool output reaches the model only as a bounded `model_summary`; context carries the current task state | B | passing |
 | Skill lifecycle | Skills validate restrictive references, pin versions, require explicit enablement, and stop before an unstarted disabled step | F | planned |
 | Model failure | Invalid, parallel, malformed, unavailable, rate-limited, stale-model, and exhausted-budget decisions cause no repeated mutation or local fallback | B | passing |
+| Per-task budgets | Cloud request, input/output token, action, repair, and elapsed-time budgets are tracked per task; exhaustion fails the task honestly with the matching code and records an evidence-safe snapshot event | B | passing |
 | Desktop lifecycle | Packaged app enforces single instance, launches one sidecar, shuts it down cleanly, and recovers stale leases | A | partial |
 | Sidecar handshake | Launcher writes a private per-launch token file; sidecar reads it, binds an ephemeral loopback port, and writes port+token back for the launcher | A | passing |
 | Cloud capability | Onboarding lists authenticated model IDs and proves one fake read-only native tool call before the provider is usable | B | passing |

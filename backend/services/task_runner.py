@@ -182,6 +182,16 @@ class TaskRunner:
         lease = self.db.query(RunnerLease).filter_by(id=1).first()
         return lease and lease.owner_nonce == self._lease_nonce
 
+    async def record_event(self, task_id: str, event_type: str, event_data: Dict[str, Any]) -> None:
+        """Append a durable event without changing task state (e.g. budget usage)."""
+        if not self._verify_lease():
+            raise RuntimeError("Runner lease not held")
+        task = self.db.query(Task).filter_by(id=task_id).first()
+        if not task:
+            raise RuntimeError(f"Task {task_id} not found")
+        self._append_event(task_id, event_type, event_data)
+        self.db.commit()
+
     async def create_task(self, original_request: str, idempotency_key: Optional[str] = None) -> Task:
         """Create a new task.
 

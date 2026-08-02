@@ -82,6 +82,18 @@ non-secret model ID is persisted, to `profile.json` under the user-local data
 directory (`backend/core/profile.py`). `resolve_selected_model` is the single
 resolution point: environment override first, then persisted profile metadata.
 
+## Per-task budgets (implemented)
+
+Each task carries a `TaskBudget` (`backend/core/budgets.py`) tracking Cloud
+request count, input/output tokens, executed actions, repair attempts, and
+wall-clock elapsed time against the limits in `config.py`. The execution loop
+checks budgets before every iteration and records a durable, evidence-safe
+`task.budget` snapshot event on terminal states. Exceeding any budget fails the
+task honestly with the matching code (`ACTION_LIMIT_EXCEEDED`,
+`CLOUD_REQUEST_LIMIT_EXCEEDED`, `INPUT_TOKEN_LIMIT_EXCEEDED`,
+`OUTPUT_TOKEN_LIMIT_EXCEEDED`, `ELAPSED_TIME_EXCEEDED`) -- never a retry, a
+local fallback, or an unrecorded mutation.
+
 ## Milestone gate
 
 No feature work beyond Phase A may proceed until the owner approves this

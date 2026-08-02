@@ -13,6 +13,7 @@ from backend.adapters.ollama_adapter import get_adapter, format_tools_for_ollama
 from backend.tools.executor import ToolExecutor
 from backend.services.skills_system import get_registry
 from backend.api.schemas import TaskState
+from backend.core.budgets import TaskBudget, BudgetExceededError
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional as Opt
 
@@ -365,7 +366,8 @@ Always think step-by-step and prefer observation before action."""
         event_history: List[Dict[str, Any]],
         current_state: str,
         pending_question: Optional[str] = None,
-        repair_context: Optional[str] = None
+        repair_context: Optional[str] = None,
+        budget: Optional[TaskBudget] = None
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Make a decision for the current task state.
@@ -426,6 +428,13 @@ Always think step-by-step and prefer observation before action."""
             tokens_used = usage.get('total_tokens', 0)
             self.token_count += tokens_used
             
+            # Record the Cloud request + token usage against the per-task budget.
+            if budget is not None:
+                budget.record_cloud_request(
+                    input_tokens=usage.get('prompt_tokens') or usage.get('prompt_eval_count') or 0,
+                    output_tokens=usage.get('completion_tokens') or usage.get('eval_count') or 0,
+                )
+            
             if self.token_count > self.MAX_TOKENS_PER_TASK:
                 logger.warning(f"Token budget exceeded for task: {self.token_count}")
             
@@ -443,6 +452,8 @@ Always think step-by-step and prefer observation before action."""
             logger.info(f"Model decision: {decision_type}")
             return decision_type, params
             
+        except BudgetExceededError:
+            raise
         except ModelDecisionError:
             raise
         except Exception as e:
