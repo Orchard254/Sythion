@@ -108,6 +108,16 @@ malformed IDs and missing window/element titles (`INVALID_APP_ID`,
 gating (e.g. `DIRECT_INSTRUCTION_REQUIRED`, `ELEVATION_NOT_ALLOWED`) still
 runs first and stays authoritative.
 
+## Cancellation boundary (implemented)
+
+Cancellation is checked at every boundary before an OS action. The execution
+loop re-checks task state after the model call, `_execute_tool` refuses to
+commit `action_started` for an already-cancelled task, and the executor calls
+`PolicyContext.cancelled_check` after policy + target validation and
+immediately before `tool.execute` -- returning `CANCELLED` without touching the
+OS. Cancellation and interruption are durable via the immutable event stream
+and survive lease takeover.
+
 ## Milestone gate
 
 No feature work beyond Phase A may proceed until the owner approves this

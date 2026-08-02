@@ -475,6 +475,16 @@ class TaskExecutionLoop:
         policy = tool.get_policy_requirements() if tool else {}
         mutating = bool(policy.get("mutating") or policy.get("destructive") or
                         policy.get("risk_level") in {"medium", "high"})
+
+        # Cancel request may have arrived between the model call and here: never
+        # commit an action_started record for a task that is already cancelled.
+        task = await self.runner.get_task(task_id)
+        if not task:
+            raise RuntimeError(f"Task {task_id} not found")
+        if task.state == TaskState.CANCELLED.value:
+            logger.info(f"Task {task_id} cancelled before tool '{tool_name}'; not executing")
+            return False
+
         action_id = str(uuid.uuid4()) if mutating else None
         if action_id:
             await self.runner.record_action_started(
@@ -483,15 +493,19 @@ class TaskExecutionLoop:
                 tool_name=tool_name,
                 parameter_keys=list(tool_params.keys()),
             )
-        
+
+        async def _is_cancelled() -> bool:
+            current = await self.runner.get_task(task_id)
+            return current is not None and current.state == TaskState.CANCELLED.value
+
         # Execute tool
-        task = await self.runner.get_task(task_id)
-        if not task:
-            raise RuntimeError(f"Task {task_id} not found")
         result: ToolOutput = await self.tool_executor.execute_tool(
             tool_name=tool_name,
             input_data=tool_params,
-            policy_context=PolicyContext(direct_user_instruction=bool(task.original_request.strip())),
+            policy_context=PolicyContext(
+                direct_user_instruction=bool(task.original_request.strip()),
+                cancelled_check=_is_cancelled,
+            ),
         )
         
         # Record event

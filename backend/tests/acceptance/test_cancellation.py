@@ -12,6 +12,8 @@ from backend.api.schemas import TaskState
 from backend.services.task_runner import TaskRunner
 from backend.services.task_execution_loop import TaskExecutionLoop
 from backend.models.database import TaskEvent, RunnerLease
+from backend.tools.executor import ToolExecutor, PolicyContext
+from backend.tools.file_tools import create_file_tools
 
 
 @pytest.mark.asyncio
@@ -89,3 +91,75 @@ async def test_stale_lease_cancel_survives_restart(db_session):
 
     assert recovered.state == TaskState.CANCELLED.value
     await replacement.release_lease()
+
+
+@pytest.mark.asyncio
+async def test_executor_cancellation_check_blocks_os_action(db_session, tmp_path, monkeypatch):
+    """A cancel signalled right before execution must stop the OS action.
+
+    The executor calls `cancelled_check` after policy and target validation,
+    immediately before `tool.execute`; a True result returns CANCELLED and the
+    tool's OS-touching execute is never invoked.
+    """
+    ex = ToolExecutor()
+    for tool in create_file_tools():
+        ex.register_tool(tool)
+
+    target = tmp_path / "blocked.txt"
+    target.write_text("data", encoding="utf-8")
+
+    called = []
+
+    async def _bomb(input_data):
+        called.append(True)
+        raise AssertionError("execute must not run on a cancelled task")
+
+    tool = ex.get_tool("file_read")
+    monkeypatch.setattr(tool, "execute", _bomb)
+
+    out = await ex.execute_tool(
+        "file_read",
+        {"path": str(target)},
+        policy_context=PolicyContext(
+            direct_user_instruction=True,
+            cancelled_check=lambda: _always_true(),
+        ),
+    )
+    assert not out.success
+    assert out.error["code"] == "CANCELLED"
+    assert called == []
+
+
+async def _always_true() -> bool:
+    return True
+
+
+@pytest.mark.asyncio
+async def test_cancelled_task_records_no_action_started(db_session, task_runner):
+    """A task cancelled before tool dispatch must not commit action_started."""
+    ex = ToolExecutor()
+    for tool in create_file_tools():
+        ex.register_tool(tool)
+
+    await task_runner.acquire_lease()
+    task = await task_runner.create_task("Cancel before dispatch")
+    await task_runner.transition_state(task.id, TaskState.RUNNING, "task.execution_started", {})
+
+    loop = TaskExecutionLoop(db_session, task_runner, ex)
+
+    async def _decision(*args, **kwargs):
+        await task_runner.cancel_task(task.id)
+        from backend.services.model_engine import DecisionType
+        return DecisionType.EXECUTE_TOOL, {"tool_name": "file_delete", "params": {"path": "C:\\tmp"}}
+
+    loop.model_engine.make_decision = _decision
+
+    await loop.execute_task(task.id)
+
+    events = db_session.query(TaskEvent).filter_by(task_id=task.id).order_by(
+        TaskEvent.sequence_num.asc()
+    ).all()
+    assert any(e.event_type == "task.cancelled" for e in events)
+    assert not any(e.event_type == "action.started" for e in events)
+    assert not any("action_started" in e.event_type for e in events)
+    await task_runner.release_lease()

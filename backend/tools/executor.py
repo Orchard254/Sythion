@@ -5,7 +5,7 @@ Executes typed tools with policy evaluation and verification.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Type, Dict, Any, Optional
+from typing import Type, Dict, Any, Optional, Callable, Awaitable
 from pydantic import BaseModel
 import time
 
@@ -57,6 +57,13 @@ class PolicyContext:
     """Trusted execution context supplied by the task runner, never the model."""
 
     direct_user_instruction: bool = False
+
+    cancelled_check: Optional[Callable[[], Awaitable[bool]]] = None
+    """Async predicate the executor calls immediately before an OS action.
+
+    Returns True when the caller's task has been cancelled, so the executor can
+    refuse the action at the last deterministic boundary.
+    """
     
     @abstractmethod
     async def verify(self, input_data: BaseModel, output: ToolOutput) -> bool:
@@ -166,6 +173,23 @@ class ToolExecutor:
                 error=target_error,
                 duration_ms=0,
             )
+
+        # Final cancellation check immediately before the OS action: a cancel
+        # that arrived during input/target validation must stop the action.
+        if policy_context is not None and policy_context.cancelled_check is not None:
+            try:
+                if await policy_context.cancelled_check():
+                    return ToolOutput(
+                        success=False,
+                        error={"code": "CANCELLED", "message": "Task was cancelled before the action could run"},
+                        duration_ms=0,
+                    )
+            except Exception as e:
+                return ToolOutput(
+                    success=False,
+                    error={"code": "CANCELLATION_CHECK_ERROR", "message": str(e)},
+                    duration_ms=0,
+                )
         
         # Execute with timing
         start_time = time.time()
