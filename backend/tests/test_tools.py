@@ -231,16 +231,30 @@ class TestFileTools:
         assert result.data["size"] == len(test_content)
     
     @pytest.mark.asyncio
-    async def test_read_nonexistent_file(self):
+    async def test_read_nonexistent_file(self, temp_dir):
         """Test reading a non-existent file"""
         from tools.file_tools import FileReadTool
         from api.schemas import FileReadInput
         
         tool = FileReadTool()
-        result = await tool.execute(FileReadInput(path="/nonexistent/path/file.txt"))
+        missing = os.path.join(temp_dir, "does_not_exist.txt")
+        result = await tool.execute(FileReadInput(path=missing))
         
         assert result.success is False
         assert "not found" in result.error.get("message", "").lower()
+
+    @pytest.mark.asyncio
+    async def test_path_outside_roots_rejected(self):
+        """Test that paths outside approved roots are rejected"""
+        from tools.file_tools import FileReadTool
+        from api.schemas import FileReadInput
+        
+        tool = FileReadTool()
+        # Paths outside the approved roots must be refused (e.g. system dirs)
+        result = await tool.execute(FileReadInput(path="C:\\Windows\\win.ini"))
+        
+        assert result.success is False
+        assert "outside approved roots" in result.error.get("message", "").lower()
     
     @pytest.mark.asyncio
     async def test_create_file(self, temp_dir):

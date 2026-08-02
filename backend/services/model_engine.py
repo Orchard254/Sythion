@@ -89,7 +89,8 @@ class ModelDecisionEngine:
         
     def _build_system_prompt(self) -> str:
         """Build the system prompt for JARVIS behavior."""
-        return """You are JARVIS, a Windows 10/11 personal desktop assistant.
+        available_tools = ", ".join(self.tool_executor.list_tools()) or "(none registered)"
+        return f"""You are JARVIS, a Windows 10/11 personal desktop assistant.
 
 Your role is to help users accomplish tasks on their Windows computer through safe, verified actions.
 
@@ -103,13 +104,8 @@ IMPORTANT RULES:
 7. Ask for clarification when targets are ambiguous
 8. Stop immediately if the user cancels
 
-AVAILABLE TOOLS:
-- System reads: get_time, get_battery_status, get_disk_usage, list_processes, get_active_window
-- File operations: list_directory, read_file, create_file, write_file, move_file, copy_file, delete_file
-- Application control: list_apps, launch_app, focus_app, close_app
-- Package management: search_packages, list_packages, install_package, uninstall_package
-- GUI interaction: observe_gui, focus_window, invoke_element, set_value, click, type_text, send_hotkey
-- Skills: run_skill (for complex multi-step workflows)
+AVAILABLE TOOLS (use exactly these registered names via execute_tool):
+{available_tools}
 
 DECISION TYPES:
 1. complete_task - When the task is fully accomplished

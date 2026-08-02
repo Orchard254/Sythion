@@ -155,10 +155,8 @@ def format_tools_for_ollama(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 
                 properties[field_name] = prop
                 
-                # Check if required
-                if not field_info.is_required() and field_info.default is None:
-                    pass  # Optional
-                else:
+                # Check if required: only fields without a default are required
+                if field_info.is_required():
                     required.append(field_name)
 
         formatted.append({

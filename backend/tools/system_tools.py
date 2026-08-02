@@ -88,11 +88,18 @@ class SystemBatteryTool(BaseTool):
                 evidence={"source": "psutil_sensors"}
             )
         except Exception as e:
-            # Return success with no battery info instead of failure for environments without battery sensors
+            # No battery sensor is normal on desktops; treat as success only
+            # for that case. Other psutil errors are real failures.
+            if "No such device" in str(e) or "not available" in str(e).lower():
+                return ToolOutput(
+                    success=True,
+                    data={"available": False, "message": "No battery detected"},
+                    evidence={"source": "psutil"}
+                )
             return ToolOutput(
-                success=True,
-                data={"available": False, "message": f"Battery sensor not available: {str(e)}"},
-                evidence={"source": "psutil_error"}
+                success=False,
+                error={"code": "BATTERY_ERROR", "message": str(e)},
+                duration_ms=0
             )
     
     async def verify(self, input_data: SystemBatteryInput, output: ToolOutput) -> bool:

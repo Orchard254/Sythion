@@ -4,6 +4,9 @@ Implements application management: list, launch, focus, close
 Platform-specific implementations for Windows with fallbacks for Linux/Mac
 """
 import subprocess
+import shutil
+import os
+import re
 import platform
 from typing import Dict, Any, List, Optional
 
@@ -15,6 +18,17 @@ from api.schemas import (
     AppFocusInput,
     AppCloseInput,
 )
+
+
+# App identifiers are used as argument-list entries (never through a shell),
+# but rejecting shell metacharacters defends against `os.startfile`/app-registry
+# surprises and keeps the value a plain app name.
+_APP_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+ ()-]*$")
+
+
+def _validate_app_id(app_id: str) -> None:
+    if not app_id or not _APP_ID_PATTERN.match(app_id) or any(c in app_id for c in "/\\"):
+        raise ValueError(f"Invalid app_id: {app_id!r}")
 
 
 class AppListTool(BaseTool):
@@ -51,34 +65,40 @@ class AppListTool(BaseTool):
                                 try:
                                     subkey_name = winreg.EnumKey(key, i)
                                     subkey = winreg.OpenKey(key, subkey_name)
-                                    
-                                    try:
-                                        display_name = winreg.QueryValueEx(subkey, "DisplayName")[0]
-                                        publisher = winreg.QueryValueEx(subkey, "Publisher")[0] if winreg.QueryValueEx(subkey, "Publisher") else None
-                                        version = winreg.QueryValueEx(subkey, "DisplayVersion")[0] if winreg.QueryValueEx(subkey, "DisplayVersion") else None
-                                        install_location = winreg.QueryValueEx(subkey, "InstallLocation")[0] if winreg.QueryValueEx(subkey, "InstallLocation") else None
-                                        
-                                        # Filter by search term if provided
-                                        if input_data.search_term and input_data.search_term.lower() not in display_name.lower():
-                                            i += 1
-                                            continue
-                                        
-                                        if display_name not in seen_names:
-                                            seen_names.add(display_name)
-                                            apps.append({
-                                                "name": display_name,
-                                                "publisher": publisher,
-                                                "version": version,
-                                                "install_location": install_location,
-                                                "platform": "windows"
-                                            })
-                                    except FileNotFoundError:
-                                        pass
-                                    finally:
-                                        winreg.CloseKey(subkey)
-                                    i += 1
                                 except OSError:
                                     break
+
+                                try:
+                                    def _q(subkey_, name_):
+                                        try:
+                                            return winreg.QueryValueEx(subkey_, name_)[0]
+                                        except (FileNotFoundError, OSError):
+                                            return None
+
+                                    display_name = _q(subkey, "DisplayName")
+                                    publisher = _q(subkey, "Publisher")
+                                    version = _q(subkey, "DisplayVersion")
+                                    install_location = _q(subkey, "InstallLocation")
+
+                                    if display_name is None:
+                                        continue
+
+                                    # Filter by search term if provided
+                                    if input_data.search_term and input_data.search_term.lower() not in display_name.lower():
+                                        continue
+
+                                    if display_name not in seen_names:
+                                        seen_names.add(display_name)
+                                        apps.append({
+                                            "name": display_name,
+                                            "publisher": publisher,
+                                            "version": version,
+                                            "install_location": install_location,
+                                            "platform": "windows"
+                                        })
+                                finally:
+                                    winreg.CloseKey(subkey)
+                                i += 1
                             winreg.CloseKey(key)
                         except OSError:
                             continue
@@ -194,48 +214,49 @@ class AppLaunchTool(BaseTool):
         try:
             system = platform.system()
             app_id = input_data.app_id
-            
+            _validate_app_id(app_id)
+
             if system == "Windows":
-                # Windows: Use start command or ShellExecute
+                # Windows: resolve the executable without a shell, then launch.
+                # `shutil.which` covers PATH; os.startfile handles registered
+                # app names / UWP aliases and never goes through cmd.exe.
                 try:
                     import win32api
                     import win32con
-                    
-                    # Try to find the application
-                    result = subprocess.run(
-                        ["where", app_id],
-                        capture_output=True,
-                        text=True,
-                        shell=True
-                    )
-                    
-                    if result.returncode == 0:
-                        exe_path = result.stdout.strip().split('\n')[0]
-                        subprocess.Popen([exe_path], shell=True)
+
+                    exe_path = shutil.which(app_id)
+                    if exe_path:
+                        subprocess.Popen([exe_path], shell=False)
+                        method = "resolved_executable"
                     else:
-                        # Try to start by name
-                        subprocess.Popen(["start", app_id], shell=True)
-                    
+                        os.startfile(app_id)
+                        method = "startfile"
                     return ToolOutput(
                         success=True,
                         data={
                             "app_id": app_id,
                             "platform": "windows",
-                            "method": "shell_start"
+                            "method": method
                         },
-                        evidence={"source": "windows_shell"}
+                        evidence={"source": "windows_launch"}
                     )
                 except ImportError:
                     # Fallback without pywin32
-                    subprocess.Popen(["start", app_id], shell=True)
+                    exe_path = shutil.which(app_id)
+                    if exe_path:
+                        subprocess.Popen([exe_path], shell=False)
+                        method = "resolved_executable"
+                    else:
+                        os.startfile(app_id)
+                        method = "startfile"
                     return ToolOutput(
                         success=True,
                         data={
                             "app_id": app_id,
                             "platform": "windows",
-                            "method": "shell_start_fallback"
+                            "method": method
                         },
-                        evidence={"source": "windows_shell"}
+                        evidence={"source": "windows_launch"}
                     )
             
             elif system == "Darwin":
@@ -311,6 +332,7 @@ class AppFocusTool(BaseTool):
         try:
             system = platform.system()
             app_id = input_data.app_id
+            _validate_app_id(app_id)
             
             if system == "Windows":
                 # Windows: Use win32gui to find and focus window
@@ -360,8 +382,9 @@ class AppFocusTool(BaseTool):
             elif system == "Darwin":
                 # macOS: Use AppleScript to focus application
                 try:
+                    safe_id = app_id.replace('"', '\\"')
                     script = f'''
-                    tell application "{app_id}"
+                    tell application "{safe_id}"
                         activate
                     end tell
                     '''
@@ -441,16 +464,25 @@ class AppCloseTool(BaseTool):
             system = platform.system()
             app_id = input_data.app_id
             force = input_data.force
-            
+            _validate_app_id(app_id)
+            if "*" in app_id:
+                raise ValueError("Wildcard app ids are not allowed")
+
             if system == "Windows":
                 # Windows: Use taskkill or WM_CLOSE
                 try:
                     if force:
-                        subprocess.run(
-                            ["taskkill", "/IM", f"{app_id}*", "/F"],
+                        result = subprocess.run(
+                            ["taskkill", "/IM", app_id, "/F"],
                             capture_output=True,
                             text=True
                         )
+                        if result.returncode != 0:
+                            return ToolOutput(
+                                success=False,
+                                error={"code": "KILL_ERROR", "message": (result.stderr or result.stdout).strip()},
+                                duration_ms=0
+                            )
                         method = "taskkill_force"
                     else:
                         # Try graceful close first
@@ -466,10 +498,16 @@ class AppCloseTool(BaseTool):
                         
                         windows = []
                         win32gui.EnumWindows(enum_windows, windows)
-                        
+
+                        if not windows:
+                            return ToolOutput(
+                                success=False,
+                                error={"code": "WINDOW_NOT_FOUND", "message": f"No window found matching '{app_id}'"},
+                                duration_ms=0
+                            )
                         for hwnd in windows:
                             win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-                        
+
                         method = "wm_close"
                     
                     return ToolOutput(
@@ -484,11 +522,17 @@ class AppCloseTool(BaseTool):
                     )
                 except ImportError:
                     # Fallback to taskkill
-                    subprocess.run(
-                        ["taskkill", "/IM", f"{app_id}*", "/F" if force else ""],
+                    result = subprocess.run(
+                        ["taskkill", "/IM", app_id, "/F" if force else ""],
                         capture_output=True,
                         text=True
                     )
+                    if result.returncode != 0:
+                        return ToolOutput(
+                            success=False,
+                            error={"code": "KILL_ERROR", "message": (result.stderr or result.stdout).strip()},
+                            duration_ms=0
+                        )
                     return ToolOutput(
                         success=True,
                         data={
@@ -506,8 +550,9 @@ class AppCloseTool(BaseTool):
                     subprocess.run(["killall", "-9", app_id], capture_output=True)
                     method = "kill_force"
                 else:
+                    safe_id = app_id.replace('"', '\\"')
                     script = f'''
-                    tell application "{app_id}"
+                    tell application "{safe_id}"
                         quit
                     end tell
                     '''

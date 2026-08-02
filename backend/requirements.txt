@@ -16,6 +16,9 @@ pydantic-settings==2.1.0
 # System utilities
 psutil==5.9.7
 
+# Recycle-bin deletion (safe delete without permanent data loss)
+send2trash==1.8.3
+
 # HTTP client (for Ollama Cloud)
 httpx==0.26.0
 

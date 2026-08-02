@@ -6,6 +6,7 @@ Platform-specific implementations for Windows (winget/chocolatey), macOS (brew),
 import subprocess
 import platform
 import json
+import re
 from typing import Dict, Any, List, Optional
 
 from tools.executor import BaseTool
@@ -16,6 +17,16 @@ from api.schemas import (
     PackageInstallInput,
     PackageUninstallInput,
 )
+
+# Package ids are passed as argument-list entries (never through a shell), but a
+# value starting with `-`/`--` could be parsed as a tool flag (e.g. winget).
+# Restrict ids to sane package-name characters.
+_PACKAGE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+\-]*$")
+
+
+def _validate_package_id(package_id: str) -> None:
+    if not package_id or not _PACKAGE_ID_PATTERN.match(package_id):
+        raise ValueError(f"Invalid package_id: {package_id!r}")
 
 
 class PackageSearchTool(BaseTool):
@@ -317,6 +328,7 @@ class PackageInstallTool(BaseTool):
             system = platform.system()
             package_id = input_data.package_id
             source = input_data.source
+            _validate_package_id(package_id)
             
             if system == "Windows":
                 # Determine package manager
@@ -396,7 +408,11 @@ class PackageInstallTool(BaseTool):
                     "platform": system,
                     "source": source
                 } if success else None,
-                error=None if success else {"code": "INSTALL_FAILED", "message": f"Failed to install {package_id}"},
+                error=None if success else {
+                    "code": "INSTALL_FAILED",
+                    "message": f"Failed to install {package_id}",
+                    "detail": (result.stderr or result.stdout).strip()[:2000]
+                },
                 evidence={"source": "package_manager_install"}
             )
         except Exception as e:
@@ -427,6 +443,7 @@ class PackageUninstallTool(BaseTool):
         try:
             system = platform.system()
             package_id = input_data.package_id
+            _validate_package_id(package_id)
             
             if system == "Windows":
                 # Try winget first
@@ -499,7 +516,11 @@ class PackageUninstallTool(BaseTool):
                     "method": method,
                     "platform": system
                 } if success else None,
-                error=None if success else {"code": "UNINSTALL_FAILED", "message": f"Failed to uninstall {package_id}"},
+                error=None if success else {
+                    "code": "UNINSTALL_FAILED",
+                    "message": f"Failed to uninstall {package_id}",
+                    "detail": (result.stderr or result.stdout).strip()[:2000]
+                },
                 evidence={"source": "package_manager_uninstall"}
             )
         except Exception as e:

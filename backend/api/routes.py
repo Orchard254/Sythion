@@ -335,7 +335,7 @@ async def execute_tool(
         
         return ToolExecutionResponse(
             success=result.success,
-            output=result.output,
+            output=result.data,
             error=result.error,
             evidence=result.evidence
         )

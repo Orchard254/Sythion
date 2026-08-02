@@ -19,6 +19,53 @@ from api.schemas import (
     FileDeleteInput,
 )
 
+# Upper bound on how much content the LLM may write in one call.
+MAX_WRITE_BYTES = 2 * 1024 * 1024
+
+
+def _approved_roots() -> List[Path]:
+    """Return the configured file roots, or safe defaults when unset.
+
+    When JARVIS_FILE_ROOTS is empty we fall back to the user's home directory
+    and the process working directory so file tools remain usable but still
+    cannot reach outside the user's own data (e.g. C:\\Windows, other users).
+    """
+    try:
+        from backend.core.config import settings
+    except ImportError:
+        from core.config import settings
+    if settings.file_roots:
+        return [Path(r).expanduser().resolve() for r in settings.file_roots]
+    return [Path.home().resolve(), Path.cwd().resolve()]
+
+
+def _contained(path: Path) -> bool:
+    """Return True if `path` is inside one of the approved roots.
+
+    Performs case-insensitive comparison (Windows) and follows symlinks so a
+    link inside a root pointing outside is rejected.
+    """
+    try:
+        resolved = path.expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    norm = os.path.normcase(str(resolved))
+    for root in _approved_roots():
+        root_norm = os.path.normcase(str(root))
+        if norm == root_norm or norm.startswith(root_norm + os.sep):
+            return True
+    return False
+
+
+def _safe_resolve(raw: str, allow_existing_missing: bool = False) -> Path:
+    """Resolve a user-supplied path and enforce it stays within approved roots."""
+    if not raw or not str(raw).strip():
+        raise ValueError("Path must not be empty")
+    path = Path(str(raw)).expanduser().resolve()
+    if not _contained(path):
+        raise ValueError(f"Path is outside approved roots: {path}")
+    return path
+
 
 class FileListTool(BaseTool):
     """List directory contents."""
@@ -30,7 +77,7 @@ class FileListTool(BaseTool):
     async def execute(self, input_data: FileListInput) -> ToolOutput:
         """Execute the file list tool."""
         try:
-            path = Path(input_data.path).expanduser().resolve()
+            path = _safe_resolve(input_data.path)
             
             if not path.exists():
                 return ToolOutput(
@@ -107,7 +154,7 @@ class FileReadTool(BaseTool):
     async def execute(self, input_data: FileReadInput) -> ToolOutput:
         """Execute the file read tool."""
         try:
-            path = Path(input_data.path).expanduser().resolve()
+            path = _safe_resolve(input_data.path)
             
             if not path.exists():
                 return ToolOutput(
@@ -173,7 +220,14 @@ class FileCreateTool(BaseTool):
     async def execute(self, input_data: FileCreateInput) -> ToolOutput:
         """Execute the file create tool."""
         try:
-            path = Path(input_data.path).expanduser().resolve()
+            path = _safe_resolve(input_data.path)
+
+            if len(input_data.content.encode('utf-8')) > MAX_WRITE_BYTES:
+                return ToolOutput(
+                    success=False,
+                    error={"code": "WRITE_TOO_LARGE", "message": f"Content exceeds max write size of {MAX_WRITE_BYTES} bytes"},
+                    duration_ms=0
+                )
             
             # Check if file already exists
             if path.exists():
@@ -226,7 +280,14 @@ class FileWriteTool(BaseTool):
     async def execute(self, input_data: FileWriteInput) -> ToolOutput:
         """Execute the file write tool."""
         try:
-            path = Path(input_data.path).expanduser().resolve()
+            path = _safe_resolve(input_data.path)
+            
+            if len(input_data.content.encode('utf-8')) > MAX_WRITE_BYTES:
+                return ToolOutput(
+                    success=False,
+                    error={"code": "WRITE_TOO_LARGE", "message": f"Content exceeds max write size of {MAX_WRITE_BYTES} bytes"},
+                    duration_ms=0
+                )
             
             # Create parent directories if they don't exist
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -270,8 +331,8 @@ class FileMoveTool(BaseTool):
     async def execute(self, input_data: FileMoveInput) -> ToolOutput:
         """Execute the file move tool."""
         try:
-            source = Path(input_data.source_path).expanduser().resolve()
-            dest = Path(input_data.destination_path).expanduser().resolve()
+            source = _safe_resolve(input_data.source_path)
+            dest = _safe_resolve(input_data.destination_path)
             
             if not source.exists():
                 return ToolOutput(
@@ -297,6 +358,14 @@ class FileMoveTool(BaseTool):
             
             # Create parent directories if needed
             dest.parent.mkdir(parents=True, exist_ok=True)
+            
+            # shutil.move uses os.rename on Windows, which raises FileExistsError
+            # when the destination exists; honour overwrite explicitly.
+            if input_data.overwrite and dest.exists():
+                if dest.is_dir():
+                    shutil.rmtree(dest)
+                else:
+                    dest.unlink()
             
             # Move the file
             shutil.move(str(source), str(dest))
@@ -336,8 +405,8 @@ class FileCopyTool(BaseTool):
     async def execute(self, input_data: FileCopyInput) -> ToolOutput:
         """Execute the file copy tool."""
         try:
-            source = Path(input_data.source_path).expanduser().resolve()
-            dest = Path(input_data.destination_path).expanduser().resolve()
+            source = _safe_resolve(input_data.source_path)
+            dest = _safe_resolve(input_data.destination_path)
             
             if not source.exists():
                 return ToolOutput(
@@ -402,7 +471,7 @@ class FileDeleteTool(BaseTool):
     async def execute(self, input_data: FileDeleteInput) -> ToolOutput:
         """Execute the file delete tool."""
         try:
-            path = Path(input_data.path).expanduser().resolve()
+            path = _safe_resolve(input_data.path)
             
             if not path.exists():
                 return ToolOutput(
@@ -422,12 +491,17 @@ class FileDeleteTool(BaseTool):
             if input_data.use_recycle_bin:
                 try:
                     import send2trash
-                    send2trash.send2trash(str(path))
-                    method = "recycle_bin"
                 except ImportError:
-                    # Fallback to permanent deletion if send2trash not available
-                    path.unlink()
-                    method = "permanent_deletion_no_send2trash"
+                    # Do NOT silently fall back to permanent deletion: the caller
+                    # asked for recycle-bin semantics and expects recoverable deletes.
+                    return ToolOutput(
+                        success=False,
+                        error={"code": "RECYCLE_BIN_UNAVAILABLE",
+                               "message": "use_recycle_bin requested but send2trash is not installed; refusing to permanently delete."},
+                        duration_ms=0
+                    )
+                send2trash.send2trash(str(path))
+                method = "recycle_bin"
             else:
                 path.unlink()
                 method = "permanent_deletion"
@@ -448,8 +522,14 @@ class FileDeleteTool(BaseTool):
             )
     
     async def verify(self, input_data: FileDeleteInput, output: ToolOutput) -> bool:
-        """Verify the tool execution result."""
-        return output.success and "path" in (output.data or {})
+        """Verify the file was actually deleted."""
+        if not output.success:
+            return False
+        data = output.data or {}
+        path = data.get("path")
+        if not path:
+            return False
+        return not Path(str(path)).exists()
     
     def get_policy_requirements(self) -> Dict[str, Any]:
         """Get policy requirements for this tool."""
