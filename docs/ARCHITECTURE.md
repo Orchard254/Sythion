@@ -142,6 +142,27 @@ junction, or reparse point is rejected outright (`TARGET_REPARSE_POINT_REJECTED`
 Deletes default to the Recycle Bin (refusing silent permanent fallback) and
 record `recoverable` in their evidence.
 
+## Registered application identities (implemented)
+
+App discovery reads the Windows uninstall hives (`app_tools.py`), and
+`app_launch` resolves strictly against those registered identities -- the model
+can never supply an executable path or command-line arguments, so `app_id` is
+validated to a plain registered display name. The resolved executable comes
+from the registry and is launched with no arguments and no shell. Graceful
+`app_close` posts `WM_CLOSE` and then probes: a still-open window is surfaced
+as an unsaved-work prompt (`UNSAVED_WORK_PROMPT`) that the user must answer;
+JARVIS never auto-chooses Save or Discard and never escalates to a force kill.
+Non-Windows app paths are removed.
+
+## Package restrictions (implemented)
+
+Package actions are fixed-argument `winget` operations with exact ids and no
+free-form flags (`package_tools.py`). Agreement/elevation prompts are never
+auto-accepted: when winget requires them it fails and the result is surfaced.
+Chocolatey, Homebrew, apt, and any `sudo`/`-y` invocation are removed. The
+executor policy gate additionally blocks install/uninstall with
+`ELEVATION_NOT_ALLOWED` (standard-user actions only) as defense in depth.
+
 ## Milestone gate
 
 No feature work beyond Phase A may proceed until the owner approves this

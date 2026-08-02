@@ -17,7 +17,9 @@ milestone can be accepted.
 | Controlled file mutation | Writes are atomic (temp + `os.replace`), refuse clobber without overwrite, cancel before the final replace leaves prior content intact, and record fresh post-mutation verification for create/write/move/copy/delete | C | passing |
 | Canonical file identity | File execution re-verifies containment via real OS handles (short-name/case safe) and rejects targets that are symlinks/junctions/reparse points; recycle-bin deletes record recoverability | C | passing |
 | Recovery/undo | Crash after `action_started` marks the task `interrupted` and action `uncertain`; explicit resume re-observes before mutation | B/C | planned |
-| Permissions/identity | Apps use registered identities; arbitrary executables, arguments, Run dialogs, and elevation are denied | C | planned |
+| Permissions/identity | Apps use registered identities; arbitrary executables, arguments, Run dialogs, and elevation are denied | C | passing |
+| Unsaved work | A still-open window after graceful `WM_CLOSE` is surfaced as an unsaved-work prompt and never auto-answered as Save/Discard | C | passing |
+| Package restrictions | Install/uninstall use fixed-argument winget with exact ids; agreements/elevation are never auto-accepted; other package managers are removed | C | passing |
 | Data lifecycle | LocalAppData storage has user-only ACLs; secrets and prohibited content are absent from DB, events, logs, and Cloud context | A/B | partial |
 | Secret storage | API keys are write-only via Windows Credential Manager; the value is never returned by an endpoint, stored in SQLite, or written to `.env` | A | passing |
 | GUI reliability | Locked, elevated, stale, missing, disconnected, or browser targets receive no input | D | planned |
