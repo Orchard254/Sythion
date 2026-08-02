@@ -602,11 +602,15 @@ class AppCloseTool(BaseTool):
         return output.success
     
     def get_policy_requirements(self) -> Dict[str, Any]:
-        """Get policy requirements for this tool."""
+        """Get policy requirements for this tool.
+
+        Policy metadata is static (never input-dependent): closing an
+        application is a destructive, confirmation-required action.
+        """
         return {
-            "risk_level": "high" if input_data.force else "medium",
+            "risk_level": "high",
             "requires_confirmation": True,
-            "destructive": input_data.force
+            "destructive": True,
         }
 
 

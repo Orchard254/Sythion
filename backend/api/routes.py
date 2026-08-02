@@ -4,6 +4,8 @@ Handles task management, tool execution, settings, and skills.
 """
 import logging
 import asyncio
+import json
+from datetime import datetime
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from sqlalchemy.orm import Session
@@ -15,7 +17,7 @@ from backend.services.task_execution_loop import run_task
 from backend.adapters.ollama_adapter import get_adapter, format_tools_for_ollama
 from backend.tools.executor import ToolExecutor
 from backend.api.schemas import (
-    TaskCreate, TaskResponse, TaskListResponse, 
+    TaskCreate, TaskResponse, TaskListResponse, TaskReply,
     TaskState, HealthResponse, SettingsResponse,
     ToolExecutionRequest, ToolExecutionResponse,
     VoiceStartResponse, VoiceAudioInput
@@ -88,7 +90,23 @@ async def create_task(
             original_request=task_data.original_request,
             idempotency_key=task_data.idempotency_key
         )
-        
+
+        # Idempotent replay: an existing task was already accepted and executed.
+        # Never re-transition or re-run it (completed/failed/cancelled states are
+        # terminal and must not be started again).
+        if task.state != TaskState.CREATED.value:
+            logger.info(f"Idempotent replay returned existing task {task.id} (state={task.state})")
+            return TaskResponse(
+                id=task.id,
+                original_request=task.original_request,
+                state=TaskState(task.state),
+                created_at=task.created_at,
+                updated_at=task.updated_at,
+                version=task.version,
+                final_result=task.final_result,
+                terminal_reason=task.terminal_reason
+            )
+
         # Initialize skills registry if not done
         registry = get_registry()
         if len(registry.list_skills()) == 0:
@@ -298,27 +316,109 @@ async def resume_task(task_id: str, db: Session = Depends(get_db)):
         await runner.release_lease()
 
 
+@router.post("/tasks/{task_id}/reply", response_model=TaskResponse)
+async def reply_to_task(task_id: str, reply_data: TaskReply, db: Session = Depends(get_db)):
+    """Submit a clarification reply to a waiting_for_user task.
+
+    The reply is recorded as a durable `user.replied` event on the SAME task
+    (never a new task), and execution resumes on that task.
+    """
+    runner = get_runner(db)
+
+    if not await runner.acquire_lease(task_id=task_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot reply while another runner is active"
+        )
+
+    try:
+        task = await runner.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+        if task.state != TaskState.WAITING_FOR_USER.value:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot reply to task in state {task.state}. Only waiting_for_user tasks can receive replies."
+            )
+
+        # Record the reply as an immutable event and return to running.
+        updated_task = await runner.transition_state(
+            task_id=task_id,
+            new_state=TaskState.RUNNING,
+            event_type="user.replied",
+            event_data={
+                "answer": reply_data.answer,
+                "replied_at": datetime.utcnow().isoformat(),
+            },
+            pending_question=None,
+        )
+
+        # Resume background execution for this same task.
+        from backend.services.task_execution_loop import run_task
+        tool_executor = get_tool_executor()
+        asyncio.create_task(run_task(db, task_id, tool_executor))
+
+        logger.info(f"Task {task_id} resumed after user reply")
+
+        return TaskResponse(
+            id=updated_task.id,
+            original_request=updated_task.original_request,
+            state=TaskState(updated_task.state),
+            created_at=updated_task.created_at,
+            updated_at=updated_task.updated_at,
+            version=updated_task.version,
+            final_result=updated_task.final_result,
+            terminal_reason=updated_task.terminal_reason
+        )
+
+    finally:
+        await runner.release_lease()
+
+
 @router.get("/tasks/{task_id}/events")
-async def get_task_events(task_id: str, db: Session = Depends(get_db)):
-    """Get event history for a task."""
+async def get_task_events(task_id: str, after_sequence: int = 0, db: Session = Depends(get_db)):
+    """Get immutable event history for a task, replayable from `after_sequence`.
+
+    Events are returned in strict sequence order. Passing `after_sequence=N`
+    returns only events with sequence_num > N, reconstructing exactly the
+    committed timeline from that point (used by slow/disconnected clients).
+    """
     from backend.models.database import TaskEvent
-    
-    events = db.query(TaskEvent).filter_by(task_id=task_id).order_by(
-        TaskEvent.sequence_num.asc()
-    ).all()
-    
+
+    query = db.query(TaskEvent).filter_by(task_id=task_id)
+    if after_sequence:
+        query = query.filter(TaskEvent.sequence_num > after_sequence)
+    events = query.order_by(TaskEvent.sequence_num.asc()).all()
+
     return {
         "task_id": task_id,
+        "after_sequence": after_sequence,
         "events": [
             {
                 "event_type": e.event_type,
-                "event_data": e.event_data,
+                "event_data": _decode_event_data(e.event_data),
                 "sequence_num": e.sequence_num,
                 "created_at": e.created_at
             }
             for e in events
         ]
     }
+
+
+def _decode_event_data(raw: Any) -> Dict[str, Any]:
+    """Decode stored event JSON, tolerating legacy malformed payloads."""
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        try:
+            return json.loads(str(raw).replace("\\", "\\\\"))
+        except (json.JSONDecodeError, TypeError):
+            return {"raw": str(raw)}
 
 
 @router.get("/tools", response_model=Dict[str, List[Dict[str, Any]]])

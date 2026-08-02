@@ -137,6 +137,14 @@ class TaskExecutionLoop:
                     )
                     continue
                 
+                # Re-check cancellation before executing: a cancel request may
+                # have arrived during the (slow) model call. A cancelled task
+                # must never trigger an OS action.
+                task = await self.runner.get_task(task_id)
+                if task.state == TaskState.CANCELLED.value:
+                    logger.info(f"Task {task_id} was cancelled during decision; not executing")
+                    break
+
                 # Execute the decision
                 action_count += 1
                 success = await self._execute_decision(
@@ -158,8 +166,7 @@ class TaskExecutionLoop:
                     TaskState.WAITING_FOR_USER.value
                 ]:
                     logger.info(f"Task {task_id} reached state: {task.state}")
-                    if task.state != TaskState.WAITING_FOR_USER.value:
-                        break
+                    break
                     
         except Exception as e:
             logger.error(f"Critical error in task execution: {e}", exc_info=True)

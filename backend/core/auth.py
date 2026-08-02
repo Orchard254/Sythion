@@ -25,6 +25,8 @@ DEVELOPMENT_APP_ORIGINS = frozenset({
 
 PROTECTED_PATHS = frozenset({"/health", "/tasks", "/tools"})
 
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
 
 def control_origins(development_mode: bool) -> frozenset[str]:
     """Return the exact trusted origins for the active runtime mode."""
@@ -124,6 +126,13 @@ class LocalControlBoundaryMiddleware:
         expected_token = self.token_provider()
         if not expected_token or not token or not hmac.compare_digest(token, expected_token):
             await self._reject(scope, send, 401, "Invalid or missing control token")
+            return
+
+        # The sidecar is loopback-only. Reject non-loopback peers outright; the
+        # token/origin rules are the second line of defense for browser CSRF.
+        client = scope.get("client")
+        if client and client[0] not in LOOPBACK_HOSTS:
+            await self._reject(scope, send, 403, "Requests must originate from the loopback interface")
             return
 
         # The token already authenticates the caller. The origin check is an
