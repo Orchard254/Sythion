@@ -45,6 +45,11 @@ async def lifespan(app: FastAPI):
     # Startup
     control_token = generate_control_token()
     logger.info(f"JARVIS starting with control token: {control_token[:8]}...")
+
+    # Validate critical configuration early so misconfig is obvious at boot
+    from .core.config import validate_startup_config
+    for level, message in validate_startup_config():
+        getattr(logger, level)(message)
     
     # Initialize database
     db_path = settings.database_path or os.path.join(

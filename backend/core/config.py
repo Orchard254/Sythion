@@ -53,3 +53,39 @@ settings = Settings()
 def generate_control_token() -> str:
     """Generate a random per-launch control token."""
     return str(uuid.uuid4())
+
+
+def validate_startup_config():
+    """Validate critical configuration at startup.
+
+    Returns a list of (level, message) tuples. Errors indicate the app
+    cannot function as intended; warnings indicate degraded function.
+    """
+    issues = []
+
+    if not settings.ollama_api_key:
+        issues.append((
+            "error",
+            "No Ollama API key configured. Set JARVIS_OLLAMA_API_KEY in "
+            "backend/.env (or the environment) so the model can be reached. "
+            "Tasks will fail until this is set."
+        ))
+    if not settings.selected_model:
+        issues.append((
+            "error",
+            "No model selected. Set JARVIS_SELECTED_MODEL in backend/.env "
+            "(e.g. minimax-m3:cloud). Tasks will fail until this is set."
+        ))
+
+    if settings.max_actions_per_task < 1:
+        issues.append((
+            "error",
+            f"max_actions_per_task must be >= 1 (got {settings.max_actions_per_task})."
+        ))
+    if settings.max_elapsed_time_seconds < 1:
+        issues.append((
+            "error",
+            f"max_elapsed_time_seconds must be >= 1 (got {settings.max_elapsed_time_seconds})."
+        ))
+
+    return issues
