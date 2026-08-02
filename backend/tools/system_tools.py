@@ -8,8 +8,19 @@ import psutil
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-# Use absolute import instead of relative
+# Import as a package when running as `backend.main`, or as bare modules
+# when tools are loaded directly (tests / scripts run from backend/).
 try:
+    from backend.tools.executor import BaseTool
+    from backend.api.schemas import (
+        ToolOutput,
+        SystemTimeInput,
+        SystemBatteryInput,
+        SystemDiskInput,
+        SystemProcessesInput,
+        SystemActiveWindowInput,
+    )
+except ImportError:
     from tools.executor import BaseTool
     from api.schemas import (
         ToolOutput,
@@ -19,39 +30,6 @@ try:
         SystemProcessesInput,
         SystemActiveWindowInput,
     )
-except ImportError:
-    try:
-        from jarvis_backend.tools.executor import BaseTool
-        from jarvis_backend.api.schemas import (
-            ToolOutput,
-            SystemTimeInput,
-            SystemBatteryInput,
-            SystemDiskInput,
-            SystemProcessesInput,
-            SystemActiveWindowInput,
-        )
-    except ImportError:
-        # Minimal fallbacks
-        class BaseTool:
-            pass
-        
-        class ToolOutput:
-            pass
-        
-        class SystemTimeInput:
-            pass
-        
-        class SystemBatteryInput:
-            pass
-        
-        class SystemDiskInput:
-            pass
-        
-        class SystemProcessesInput:
-            pass
-        
-        class SystemActiveWindowInput:
-            pass
 
 
 class SystemTimeTool(BaseTool):
