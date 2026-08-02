@@ -168,3 +168,40 @@ def test_redaction_removes_all_reasoning_variants(db_session, full_tool_executor
                   "chain_of_thought", "rationale", "internal_thoughts"):
         assert field not in redacted
     assert redacted["content"] == "ok"
+
+
+def test_guessed_mutating_tool_name_rejected(db_session, full_tool_executor):
+    """A model that guesses a mutating tool's name must not reach it.
+
+    Only the policy-filtered model-visible subset may be called directly; a
+    registered-but-hidden mutating tool is rejected as an invalid decision.
+    """
+    from backend.services.model_engine import ModelDecisionError
+    engine = ModelDecisionEngine(db_session, full_tool_executor)
+
+    # file_write is registered but never model-visible (mutating).
+    assert "file_write" in full_tool_executor.list_tools()
+    assert "file_write" not in {t["name"] for t in engine._model_visible_tools()}
+
+    response = {
+        "message": {
+            "tool_calls": [{
+                "function": {"name": "file_write", "arguments": "{}"},
+            }],
+        }
+    }
+    with pytest.raises(ModelDecisionError) as exc_info:
+        engine._parse_decision(response)
+    assert exc_info.value.code == "INVALID_DECISION_TYPE"
+
+    # A visible read-only tool still maps to execute_tool.
+    visible_response = {
+        "message": {
+            "tool_calls": [{
+                "function": {"name": "system_time", "arguments": "{}"},
+            }],
+        }
+    }
+    decision_type, params = engine._parse_decision(visible_response)
+    assert decision_type == "execute_tool"
+    assert params["tool_name"] == "system_time"

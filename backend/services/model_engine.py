@@ -351,8 +351,11 @@ Always think step-by-step and prefer observation before action."""
             
             if decision_type not in valid_types:
                 # The model may call a registered tool directly instead of
-                # wrapping it in execute_tool - map that to EXECUTE_TOOL.
-                if self.tool_executor.get_tool(decision_type) is not None:
+                # wrapping it in execute_tool - map that to EXECUTE_TOOL. Only
+                # tools in the policy-filtered model-visible subset may be
+                # called: a guessed mutating/GUI tool name must be rejected,
+                # not mapped, even if it is registered.
+                if decision_type in {t["name"] for t in self._model_visible_tools()}:
                     params = args or {}
                     if not isinstance(params, dict):
                         params = {}
