@@ -79,6 +79,17 @@ No feature work beyond Phase A may proceed until the owner approves this
 record and the acceptance-test map. Existing prototype code remains a source
 of implementation lessons, not proof of acceptance.
 
+## Secret storage (implemented)
+
+API keys are no longer documented or configured via `.env`. The production
+backend stores secrets in Windows Credential Manager (write-only by contract)
+via `backend/core/secrets.py`; the value is never returned by any endpoint,
+never written to SQLite, logs, task events, exports, or model context, and is
+only resolvable at the one sanctioned point (`resolve_ollama_api_key`). A
+non-persistent in-memory backend is used for tests so the real vault is never
+touched. Write-only endpoints: `GET /api/v1/secrets`, `PUT
+/api/v1/secrets/{name}`, `DELETE /api/v1/secrets/{name}`.
+
 ## References
 
 - Product requirements and non-negotiable safety rules:

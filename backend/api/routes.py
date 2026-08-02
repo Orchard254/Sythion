@@ -21,7 +21,8 @@ from backend.api.schemas import (
     TaskCreate, TaskResponse, TaskListResponse, TaskReply,
     TaskState, HealthResponse, SettingsResponse,
     ToolExecutionRequest, ToolExecutionResponse,
-    VoiceStartResponse, VoiceAudioInput
+    VoiceStartResponse, VoiceAudioInput,
+    SecretWriteRequest, SecretStatusResponse, SecretsListResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -540,6 +541,33 @@ async def get_settings():
         max_cloud_requests_per_task=settings.max_cloud_requests_per_task,
         voice_enabled=settings.voice_enabled
     )
+
+
+@router.get("/secrets", response_model=SecretsListResponse)
+async def list_secret_status():
+    """List which known secrets are configured. Never returns secret values."""
+    from backend.core.secrets import list_secret_names
+    return SecretsListResponse(configured=list_secret_names())
+
+
+@router.put("/secrets/{name}", response_model=SecretStatusResponse)
+async def set_secret(name: str, body: SecretWriteRequest):
+    """Store a secret (write-only). The value is never returned."""
+    from backend.core.secrets import set_secret as store_secret, KNOWN_SECRETS
+    if name not in KNOWN_SECRETS:
+        raise HTTPException(status_code=404, detail=f"Unknown secret name: {name}")
+    store_secret(name, body.value)
+    return SecretStatusResponse(configured=True, name=name)
+
+
+@router.delete("/secrets/{name}", response_model=SecretStatusResponse)
+async def delete_secret(name: str):
+    """Delete a stored secret."""
+    from backend.core.secrets import delete_secret as remove_secret, KNOWN_SECRETS
+    if name not in KNOWN_SECRETS:
+        raise HTTPException(status_code=404, detail=f"Unknown secret name: {name}")
+    remove_secret(name)
+    return SecretStatusResponse(configured=False, name=name)
 
 
 @router.put("/settings")

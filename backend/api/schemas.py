@@ -291,6 +291,24 @@ class ModelDecisionRunSkill(BaseModel):
     inputs: Dict[str, Any]
 
 
+# Secret Schemas
+
+class SecretWriteRequest(BaseModel):
+    """Schema for storing a secret. Values are write-only and never returned."""
+    value: str = Field(..., min_length=1, max_length=8192)
+
+
+class SecretStatusResponse(BaseModel):
+    """Schema for secret configuration status (never contains secret values)."""
+    configured: bool
+    name: str
+
+
+class SecretsListResponse(BaseModel):
+    """Schema listing which known secrets are configured (never their values)."""
+    configured: List[str]
+
+
 # Settings Schemas
 
 class SettingsUpdate(BaseModel):

@@ -16,6 +16,7 @@ milestone can be accepted.
 | Recovery/undo | Crash after `action_started` marks the task `interrupted` and action `uncertain`; explicit resume re-observes before mutation | B/C | planned |
 | Permissions/identity | Apps use registered identities; arbitrary executables, arguments, Run dialogs, and elevation are denied | C | planned |
 | Data lifecycle | LocalAppData storage has user-only ACLs; secrets and prohibited content are absent from DB, events, logs, and Cloud context | A/B | partial |
+| Secret storage | API keys are write-only via Windows Credential Manager; the value is never returned by an endpoint, stored in SQLite, or written to `.env` | A | passing |
 | GUI reliability | Locked, elevated, stale, missing, disconnected, or browser targets receive no input | D | planned |
 | Tool discovery | Model context is policy-filtered and bounded; it never contains full directories, raw UI trees, screenshots, or thinking | B | passing |
 | Brain contract | Model-visible tools are the policy-filtered read-only subset exposed directly (no `execute_tool` wrapper); tool output reaches the model only as a bounded `model_summary`; context carries the current task state | B | passing |

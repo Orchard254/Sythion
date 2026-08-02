@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings
 from typing import List
 import secrets
 import os
+from .secrets import resolve_ollama_api_key
 
 
 class Settings(BaseSettings):
@@ -64,12 +65,13 @@ def validate_startup_config():
     """
     issues = []
 
-    if not settings.ollama_api_key:
+    if not resolve_ollama_api_key(settings.ollama_api_key):
         issues.append((
             "error",
-            "No Ollama API key configured. Set JARVIS_OLLAMA_API_KEY in "
-            "backend/.env (or the environment) so the model can be reached. "
-            "Tasks will fail until this is set."
+            "No Ollama API key configured. Store one via "
+            "PUT /api/v1/secrets/ollama_api_key (write-only secret store) or "
+            "set JARVIS_OLLAMA_API_KEY for development. Tasks will fail until "
+            "this is set."
         ))
     if not settings.selected_model:
         issues.append((

@@ -7,6 +7,7 @@ import httpx
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 from ..core.config import settings
+from ..core.secrets import resolve_ollama_api_key
 
 
 class ProviderCapabilityError(RuntimeError):
@@ -24,7 +25,7 @@ class OllamaCloudAdapter:
 
     def __init__(self):
         self.base_url = settings.ollama_cloud_base_url
-        self.api_key = settings.ollama_api_key
+        self.api_key = resolve_ollama_api_key(settings.ollama_api_key)
         self.selected_model = settings.selected_model
         self._client: Optional[httpx.AsyncClient] = None
         self._capability_profile: Optional[ProviderCapabilityProfile] = None

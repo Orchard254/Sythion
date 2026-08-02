@@ -149,11 +149,12 @@ def get_auth():
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint (legacy, moved to /api/v1/health)."""
+    from .core.secrets import resolve_ollama_api_key
     return HealthResponse(
         status="healthy",
         version="0.1.0",
         database_connected=db_manager is not None,
-        cloud_configured=bool(settings.ollama_api_key)
+        cloud_configured=bool(resolve_ollama_api_key(settings.ollama_api_key))
     )
 
 
