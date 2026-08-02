@@ -5,7 +5,7 @@
 1. **Create `.env` file** in `jarvis/backend/` directory with your API key:
    ```bash
    JARVIS_OLLAMA_API_KEY=your_actual_api_key_here
-   JARVIS_SELECTED_MODEL=qwen2.5:7b
+   JARVIS_SELECTED_MODEL=minimax-m3:cloud
    ```
 
 2. **Get your Ollama API Key:**
@@ -16,9 +16,10 @@
 
 3. **Start the backend:**
    ```bash
-   cd jarvis/backend
-   python -m uvicorn main:app --reload
+   cd jarvis
+   python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
    ```
+   or use the one-command launcher: `start_jarvis.cmd`
 
 ---
 
@@ -36,7 +37,7 @@ JARVIS uses Ollama Cloud for LLM inference. You must configure:
 # Ollama Cloud API credentials
 JARVIS_OLLAMA_CLOUD_BASE_URL=https://ollama.com
 JARVIS_OLLAMA_API_KEY=your_api_key_here
-JARVIS_SELECTED_MODEL=qwen2.5:7b  # Or another supported model
+JARVIS_SELECTED_MODEL=minimax-m3:cloud  # Or another supported model
 ```
 
 **Getting Your API Key:**
@@ -47,8 +48,8 @@ JARVIS_SELECTED_MODEL=qwen2.5:7b  # Or another supported model
 5. Copy the key to your environment
 
 **Available Models:**
-- `qwen2.5:7b` - Balanced performance (recommended)
-- `qwen2.5:14b` - Higher accuracy, slower
+- `minimax-m3:cloud` - Balanced performance (recommended)
+- `qwen2.5:7b` - Alternative option
 - `llama3.1:8b` - Alternative option
 
 To list available models after setup:
@@ -87,11 +88,9 @@ JARVIS_TTS_VOICE_NAME=Microsoft Zira Desktop
 
 ### Security Token
 
-The control token is generated per-launch by the Tauri desktop app. For direct API testing:
-
-```bash
-JARVIS_CONTROL_TOKEN=$(python -c "import uuid; print(str(uuid.uuid4()))")
-```
+`ControlTokenSecurity` middleware (`backend/core/auth.py`) can validate a
+per-launch `X-Control-Token` header, but it is **not enforced on routes yet**,
+so the API currently works without a token while bound to 127.0.0.1.
 
 ## Quick Test
 
@@ -102,6 +101,13 @@ cd jarvis/backend
 python -c "from backend.core.config import settings; print('Config OK:', bool(settings.ollama_api_key))"
 ```
 
+Or, with the backend running, run the end-to-end smoke test:
+
+```bash
+cd jarvis
+python scripts/smoke_test.py --all
+```
+
 ## Production Checklist
 
 - [ ] Ollama API key configured
@@ -109,7 +115,6 @@ python -c "from backend.core.config import settings; print('Config OK:', bool(se
 - [ ] Database path writable
 - [ ] File roots defined (security requirement)
 - [ ] Voice models downloaded (if using voice)
-- [ ] Control token generated (for API access)
 
 ## Troubleshooting
 
@@ -119,8 +124,8 @@ python -c "from backend.core.config import settings; print('Config OK:', bool(se
 - Ensure network connectivity
 
 **"No models available":**
-- Pull a model: `ollama pull qwen2.5:7b` (if using local Ollama)
 - Verify API endpoint URL
+- List models with the `curl /api/tags` command above
 
 **Database errors:**
 - Ensure directory exists and is writable

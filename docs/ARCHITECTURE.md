@@ -7,15 +7,16 @@ This document captures the architectural decisions for the JARVIS Windows 10/11 
 
 ### Core Components
 
-1. **Frontend (React + Tauri)**
-   - Desktop window interface
+1. **Frontend (React + Vite, browser dashboard)**
    - Dashboard with task timeline, task cards, settings
    - Voice mode toggle and microphone control
-   - Stop button (global shortcut via Tauri)
+   - Runs at http://localhost:3000, proxies `/api` to the backend
+   - A Tauri desktop shell is planned but not yet implemented (no Rust
+     toolchain installed); `start_jarvis.cmd` launches backend + browser
    - No direct Windows automation capabilities
 
 2. **Backend (Python FastAPI Sidecar)**
-   - Authenticated local API (127.0.0.1 only)
+   - Local API (127.0.0.1 only)
    - Task application service with single runner lease
    - Tool executor with typed actions
    - SQLite database manager
@@ -122,8 +123,8 @@ interrupted -> running (on explicit resume)
 
 1. **Local Boundary**
    - API binds only to 127.0.0.1
-   - Per-launch random authentication token
-   - Tauri starts single Python sidecar
+   - `ControlTokenSecurity` middleware exists but is NOT wired onto routes;
+     requests currently require no auth token (enforcement is a TODO)
    - No shell/process execution from frontend
 
 2. **Data Protection**
@@ -141,9 +142,10 @@ interrupted -> running (on explicit resume)
 ## API Contract
 
 ### Authentication
-- All requests require `X-Control-Token` header
-- Token generated per-launch by Tauri
-- Validated on every request
+- `ControlTokenSecurity` in `backend/core/auth.py` validates `X-Control-Token`
+  (or `Authorization: Bearer`) against a per-launch token
+- **Status: implemented but not enforced** — no route currently applies the
+  dependency, so API calls work without a token while the app is local-only
 
 ### Endpoints
 
@@ -170,8 +172,10 @@ GET /models - List available models
 
 1. Dashboard controls microphone permission
 2. Audio streamed as PCM frames to sidecar
-3. Local VAD detects speech segments
-4. Local STT transcribes segments
+3. VAD detects speech segments (energy-based `SimpleVAD`; PyAudio/WebRTC
+   VAD used when `use_windows_audio=True`)
+4. STT transcribes segments (Whisper when installed; otherwise a stub that
+   returns a placeholder — real transcription is not active out of the box)
 5. Editable transcript shown in UI
 6. "Stop" phrase detected locally
 7. Raw audio deleted after transcription (unless recording enabled)

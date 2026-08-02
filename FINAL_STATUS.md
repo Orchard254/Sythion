@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-**JARVIS** is a fully functional Windows 10/11 desktop assistant with voice control, GUI automation, and LLM-powered task execution. The project has achieved **Phase 2 Complete** status with a production-ready core system.
+**JARVIS** is a Windows 10/11 desktop assistant with LLM-powered task execution, tool use, GUI automation, and a voice pipeline abstraction. The project has achieved **Phase 3 Complete** status with a working backend, browser dashboard, and 74 passing tests. Note: voice STT/TTS run in stub mode unless the optional Whisper/SAPI5 components are installed, and a Tauri desktop shell is planned but not yet built.
 
 ---
 
@@ -34,13 +34,14 @@
 ## 📊 Test Results
 
 ```
-======================= 66 PASSED, 47 warnings in 2.18s ========================
+======================= 74 PASSED in ~8s =====================================
 ```
 
 **Test Breakdown:**
-- Tool Framework Tests: 18 passing
-- GUI Tool Tests: 35 passing  
-- Integration Tests: 13 passing
+- Tool Framework Tests (`test_tools.py`): 18 passing
+- GUI Tool Tests (`test_gui_tools.py`): 35 passing
+- Integration Tests (`test_integration.py`): 13 passing
+- Voice API Tests (`test_voice_api.py`): 8 passing
 
 **All tests green.** No failures.
 

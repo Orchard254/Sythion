@@ -19,7 +19,7 @@ cd jarvis/backend
 cat > .env << EOF
 JARVIS_OLLAMA_CLOUD_BASE_URL=https://ollama.com
 JARVIS_OLLAMA_API_KEY=your_api_key_here
-JARVIS_SELECTED_MODEL=qwen2.5:7b
+JARVIS_SELECTED_MODEL=minimax-m3:cloud
 JARVIS_FILE_ROOTS=C:/Users/YourName/Documents,C:/Users/YourName/Downloads
 JARVIS_DATABASE_PATH=C:/Users/YourName/AppData/Local/JARVIS/jarvis.db
 EOF
@@ -78,6 +78,15 @@ curl -X POST http://127.0.0.1:8000/api/v1/tasks \
 python cli.py "what time is it"
 ```
 
+### 5. Smoke Test (requires backend running)
+
+```bash
+python scripts/smoke_test.py --all
+```
+
+Runs health, DB, model-config, a live model task, and the `system_time` tool
+check against the running backend. Exit code 0 = all checks passed.
+
 ---
 
 ## 📚 Documentation
@@ -110,9 +119,9 @@ python cli.py "what time is it"
 - ✅ Re-observation before continuing mutations
 
 #### Voice Pipeline (NEW in Phase 3)
-- ✅ PyAudio/WebRTC VAD for voice activity detection
-- ✅ whisper.cpp STT (Windows) / openai-whisper (Linux/Mac)
-- ✅ Windows SAPI5 TTS integration
+- ✅ VAD (energy-based SimpleVAD; PyAudio/WebRTC when enabled)
+- ⚠️ STT (Whisper if installed, otherwise stub — needs model install to be real)
+- ⚠️ TTS (Windows SAPI5 when available, otherwise stub)
 - ✅ Session-based audio streaming API
 
 #### GUI Automation
@@ -239,11 +248,13 @@ POST /api/tasks
 ## 🛣️ Roadmap
 
 ### Phase 4 (Next)
-- [ ] Frontend dashboard integration
+- [x] Frontend dashboard integration (browser dashboard live)
+- [ ] Tauri desktop shell
+- [ ] Enforce per-launch auth token on API routes
+- [ ] Real STT (Whisper) out of the box
 - [ ] Skill library expansion
 - [ ] Performance optimization
 - [ ] Enhanced error handling
-- [ ] User feedback incorporation
 
 ### Future Considerations
 - Local LLM support (Ollama local instances)
@@ -265,5 +276,5 @@ Proprietary - All rights reserved
 
 ---
 
-**Last Updated**: July 2025  
+**Last Updated**: August 2026  
 **Version**: 0.1.0 (Phase 3 Complete)
