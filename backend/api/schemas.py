@@ -80,8 +80,11 @@ class ToolInput(BaseModel):
 
 class ToolOutput(BaseModel):
     """Schema for tool execution output."""
+    model_config = {"protected_namespaces": ()}
+
     success: bool
     data: Optional[Dict[str, Any]] = None
+    model_summary: Optional[str] = None
     error: Optional[Dict[str, Any]] = None
     evidence: Optional[Dict[str, Any]] = None
     duration_ms: int = 0

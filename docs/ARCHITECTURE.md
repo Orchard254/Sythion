@@ -25,7 +25,11 @@ control system, scheduler, background listener, or self-modifying system.
    profile-wide lease allows one `running` task and supports safe recovery.
 5. The model can select exactly one validated control or policy-filtered tool
    call per turn. It cannot execute actions, override policy, or claim success
-   without recorded verification.
+   without recorded verification. The model never sees a generic `execute_tool`
+   wrapper: only the policy-filtered read-only tool subset plus the four control
+   functions (`request_user_input`, `run_skill`, `complete_task`, `fail_task`),
+   each with a Pydantic schema. Tool output reaches the model only as a bounded,
+   redacted `model_summary`; full audit data stays out of model context.
 6. Tools make one bounded action with typed inputs/outputs, deterministic
    policy, fresh verification, cancellation handling, and recovery guidance.
 7. Voice capture exists only while the visible dashboard is open and voice

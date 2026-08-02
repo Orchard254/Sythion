@@ -89,7 +89,7 @@ class ModelDecisionEngine:
         
     def _build_system_prompt(self) -> str:
         """Build the system prompt for JARVIS behavior."""
-        available_tools = ", ".join(self.tool_executor.list_tools()) or "(none registered)"
+        available_tools = ", ".join(t["name"] for t in self._model_visible_tools()) or "(none registered)"
         return f"""You are JARVIS, a Windows 10/11 personal desktop assistant.
 
 Your role is to help users accomplish tasks on their Windows computer through safe, verified actions.
@@ -104,7 +104,7 @@ IMPORTANT RULES:
 7. Ask for clarification when targets are ambiguous
 8. Stop immediately if the user cancels
 
-AVAILABLE TOOLS (use exactly these registered names via execute_tool):
+AVAILABLE TOOLS (call one directly by its exact name):
 {available_tools}
 
 DECISION TYPES:
@@ -112,17 +112,47 @@ DECISION TYPES:
 2. fail_task - When you cannot complete the task (after max 2 repair attempts)
 3. request_user_input - When you need clarification or user confirmation
 4. run_skill - To execute a registered skill workflow
-5. execute_tool - To call a single tool with specific parameters
 
-CRITICAL: ALWAYS wrap your tool usage in the execute_tool decision. Never call a
-tool directly. To use a tool, call execute_tool with:
-- tool_name: the exact name of the tool to call
-- params: an object of the tool's parameters
+Call any listed tool directly with its parameters. To finish, call complete_task
+with the final result. To ask a question, call request_user_input.
 
 You MUST call a tool to get real information (like the current time). Do NOT
-answer from memory - use execute_tool to query the system first.
+answer from memory - use a tool to query the system first.
 
 Always think step-by-step and prefer observation before action."""
+
+    def _model_visible_tools(self) -> List[Dict[str, Any]]:
+        """Return the policy-filtered subset of tools safe to expose to the model.
+
+        Phase B exposes only read-only, confirmation-free tools with no screen,
+        UI-tree, or privacy-sensitive output. Mutating and GUI tools remain
+        registered and policy-gated at the executor but are never model-visible
+        until their milestone gate passes (Phase C+).
+        """
+        visible = []
+        for name in self.tool_executor.list_tools():
+            tool = self.tool_executor.get_tool(name)
+            if not tool:
+                continue
+            reqs = tool.get_policy_requirements()
+            if reqs.get("mutating") or reqs.get("destructive"):
+                continue
+            if reqs.get("requires_confirmation"):
+                continue
+            if reqs.get("risk_level") in {"medium", "high"}:
+                continue
+            if (
+                reqs.get("privacy_sensitive")
+                or reqs.get("requires_screen_access")
+                or reqs.get("requires_ui_automation")
+            ):
+                continue
+            visible.append({
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.input_schema,
+            })
+        return visible
 
     def _decision_tools(self) -> List[Dict[str, Any]]:
         """Build tool metadata for the decision functions."""
@@ -146,11 +176,6 @@ Always think step-by-step and prefer observation before action."""
                 "name": DecisionType.RUN_SKILL,
                 "description": "Execute a registered skill workflow",
                 "input_schema": RunSkillInput,
-            },
-            {
-                "name": DecisionType.EXECUTE_TOOL,
-                "description": "Execute a single tool with parameters",
-                "input_schema": ExecuteToolInput,
             },
         ]
 
@@ -191,6 +216,8 @@ Always think step-by-step and prefer observation before action."""
         
         if normalized_goal:
             user_content += f"Normalized Goal: {normalized_goal}\n"
+        
+        user_content += f"Current State: {current_state}\n"
             
         if pending_question:
             user_content += f"\nPENDING QUESTION (awaiting your next action after user response): {pending_question}\n"
@@ -207,7 +234,9 @@ Always think step-by-step and prefer observation before action."""
                 if event_type == 'tool.executed':
                     tool_name = event_data.get('tool_name', 'unknown')
                     success = event_data.get('success', False)
-                    result_summary = str(event_data.get('output', {}))[:200]
+                    result_summary = event_data.get('model_summary')
+                    if not result_summary:
+                        result_summary = str(event_data.get('output', {}))[:200]
                     user_content += f"- [{timestamp}] Tool '{tool_name}' executed: {'SUCCESS' if success else 'FAILED'}\n"
                     user_content += f"  Result: {result_summary}\n"
                 elif event_type == 'skill.executed':
@@ -373,16 +402,9 @@ Always think step-by-step and prefer observation before action."""
                 "content": f"REPAIR REQUIRED: {repair_context}\n\nPlease provide a valid decision."
             })
         
-        # Get tools for the model
-        tool_metadata = []
-        for name in self.tool_executor.list_tools():
-            tool = self.tool_executor.get_tool(name)
-            if tool:
-                tool_metadata.append({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "input_schema": tool.input_schema,
-                })
+        # Get tools for the model: only the policy-filtered read-only subset,
+        # plus the control functions. Mutating/GUI tools are never exposed.
+        tool_metadata = list(self._model_visible_tools())
         tool_metadata.extend(self._decision_tools())
         formatted_tools = format_tools_for_ollama(tool_metadata)
         

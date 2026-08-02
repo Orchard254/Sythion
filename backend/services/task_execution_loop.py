@@ -464,6 +464,9 @@ class TaskExecutionLoop:
         )
         
         # Record event
+        model_summary = result.model_summary
+        if not model_summary and result.data is not None:
+            model_summary = json.dumps(result.data, default=str)[:200]
         await self.runner.transition_state(
             task_id=task_id,
             new_state=TaskState.RUNNING,  # Stay in running
@@ -472,6 +475,7 @@ class TaskExecutionLoop:
                 "tool_name": tool_name,
                 "success": result.success,
                 "output": result.data or result.output if hasattr(result, 'output') else result.data,
+                "model_summary": model_summary,
                 "error": result.error,
                 "evidence": result.evidence,
                 "duration_ms": result.duration_ms,
