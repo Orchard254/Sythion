@@ -22,6 +22,20 @@ from api.schemas import (
 )
 
 
+def _gui_target_error(window_title: str, element_description: Optional[str] = None) -> Optional[Dict[str, str]]:
+    """Deterministic, side-effect-free validation of a GUI target.
+
+    GUI v1 requires a non-empty window title (and an element description for
+    element-bound actions) so the executor never reaches an OS call with an
+    ambiguous target.
+    """
+    if not window_title or not str(window_title).strip():
+        return {"code": "TARGET_REQUIRED", "message": "A window title is required"}
+    if element_description is not None and not str(element_description).strip():
+        return {"code": "ELEMENT_TARGET_REQUIRED", "message": "An element description is required"}
+    return None
+
+
 class GUIObserveTool(BaseTool):
     """Observe the current GUI state with optional OCR."""
     
@@ -567,6 +581,9 @@ class GUIFocusTool(BaseTool):
             "foreground_window_change": True
         }
 
+    def validate_targets(self, input_data: GUIFocusInput) -> Optional[Dict[str, str]]:
+        return _gui_target_error(input_data.window_title)
+
 
 class GUIClickTool(BaseTool):
     """Click at specific coordinates or on a UI element."""
@@ -735,6 +752,9 @@ class GUIClickTool(BaseTool):
             "coordinate_bounds_check": True
         }
 
+    def validate_targets(self, input_data: GUIClickInput) -> Optional[Dict[str, str]]:
+        return _gui_target_error(input_data.window_title)
+
 
 class GUITypeTool(BaseTool):
     """Type text into the focused window."""
@@ -892,6 +912,9 @@ class GUITypeTool(BaseTool):
             "input_injection": True,
             "keyboard_input": True
         }
+
+    def validate_targets(self, input_data: GUITypeInput) -> Optional[Dict[str, str]]:
+        return _gui_target_error(input_data.window_title)
 
 
 class GUIHotkeyTool(BaseTool):
@@ -1111,6 +1134,9 @@ class GUIHotkeyTool(BaseTool):
             "dangerous_combinations": ["ctrl+alt+delete", "alt+f4", "win+x"]
         }
 
+    def validate_targets(self, input_data: GUIHotkeyInput) -> Optional[Dict[str, str]]:
+        return _gui_target_error(input_data.window_title)
+
 
 class GUIInvokeTool(BaseTool):
     """Invoke/click a UI element by description."""
@@ -1284,6 +1310,9 @@ class GUIInvokeTool(BaseTool):
             "element_interaction": True
         }
 
+    def validate_targets(self, input_data: GUIInvokeInput) -> Optional[Dict[str, str]]:
+        return _gui_target_error(input_data.window_title, input_data.element_description)
+
 
 class GUISetValueTool(BaseTool):
     """Set value of a UI element (text field, checkbox, etc.)."""
@@ -1456,3 +1485,6 @@ class GUISetValueTool(BaseTool):
             "element_modification": True,
             "data_entry": True
         }
+
+    def validate_targets(self, input_data: GUISetValueInput) -> Optional[Dict[str, str]]:
+        return _gui_target_error(input_data.window_title, input_data.element_description)

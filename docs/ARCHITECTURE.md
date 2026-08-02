@@ -94,6 +94,20 @@ task honestly with the matching code (`ACTION_LIMIT_EXCEEDED`,
 `OUTPUT_TOKEN_LIMIT_EXCEEDED`, `ELAPSED_TIME_EXCEEDED`) -- never a retry, a
 local fallback, or an unrecorded mutation.
 
+## Target validation (implemented)
+
+Every tool action passes a deterministic, side-effect-free target gate before
+any OS call. `BaseTool.validate_targets(input_data)` runs in
+`ToolExecutor.execute_tool` after input schema validation and before
+`execute()`; it returns an error dict that becomes the tool output without
+touching the OS. File tools reject empty paths, wildcards/bulk selection
+(`TARGET_REQUIRED`, `TARGET_WILDCARD_REJECTED`), and any path outside the
+approved roots (`TARGET_OUTSIDE_ROOTS`). App, package, and GUI targets reject
+malformed IDs and missing window/element titles (`INVALID_APP_ID`,
+`INVALID_PACKAGE_ID`, `TARGET_REQUIRED`, `ELEMENT_TARGET_REQUIRED`). Policy
+gating (e.g. `DIRECT_INSTRUCTION_REQUIRED`, `ELEVATION_NOT_ALLOWED`) still
+runs first and stays authoritative.
+
 ## Milestone gate
 
 No feature work beyond Phase A may proceed until the owner approves this

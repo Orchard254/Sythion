@@ -31,6 +31,15 @@ def _validate_app_id(app_id: str) -> None:
         raise ValueError(f"Invalid app_id: {app_id!r}")
 
 
+def _app_target_error(app_id: str) -> Optional[Dict[str, str]]:
+    """Deterministic, side-effect-free validation of an app target."""
+    try:
+        _validate_app_id(app_id)
+    except ValueError as e:
+        return {"code": "INVALID_APP_ID", "message": str(e)}
+    return None
+
+
 class AppListTool(BaseTool):
     """List installed applications."""
     
@@ -319,6 +328,9 @@ class AppLaunchTool(BaseTool):
         """Get policy requirements for this tool."""
         return {"risk_level": "medium", "requires_confirmation": True}
 
+    def validate_targets(self, input_data: AppLaunchInput) -> Optional[Dict[str, str]]:
+        return _app_target_error(input_data.app_id)
+
 
 class AppFocusTool(BaseTool):
     """Focus/bring an application window to front."""
@@ -449,6 +461,9 @@ class AppFocusTool(BaseTool):
     def get_policy_requirements(self) -> Dict[str, Any]:
         """Get policy requirements for this tool."""
         return {"risk_level": "low", "requires_confirmation": False}
+
+    def validate_targets(self, input_data: AppFocusInput) -> Optional[Dict[str, str]]:
+        return _app_target_error(input_data.app_id)
 
 
 class AppCloseTool(BaseTool):
@@ -612,6 +627,14 @@ class AppCloseTool(BaseTool):
             "requires_confirmation": True,
             "destructive": True,
         }
+
+    def validate_targets(self, input_data: AppCloseInput) -> Optional[Dict[str, str]]:
+        error = _app_target_error(input_data.app_id)
+        if error:
+            return error
+        if "*" in input_data.app_id:
+            return {"code": "INVALID_APP_ID", "message": "Wildcard app ids are not allowed"}
+        return None
 
 
 def create_app_tools() -> List[BaseTool]:

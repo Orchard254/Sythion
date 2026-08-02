@@ -5,7 +5,7 @@ Implements file operations: read, write, list, create, delete, move, copy
 import os
 import shutil
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from tools.executor import BaseTool
 from api.schemas import (
@@ -65,6 +65,31 @@ def _safe_resolve(raw: str, allow_existing_missing: bool = False) -> Path:
     if not _contained(path):
         raise ValueError(f"Path is outside approved roots: {path}")
     return path
+
+
+# v1 rejects wildcards, bulk selection, and implicit recursion in file targets.
+_WILDCARD_CHARS = set("*?[")
+
+
+def _path_target_error(raw: str) -> Optional[Dict[str, str]]:
+    """Deterministic, side-effect-free validation of a file target path.
+
+    Returns an error dict when the target is empty, contains wildcards, or
+    escapes the approved roots; None when the target is acceptable. This gate
+    runs before any OS call.
+    """
+    if not raw or not str(raw).strip():
+        return {"code": "TARGET_REQUIRED", "message": "A file target path is required"}
+    text = str(raw)
+    if any(c in text for c in _WILDCARD_CHARS):
+        return {"code": "TARGET_WILDCARD_REJECTED", "message": "Wildcards and bulk selection are not allowed in v1 file targets"}
+    try:
+        path = Path(text).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return {"code": "TARGET_UNRESOLVABLE", "message": f"Cannot resolve target path: {text}"}
+    if not _contained(path):
+        return {"code": "TARGET_OUTSIDE_ROOTS", "message": f"Target is outside approved roots: {path}"}
+    return None
 
 
 class FileListTool(BaseTool):
@@ -143,6 +168,9 @@ class FileListTool(BaseTool):
         """Get policy requirements for this tool."""
         return {"risk_level": "none", "requires_confirmation": False}
 
+    def validate_targets(self, input_data: FileListInput) -> Optional[Dict[str, str]]:
+        return _path_target_error(input_data.path)
+
 
 class FileReadTool(BaseTool):
     """Read file contents."""
@@ -209,6 +237,9 @@ class FileReadTool(BaseTool):
         """Get policy requirements for this tool."""
         return {"risk_level": "low", "requires_confirmation": False, "redact_sensitive": True}
 
+    def validate_targets(self, input_data: FileReadInput) -> Optional[Dict[str, str]]:
+        return _path_target_error(input_data.path)
+
 
 class FileCreateTool(BaseTool):
     """Create a new file."""
@@ -269,6 +300,9 @@ class FileCreateTool(BaseTool):
         """Get policy requirements for this tool."""
         return {"risk_level": "medium", "requires_confirmation": True, "confirm_overwrite": True}
 
+    def validate_targets(self, input_data: FileCreateInput) -> Optional[Dict[str, str]]:
+        return _path_target_error(input_data.path)
+
 
 class FileWriteTool(BaseTool):
     """Write content to a file."""
@@ -319,6 +353,9 @@ class FileWriteTool(BaseTool):
     def get_policy_requirements(self) -> Dict[str, Any]:
         """Get policy requirements for this tool."""
         return {"risk_level": "medium", "requires_confirmation": True}
+
+    def validate_targets(self, input_data: FileWriteInput) -> Optional[Dict[str, str]]:
+        return _path_target_error(input_data.path)
 
 
 class FileMoveTool(BaseTool):
@@ -394,6 +431,9 @@ class FileMoveTool(BaseTool):
         """Get policy requirements for this tool."""
         return {"risk_level": "medium", "requires_confirmation": True}
 
+    def validate_targets(self, input_data: FileMoveInput) -> Optional[Dict[str, str]]:
+        return _path_target_error(input_data.source_path) or _path_target_error(input_data.destination_path)
+
 
 class FileCopyTool(BaseTool):
     """Copy a file to a new location."""
@@ -459,6 +499,9 @@ class FileCopyTool(BaseTool):
     def get_policy_requirements(self) -> Dict[str, Any]:
         """Get policy requirements for this tool."""
         return {"risk_level": "medium", "requires_confirmation": True}
+
+    def validate_targets(self, input_data: FileCopyInput) -> Optional[Dict[str, str]]:
+        return _path_target_error(input_data.source_path) or _path_target_error(input_data.destination_path)
 
 
 class FileDeleteTool(BaseTool):
@@ -534,6 +577,9 @@ class FileDeleteTool(BaseTool):
     def get_policy_requirements(self) -> Dict[str, Any]:
         """Get policy requirements for this tool."""
         return {"risk_level": "high", "requires_confirmation": True, "destructive": True}
+
+    def validate_targets(self, input_data: FileDeleteInput) -> Optional[Dict[str, str]]:
+        return _path_target_error(input_data.path)
 
 
 def create_file_tools() -> List[BaseTool]:

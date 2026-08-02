@@ -29,6 +29,15 @@ def _validate_package_id(package_id: str) -> None:
         raise ValueError(f"Invalid package_id: {package_id!r}")
 
 
+def _package_target_error(package_id: str) -> Optional[Dict[str, str]]:
+    """Deterministic, side-effect-free validation of a package target."""
+    try:
+        _validate_package_id(package_id)
+    except ValueError as e:
+        return {"code": "INVALID_PACKAGE_ID", "message": str(e)}
+    return None
+
+
 class PackageSearchTool(BaseTool):
     """Search for packages in package managers."""
     
@@ -430,6 +439,9 @@ class PackageInstallTool(BaseTool):
         """Get policy requirements for this tool."""
         return {"risk_level": "high", "requires_confirmation": True, "requires_admin": True}
 
+    def validate_targets(self, input_data: PackageInstallInput) -> Optional[Dict[str, str]]:
+        return _package_target_error(input_data.package_id)
+
 
 class PackageUninstallTool(BaseTool):
     """Uninstall a package."""
@@ -537,6 +549,9 @@ class PackageUninstallTool(BaseTool):
     def get_policy_requirements(self) -> Dict[str, Any]:
         """Get policy requirements for this tool."""
         return {"risk_level": "high", "requires_confirmation": True, "destructive": True, "requires_admin": True}
+
+    def validate_targets(self, input_data: PackageUninstallInput) -> Optional[Dict[str, str]]:
+        return _package_target_error(input_data.package_id)
 
 
 def create_package_tools() -> List[BaseTool]:

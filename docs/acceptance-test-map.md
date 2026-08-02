@@ -19,6 +19,7 @@ milestone can be accepted.
 | Secret storage | API keys are write-only via Windows Credential Manager; the value is never returned by an endpoint, stored in SQLite, or written to `.env` | A | passing |
 | GUI reliability | Locked, elevated, stale, missing, disconnected, or browser targets receive no input | D | planned |
 | Tool discovery | Model context is policy-filtered and bounded; it never contains full directories, raw UI trees, screenshots, or thinking | B | passing |
+| Target validation | Empty, wildcard, out-of-root file targets and invalid app/package IDs and missing GUI window titles are rejected deterministically before any OS action | B | passing |
 | Brain contract | Model-visible tools are the policy-filtered read-only subset exposed directly (no `execute_tool` wrapper); tool output reaches the model only as a bounded `model_summary`; context carries the current task state; reasoning/thinking fields are stripped from model responses | B | passing |
 | Skill lifecycle | Skills validate restrictive references, pin versions, require explicit enablement, and stop before an unstarted disabled step | F | planned |
 | Model failure | Invalid, parallel, malformed, unavailable, rate-limited, stale-model, and exhausted-budget decisions cause no repeated mutation or local fallback | B | passing |

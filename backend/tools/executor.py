@@ -36,6 +36,21 @@ class BaseTool(ABC):
         """
         pass
 
+    def validate_targets(self, input_data: BaseModel) -> Optional[Dict[str, str]]:
+        """Deterministic, side-effect-free target validation.
+
+        Runs before `execute` so an ambiguous, malformed, or out-of-scope
+        target is rejected before any OS action occurs. Returns an error dict
+        with `code`/`message` when the target is invalid, or None when valid.
+
+        Args:
+            input_data: Validated input data
+
+        Returns:
+            An error dict (code + message) or None
+        """
+        return None
+
 
 @dataclass(frozen=True)
 class PolicyContext:
@@ -141,6 +156,15 @@ class ToolExecutor:
                 success=False,
                 error={"code": "INVALID_INPUT", "message": str(e)},
                 duration_ms=0
+            )
+
+        # Deterministic target validation before any OS action.
+        target_error = tool.validate_targets(validated_input)
+        if target_error:
+            return ToolOutput(
+                success=False,
+                error=target_error,
+                duration_ms=0,
             )
         
         # Execute with timing
