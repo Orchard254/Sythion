@@ -59,6 +59,14 @@ class DatabaseManager:
         finally:
             session.close()
 
+    def new_session(self) -> Session:
+        """Create an independent session not tied to a request scope.
+
+        Caller owns the session and must call .close() when done. This is
+        used for background task execution that outlives the HTTP request.
+        """
+        return self.SessionLocal()
+
 
 def init_database(database_path: str) -> DatabaseManager:
     """Initialize the database and return manager instance.

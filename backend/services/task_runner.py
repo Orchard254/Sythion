@@ -4,6 +4,7 @@ Manages single task execution with durable state.
 """
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
@@ -11,6 +12,8 @@ from sqlalchemy.orm import Session
 
 from backend.models.database import Task, TaskEvent, RunnerLease
 from backend.api.schemas import TaskState
+
+logger = logging.getLogger(__name__)
 
 
 class TaskRunner:
@@ -293,13 +296,15 @@ class TaskRunner:
         )
 
 
-# Singleton instance per process
-_runner: Optional[TaskRunner] = None
-
+# NOTE: TaskRunner instances are short-lived per-request objects. They
+# hold a reference to a DB session, which must NOT be cached across
+# requests (sessions are request-scoped and closed when the request ends).
+# Always create a fresh TaskRunner with the current session.
 
 def get_runner(db_session: Session) -> TaskRunner:
-    """Get or create task runner instance."""
-    global _runner
-    if _runner is None:
-        _runner = TaskRunner(db_session)
-    return _runner
+    """Create a TaskRunner bound to the given session.
+
+    A fresh runner is created per call so it never holds a stale session
+    from a previous request.
+    """
+    return TaskRunner(db_session)

@@ -62,14 +62,23 @@ class TaskExecutionLoop:
         repair_attempts = 0
         action_count = 0
         
+        # Start a lease heartbeat so long LLM calls don't let the lease
+        # expire mid-task (30s expiry). Without this, a second request can
+        # steal the lease and we get spurious 409s or double execution.
+        heartbeat = asyncio.create_task(self._heartbeat_lease(task_id))
+        
         try:
-            # Transition to running state
-            task = await self.runner.transition_state(
-                task_id=task_id,
-                new_state=TaskState.RUNNING,
-                event_type="task.execution_started",
-                event_data={"started_at": datetime.utcnow().isoformat()}
-            )
+            # Transition to running state (no-op if the route already did)
+            task = await self.runner.get_task(task_id)
+            if task is None:
+                raise RuntimeError(f"Task {task_id} not found")
+            if task.state != TaskState.RUNNING.value:
+                task = await self.runner.transition_state(
+                    task_id=task_id,
+                    new_state=TaskState.RUNNING,
+                    event_type="task.execution_started",
+                    event_data={"started_at": datetime.utcnow().isoformat()}
+                )
             
             while True:
                 # Check action limit
@@ -95,6 +104,7 @@ class TaskExecutionLoop:
                 events = self._get_event_history(task_id)
                 
                 # Request decision from model
+                repair_context = None
                 try:
                     decision_type, params = await self.model_engine.make_decision(
                         task_id=task.id,
@@ -103,7 +113,7 @@ class TaskExecutionLoop:
                         event_history=events,
                         current_state=task.state,
                         pending_question=task.pending_question,
-                        repair_context=None  # Will be set if this is a repair
+                        repair_context=repair_context
                     )
                     repair_attempts = 0  # Reset on successful decision
                     
@@ -119,7 +129,11 @@ class TaskExecutionLoop:
                         )
                         break
                     
-                    # Try again with repair context
+                    # Try again, telling the model what went wrong
+                    repair_context = (
+                        f"Your previous decision was rejected: {e.message} "
+                        f"(code {e.code}). Respond with a valid tool call."
+                    )
                     continue
                 
                 # Execute the decision
@@ -153,6 +167,26 @@ class TaskExecutionLoop:
                 code="EXECUTION_ERROR",
                 message=str(e)
             )
+            raise
+        finally:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    async def _heartbeat_lease(self, task_id: str) -> None:
+        """Renew the runner lease every few seconds during execution."""
+        try:
+            while True:
+                if not await self.runner.renew_lease(task_id):
+                    logger.warning(
+                        f"Lease lost during execution of task {task_id}; "
+                        "another runner may have taken over"
+                    )
+                    return
+                await asyncio.sleep(10)
+        except asyncio.CancelledError:
             raise
     
     def _get_event_history(self, task_id: str) -> List[Dict[str, Any]]:
@@ -403,21 +437,30 @@ class TaskExecutionLoop:
 
 async def run_task(db_session: Session, task_id: str, tool_executor: ToolExecutor) -> None:
     """
-    Convenience function to run a single task.
-    
+    Run a single task in the background.
+
+    Creates an independent DB session because the request-scoped session
+    passed in is closed once the HTTP response is sent. This guarantees the
+    long-running execution loop has a live session for its whole duration.
+
     Args:
-        db_session: Database session
+        db_session: Original request session (unused; kept for compat)
         task_id: Task ID to execute
         tool_executor: Tool executor instance
     """
-    runner = TaskRunner(db_session)
-    
-    # Acquire lease
-    if not await runner.acquire_lease():
-        raise RuntimeError("Another task runner is currently active")
-    
+    from backend.models.database import get_db_manager
+
+    db_manager = get_db_manager()
+    session = db_manager.new_session()
+    runner = TaskRunner(session)
+
     try:
-        loop = TaskExecutionLoop(db_session, runner, tool_executor)
+        # Acquire lease
+        if not await runner.acquire_lease():
+            raise RuntimeError("Another task runner is currently active")
+
+        loop = TaskExecutionLoop(session, runner, tool_executor)
         await loop.execute_task(task_id)
     finally:
         await runner.release_lease()
+        session.close()

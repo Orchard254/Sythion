@@ -33,6 +33,13 @@ def set_db_manager(manager):
     _db_manager = manager
 
 
+def get_db_manager():
+    """Get the database manager instance (used by background tasks)."""
+    if _db_manager is None:
+        raise RuntimeError("Database not initialized. Call init_database first.")
+    return _db_manager
+
+
 class Task(Base):
     """Current state projection for a task."""
     
