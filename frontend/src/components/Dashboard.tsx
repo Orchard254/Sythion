@@ -12,32 +12,43 @@ export function Dashboard() {
   const audioChunksRef = useRef<Blob[]>([]);
   const voiceSessionIdRef = useRef<string | null>(null);
 
-  // Load tasks on mount
-  useEffect(() => {
-    const loadTasks = async () => {
-      try {
-        const list = await taskService.list();
-        setTasks(list);
-      } catch (error) {
-        console.error('Failed to load tasks:', error);
-      }
-    };
-    loadTasks();
+  const pollTasks = useCallback(async () => {
+    try {
+      const list = await taskService.list();
+      setTasks(list);
+    } catch (error) {
+      console.error('Failed to poll tasks:', error);
+    }
   }, [setTasks]);
 
-  // Poll for task updates so completed results appear without manual refresh
+  const hasActiveTasks = tasks.some((t) =>
+    t.state === 'running' || t.state === 'waiting_for_user' || t.state === 'interrupted'
+  );
+
+  // Load tasks on mount
   useEffect(() => {
-    const poll = async () => {
-      try {
-        const list = await taskService.list();
-        setTasks(list);
-      } catch (error) {
-        console.error('Failed to poll tasks:', error);
-      }
+    pollTasks();
+  }, [pollTasks]);
+
+  // Adaptive polling: fast while any task is in flight, slow when idle.
+  // Self-scheduling timeout so the interval adjusts to activity.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    let cancelled = false;
+
+    const schedule = () => {
+      timer = setTimeout(async () => {
+        await pollTasks();
+        if (!cancelled) schedule();
+      }, hasActiveTasks ? 2000 : 15000);
     };
-    const interval = setInterval(poll, 3000);
-    return () => clearInterval(interval);
-  }, [setTasks]);
+    schedule();
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [hasActiveTasks, pollTasks]);
 
   const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,6 +60,7 @@ export function Dashboard() {
       setTasks([...tasks, task]);
       setNewTaskRequest('');
       setActiveTask(task.id);
+      pollTasks();
     } catch (error) {
       console.error('Failed to create task:', error);
     } finally {
@@ -66,6 +78,7 @@ export function Dashboard() {
       if (activeTaskId === taskId) {
         setActiveTask(null);
       }
+      pollTasks();
     } catch (error) {
       console.error('Failed to cancel task:', error);
     }
@@ -78,6 +91,7 @@ export function Dashboard() {
         t.id === taskId ? { ...t, state: task.state } : t
       ));
       setActiveTask(task.id);
+      pollTasks();
     } catch (error) {
       console.error('Failed to resume task:', error);
     }
