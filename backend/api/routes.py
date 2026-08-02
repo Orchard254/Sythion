@@ -5,6 +5,7 @@ Handles task management, tool execution, settings, and skills.
 import logging
 import asyncio
 import json
+import os
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
@@ -65,6 +66,20 @@ async def health_check(db: Session = Depends(get_db)):
         database_connected=True,
         cloud_configured=cloud_ok
     )
+
+
+@router.get("/version")
+async def version_check():
+    """Return the sidecar version for the packaged-app update path."""
+    from backend import __version__
+    from core.config import settings
+
+    return {
+        "version": __version__,
+        "api_version": "v1",
+        "platform": "windows" if os.name == "nt" else os.name,
+        "runtime": "uvicorn",
+    }
 
 
 @router.post("/tasks", response_model=TaskResponse)

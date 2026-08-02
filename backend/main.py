@@ -35,15 +35,28 @@ configure_logging()
 db_manager: DatabaseManager = None
 tool_executor: ToolExecutor = None
 control_token: str = None
+profile_lock = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global db_manager, tool_executor, control_token
+    global db_manager, tool_executor, control_token, profile_lock
+
+    # Enforce single-instance: another live sidecar means this launch should
+    # exit cleanly rather than run two runners against one profile.
+    from .core.profile_lock import acquire_profile_lock
+    profile_lock = acquire_profile_lock()
+    if profile_lock is None:
+        raise RuntimeError(
+            "Another JARVIS sidecar holds the profile lock; refusing to start a second instance"
+        )
     
-    # Startup
-    control_token = generate_control_token()
+    # Startup: prefer the launcher-provided per-launch token (Phase A handshake),
+    # falling back to a fresh random one for dev/test.
+    from .core.handshake import read_launch_token, write_handshake
+    handshake_token = read_launch_token()
+    control_token = handshake_token or generate_control_token()
     logger.info(f"JARVIS starting with control token: {control_token[:8]}...")
 
     # Validate critical configuration early so misconfig is obvious at boot
@@ -52,11 +65,9 @@ async def lifespan(app: FastAPI):
         getattr(logger, level)(message)
     
     # Initialize database
-    db_path = settings.database_path or os.path.join(
-        os.path.expanduser("~"),
-        ".jarvis",
-        "jarvis.db"
-    )
+    from .core.storage import database_path, data_dir, migrate_legacy_data_dir
+    migrate_legacy_data_dir()
+    db_path = settings.database_path or database_path()
     db_manager = init_database(db_path)
     set_db_manager(db_manager)
     logger.info(f"Database initialized at: {db_path}")
@@ -85,10 +96,23 @@ async def lifespan(app: FastAPI):
     initialize_default_skills()
     logger.info("Skills system initialized")
     
+    # Phase A handshake: expose the bound port + token to the launcher. The
+    # launcher pre-selects a free port (JARVIS_PORT or --port) and reads this
+    # file to learn where the sidecar is listening.
+    from .core.handshake import write_handshake
+    try:
+        write_handshake(port=settings.port, token=control_token)
+        logger.info(f"Handshake written for port {settings.port}")
+    except Exception as e:  # pragma: no cover - filesystem dependent
+        logger.warning(f"Could not write handshake file: {e}")
+    
     yield
     
     # Shutdown
     logger.info("JARVIS shutting down...")
+    if profile_lock is not None:
+        profile_lock.release()
+        profile_lock = None
 
 
 app = FastAPI(

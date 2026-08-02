@@ -37,6 +37,8 @@ export function useAppInit() {
     };
 
     initializeApp();
+    // Mount-once initialization; the zustand setters are stable references.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return { isInitialized };

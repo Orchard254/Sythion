@@ -1,9 +1,11 @@
 # JARVIS Acceptance-Test Map
 
 **Status:** Gates marked `passing` have an executable suite in
-`backend/tests/acceptance/` (30 tests, run from `backend/` via
-`python -m pytest tests/acceptance/`). Tests marked `planned` must exist and
-pass before their milestone can be accepted.
+`backend/tests/acceptance/` (run from `backend/` via
+`python -m pytest tests/acceptance/`). Gates marked `partial` have the
+sidecar-side coverage but still need the packaged Tauri shell or a manual
+clean-machine check. Tests marked `planned` must exist and pass before their
+milestone can be accepted.
 
 | Area | Acceptance test | Gate | Status |
 | --- | --- | --- | --- |
@@ -13,13 +15,14 @@ pass before their milestone can be accepted.
 | External state | Every mutation commits `action_started` before execution and records a fresh verifier result | C | planned |
 | Recovery/undo | Crash after `action_started` marks the task `interrupted` and action `uncertain`; explicit resume re-observes before mutation | B/C | planned |
 | Permissions/identity | Apps use registered identities; arbitrary executables, arguments, Run dialogs, and elevation are denied | C | planned |
-| Data lifecycle | LocalAppData storage has user-only ACLs; secrets and prohibited content are absent from DB, events, logs, and Cloud context | A/B | planned |
+| Data lifecycle | LocalAppData storage has user-only ACLs; secrets and prohibited content are absent from DB, events, logs, and Cloud context | A/B | partial |
 | GUI reliability | Locked, elevated, stale, missing, disconnected, or browser targets receive no input | D | planned |
 | Tool discovery | Model context is policy-filtered and bounded; it never contains full directories, raw UI trees, screenshots, or thinking | B | passing |
 | Brain contract | Model-visible tools are the policy-filtered read-only subset exposed directly (no `execute_tool` wrapper); tool output reaches the model only as a bounded `model_summary`; context carries the current task state | B | passing |
 | Skill lifecycle | Skills validate restrictive references, pin versions, require explicit enablement, and stop before an unstarted disabled step | F | planned |
 | Model failure | Invalid, parallel, malformed, unavailable, rate-limited, stale-model, and exhausted-budget decisions cause no repeated mutation or local fallback | B | passing |
-| Desktop lifecycle | Packaged app enforces single instance, launches one sidecar, shuts it down cleanly, and recovers stale leases | A | planned |
+| Desktop lifecycle | Packaged app enforces single instance, launches one sidecar, shuts it down cleanly, and recovers stale leases | A | partial |
+| Sidecar handshake | Launcher writes a private per-launch token file; sidecar reads it, binds an ephemeral loopback port, and writes port+token back for the launcher | A | passing |
 | Cloud capability | Onboarding lists authenticated model IDs and proves one fake read-only native tool call before the provider is usable | B | passing |
 | Local API trust | Wrong token, wrong origin, non-loopback client, and unauthenticated WebSocket cannot invoke or observe sidecar operations | A | passing |
 | UIA threading | All UIA calls run only through one COM MTA worker; handles are reacquired for each fresh observation | D | planned |

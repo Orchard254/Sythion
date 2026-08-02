@@ -20,8 +20,8 @@ def default_log_path() -> str:
     env_dir = os.environ.get("JARVIS_LOG_DIR", "")
     if env_dir:
         return os.path.join(env_dir, "jarvis.log")
-    base = os.path.join(os.path.expanduser("~"), ".jarvis")
-    return os.path.join(base, "jarvis.log")
+    from .storage import log_path
+    return log_path()
 
 
 _FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"

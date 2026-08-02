@@ -1,6 +1,10 @@
 # JARVIS Architecture Decision Record
 
-**Status:** Phase -1 decision record — implementation direction accepted; Phase A remediation in progress.
+**Status:** Phase -1 decision record accepted; Phase A remediation in progress.
+The Rust-free sidecar foundation (per-launch token handshake, ephemeral port
+file, profile single-instance lock, LocalAppData storage with user-only ACLs,
+version endpoint, desktop frontend build/lint) is implemented and tested. The
+packaged Tauri shell that drives the handshake is the remaining Phase A item.
 
 ## Decision
 

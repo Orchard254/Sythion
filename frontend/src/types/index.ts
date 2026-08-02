@@ -25,7 +25,7 @@ export interface TaskEvent {
   id: number;
   task_id: string;
   event_type: string;
-  event_data: Record<string, any>;
+  event_data: Record<string, unknown>;
   sequence_num: number;
   created_at: string;
 }
