@@ -130,6 +130,18 @@ post-mutation verification by reading the committed bytes back
 (create/write/move/copy) or confirming the target no longer exists (delete),
 reported in `evidence.verification`.
 
+## Canonical file identity rechecks (implemented)
+
+Beneath the deterministic path-string gate, every file execution re-verifies
+containment with real OS handles (`CreateFileW` + `GetFinalPathNameByHandleW`
++ `GetFileInformationByHandle`). The OS-reported final location of the target
+(or its nearest existing ancestor for writes) is compared case-insensitively
+against each approved root's final location, so 8.3 short-name aliases and case
+tricks cannot bypass containment. A target that is itself a symbolic link,
+junction, or reparse point is rejected outright (`TARGET_REPARSE_POINT_REJECTED`).
+Deletes default to the Recycle Bin (refusing silent permanent fallback) and
+record `recoverable` in their evidence.
+
 ## Milestone gate
 
 No feature work beyond Phase A may proceed until the owner approves this

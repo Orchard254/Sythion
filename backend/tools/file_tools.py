@@ -6,7 +6,6 @@ import os
 import shutil
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable, Awaitable
-
 from tools.executor import BaseTool
 from api.schemas import (
     ToolOutput,
@@ -21,47 +20,6 @@ from api.schemas import (
 
 # Upper bound on how much content the LLM may write in one call.
 MAX_WRITE_BYTES = 2 * 1024 * 1024
-
-
-def _atomic_write_text(path: Path, content: str, append: bool, overwrite: bool) -> None:
-    """Write `content` to `path` atomically: temp file + os.replace.
-
-    The target only ever appears as either the old content or the new content
-    (never a partial write). Returns the final content written so the caller
-    can verify it read back identically.
-    """
-    if len(content.encode('utf-8')) > MAX_WRITE_BYTES:
-        raise _WriteTooLarge(content)
-
-    if append and path.exists():
-        existing = path.read_text(encoding='utf-8', errors='replace')
-        final_content = existing + content
-        if len(final_content.encode('utf-8')) > MAX_WRITE_BYTES:
-            raise _WriteTooLarge(final_content)
-    elif path.exists() and not overwrite and not append:
-        raise _ExistsError(str(path))
-    else:
-        final_content = content
-
-    if path.exists() and path.is_dir():
-        raise ValueError(f"Target is a directory: {path}")
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".jarvis-tmp")
-    try:
-        with open(tmp, "w", encoding="utf-8", newline="") as f:
-            f.write(final_content)
-            f.flush()
-            os.fsync(f.fileno())
-        # Final irreversible swap. os.replace is atomic on the same volume.
-        os.replace(tmp, path)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-    return final_content
 
 
 def _read_back_text(path: Path) -> str:
@@ -181,9 +139,22 @@ def _safe_resolve(raw: str, allow_existing_missing: bool = False) -> Path:
     """Resolve a user-supplied path and enforce it stays within approved roots."""
     if not raw or not str(raw).strip():
         raise ValueError("Path must not be empty")
-    path = Path(str(raw)).expanduser().resolve()
+    # Check the literal (unresolved) target first: if it is itself a reparse
+    # point we reject it before resolve() follows the link away.
+    literal = Path(str(raw)).expanduser()
+    if literal.exists() and _is_reparse_point(literal):
+        raise _TargetRejected(
+            "TARGET_REPARSE_POINT_REJECTED",
+            f"Target is a symbolic link, junction, or reparse point and is rejected in v1: {literal}")
+    path = literal.resolve()
     if not _contained(path):
-        raise ValueError(f"Path is outside approved roots: {path}")
+        raise _TargetRejected(
+            "TARGET_OUTSIDE_ROOTS",
+            f"Target is outside approved roots: {path}")
+    if not _canonical_contained(path):
+        raise _TargetRejected(
+            "TARGET_OUTSIDE_ROOTS",
+            f"Canonical location is outside approved roots: {path}")
     return path
 
 
@@ -210,6 +181,181 @@ def _path_target_error(raw: str) -> Optional[Dict[str, str]]:
     if not _contained(path):
         return {"code": "TARGET_OUTSIDE_ROOTS", "message": f"Target is outside approved roots: {path}"}
     return None
+
+
+# --- Canonical Windows handle rechecks --------------------------------------
+# The string gate above is fast and deterministic; these rechecks open a real
+# handle to the target (and to each approved root) and compare the final
+# location the OS reports. This defeats short-name (8.3) aliases, case tricks,
+# and reparse points that a string comparison could be fooled by, and rejects
+# operating on symbolic links / junctions outright.
+
+_CTYPES_READY = False
+if os.name == "nt":
+    try:
+        import ctypes
+        import ctypes.wintypes as wintypes
+
+        _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        _FILE_READ_ATTRIBUTES = 0x80
+        _FILE_SHARE_READ = 0x1
+        _FILE_SHARE_WRITE = 0x2
+        _FILE_SHARE_DELETE = 0x4
+        _OPEN_EXISTING = 3
+        _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+        _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+        _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+        _INVALID_HANDLE = ctypes.c_void_p(-1).value
+
+        _kernel32.CreateFileW.restype = wintypes.HANDLE
+        _kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+        ]
+        _kernel32.CloseHandle.restype = wintypes.BOOL
+        _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        class _ByHandleFileInformation(ctypes.Structure):
+            _fields_ = [
+                ("dwFileAttributes", wintypes.DWORD),
+                ("ftCreationTime", wintypes.FILETIME),
+                ("ftLastAccessTime", wintypes.FILETIME),
+                ("ftLastWriteTime", wintypes.FILETIME),
+                ("dwVolumeSerialNumber", wintypes.DWORD),
+                ("nFileSizeHigh", wintypes.DWORD),
+                ("nFileSizeLow", wintypes.DWORD),
+                ("nNumberOfLinks", wintypes.DWORD),
+                ("nFileIndexHigh", wintypes.DWORD),
+                ("nFileIndexLow", wintypes.DWORD),
+            ]
+
+        _kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+        _kernel32.GetFileInformationByHandle.argtypes = [
+            wintypes.HANDLE, ctypes.POINTER(_ByHandleFileInformation),
+        ]
+        _kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+        _kernel32.GetFinalPathNameByHandleW.argtypes = [
+            wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD,
+        ]
+
+        def _open_no_follow(path: str):
+            handle = _kernel32.CreateFileW(
+                str(path), _FILE_READ_ATTRIBUTES,
+                _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
+                None, _OPEN_EXISTING,
+                _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+                None)
+            return None if handle == _INVALID_HANDLE else handle
+
+        def _open_follow(path: str):
+            handle = _kernel32.CreateFileW(
+                str(path), _FILE_READ_ATTRIBUTES,
+                _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
+                None, _OPEN_EXISTING, _FILE_FLAG_BACKUP_SEMANTICS, None)
+            return None if handle == _INVALID_HANDLE else handle
+
+        def _file_attributes(handle) -> Optional[int]:
+            info = _ByHandleFileInformation()
+            if not _kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
+                return None
+            return int(info.dwFileAttributes)
+
+        def _final_path_by_handle(handle) -> Optional[str]:
+            buf = ctypes.create_unicode_buffer(32768)
+            n = _kernel32.GetFinalPathNameByHandleW(handle, buf, 32768, 0)
+            if n == 0 or n >= 32768:
+                return None
+            return buf.value
+
+        _CTYPES_READY = True
+    except Exception:
+        _CTYPES_READY = False
+
+
+def _normalize_final(final_path: str) -> str:
+    """Strip the \\\\?\\ device prefix GetFinalPathNameByHandleW adds."""
+    if final_path.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + final_path[8:]
+    if final_path.startswith("\\\\?\\"):
+        return final_path[4:]
+    return final_path
+
+
+def _canonical_of_existing(path: Path) -> Optional[str]:
+    """OS-reported final location of an existing file/directory."""
+    if not _CTYPES_READY:
+        return None
+    handle = _open_follow(path)
+    if not handle:
+        return None
+    try:
+        final = _final_path_by_handle(handle)
+        return _normalize_final(final) if final else None
+    finally:
+        _kernel32.CloseHandle(handle)
+
+
+def _is_reparse_point(path: Path) -> bool:
+    """True when the existing target itself is a link/junction/reparse point."""
+    if not _CTYPES_READY:
+        return False
+    handle = _open_no_follow(path)
+    if not handle:
+        return False
+    try:
+        attrs = _file_attributes(handle)
+        return bool(attrs and (attrs & _FILE_ATTRIBUTE_REPARSE_POINT))
+    finally:
+        _kernel32.CloseHandle(handle)
+
+
+def _is_under_canonical(canonical: str, roots: List[str]) -> bool:
+    c = canonical.rstrip("\\") or "\\"
+    cl = c.lower()
+    for root in roots:
+        r = root.rstrip("\\") or "\\"
+        if cl == r.lower() or cl.startswith(r.lower() + "\\"):
+            return True
+    return False
+
+
+def _canonical_contained(path: Path) -> bool:
+    """Defense-in-depth containment check using real OS handles.
+
+    Compares the OS-reported final location of the nearest existing ancestor of
+    `path` (or the target itself) against each approved root's final location,
+    so short names, case, and reparse-point targets cannot bypass the string
+    gate. Returns True on non-Windows where the string gate is authoritative.
+    """
+    if not _CTYPES_READY:
+        return True
+    root_finals = []
+    for root in _approved_roots():
+        final = _canonical_of_existing(root)
+        if final:
+            root_finals.append(final)
+    if not root_finals:
+        return False
+    probe = path
+    while not probe.exists():
+        parent = probe.parent
+        if parent == probe:
+            return False
+        probe = parent
+    target = _canonical_of_existing(probe)
+    if not target:
+        return False
+    return _is_under_canonical(target, root_finals)
+
+
+class _TargetRejected(Exception):
+    """Raised when an execution-time target recheck rejects a path."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
 
 class FileListTool(BaseTool):
@@ -273,6 +419,8 @@ class FileListTool(BaseTool):
                 },
                 evidence={"source": "filesystem_list"}
             )
+        except _TargetRejected as e:
+            return ToolOutput(success=False, error={"code": e.code, "message": e.message}, duration_ms=0)
         except Exception as e:
             return ToolOutput(
                 success=False,
@@ -342,6 +490,8 @@ class FileReadTool(BaseTool):
                 },
                 evidence={"source": "filesystem_read"}
             )
+        except _TargetRejected as e:
+            return ToolOutput(success=False, error={"code": e.code, "message": e.message}, duration_ms=0)
         except Exception as e:
             return ToolOutput(
                 success=False,
@@ -421,6 +571,8 @@ class FileCreateTool(BaseTool):
                 },
                 evidence={"source": "filesystem_create", "verification": "passed" if matches else "failed"}
             )
+        except _TargetRejected as e:
+            return ToolOutput(success=False, error={"code": e.code, "message": e.message}, duration_ms=0)
         except Exception as e:
             return ToolOutput(
                 success=False,
@@ -499,6 +651,8 @@ class FileWriteTool(BaseTool):
                 },
                 evidence={"source": "filesystem_write", "verification": "passed" if matches else "failed"}
             )
+        except _TargetRejected as e:
+            return ToolOutput(success=False, error={"code": e.code, "message": e.message}, duration_ms=0)
         except Exception as e:
             return ToolOutput(
                 success=False,
@@ -592,6 +746,8 @@ class FileMoveTool(BaseTool):
                 },
                 evidence={"source": "filesystem_move", "verification": "passed" if verified else "failed"}
             )
+        except _TargetRejected as e:
+            return ToolOutput(success=False, error={"code": e.code, "message": e.message}, duration_ms=0)
         except Exception as e:
             return ToolOutput(
                 success=False,
@@ -671,6 +827,8 @@ class FileCopyTool(BaseTool):
                 },
                 evidence={"source": "filesystem_copy", "verification": "passed" if verified else "failed"}
             )
+        except _TargetRejected as e:
+            return ToolOutput(success=False, error={"code": e.code, "message": e.message}, duration_ms=0)
         except Exception as e:
             return ToolOutput(
                 success=False,
@@ -737,6 +895,7 @@ class FileDeleteTool(BaseTool):
             
             # Fresh post-mutation verification: the target no longer exists.
             verified = not path.exists()
+            recoverable = method == "recycle_bin"
 
             return ToolOutput(
                 success=True,
@@ -744,9 +903,16 @@ class FileDeleteTool(BaseTool):
                     "path": str(path),
                     "deletion_method": method,
                     "verified": verified,
+                    "recoverable": recoverable,
                 },
-                evidence={"source": "filesystem_delete", "verification": "passed" if verified else "failed"}
+                evidence={
+                    "source": "filesystem_delete",
+                    "verification": "passed" if verified else "failed",
+                    "recoverable": recoverable,
+                }
             )
+        except _TargetRejected as e:
+            return ToolOutput(success=False, error={"code": e.code, "message": e.message}, duration_ms=0)
         except Exception as e:
             return ToolOutput(
                 success=False,
