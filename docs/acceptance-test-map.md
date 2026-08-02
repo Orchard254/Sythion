@@ -13,7 +13,8 @@ milestone can be accepted.
 | Intent routing | Clarification replies use the same task ID; corrections require cancel then replacement | B | passing |
 | Cancellation | Cancellation is durable, checked before OS calls, and prevents the next action | B | passing |
 | Read-only slice | A task runs end-to-end through a real read-only system tool with recorded evidence and verified completion; mutating tools stay out of the model-visible subset | B | passing |
-| External state | Every mutation commits `action_started` before execution and records a fresh verifier result | C | planned |
+| External state | Every mutation commits `action_started` before execution and records a fresh verifier result | C | partial |
+| Controlled file mutation | Writes are atomic (temp + `os.replace`), refuse clobber without overwrite, cancel before the final replace leaves prior content intact, and record fresh post-mutation verification for create/write/move/copy/delete | C | passing |
 | Recovery/undo | Crash after `action_started` marks the task `interrupted` and action `uncertain`; explicit resume re-observes before mutation | B/C | planned |
 | Permissions/identity | Apps use registered identities; arbitrary executables, arguments, Run dialogs, and elevation are denied | C | planned |
 | Data lifecycle | LocalAppData storage has user-only ACLs; secrets and prohibited content are absent from DB, events, logs, and Cloud context | A/B | partial |

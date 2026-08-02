@@ -51,6 +51,21 @@ class BaseTool(ABC):
         """
         return None
 
+    async def _is_cancelled(self) -> bool:
+        """Return True when the caller's task was cancelled mid-execution.
+
+        The executor sets `_active_cancelled_check` for the duration of
+        `execute`; multi-step tools consult this before a final, irreversible
+        OS swap (e.g. the atomic replace in file writes).
+        """
+        check = getattr(self, "_active_cancelled_check", None)
+        if check is None:
+            return False
+        try:
+            return bool(await check())
+        except Exception:
+            return False
+
 
 @dataclass(frozen=True)
 class PolicyContext:
@@ -193,6 +208,13 @@ class ToolExecutor:
         
         # Execute with timing
         start_time = time.time()
+        # Expose the active cancellation check to tools so multi-step mutations
+        # (e.g. write-temp then atomic replace) can stop before the final swap.
+        tool._active_cancelled_check = (
+            policy_context.cancelled_check
+            if policy_context is not None
+            else None
+        )
         try:
             output = await tool.execute(validated_input)
             duration_ms = int((time.time() - start_time) * 1000)
@@ -213,6 +235,8 @@ class ToolExecutor:
                 error={"code": "EXECUTION_ERROR", "message": str(e)},
                 duration_ms=duration_ms
             )
+        finally:
+            tool._active_cancelled_check = None
 
     @staticmethod
     def _policy_error(

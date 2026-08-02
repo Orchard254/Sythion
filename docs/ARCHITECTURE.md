@@ -118,6 +118,18 @@ immediately before `tool.execute` -- returning `CANCELLED` without touching the
 OS. Cancellation and interruption are durable via the immutable event stream
 and survive lease takeover.
 
+## Controlled file mutations (implemented)
+
+File writes use atomic temp-file + `os.replace` semantics
+(`backend/tools/file_tools.py`): the target only ever shows old or new content,
+never a partial write. `file_create`/`file_write` refuse to clobber an existing
+file without an explicit `overwrite`, and the active cancellation check is
+awaited right before the final replace so a cancel mid-write leaves the prior
+content intact (no orphaned temp file). Every mutation records fresh
+post-mutation verification by reading the committed bytes back
+(create/write/move/copy) or confirming the target no longer exists (delete),
+reported in `evidence.verification`.
+
 ## Milestone gate
 
 No feature work beyond Phase A may proceed until the owner approves this

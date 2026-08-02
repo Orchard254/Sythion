@@ -5,7 +5,7 @@ Implements file operations: read, write, list, create, delete, move, copy
 import os
 import shutil
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable, Awaitable
 
 from tools.executor import BaseTool
 from api.schemas import (
@@ -21,6 +21,126 @@ from api.schemas import (
 
 # Upper bound on how much content the LLM may write in one call.
 MAX_WRITE_BYTES = 2 * 1024 * 1024
+
+
+def _atomic_write_text(path: Path, content: str, append: bool, overwrite: bool) -> None:
+    """Write `content` to `path` atomically: temp file + os.replace.
+
+    The target only ever appears as either the old content or the new content
+    (never a partial write). Returns the final content written so the caller
+    can verify it read back identically.
+    """
+    if len(content.encode('utf-8')) > MAX_WRITE_BYTES:
+        raise _WriteTooLarge(content)
+
+    if append and path.exists():
+        existing = path.read_text(encoding='utf-8', errors='replace')
+        final_content = existing + content
+        if len(final_content.encode('utf-8')) > MAX_WRITE_BYTES:
+            raise _WriteTooLarge(final_content)
+    elif path.exists() and not overwrite and not append:
+        raise _ExistsError(str(path))
+    else:
+        final_content = content
+
+    if path.exists() and path.is_dir():
+        raise ValueError(f"Target is a directory: {path}")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".jarvis-tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(final_content)
+            f.flush()
+            os.fsync(f.fileno())
+        # Final irreversible swap. os.replace is atomic on the same volume.
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    return final_content
+
+
+def _read_back_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="strict")
+
+
+def _file_bytes(path: Path) -> bytes:
+    return path.read_bytes()
+
+
+def _bytes_match(a: Path, b: Path) -> bool:
+    return _file_bytes(a) == _file_bytes(b)
+
+
+async def _atomic_write_text(
+    path: Path,
+    content: str,
+    append: bool,
+    overwrite: bool,
+    cancelled_check: Optional[Callable[[], Awaitable[bool]]] = None,
+) -> str:
+    """Write `content` to `path` atomically: temp file + os.replace.
+
+    The target only ever appears as either the old content or the new content
+    (never a partial write). When a `cancelled_check` is supplied it is awaited
+    immediately before the final `os.replace` so a cancel that arrives during
+    the (potentially large) write still prevents the swap. Returns the final
+    content written so the caller can verify it read back identically.
+    """
+    if len(content.encode('utf-8')) > MAX_WRITE_BYTES:
+        raise _WriteTooLarge(content)
+
+    if append and path.exists():
+        existing = path.read_text(encoding='utf-8', errors='replace')
+        final_content = existing + content
+        if len(final_content.encode('utf-8')) > MAX_WRITE_BYTES:
+            raise _WriteTooLarge(final_content)
+    elif path.exists() and not overwrite and not append:
+        raise _ExistsError(str(path))
+    else:
+        final_content = content
+
+    if path.exists() and path.is_dir():
+        raise ValueError(f"Target is a directory: {path}")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".jarvis-tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(final_content)
+            f.flush()
+            os.fsync(f.fileno())
+        # Cancel may have arrived while the temp file was being written: the
+        # original target is still untouched, so stop before the swap.
+        if cancelled_check is not None:
+            if await cancelled_check():
+                raise _CancelledError()
+        # Final irreversible swap. os.replace is atomic on the same volume.
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    return final_content
+
+
+class _WriteTooLarge(Exception):
+    pass
+
+
+class _ExistsError(Exception):
+    def __init__(self, message):
+        super().__init__(message)
+
+
+class _CancelledError(Exception):
+    pass
 
 
 def _approved_roots() -> List[Path]:
@@ -260,30 +380,46 @@ class FileCreateTool(BaseTool):
                     duration_ms=0
                 )
             
-            # Check if file already exists
-            if path.exists():
-                if not input_data.overwrite:
-                    return ToolOutput(
-                        success=False,
-                        error={"code": "FILE_EXISTS", "message": f"File already exists: {path}. Use overwrite=True to replace."},
-                        duration_ms=0
-                    )
-                # If overwrite is True, we'll proceed to write
+            # Atomic write: temp file + replace. If the target exists and
+            # overwrite is False, refuse (no clobber). A cancellation that
+            # arrives mid-write stops before the final replace.
+            try:
+                final_content = await _atomic_write_text(
+                    path,
+                    input_data.content,
+                    append=False,
+                    overwrite=input_data.overwrite,
+                    cancelled_check=self._is_cancelled,
+                )
+            except _ExistsError as e:
+                return ToolOutput(
+                    success=False,
+                    error={"code": "FILE_EXISTS", "message": f"File already exists: {path}. Use overwrite=True to replace."},
+                    duration_ms=0
+                )
+            except _CancelledError:
+                return ToolOutput(
+                    success=False,
+                    error={"code": "CANCELLED", "message": "Task was cancelled before the file replace"},
+                    duration_ms=0
+                )
             
-            # Create parent directories if they don't exist
-            path.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Write the file
-            path.write_text(input_data.content, encoding='utf-8')
-            
+            # Fresh post-mutation verification: read the committed bytes back.
+            try:
+                written = _read_back_text(path)
+                matches = written == final_content
+            except (OSError, UnicodeDecodeError):
+                matches = False
+
             return ToolOutput(
                 success=True,
                 data={
                     "path": str(path),
-                    "bytes_written": len(input_data.content.encode('utf-8')),
-                    "overwritten": path.exists() and input_data.overwrite
+                    "bytes_written": len(final_content.encode('utf-8')),
+                    "overwritten": path.exists() and input_data.overwrite,
+                    "verified": matches,
                 },
-                evidence={"source": "filesystem_create"}
+                evidence={"source": "filesystem_create", "verification": "passed" if matches else "failed"}
             )
         except Exception as e:
             return ToolOutput(
@@ -323,21 +459,45 @@ class FileWriteTool(BaseTool):
                     duration_ms=0
                 )
             
-            # Create parent directories if they don't exist
-            path.parent.mkdir(parents=True, exist_ok=True)
+            # Atomic write (temp file + replace); a cancellation arriving during
+            # the write stops before the final swap so the old file survives.
+            try:
+                final_content = await _atomic_write_text(
+                    path,
+                    input_data.content,
+                    append=input_data.append,
+                    overwrite=True,
+                    cancelled_check=self._is_cancelled,
+                )
+            except _CancelledError:
+                return ToolOutput(
+                    success=False,
+                    error={"code": "CANCELLED", "message": "Task was cancelled before the file replace"},
+                    duration_ms=0
+                )
+            except _WriteTooLarge:
+                return ToolOutput(
+                    success=False,
+                    error={"code": "WRITE_TOO_LARGE", "message": f"Content exceeds max write size of {MAX_WRITE_BYTES} bytes"},
+                    duration_ms=0
+                )
             
-            mode = 'a' if input_data.append else 'w'
-            with open(path, mode, encoding='utf-8') as f:
-                f.write(input_data.content)
-            
+            # Fresh post-mutation verification: read the committed bytes back.
+            try:
+                written = _read_back_text(path)
+                matches = written == final_content
+            except (OSError, UnicodeDecodeError):
+                matches = False
+
             return ToolOutput(
                 success=True,
                 data={
                     "path": str(path),
-                    "bytes_written": len(input_data.content.encode('utf-8')),
-                    "appended": input_data.append
+                    "bytes_written": len(final_content.encode('utf-8')),
+                    "appended": input_data.append,
+                    "verified": matches,
                 },
-                evidence={"source": "filesystem_write"}
+                evidence={"source": "filesystem_write", "verification": "passed" if matches else "failed"}
             )
         except Exception as e:
             return ToolOutput(
@@ -404,17 +564,33 @@ class FileMoveTool(BaseTool):
                 else:
                     dest.unlink()
             
+            # Capture source bytes before the move for post-mutation verification.
+            try:
+                source_bytes = _file_bytes(source)
+            except OSError:
+                source_bytes = None
+
             # Move the file
             shutil.move(str(source), str(dest))
             
+            # Fresh post-mutation verification: the destination exists and
+            # carries the exact source bytes.
+            verified = dest.exists() and dest.is_file()
+            if verified and source_bytes is not None:
+                try:
+                    verified = _file_bytes(dest) == source_bytes
+                except OSError:
+                    verified = False
+
             return ToolOutput(
                 success=True,
                 data={
                     "source": str(source),
                     "destination": str(dest),
-                    "overwritten": dest.exists() and input_data.overwrite
+                    "overwritten": dest.exists() and input_data.overwrite,
+                    "verified": verified,
                 },
-                evidence={"source": "filesystem_move"}
+                evidence={"source": "filesystem_move", "verification": "passed" if verified else "failed"}
             )
         except Exception as e:
             return ToolOutput(
@@ -476,14 +652,24 @@ class FileCopyTool(BaseTool):
             # Copy the file
             shutil.copy2(str(source), str(dest))
             
+            # Fresh post-mutation verification: the destination exists and
+            # carries the exact source bytes.
+            verified = dest.exists() and dest.is_file()
+            if verified:
+                try:
+                    verified = _bytes_match(source, dest)
+                except OSError:
+                    verified = False
+
             return ToolOutput(
                 success=True,
                 data={
                     "source": str(source),
                     "destination": str(dest),
-                    "overwritten": dest.exists() and input_data.overwrite
+                    "overwritten": dest.exists() and input_data.overwrite,
+                    "verified": verified,
                 },
-                evidence={"source": "filesystem_copy"}
+                evidence={"source": "filesystem_copy", "verification": "passed" if verified else "failed"}
             )
         except Exception as e:
             return ToolOutput(
@@ -549,13 +735,17 @@ class FileDeleteTool(BaseTool):
                 path.unlink()
                 method = "permanent_deletion"
             
+            # Fresh post-mutation verification: the target no longer exists.
+            verified = not path.exists()
+
             return ToolOutput(
                 success=True,
                 data={
                     "path": str(path),
-                    "deletion_method": method
+                    "deletion_method": method,
+                    "verified": verified,
                 },
-                evidence={"source": "filesystem_delete"}
+                evidence={"source": "filesystem_delete", "verification": "passed" if verified else "failed"}
             )
         except Exception as e:
             return ToolOutput(
