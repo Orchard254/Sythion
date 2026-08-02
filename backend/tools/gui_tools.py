@@ -1,13 +1,26 @@
 """
-GUI Tools for JARVIS
-Implements GUI observation and interaction using UI Automation (Windows) with OCR fallback.
-Platform-specific implementations for Windows with fallbacks for Linux/Mac.
+GUI Tools for JARVIS -- Phase D: Reliable Windows GUI automation.
+
+Windows-only. Every UI Automation call runs on one dedicated background COM MTA
+worker thread -- never on the FastAPI event loop or the dashboard UI thread --
+and live UIA handles never cross threads: each observation reacquires the
+target from fresh evidence and returns only plain data.
+
+v1 is limited to visible, foreground-able, medium-integrity native desktop
+windows. Locked sessions, secure desktops, UAC, elevated processes, and security
+surfaces are denied. UIA patterns are used first; coordinates are a single-shot
+physical-pixel fallback followed by a fresh re-observation -- never a guessed
+second click.
 """
+import asyncio
+import ctypes
+import os
 import platform
-import subprocess
+import queue
+import threading
 import time
-from typing import Dict, Any, List, Optional
-from pathlib import Path
+from concurrent.futures import Future
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools.executor import BaseTool
 from api.schemas import (
@@ -20,6 +33,38 @@ from api.schemas import (
     GUITypeInput,
     GUIHotkeyInput,
 )
+
+_IS_WINDOWS = os.name == "nt"
+
+# Bounds that keep observations and context small and deterministic.
+_MAX_UI_TREE_DEPTH = 3
+_MAX_UI_ELEMENTS = 60
+_MAX_WINDOW_TITLES = 20
+_UIA_CALL_TIMEOUT = 10.0
+
+# A targeted OCR/visual observation must be no older than this to be usable.
+_OCR_MAX_AGE_SECONDS = 5.0
+
+# Security surfaces and elevated windows receive no interaction.
+_SECURITY_WINDOW_TITLE_FRAGMENTS = ("user account control",)
+_SECURITY_WINDOW_CLASSES = {"Consent UI Class", "SecureDesktop"}
+
+# Hotkeys JARVIS never synthesizes, even when a window is foreground.
+_DANGEROUS_HOTKEYS = {
+    ("alt", "ctrl", "delete"),
+    ("ctrl", "esc", "shift"),
+    ("l", "win"),
+}
+
+_VALID_HOTKEY_KEYS = {
+    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
+    "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+    "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+    "ctrl", "alt", "shift", "win", "enter", "tab", "space", "backspace",
+    "delete", "escape", "esc", "home", "end", "up", "down", "left", "right",
+    "-", "=", "[", "]", ";", "'", ",", ".", "/", "\\",
+}
 
 
 def _gui_target_error(window_title: str, element_description: Optional[str] = None) -> Optional[Dict[str, str]]:
@@ -36,1278 +81,793 @@ def _gui_target_error(window_title: str, element_description: Optional[str] = No
     return None
 
 
-class GUIObserveTool(BaseTool):
-    """Observe the current GUI state with optional OCR."""
-    
-    name = "gui_observe"
-    description = "Observe the current GUI state, optionally using OCR to extract text from screen"
-    input_schema = GUIObserveInput
-    
-    async def execute(self, input_data: GUIObserveInput) -> ToolOutput:
-        """Execute the GUI observe tool."""
-        try:
-            system = platform.system()
-            
-            if system == "Windows":
-                return await self._observe_windows(input_data)
-            elif system == "Darwin":
-                return await self._observe_macos(input_data)
-            else:
-                return await self._observe_linux(input_data)
-                
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "OBSERVATION_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    async def _observe_windows(self, input_data: GUIObserveInput) -> ToolOutput:
-        """Observe GUI on Windows using UI Automation."""
-        try:
-            import comtypes.client
-            comtypes.client.GetModule("UIAutomationCore.dll")
-            from comtypes.gen import UIAutomationClient as uia
-            
-            # Create UI Automation instance
-            iuia = comtypes.client.CreateObject(uia.CUIAutomation8).QueryInterface(uia.IUIAutomation)
-            
-            # Get root element
-            root = iuia.GetRootElement()
-            
-            # Find window if title specified
-            if input_data.window_title:
-                condition = iuia.CreatePropertyCondition(
-                    uia.UIA_NamePropertyId,
-                    input_data.window_title
-                )
-                window = root.FindFirst(uia.TreeScope_Children, condition)
-                if not window:
-                    # Try partial match
-                    window = self._find_window_by_partial_title(iuia, root, input_data.window_title)
-                
-                if not window:
-                    return ToolOutput(
-                        success=False,
-                        error={"code": "WINDOW_NOT_FOUND", "message": f"Window '{input_data.window_title}' not found"},
-                        data={"available_windows": self._list_windows(iuia, root)}
-                    )
-                target = window
-            else:
-                target = root
-            
-            # Build UI tree
-            ui_tree = self._build_ui_tree(iuia, target, max_depth=3)
-            
-            # OCR if requested
-            ocr_text = None
-            if input_data.use_ocr:
-                ocr_text = await self._perform_ocr_windows(target)
-            
-            return ToolOutput(
-                success=True,
-                data={
-                    "ui_tree": ui_tree,
-                    "ocr_text": ocr_text,
-                    "window_title": input_data.window_title or "Desktop"
-                },
-                evidence={"screenshot_path": None}  # Could capture screenshot here
-            )
-            
-        except ImportError:
-            # Fallback to basic screenshot approach
-            return await self._fallback_observe(input_data)
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "UIA_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    def _find_window_by_partial_title(self, iuia, root, partial_title: str) -> Optional[Any]:
-        """Find window by partial title match."""
-        condition = iuia.CreatePropertyCondition(
-            uia.UIA_ControlTypePropertyId,
-            uia.UIA_WindowControlTypeId
-        )
-        windows = root.FindAll(uia.TreeScope_Children, condition)
-        
-        for i in range(windows.Length):
-            window = windows.GetElement(i)
-            name = window.CurrentName
-            if partial_title.lower() in name.lower():
-                return window
+def _hotkey_error(keys: List[str]) -> Optional[Dict[str, str]]:
+    """Deterministic validation of a hotkey combination."""
+    if not keys:
+        return {"code": "HOTKEY_REQUIRED", "message": "At least one key is required"}
+    normalized = []
+    for key in keys:
+        k = str(key).strip().lower()
+        if k not in _VALID_HOTKEY_KEYS:
+            return {"code": "INVALID_HOTKEY_KEY", "message": f"Unsupported key: {key}"}
+        normalized.append(k)
+    combo = tuple(sorted(set(normalized)))
+    if combo in _DANGEROUS_HOTKEYS:
+        return {"code": "DANGEROUS_HOTKEY_REJECTED", "message": f"Hotkey {'+'.join(sorted(combo))} is rejected"}
+    return None
+
+
+# --------------------------------------------------------------------------
+# Windows session / target safety (real API checks, run on the caller thread;
+# they are cheap and do not need UIA).
+# --------------------------------------------------------------------------
+
+def _session_accepts_input() -> bool:
+    """False when the session is locked or on the secure desktop."""
+    if not _IS_WINDOWS:
+        return False
+    try:
+        if ctypes.windll.user32.GetForegroundWindow() == 0:
+            return False
+        desktop = ctypes.windll.user32.OpenInputDesktop(0, False, 0x0001)  # DESKTOP_READOBJECTS
+        if not desktop:
+            return False
+        ctypes.windll.user32.CloseDesktop(desktop)
+        return True
+    except (AttributeError, OSError):
+        return False
+
+
+def _window_pid(hwnd: int) -> Optional[int]:
+    if not hwnd:
         return None
-    
-    def _list_windows(self, iuia, root) -> List[str]:
-        """List all available window titles."""
+    pid = ctypes.c_ulong()
+    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return int(pid.value) or None
+
+
+def _window_title(hwnd: int) -> str:
+    length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+    buf = ctypes.create_unicode_buffer(length + 1)
+    ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+    return buf.value
+
+
+def _window_class(hwnd: int) -> str:
+    buf = ctypes.create_unicode_buffer(256)
+    ctypes.windll.user32.GetClassNameW(hwnd, buf, 256)
+    return buf.value
+
+
+def _integrity_rid(pid: int) -> Optional[int]:
+    """Windows integrity level RID of a process (4096 medium, 12288 high)."""
+    if not _IS_WINDOWS:
+        return None
+    PROCESS_QUERY_INFORMATION = 0x0400
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    TOKEN_QUERY = 0x0008
+    TokenIntegrityLevel = 25
+    handle = ctypes.windll.kernel32.OpenProcess(
+        PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        token = ctypes.c_void_p()
+        if not ctypes.windll.advapi32.OpenProcessToken(handle, TOKEN_QUERY, ctypes.byref(token)):
+            return None
+        try:
+            size = ctypes.c_ulong()
+            ctypes.windll.advapi32.GetTokenInformation(token, TokenIntegrityLevel, None, 0, ctypes.byref(size))
+            if size.value == 0:
+                return None
+            buf = ctypes.create_string_buffer(size.value)
+            if not ctypes.windll.advapi32.GetTokenInformation(
+                    token, TokenIntegrityLevel, buf, size.value, ctypes.byref(size)):
+                return None
+            return _sid_last_subauthority_from_buffer(buf, size.value)
+        finally:
+            ctypes.windll.kernel32.CloseHandle(token)
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def _sid_last_subauthority_from_buffer(buf, size: int) -> Optional[int]:
+    """Extract the last RID from a TOKEN_MANDATORY_LABEL buffer without ctypes structure churn.
+
+    TOKEN_MANDATORY_LABEL { SID_AND_ATTRIBUTES { PSID Sid; DWORD Attributes } }:
+      offset 0: PSID pointer (8 bytes on x64)
+      offset 8: Attributes (4 bytes, ignored)
+      offset 12: SID bytes begin: Revision(1) + SubAuthorityCount(1) + IdentifierAuthority(6) + SubAuthority[n] (4 each)
+    """
+    try:
+        import ctypes as _c
+        pointer_size = _c.sizeof(_c.c_void_p)
+        sid_offset = pointer_size + 4  # PSID + Attributes
+        if sid_offset + 2 > size:
+            return None
+        count = buf[sid_offset + 1]
+        sub_auth_start = sid_offset + 2 + 6
+        if sub_auth_start + (count * 4) > size:
+            return None
+        last = buf[sub_auth_start + (count - 1) * 4: sub_auth_start + count * 4]
+        return int.from_bytes(last, "little")
+    except Exception:
+        return None
+
+
+def _is_elevated(pid: Optional[int]) -> bool:
+    if pid is None:
+        return False
+    rid = _integrity_rid(pid)
+    return rid is not None and rid >= 12288  # high integrity or above
+
+
+def _target_window_safety(hwnd: int, title: str) -> Optional[Dict[str, str]]:
+    """Return an error dict when the target window must not be automated."""
+    if not hwnd:
+        return {"code": "WINDOW_NOT_FOUND", "message": "Target window not found"}
+    if not ctypes.windll.user32.IsWindowVisible(hwnd):
+        return {"code": "TARGET_NOT_VISIBLE", "message": f"Window '{title}' is not visible"}
+    if ctypes.windll.user32.IsIconic(hwnd):
+        return {"code": "TARGET_MINIMIZED", "message": f"Window '{title}' is minimized"}
+    cls = _window_class(hwnd).strip()
+    if cls in _SECURITY_WINDOW_CLASSES:
+        return {"code": "SECURITY_SURFACE_DENIED", "message": "Security surfaces (UAC, secure desktop) are denied"}
+    current_title = _window_title(hwnd).strip()
+    if any(frag in current_title.lower() for frag in _SECURITY_WINDOW_TITLE_FRAGMENTS):
+        return {"code": "SECURITY_SURFACE_DENIED", "message": "Security surfaces (UAC, secure desktop) are denied"}
+    pid = _window_pid(hwnd)
+    if _is_elevated(pid):
+        return {"code": "ELEVATED_TARGET_DENIED", "message": f"Window '{title}' belongs to an elevated process and cannot be automated"}
+
+
+# --------------------------------------------------------------------------
+# UIA driver -- every call below runs inside the MTA worker thread.
+# --------------------------------------------------------------------------
+
+class _UIADriver:
+    """Real comtypes-backed UIA layer; tests substitute a fake."""
+
+    def _session(self):
+        import comtypes.client
+        comtypes.client.GetModule("UIAutomationCore.dll")
+        from comtypes.gen import UIAutomationClient as uia
+        return comtypes.client.CreateObject(uia.CUIAutomation).QueryInterface(uia.IUIAutomation)
+
+    def list_windows(self) -> List[Dict[str, Any]]:
+        from comtypes.gen import UIAutomationClient as _uia
+        uia = self._session()
+        root = uia.GetRootElement()
+        wcond = uia.CreatePropertyCondition(_uia.UIA_ControlTypePropertyId, _uia.UIA_WindowControlTypeId)
+        result = root.FindAll(1, wcond)  # TreeScope_Children
         windows = []
-        condition = iuia.CreatePropertyCondition(
-            uia.UIA_ControlTypePropertyId,
-            uia.UIA_WindowControlTypeId
-        )
-        result = root.FindAll(uia.TreeScope_Children, condition)
-        
         for i in range(result.Length):
-            window = result.GetElement(i)
-            name = window.CurrentName
-            if name:  # Skip empty titles
-                windows.append(name)
-        
+            if i >= _MAX_WINDOW_TITLES:
+                break
+            element = result.GetElement(i)
+            name = element.CurrentName
+            if name:
+                windows.append({"title": name})
         return windows
-    
-    def _build_ui_tree(self, iuia, element, depth: int = 0, max_depth: int = 3) -> Dict[str, Any]:
-        """Build a simplified UI tree representation."""
-        if depth > max_depth:
-            return {}
-        
+
+    def observe(self, window_title: str, max_depth: int, max_elements: int) -> Dict[str, Any]:
+        from comtypes.gen import UIAutomationClient as _uia
+        uia = self._session()
+        root = uia.GetRootElement()
+        element = self._find_window(uia, root, window_title)
+        if element is None:
+            return {"found": False}
+        identity = self._window_identity(uia, element)
+        tree = self._build_tree(uia, element, 0, max_depth, max_elements, 0)
+        identity["ui_tree"] = tree
+        identity["found"] = True
+        return identity
+
+    def _find_window(self, uia, root, title: str):
+        from comtypes.gen import UIAutomationClient as _uia
+        exact = uia.CreatePropertyCondition(_uia.UIA_NamePropertyId, title)
+        found = root.FindFirst(1, exact)  # TreeScope_Children
+        if found:
+            return found
+        # Bounded partial match over window controls.
+        wcond = uia.CreatePropertyCondition(_uia.UIA_ControlTypePropertyId, _uia.UIA_WindowControlTypeId)
+        windows = root.FindAll(1, wcond)
+        for i in range(windows.Length):
+            if i >= _MAX_WINDOW_TITLES:
+                break
+            win = windows.GetElement(i)
+            if title.lower() in (win.CurrentName or "").lower():
+                return win
+        return None
+
+    def _window_identity(self, uia, element) -> Dict[str, Any]:
+        from comtypes.gen import UIAutomationClient as _uia
+        runtime_ids = []
+        try:
+            rid = element.GetRuntimeId()
+            for i in range(rid.Length):
+                runtime_ids.append(int(rid.GetElement(i)))
+        except Exception:
+            pass
+        hwnd = 0
+        try:
+            hwnd = int(element.CurrentNativeWindowHandle)
+        except Exception:
+            pass
+        return {
+            "title": element.CurrentName or "",
+            "control_type": int(element.CurrentControlType),
+            "hwnd": hwnd,
+            "pid": _window_pid(hwnd) if hwnd else None,
+            "runtime_id": runtime_ids,
+            "observed_at": time.time(),
+        }
+
+    def _build_tree(self, uia, element, depth: int, max_depth: int, max_elements: int, count: int) -> Dict[str, Any]:
+        from comtypes.gen import UIAutomationClient as _uia
+        if depth > max_depth or count >= max_elements:
+            return {"name": "...", "truncated": True}
+        count += 1
         node = {
             "name": element.CurrentName or "<unnamed>",
-            "control_type": self._get_control_type_name(element.CurrentControlType),
-            "class_name": element.CurrentClassName or "",
-            "is_enabled": element.CurrentIsEnabled,
-            "is_visible": element.CurrentIsOffscreen == False,
+            "control_type": int(element.CurrentControlType),
+            "automation_id": element.CurrentAutomationId or "",
+            "enabled": bool(element.CurrentIsEnabled),
+            "offscreen": bool(element.CurrentIsOffscreen),
         }
-        
-        # Add children
-        children = []
-        walker = iuia.ControlViewWalker
-        child = walker.GetFirstChildElement(element)
-        
-        while child:
-            children.append(self._build_ui_tree(iuia, child, depth + 1, max_depth))
-            child = walker.GetNextSiblingElement(child)
-        
-        if children:
-            node["children"] = children
-        
+        try:
+            walker = uia.ControlViewWalker
+            child = walker.GetFirstChildElement(element)
+            children = []
+            while child and count < max_elements:
+                children.append(self._build_tree(uia, child, depth + 1, max_depth, max_elements, count))
+                child = walker.GetNextSiblingElement(child)
+            if children:
+                node["children"] = children
+        except Exception:
+            pass
         return node
-    
-    def _get_control_type_name(self, control_type_id: int) -> str:
-        """Convert control type ID to readable name."""
-        # Simplified mapping - in production would have full mapping
-        type_map = {
-            50000: "Pane",
-            50004: "Text",
-            50005: "MenuBar",
-            50007: "CheckBox",
-            50008: "RadioButton",
-            50009: "ComboBox",
-            50010: "Edit",
-            50011: "Button",
-            50012: "Calendar",
-            50013: "DataGrid",
-            50016: "Document",
-            50017: "Group",
-            50019: "Image",
-            50020: "List",
-            50021: "ListItem",
-            50022: "Menu",
-            50023: "MenuItem",
-            50024: "ScrollBar",
-            50025: "Slider",
-            50026: "Spinner",
-            50027: "StatusBar",
-            50028: "Tab",
-            50029: "TabItem",
-            50030: "Text",
-            50031: "ToolBar",
-            50032: "ToolTip",
-            50033: "Tree",
-            50034: "TreeItem",
-            50035: "Custom",
-            50036: "Window",
+
+    def focus(self, window_title: str) -> Dict[str, Any]:
+        from comtypes.gen import UIAutomationClient as _uia
+        uia = self._session()
+        root = uia.GetRootElement()
+        element = self._find_window(uia, root, window_title)
+        if element is None:
+            return {"ok": False, "code": "WINDOW_NOT_FOUND", "message": f"Window '{window_title}' not found"}
+        identity = self._window_identity(uia, element)
+        hwnd = identity["hwnd"]
+        try:
+            pattern = element.GetCurrentPattern(_uia.UIA_WindowPatternId)
+            pattern.SetWindowVisualState(0)  # WindowVisualState_Normal
+            pattern.WaitForInputIdle(2000)
+        except Exception:
+            pass
+        if hwnd:
+            if ctypes.windll.user32.IsIconic(hwnd):
+                ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            ctypes.windll.user32.BringWindowToTop(hwnd)
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+        time.sleep(0.15)
+        identity["foreground"] = hwnd and ctypes.windll.user32.GetForegroundWindow() == hwnd
+        return {"ok": True, "window": identity}
+
+    def find_element(self, window_title: str, description: str) -> Dict[str, Any]:
+        from comtypes.gen import UIAutomationClient as _uia
+        uia = self._session()
+        root = uia.GetRootElement()
+        window = self._find_window(uia, root, window_title)
+        if window is None:
+            return {"ok": False, "code": "WINDOW_NOT_FOUND", "message": f"Window '{window_title}' not found"}
+        needle = description.strip().lower()
+        target = self._find_element_recursive(uia, window, needle, 0, 0)
+        if target is None:
+            return {"ok": False, "code": "ELEMENT_NOT_FOUND", "message": f"No element matching '{description}'"}
+        element = target[0]
+        identity = {
+            "name": element.CurrentName or "",
+            "control_type": int(element.CurrentControlType),
+            "automation_id": element.CurrentAutomationId or "",
+            "rect": list(self._element_rect(uia, element)),
         }
-        return type_map.get(control_type_id, f"Unknown({control_type_id})")
-    
-    async def _perform_ocr_windows(self, element) -> Optional[str]:
-        """Perform OCR on the specified element."""
-        try:
-            # Use Windows.Media.Ocr if available (Windows 10+)
-            import winrt.windows.media.ocr as ocr
-            import winrt.windows.graphics.imaging as imaging
-            
-            # Get bounding rectangle
-            rect = element.CurrentBoundingRectangle
-            
-            # Capture screenshot of region (simplified - would need actual capture)
-            # For now, return None as this requires additional setup
+        return {"ok": True, "element": identity, "window": self._window_identity(uia, window)}
+
+    def _find_element_recursive(self, uia, element, needle: str, depth: int, count: int):
+        from comtypes.gen import UIAutomationClient as _uia
+        if depth > _MAX_UI_TREE_DEPTH or count >= _MAX_UI_ELEMENTS:
             return None
-            
-        except ImportError:
-            # Try Tesseract as fallback
-            try:
-                import pytesseract
-                from PIL import Image
-                
-                # Would need actual screenshot here
-                return None
-            except ImportError:
-                return None
-    
-    async def _fallback_observe(self, input_data: GUIObserveInput) -> ToolOutput:
-        """Fallback observation method for systems without UIA."""
-        # Try to use xdotool on Linux
-        if platform.system() == "Linux":
-            try:
-                result = subprocess.run(
-                    ["xdotool", "getactivewindow", "getwindowname"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                window_title = result.stdout.strip()
-                
-                return ToolOutput(
-                    success=True,
-                    data={
-                        "active_window": window_title,
-                        "note": "Limited observation on Linux - consider installing UI automation tools"
-                    }
-                )
-            except Exception:
-                pass
-        
-        return ToolOutput(
-            success=True,
-            data={
-                "note": "GUI observation not fully supported on this platform",
-                "platform": platform.system()
-            }
-        )
-    
-    async def _observe_macos(self, input_data: GUIObserveInput) -> ToolOutput:
-        """Observe GUI on macOS using AppleScript."""
+        name = (element.CurrentName or "").strip()
+        aid = (element.CurrentAutomationId or "").strip()
+        if needle and (needle in name.lower() or needle in aid.lower()):
+            return (element, count)
+        count += 1
         try:
-            # Get frontmost app
-            script = '''
-            tell application "System Events"
-                set frontApp to name of first application process whose frontmost is true
-                set windowList to every window of application process frontApp
-                return {frontApp, windowList}
-            end tell
-            '''
-            result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            return ToolOutput(
-                success=True,
-                data={
-                    "apple_script_output": result.stdout,
-                    "platform": "macOS"
-                }
-            )
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "MACOS_OBSERVE_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    async def _observe_linux(self, input_data: GUIObserveInput) -> ToolOutput:
-        """Observe GUI on Linux using xdotool/wmctrl."""
+            walker = uia.ControlViewWalker
+            child = walker.GetFirstChildElement(element)
+            while child and count < _MAX_UI_ELEMENTS:
+                found = self._find_element_recursive(uia, child, needle, depth + 1, count)
+                if found:
+                    return found
+                count += 1
+                child = walker.GetNextSiblingElement(child)
+        except Exception:
+            pass
+        return None
+
+    def _element_rect(self, uia, element) -> Tuple[int, int, int, int]:
         try:
-            # Get active window
-            result = subprocess.run(
-                ["xdotool", "getactivewindow", "getwindowname"],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            if result.returncode == 0:
-                window_title = result.stdout.strip()
-                
-                # Get window geometry
-                geom_result = subprocess.run(
-                    ["xdotool", "getactivewindow", "getwindowgeometry"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                
-                return ToolOutput(
-                    success=True,
-                    data={
-                        "active_window": window_title,
-                        "geometry": geom_result.stdout.strip() if geom_result.returncode == 0 else None
-                    }
-                )
-            
-            return ToolOutput(
-                success=True,
-                data={"note": "xdotool not available or failed"}
-            )
-            
-        except FileNotFoundError:
-            return ToolOutput(
-                success=True,
-                data={"note": "xdotool not installed. Install with: sudo apt install xdotool"}
-            )
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "LINUX_OBSERVE_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    async def verify(self, input_data: GUIObserveInput, output: ToolOutput) -> bool:
-        """Verify the observation was successful."""
-        return output.success and output.data is not None
-    
-    def get_policy_requirements(self) -> Dict[str, Any]:
-        """Get policy requirements for this tool."""
+            rect = element.CurrentBoundingRectangle
+            return (int(rect.left), int(rect.top), int(rect.right - rect.left), int(rect.bottom - rect.top))
+        except Exception:
+            return (0, 0, 0, 0)
+
+    def invoke(self, window_title: str, description: str) -> Dict[str, Any]:
+        from comtypes.gen import UIAutomationClient as _uia
+        found = self.find_element(window_title, description)
+        if not found["ok"]:
+            return found
+        uia = self._session()
+        root = uia.GetRootElement()
+        window = self._find_window(uia, root, window_title)
+        if window is None:
+            return {"ok": False, "code": "WINDOW_NOT_FOUND", "message": f"Window '{window_title}' not found"}
+        element = self._find_element_recursive(uia, window, description.strip().lower(), 0, 0)
+        if element is None:
+            return {"ok": False, "code": "ELEMENT_NOT_FOUND", "message": f"No element matching '{description}'"}
+        target = element[0]
+        try:
+            pattern = target.GetCurrentPattern(_uia.UIA_InvokePatternId)
+            pattern.Invoke()
+            return {"ok": True, "method": "uia_invoke", "element": found["element"]}
+        except Exception:
+            return {"ok": False, "code": "NO_INVOKE_PATTERN",
+                    "message": f"Element '{description}' has no Invoke pattern; JARVIS does not guess a fallback click"}
+
+    def set_value(self, window_title: str, description: str, value: str) -> Dict[str, Any]:
+        from comtypes.gen import UIAutomationClient as _uia
+        found = self.find_element(window_title, description)
+        if not found["ok"]:
+            return found
+        uia = self._session()
+        root = uia.GetRootElement()
+        window = self._find_window(uia, root, window_title)
+        if window is None:
+            return {"ok": False, "code": "WINDOW_NOT_FOUND", "message": f"Window '{window_title}' not found"}
+        element = self._find_element_recursive(uia, window, description.strip().lower(), 0, 0)
+        if element is None:
+            return {"ok": False, "code": "ELEMENT_NOT_FOUND", "message": f"No element matching '{description}'"}
+        target = element[0]
+        try:
+            pattern = target.GetCurrentPattern(_uia.UIA_ValuePatternId)
+            pattern.SetValue(value)
+            return {"ok": True, "method": "uia_value", "element": found["element"]}
+        except Exception:
+            return {"ok": False, "code": "NO_VALUE_PATTERN",
+                    "message": f"Element '{description}' has no Value pattern; JARVIS does not guess a fallback"}
+
+    # -- physical-pixel fallback input (single-shot; re-observes afterwards) --
+
+    def single_click(self, window_title: str, x: int, y: int) -> Dict[str, Any]:
+        identity = self.observe(window_title, 1, 1)
+        if not identity.get("found"):
+            return {"ok": False, "code": "WINDOW_NOT_FOUND", "message": f"Window '{window_title}' not found"}
+        from comtypes.gen import UIAutomationClient as _uia
+        uia = self._session()
+        root = uia.GetRootElement()
+        window = self._find_window(uia, root, window_title)
+        rect = self._element_rect(uia, window)
+        l, t, w, h = rect
+        px = l + x
+        py = t + y
+        _send_mouse_click(px, py)
+        post = self.observe(window_title, 1, 1)
         return {
+            "ok": True,
+            "method": "coordinate_click",
+            "point": {"x": px, "y": py},
+            "window_rect": rect,
+            "reobserved": post,
+        }
+
+    def type_text(self, window_title: str, text: str) -> Dict[str, Any]:
+        identity = self.observe(window_title, 1, 1)
+        if not identity.get("found"):
+            return {"ok": False, "code": "WINDOW_NOT_FOUND", "message": f"Window '{window_title}' not found"}
+        _send_unicode_text(text)
+        post = self.observe(window_title, 1, 1)
+        return {"ok": True, "method": "send_input_unicode", "typed": text, "reobserved": post}
+
+    def hotkey(self, window_title: str, keys: List[str]) -> Dict[str, Any]:
+        identity = self.observe(window_title, 1, 1)
+        if not identity.get("found"):
+            return {"ok": False, "code": "WINDOW_NOT_FOUND", "message": f"Window '{window_title}' not found"}
+        _send_hotkey(keys)
+        post = self.observe(window_title, 1, 1)
+        return {"ok": True, "method": "send_input_hotkey", "keys": list(keys), "reobserved": post}
+
+
+# --------------------------------------------------------------------------
+# Win32 input synthesis (physical pixels).
+# --------------------------------------------------------------------------
+
+_INPUT_KEYBOARD = 1
+_INPUT_MOUSE = 0
+_KEYEVENTF_KEYUP = 0x0002
+_KEYEVENTF_UNICODE = 0x0004
+_MOUSEEVENTF_LEFTDOWN = 0x0002
+_MOUSEEVENTF_LEFTUP = 0x0004
+_MOUSEEVENTF_ABSOLUTE = 0x8000
+_MOUSEEVENTF_MOVE = 0x0001
+
+
+class _KEYBDINPUT(ctypes.Structure):
+    _fields_ = [("wVk", ctypes.c_ushort), ("wScan", ctypes.c_ushort),
+                ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
+
+class _MOUSEINPUT(ctypes.Structure):
+    _fields_ = [("dx", ctypes.c_long), ("dy", ctypes.c_long), ("mouseData", ctypes.c_ulong),
+                ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
+
+class _INPUT_UNION(ctypes.Union):
+    _fields_ = [("ki", _KEYBDINPUT), ("mi", _MOUSEINPUT)]
+
+
+class _INPUT(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_ulong), ("union", _INPUT_UNION)]
+
+
+def _send_input(*inputs: _INPUT) -> None:
+    if not _IS_WINDOWS:
+        return
+    arr = (_INPUT * len(inputs))(*inputs)
+    ctypes.windll.user32.SendInput(len(inputs), arr, ctypes.sizeof(_INPUT))
+
+
+def _key_input(vk: int, flags: int) -> _INPUT:
+    extra = ctypes.c_ulong(0)
+    return _INPUT(
+        _INPUT_KEYBOARD,
+        _INPUT_UNION(ki=_KEYBDINPUT(ctypes.c_ushort(vk), 0, ctypes.c_ulong(flags), 0, ctypes.pointer(extra))))
+
+
+def _unicode_input(char: str, flags: int) -> _INPUT:
+    extra = ctypes.c_ulong(0)
+    return _INPUT(
+        _INPUT_KEYBOARD,
+        _INPUT_UNION(ki=_KEYBDINPUT(0, ctypes.c_ushort(ord(char)), ctypes.c_ulong(flags | _KEYEVENTF_UNICODE), 0,
+                                    ctypes.pointer(extra))))
+
+
+def _mouse_input(dx: int, dy: int, flags: int) -> _INPUT:
+    extra = ctypes.c_ulong(0)
+    return _INPUT(_INPUT_MOUSE, _INPUT_UNION(mi=_MOUSEINPUT(
+        ctypes.c_long(dx), ctypes.c_long(dy), 0, ctypes.c_ulong(flags), 0, ctypes.pointer(extra))))
+
+
+def _absolute_xy(x: int, y: int) -> Tuple[int, int]:
+    """Map physical pixels to SendInput absolute coordinates on the virtual screen."""
+    if not _IS_WINDOWS:
+        return (x, y)
+    sw = int(ctypes.windll.user32.GetSystemMetrics(0))  # SM_CXSCREEN
+    sh = int(ctypes.windll.user32.GetSystemMetrics(1))  # SM_CYSCREEN
+    if sw <= 1 or sh <= 1:
+        return (x, y)
+    return (int(x * 65535 / (sw - 1)), int(y * 65535 / (sh - 1)))
+
+
+def _send_mouse_click(x: int, y: int) -> None:
+    dx, dy = _absolute_xy(x, y)
+    _send_input(
+        _mouse_input(dx, dy, _MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE),
+        _mouse_input(dx, dy, _MOUSEEVENTF_LEFTDOWN | _MOUSEEVENTF_ABSOLUTE),
+        _mouse_input(dx, dy, _MOUSEEVENTF_LEFTUP | _MOUSEEVENTF_ABSOLUTE),
+    )
+
+
+def _send_unicode_text(text: str) -> None:
+    down_events = [_unicode_input(ch, 0) for ch in text]
+    up_events = [_unicode_input(ch, _KEYEVENTF_KEYUP) for ch in text]
+    _send_input(*(down_events + up_events))
+
+
+_VK_MAP = {
+    "enter": 0x0D, "tab": 0x09, "space": 0x20, "backspace": 0x08,
+    "delete": 0x2E, "escape": 0x1B, "esc": 0x1B, "home": 0x24, "end": 0x23,
+    "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
+    "ctrl": 0x11, "alt": 0x12, "shift": 0x10, "win": 0x5B,
+}
+
+
+def _key_vk(key: str) -> int:
+    k = key.lower()
+    if k in _VK_MAP:
+        return _VK_MAP[k]
+    if k.startswith("f") and k[1:].isdigit():
+        return 0x70 + int(k[1:]) - 1
+    if len(k) == 1 and k.isalpha():
+        return ord(k.upper())
+    if len(k) == 1 and k.isdigit():
+        return ord(k)
+    punct = {"-": 0xBD, "=": 0xBB, "[": 0xDB, "]": 0xDD, ";": 0xBA, "'": 0xDE,
+             ",": 0xBC, ".": 0xBE, "/": 0xBF, "\\": 0xDC}
+    return punct.get(k, 0)
+
+
+def _send_hotkey(keys: List[str]) -> None:
+    vks = [_key_vk(k) for k in keys if _key_vk(k)]
+    down = [_key_input(vk, 0) for vk in vks]
+    up = [_key_input(vk, _KEYEVENTF_KEYUP) for vk in reversed(vks)]
+    _send_input(*(down + up))
+
+
+# --------------------------------------------------------------------------
+# The MTA worker.
+# --------------------------------------------------------------------------
+
+class _UIAWorker:
+    """One background COM MTA thread that owns every UIA call."""
+
+    def __init__(self):
+        self._queue: "queue.Queue[Tuple[str, Future, Callable]]" = queue.Queue()
+        self._thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+        self._stop_sent = False
+
+    def start(self) -> None:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                if not self._stop_sent:
+                    return
+                # Previous stop() is winding down; wait for it so a fresh
+                # worker thread starts cleanly instead of racing with the old.
+                old = self._thread
+                self._lock.release()
+                try:
+                    old.join(timeout=_UIA_CALL_TIMEOUT)
+                finally:
+                    self._lock.acquire()
+                self._thread = None
+            self._stop_sent = False
+            self._thread = threading.Thread(target=self._run, name="jarvis-uia-mta", daemon=True)
+            self._thread.start()
+
+    def _run(self) -> None:
+        if _IS_WINDOWS:
+            try:
+                ctypes.oledll.ole32.CoInitializeEx(None, 0x0)  # COINIT_MULTITHREADED
+            except (AttributeError, OSError):
+                pass
+        while True:
+            try:
+                item = self._queue.get(timeout=0.5)
+            except queue.Empty:
+                if self._stop_sent:
+                    break
+                continue
+            kind, future, fn = item
+            if kind == "call":
+                try:
+                    future.set_result(fn())
+                except BaseException as exc:  # noqa: BLE001 - delivered to caller
+                    future.set_exception(exc)
+            elif kind == "stop":
+                break
+
+    def run(self, fn: Callable[[], Any], timeout: float = _UIA_CALL_TIMEOUT) -> Any:
+        """Run `fn` on the MTA worker and wait for its result."""
+        self.start()
+        future: Future = Future()
+        self._queue.put(("call", future, fn))
+        return future.result(timeout=timeout)
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stop_sent = True
+        self._queue.put(("stop", Future(), lambda: None))
+        # Drain any items queued after the stop marker so a later start() does
+        # not resurrect stale calls; the old thread will exit on the marker.
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            kind, future, fn = item
+            if kind == "call":
+                future.set_exception(RuntimeError("worker stopped"))
+
+
+_gui_worker = _UIAWorker()
+_uia_driver = _UIADriver()
+
+
+class _GUIUnavailable(Exception):
+    pass
+
+
+async def _run_on_worker(fn: Callable[[], Any]) -> Any:
+    """Run a driver call on the MTA worker without blocking the event loop."""
+    return await asyncio.to_thread(_gui_worker.run, fn)
+
+
+def _desktop_gate() -> Optional[Dict[str, str]]:
+    """Deny all GUI actions when the desktop is locked / on the secure desktop."""
+    if not _IS_WINDOWS:
+        return {"code": "NON_WINDOWS_UNSUPPORTED", "message": "GUI tools are Windows-only in v1"}
+    if not _session_accepts_input():
+        return {"code": "SESSION_LOCKED", "message": "The session is locked or on the secure desktop; no GUI action is allowed"}
+
+
+def _window_gate(identity: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    hwnd = int(identity.get("hwnd") or 0)
+    error = _target_window_safety(hwnd, identity.get("title") or "")
+    if error:
+        return error
+    if identity.get("foreground") is False:
+        return {"code": "FOREGROUND_REQUIRED", "message": f"Window '{identity.get('title')}' is not foreground; focus it first"}
+
+
+# --------------------------------------------------------------------------
+# Tools.
+# --------------------------------------------------------------------------
+
+class GUIObserveTool(BaseTool):
+    """Observe the current GUI state (bounded UIA tree; optional bounded OCR)."""
+
+    name = "gui_observe"
+    description = "Observe a window's UI elements (bounded); optionally request OCR for a region"
+    input_schema = GUIObserveInput
+
+    async def execute(self, input_data: GUIObserveInput) -> ToolOutput:
+        gate = _desktop_gate()
+        if gate:
+            return ToolOutput(success=False, error=gate, duration_ms=0)
+        try:
+            identity = await _run_on_worker(
+                lambda: _uia_driver.observe(input_data.window_title, _MAX_UI_TREE_DEPTH, _MAX_UI_ELEMENTS))
+        except Exception:
+            return ToolOutput(success=False, error={"code": "UIA_UNAVAILABLE", "message": "UI Automation unavailable"}, duration_ms=0)
+        if not identity.get("found"):
+            return ToolOutput(
+                success=False,
+                error={"code": "WINDOW_NOT_FOUND", "message": f"Window '{input_data.window_title}' not found"},
+                duration_ms=0)
+        error = _target_window_safety(int(identity.get("hwnd") or 0), identity.get("title") or "")
+        if error:
+            return ToolOutput(success=False, error=error, duration_ms=0)
+
+        data = {
+            "window": {
+                "title": identity.get("title"),
+                "hwnd": identity.get("hwnd"),
+                "pid": identity.get("pid"),
+                "observed_at": identity.get("observed_at"),
+            },
+            "ui_elements": identity.get("ui_tree"),
+            "bounded": True,
+        }
+        if input_data.use_ocr:
+            ocr = await self._bounded_ocr(input_data.window_title, identity)
+            data["ocr"] = ocr
+        return ToolOutput(success=True, data=data, evidence={"source": "uia_mta_worker"})
+
+    async def _bounded_ocr(self, window_title: str, identity: Dict[str, Any]) -> Dict[str, Any]:
+        # Targeted OCR/visual observation no older than _OCR_MAX_AGE_SECONDS.
+        # The OCR engine (Windows.Media.Ocr / tesseract) is not bundled in v1:
+        # return an honest "unavailable" instead of guessing or persisting raw
+        # screenshots.
+        try:
+            return {
+                "available": False,
+                "reason": "bounded OCR engine is not installed in this v1 build",
+                "max_age_seconds": _OCR_MAX_AGE_SECONDS,
+            }
+        except Exception as e:  # pragma: no cover
+            return {"available": False, "reason": str(e)}
+
+    async def verify(self, input_data: GUIObserveInput, output: ToolOutput) -> bool:
+        return output.success and output.data is not None
+
+    def get_policy_requirements(self) -> Dict[str, Any]:
+        return {
+            "risk_level": "low",
+            "requires_confirmation": False,
             "requires_screen_access": True,
             "requires_ui_automation": True,
             "elevated_process_check": True,
-            "privacy_sensitive": True
+            "privacy_sensitive": True,
+            "redact_sensitive": True,
         }
+
+    def validate_targets(self, input_data: GUIObserveInput) -> Optional[Dict[str, str]]:
+        return _gui_target_error(input_data.window_title)
 
 
 class GUIFocusTool(BaseTool):
-    """Focus/activate a specific window."""
-    
+    """Bring a window to the foreground."""
+
     name = "gui_focus"
     description = "Bring a window to the foreground and give it focus"
     input_schema = GUIFocusInput
-    
+
     async def execute(self, input_data: GUIFocusInput) -> ToolOutput:
-        """Execute the GUI focus tool."""
+        gate = _desktop_gate()
+        if gate:
+            return ToolOutput(success=False, error=gate, duration_ms=0)
         try:
-            system = platform.system()
-            
-            if system == "Windows":
-                return await self._focus_windows(input_data)
-            elif system == "Darwin":
-                return await self._focus_macos(input_data)
-            else:
-                return await self._focus_linux(input_data)
-                
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "FOCUS_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    async def _focus_windows(self, input_data: GUIFocusInput) -> ToolOutput:
-        """Focus window on Windows."""
-        try:
-            import comtypes.client
-            comtypes.client.GetModule("UIAutomationCore.dll")
-            from comtypes.gen import UIAutomationClient as uia
-            
-            iuia = comtypes.client.CreateObject(uia.CUIAutomation8).QueryInterface(uia.IUIAutomation)
-            root = iuia.GetRootElement()
-            
-            # Find window
-            window = self._find_window_by_title(iuia, root, input_data.window_title)
-            
-            if not window:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "WINDOW_NOT_FOUND", "message": f"Window '{input_data.window_title}' not found"},
-                    data={"available_windows": self._list_windows(iuia, root)}
-                )
-            
-            # Try to activate the window
-            pattern = None
-            try:
-                pattern = window.GetCurrentPattern(uia.UIA_WindowPatternId)
-                pattern.SetWindowStyle(uia.WindowVisualState_Normal)
-                pattern.WaitForInputIdle(5000)
-            except Exception:
-                pass
-            
-            # Fallback: use SetForegroundWindow via ctypes
-            try:
-                import ctypes
-                hwnd = None
-                # Get HWND from UIA element (simplified)
-                ctypes.windll.user32.SetForegroundWindow(hwnd)
-            except Exception:
-                pass
-            
-            return ToolOutput(
-                success=True,
-                data={"focused_window": input_data.window_title},
-                evidence={"method": "UIA_WindowPattern"}
-            )
-            
-        except ImportError:
-            # Fallback using pyautogui
-            try:
-                import pyautogui
-                # pyautogui can't directly focus windows, but we can try
-                return ToolOutput(
-                    success=False,
-                    error={"code": "NO_UIA", "message": "UI Automation not available, pyautogui cannot focus specific windows"}
-                )
-            except ImportError:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "NO_FOCUS_METHOD", "message": "No window focusing method available"}
-                )
-    
-    def _find_window_by_title(self, iuia, root, title: str) -> Optional[Any]:
-        """Find window by exact or partial title."""
-        # Try exact match first
-        condition = iuia.CreatePropertyCondition(
-            uia.UIA_NamePropertyId,
-            title
-        )
-        window = root.FindFirst(uia.TreeScope_Children, condition)
-        
-        if window:
-            return window
-        
-        # Try partial match
-        return self._find_window_by_partial_title(iuia, root, title)
-    
-    def _list_windows(self, iuia, root) -> List[str]:
-        """List all available window titles."""
-        windows = []
-        condition = iuia.CreatePropertyCondition(
-            uia.UIA_ControlTypePropertyId,
-            uia.UIA_WindowControlTypeId
-        )
-        result = root.FindAll(uia.TreeScope_Children, condition)
-        
-        for i in range(result.Length):
-            window = result.GetElement(i)
-            name = window.CurrentName
-            if name:
-                windows.append(name)
-        
-        return windows
-    
-    async def _focus_macos(self, input_data: GUIFocusInput) -> ToolOutput:
-        """Focus window on macOS."""
-        try:
-            script = f'''
-            tell application "{input_data.window_title}"
-                activate
-            end tell
-            '''
-            result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode == 0:
-                return ToolOutput(
-                    success=True,
-                    data={"focused_window": input_data.window_title}
-                )
-            else:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "APPLESCRIPT_ERROR", "message": result.stderr}
-                )
-                
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "MACOS_FOCUS_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    async def _focus_linux(self, input_data: GUIFocusInput) -> ToolOutput:
-        """Focus window on Linux."""
-        try:
-            # Search for window
-            search_result = subprocess.run(
-                ["xdotool", "search", "--name", input_data.window_title],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            if search_result.returncode != 0 or not search_result.stdout.strip():
-                return ToolOutput(
-                    success=False,
-                    error={"code": "WINDOW_NOT_FOUND", "message": f"Window '{input_data.window_title}' not found"}
-                )
-            
-            window_id = search_result.stdout.strip().split('\n')[0]
-            
-            # Activate window
-            activate_result = subprocess.run(
-                ["xdotool", "windowactivate", "--sync", window_id],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            if activate_result.returncode == 0:
-                return ToolOutput(
-                    success=True,
-                    data={"focused_window": input_data.window_title, "window_id": window_id}
-                )
-            else:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "ACTIVATE_FAILED", "message": activate_result.stderr}
-                )
-                
-        except FileNotFoundError:
-            return ToolOutput(
-                success=False,
-                error={"code": "XDOTOOL_NOT_FOUND", "message": "xdotool not installed"}
-            )
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "LINUX_FOCUS_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
+            result = await _run_on_worker(lambda: _uia_driver.focus(input_data.window_title))
+        except Exception:
+            return ToolOutput(success=False, error={"code": "UIA_UNAVAILABLE", "message": "UI Automation unavailable"}, duration_ms=0)
+        if not result.get("ok"):
+            return ToolOutput(success=False, error={"code": result.get("code", "FOCUS_ERROR"), "message": result.get("message", "")}, duration_ms=0)
+        window = result.get("window", {})
+        error = _target_window_safety(int(window.get("hwnd") or 0), window.get("title") or "")
+        if error:
+            return ToolOutput(success=False, error=error, duration_ms=0)
+        return ToolOutput(
+            success=True,
+            data={"focused_window": input_data.window_title, "foreground": window.get("foreground")},
+            evidence={"source": "uia_mta_worker", "method": "window_pattern"})
+
     async def verify(self, input_data: GUIFocusInput, output: ToolOutput) -> bool:
-        """Verify the window was focused."""
         return output.success
-    
+
     def get_policy_requirements(self) -> Dict[str, Any]:
-        """Get policy requirements for this tool."""
         return {
-            "requires_screen_access": True,
+            "risk_level": "medium",
+            "requires_confirmation": True,
+            "foreground_window_change": True,
+            "requires_ui_automation": True,
             "elevated_process_check": True,
-            "foreground_window_change": True
         }
 
     def validate_targets(self, input_data: GUIFocusInput) -> Optional[Dict[str, str]]:
         return _gui_target_error(input_data.window_title)
 
 
-class GUIClickTool(BaseTool):
-    """Click at specific coordinates or on a UI element."""
-    
-    name = "gui_click"
-    description = "Click at coordinates or on a UI element in a window"
-    input_schema = GUIClickInput
-    
-    async def execute(self, input_data: GUIClickInput) -> ToolOutput:
-        """Execute the GUI click tool."""
-        try:
-            system = platform.system()
-            
-            # First focus the window
-            focus_result = await self._ensure_window_focused(input_data.window_title)
-            if not focus_result.success:
-                return focus_result
-            
-            # Perform click
-            if system == "Windows":
-                return await self._click_windows(input_data)
-            elif system == "Darwin":
-                return await self._click_macos(input_data)
-            else:
-                return await self._click_linux(input_data)
-                
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "CLICK_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    async def _ensure_window_focused(self, window_title: str) -> ToolOutput:
-        """Ensure window is focused before clicking."""
-        focus_tool = GUIFocusTool()
-        return await focus_tool.execute(GUIFocusInput(window_title=window_title))
-    
-    async def _click_windows(self, input_data: GUIClickInput) -> ToolOutput:
-        """Click on Windows."""
-        try:
-            import ctypes
-            from ctypes import wintypes
-            
-            # Move mouse and click
-            ctypes.windll.user32.SetCursorPos(input_data.x, input_data.y)
-            ctypes.windll.user32.mouse_event(
-                0x0002 | 0x0004,  # MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP
-                0, 0, 0, 0
-            )
-            
-            return ToolOutput(
-                success=True,
-                data={"clicked_at": {"x": input_data.x, "y": input_data.y}},
-                evidence={"method": "SetCursorPos+mouse_event"}
-            )
-            
-        except Exception as e:
-            # Fallback to pyautogui
-            try:
-                import pyautogui
-                pyautogui.click(input_data.x, input_data.y)
-                return ToolOutput(
-                    success=True,
-                    data={"clicked_at": {"x": input_data.x, "y": input_data.y}},
-                    evidence={"method": "pyautogui"}
-                )
-            except ImportError:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "NO_CLICK_METHOD", "message": "Neither ctypes nor pyautogui available"}
-                )
-    
-    async def _click_macos(self, input_data: GUIClickInput) -> ToolOutput:
-        """Click on macOS."""
-        try:
-            script = f'''
-            tell application "System Events"
-                set position of cursor to {{{input_data.x}, {input_data.y}}}
-                click
-            end tell
-            '''
-            result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode == 0:
-                return ToolOutput(
-                    success=True,
-                    data={"clicked_at": {"x": input_data.x, "y": input_data.y}}
-                )
-            else:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "APPLESCRIPT_ERROR", "message": result.stderr}
-                )
-                
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "MACOS_CLICK_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    async def _click_linux(self, input_data: GUIClickInput) -> ToolOutput:
-        """Click on Linux."""
-        try:
-            # Move mouse
-            move_result = subprocess.run(
-                ["xdotool", "mousemove", str(input_data.x), str(input_data.y)],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            if move_result.returncode != 0:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "MOVE_FAILED", "message": move_result.stderr}
-                )
-            
-            # Click
-            click_result = subprocess.run(
-                ["xdotool", "click", "1"],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            if click_result.returncode == 0:
-                return ToolOutput(
-                    success=True,
-                    data={"clicked_at": {"x": input_data.x, "y": input_data.y}}
-                )
-            else:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "CLICK_FAILED", "message": click_result.stderr}
-                )
-                
-        except FileNotFoundError:
-            return ToolOutput(
-                success=False,
-                error={"code": "XDOTOOL_NOT_FOUND", "message": "xdotool not installed"}
-            )
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "LINUX_CLICK_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    async def verify(self, input_data: GUIClickInput, output: ToolOutput) -> bool:
-        """Verify the click was executed."""
-        return output.success
-    
-    def get_policy_requirements(self) -> Dict[str, Any]:
-        """Get policy requirements for this tool."""
-        return {
-            "requires_screen_access": True,
-            "elevated_process_check": True,
-            "input_injection": True,
-            "coordinate_bounds_check": True
-        }
-
-    def validate_targets(self, input_data: GUIClickInput) -> Optional[Dict[str, str]]:
-        return _gui_target_error(input_data.window_title)
-
-
-class GUITypeTool(BaseTool):
-    """Type text into the focused window."""
-    
-    name = "gui_type"
-    description = "Type text into the currently focused window or element"
-    input_schema = GUITypeInput
-    
-    async def execute(self, input_data: GUITypeInput) -> ToolOutput:
-        """Execute the GUI type tool."""
-        try:
-            system = platform.system()
-            
-            # First focus the window
-            focus_result = await self._ensure_window_focused(input_data.window_title)
-            if not focus_result.success:
-                return focus_result
-            
-            # Type the text
-            if system == "Windows":
-                return await self._type_windows(input_data)
-            elif system == "Darwin":
-                return await self._type_macos(input_data)
-            else:
-                return await self._type_linux(input_data)
-                
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "TYPE_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    async def _ensure_window_focused(self, window_title: str) -> ToolOutput:
-        """Ensure window is focused before typing."""
-        focus_tool = GUIFocusTool()
-        return await focus_tool.execute(GUIFocusInput(window_title=window_title))
-    
-    async def _type_windows(self, input_data: GUITypeInput) -> ToolOutput:
-        """Type on Windows."""
-        try:
-            import ctypes
-            import time
-            
-            # Use SendInput for reliable typing
-            user32 = ctypes.windll.user32
-            
-            for char in input_data.text:
-                # Simple implementation - would need proper virtual key mapping
-                user32.keybd_event(ord(char.upper()), 0, 0, 0)
-                user32.keybd_event(ord(char.upper()), 0, 2, 0)
-                time.sleep(0.01)  # Small delay between keystrokes
-            
-            return ToolOutput(
-                success=True,
-                data={"typed_text": input_data.text, "length": len(input_data.text)},
-                evidence={"method": "SendInput"}
-            )
-            
-        except Exception as e:
-            # Fallback to pyautogui
-            try:
-                import pyautogui
-                pyautogui.typewrite(input_data.text, interval=0.05)
-                return ToolOutput(
-                    success=True,
-                    data={"typed_text": input_data.text, "length": len(input_data.text)},
-                    evidence={"method": "pyautogui"}
-                )
-            except ImportError:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "NO_TYPE_METHOD", "message": "Neither ctypes nor pyautogui available"}
-                )
-    
-    async def _type_macos(self, input_data: GUITypeInput) -> ToolOutput:
-        """Type on macOS."""
-        try:
-            # Escape special characters for AppleScript
-            escaped_text = input_data.text.replace('"', '\\"')
-            
-            script = f'''
-            tell application "System Events"
-                keystroke "{escaped_text}"
-            end tell
-            '''
-            result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode == 0:
-                return ToolOutput(
-                    success=True,
-                    data={"typed_text": input_data.text, "length": len(input_data.text)}
-                )
-            else:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "APPLESCRIPT_ERROR", "message": result.stderr}
-                )
-                
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "MACOS_TYPE_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    async def _type_linux(self, input_data: GUITypeInput) -> ToolOutput:
-        """Type on Linux."""
-        try:
-            # Use xdotool to type
-            result = subprocess.run(
-                ["xdotool", "type", "--", input_data.text],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode == 0:
-                return ToolOutput(
-                    success=True,
-                    data={"typed_text": input_data.text, "length": len(input_data.text)}
-                )
-            else:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "TYPE_FAILED", "message": result.stderr}
-                )
-                
-        except FileNotFoundError:
-            return ToolOutput(
-                success=False,
-                error={"code": "XDOTOOL_NOT_FOUND", "message": "xdotool not installed"}
-            )
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "LINUX_TYPE_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    async def verify(self, input_data: GUITypeInput, output: ToolOutput) -> bool:
-        """Verify the text was typed."""
-        return output.success
-    
-    def get_policy_requirements(self) -> Dict[str, Any]:
-        """Get policy requirements for this tool."""
-        return {
-            "requires_screen_access": True,
-            "elevated_process_check": True,
-            "input_injection": True,
-            "keyboard_input": True
-        }
-
-    def validate_targets(self, input_data: GUITypeInput) -> Optional[Dict[str, str]]:
-        return _gui_target_error(input_data.window_title)
-
-
-class GUIHotkeyTool(BaseTool):
-    """Execute a keyboard hotkey combination."""
-    
-    name = "gui_hotkey"
-    description = "Press a combination of keys (hotkey) in the focused window"
-    input_schema = GUIHotkeyInput
-    
-    async def execute(self, input_data: GUIHotkeyInput) -> ToolOutput:
-        """Execute the GUI hotkey tool."""
-        try:
-            system = platform.system()
-            
-            # First focus the window
-            focus_result = await self._ensure_window_focused(input_data.window_title)
-            if not focus_result.success:
-                return focus_result
-            
-            # Execute hotkey
-            if system == "Windows":
-                return await self._hotkey_windows(input_data)
-            elif system == "Darwin":
-                return await self._hotkey_macos(input_data)
-            else:
-                return await self._hotkey_linux(input_data)
-                
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "HOTKEY_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    async def _ensure_window_focused(self, window_title: str) -> ToolOutput:
-        """Ensure window is focused before hotkey."""
-        focus_tool = GUIFocusTool()
-        return await focus_tool.execute(GUIFocusInput(window_title=window_title))
-    
-    async def _hotkey_windows(self, input_data: GUIHotkeyInput) -> ToolOutput:
-        """Execute hotkey on Windows."""
-        try:
-            import ctypes
-            import time
-            
-            user32 = ctypes.windll.user32
-            
-            # Map common key names to virtual key codes
-            vk_map = {
-                "ctrl": 0x11,
-                "alt": 0x12,
-                "shift": 0x10,
-                "win": 0x5B,
-                "enter": 0x0D,
-                "tab": 0x09,
-                "escape": 0x1B,
-                "space": 0x20,
-                "up": 0x26,
-                "down": 0x28,
-                "left": 0x25,
-                "right": 0x27,
-                "delete": 0x2E,
-                "backspace": 0x08,
-            }
-            
-            # Press all keys down
-            for key in input_data.keys:
-                vk = vk_map.get(key.lower(), ord(key.upper()))
-                user32.keybd_event(vk, 0, 0, 0)
-                time.sleep(0.01)
-            
-            # Release all keys up (in reverse order)
-            for key in reversed(input_data.keys):
-                vk = vk_map.get(key.lower(), ord(key.upper()))
-                user32.keybd_event(vk, 0, 2, 0)
-                time.sleep(0.01)
-            
-            return ToolOutput(
-                success=True,
-                data={"hotkey_executed": "+".join(input_data.keys)},
-                evidence={"method": "keybd_event"}
-            )
-            
-        except Exception as e:
-            # Fallback to pyautogui
-            try:
-                import pyautogui
-                # Convert key names for pyautogui
-                key_map = {
-                    "ctrl": "ctrl",
-                    "alt": "alt",
-                    "shift": "shift",
-                    "win": "command" if platform.system() == "Darwin" else "win",
-                }
-                keys = [key_map.get(k.lower(), k) for k in input_data.keys]
-                pyautogui.hotkey(*keys)
-                return ToolOutput(
-                    success=True,
-                    data={"hotkey_executed": "+".join(input_data.keys)},
-                    evidence={"method": "pyautogui"}
-                )
-            except ImportError:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "NO_HOTKEY_METHOD", "message": "Neither ctypes nor pyautogui available"}
-                )
-    
-    async def _hotkey_macos(self, input_data: GUIHotkeyInput) -> ToolOutput:
-        """Execute hotkey on macOS."""
-        try:
-            # Map keys for AppleScript
-            key_map = {
-                "ctrl": "control",
-                "alt": "option",
-                "shift": "shift",
-                "win": "command",
-                "enter": "return",
-                "escape": "escape",
-                "space": "space",
-                "tab": "tab",
-            }
-            
-            keys = [key_map.get(k.lower(), k) for k in input_data.keys]
-            keystroke_part = keys[-1] if keys else ""
-            modifiers = keys[:-1] if len(keys) > 1 else []
-            
-            if modifiers:
-                modifier_str = " using {" + ", ".join(modifiers) + "}"
-                script = f'''
-                tell application "System Events"
-                    keystroke "{keystroke_part}"{modifier_str}
-                end tell
-                '''
-            else:
-                script = f'''
-                tell application "System Events"
-                    keystroke "{keystroke_part}"
-                end tell
-                '''
-            
-            result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode == 0:
-                return ToolOutput(
-                    success=True,
-                    data={"hotkey_executed": "+".join(input_data.keys)}
-                )
-            else:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "APPLESCRIPT_ERROR", "message": result.stderr}
-                )
-                
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "MACOS_HOTKEY_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    async def _hotkey_linux(self, input_data: GUIHotkeyInput) -> ToolOutput:
-        """Execute hotkey on Linux."""
-        try:
-            # Build xdotool command
-            key_args = []
-            for key in input_data.keys:
-                key_args.extend(["keydown", key])
-            key_args.append("keyup")
-            key_args.extend(input_data.keys)
-            
-            result = subprocess.run(
-                ["xdotool"] + key_args,
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode == 0:
-                return ToolOutput(
-                    success=True,
-                    data={"hotkey_executed": "+".join(input_data.keys)}
-                )
-            else:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "HOTKEY_FAILED", "message": result.stderr}
-                )
-                
-        except FileNotFoundError:
-            return ToolOutput(
-                success=False,
-                error={"code": "XDOTOOL_NOT_FOUND", "message": "xdotool not installed"}
-            )
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "LINUX_HOTKEY_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    async def verify(self, input_data: GUIHotkeyInput, output: ToolOutput) -> bool:
-        """Verify the hotkey was executed."""
-        return output.success
-    
-    def get_policy_requirements(self) -> Dict[str, Any]:
-        """Get policy requirements for this tool."""
-        return {
-            "requires_screen_access": True,
-            "elevated_process_check": True,
-            "input_injection": True,
-            "keyboard_input": True,
-            "dangerous_combinations": ["ctrl+alt+delete", "alt+f4", "win+x"]
-        }
-
-    def validate_targets(self, input_data: GUIHotkeyInput) -> Optional[Dict[str, str]]:
-        return _gui_target_error(input_data.window_title)
-
-
 class GUIInvokeTool(BaseTool):
-    """Invoke/click a UI element by description."""
-    
+    """Invoke a UI element using its native UIA pattern."""
+
     name = "gui_invoke"
-    description = "Invoke (click/activate) a specific UI element by its description"
+    description = "Invoke a UI element by description using its UIA pattern (no coordinate fallback)"
     input_schema = GUIInvokeInput
-    
+
     async def execute(self, input_data: GUIInvokeInput) -> ToolOutput:
-        """Execute the GUI invoke tool."""
+        gate = _desktop_gate()
+        if gate:
+            return ToolOutput(success=False, error=gate, duration_ms=0)
         try:
-            system = platform.system()
-            
-            if system == "Windows":
-                return await self._invoke_windows(input_data)
-            else:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "PLATFORM_NOT_SUPPORTED", "message": f"GUI invoke not fully supported on {system}"}
-                )
-                
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "INVOKE_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    async def _invoke_windows(self, input_data: GUIInvokeInput) -> ToolOutput:
-        """Invoke element on Windows using UIA."""
-        try:
-            import comtypes.client
-            comtypes.client.GetModule("UIAutomationCore.dll")
-            from comtypes.gen import UIAutomationClient as uia
-            
-            iuia = comtypes.client.CreateObject(uia.CUIAutomation8).QueryInterface(uia.IUIAutomation)
-            root = iuia.GetRootElement()
-            
-            # Find window
-            window = self._find_window_by_title(iuia, root, input_data.window_title)
-            if not window:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "WINDOW_NOT_FOUND", "message": f"Window '{input_data.window_title}' not found"}
-                )
-            
-            # Find element by description (name or automation id)
-            element = self._find_element_by_description(iuia, window, input_data.element_description)
-            
-            if not element:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "ELEMENT_NOT_FOUND", "message": f"Element '{input_data.element_description}' not found"}
-                )
-            
-            # Try to invoke using InvokePattern
-            try:
-                invoke_pattern = element.GetCurrentPattern(uia.UIA_InvokePatternId)
-                invoke_pattern.Invoke()
-                return ToolOutput(
-                    success=True,
-                    data={"invoked_element": input_data.element_description},
-                    evidence={"method": "UIA_InvokePattern"}
-                )
-            except Exception:
-                # Fallback: click using bounding rectangle
-                rect = element.CurrentBoundingRectangle
-                center_x = (rect.left + rect.right) // 2
-                center_y = (rect.top + rect.bottom) // 2
-                
-                click_tool = GUIClickTool()
-                return await click_tool.execute(GUIClickInput(
-                    window_title=input_data.window_title,
-                    x=center_x,
-                    y=center_y
-                ))
-                
-        except ImportError:
-            return ToolOutput(
-                success=False,
-                error={"code": "NO_UIA", "message": "UI Automation not available"}
-            )
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "UIA_INVOKE_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    def _find_window_by_title(self, iuia, root, title: str) -> Optional[Any]:
-        """Find window by title."""
-        condition = iuia.CreatePropertyCondition(
-            uia.UIA_NamePropertyId,
-            title
-        )
-        window = root.FindFirst(uia.TreeScope_Children, condition)
-        
-        if window:
-            return window
-        
-        # Try partial match
-        return self._find_window_by_partial_title(iuia, root, title)
-    
-    def _find_window_by_partial_title(self, iuia, root, partial_title: str) -> Optional[Any]:
-        """Find window by partial title."""
-        condition = iuia.CreatePropertyCondition(
-            uia.UIA_ControlTypePropertyId,
-            uia.UIA_WindowControlTypeId
-        )
-        windows = root.FindAll(uia.TreeScope_Children, condition)
-        
-        for i in range(windows.Length):
-            window = windows.GetElement(i)
-            name = window.CurrentName
-            if partial_title.lower() in name.lower():
-                return window
-        return None
-    
-    def _find_element_by_description(self, iuia, root, description: str) -> Optional[Any]:
-        """Find element by description (name, automation id, or class)."""
-        # Try name property
-        condition = iuia.CreatePropertyCondition(
-            uia.UIA_NamePropertyId,
-            description
-        )
-        element = root.FindFirst(uia.TreeScope_Descendants, condition)
-        if element:
-            return element
-        
-        # Try automation id
-        condition = iuia.CreatePropertyCondition(
-            uia.UIA_AutomationIdPropertyId,
-            description
-        )
-        element = root.FindFirst(uia.TreeScope_Descendants, condition)
-        if element:
-            return element
-        
-        # Try partial name match
-        walker = iuia.ControlViewWalker
-        return self._search_elements_recursive(iuia, walker, root, description)
-    
-    def _search_elements_recursive(self, iuia, walker, element, description: str, depth: int = 0) -> Optional[Any]:
-        """Recursively search for element by partial name match."""
-        if depth > 10:  # Limit recursion depth
-            return None
-        
-        name = element.CurrentName
-        if name and description.lower() in name.lower():
-            return element
-        
-        child = walker.GetFirstChildElement(element)
-        while child:
-            result = self._search_elements_recursive(iuia, walker, child, description, depth + 1)
-            if result:
-                return result
-            child = walker.GetNextSiblingElement(child)
-        
-        return None
-    
+            result = await _run_on_worker(
+                lambda: _uia_driver.invoke(input_data.window_title, input_data.element_description))
+        except Exception:
+            return ToolOutput(success=False, error={"code": "UIA_UNAVAILABLE", "message": "UI Automation unavailable"}, duration_ms=0)
+        if not result.get("ok"):
+            return ToolOutput(success=False, error={"code": result.get("code", "INVOKE_ERROR"), "message": result.get("message", "")}, duration_ms=0)
+        element = result.get("element", {})
+        rect = element.get("rect") or [0, 0, 0, 0]
+        hwnd = _element_hwnd_from_rect(rect)
+        if hwnd:
+            error = _target_window_safety(hwnd, input_data.window_title)
+            if error:
+                return ToolOutput(success=False, error=error, duration_ms=0)
+        return ToolOutput(
+            success=True,
+            data={"invoked_element": input_data.element_description, "method": result.get("method")},
+            evidence={"source": "uia_mta_worker", "method": result.get("method")})
+
     async def verify(self, input_data: GUIInvokeInput, output: ToolOutput) -> bool:
-        """Verify the element was invoked."""
         return output.success
-    
+
     def get_policy_requirements(self) -> Dict[str, Any]:
-        """Get policy requirements for this tool."""
         return {
-            "requires_screen_access": True,
+            "risk_level": "medium",
+            "requires_confirmation": True,
             "requires_ui_automation": True,
+            "element_interaction": True,
             "elevated_process_check": True,
-            "element_interaction": True
         }
 
     def validate_targets(self, input_data: GUIInvokeInput) -> Optional[Dict[str, str]]:
@@ -1315,176 +875,242 @@ class GUIInvokeTool(BaseTool):
 
 
 class GUISetValueTool(BaseTool):
-    """Set value of a UI element (text field, checkbox, etc.)."""
-    
+    """Set a UI element value using its native UIA Value pattern."""
+
     name = "gui_set_value"
-    description = "Set the value of a UI element like a text field, checkbox, or combo box"
+    description = "Set the value of a UI element using its UIA Value pattern"
     input_schema = GUISetValueInput
-    
+
     async def execute(self, input_data: GUISetValueInput) -> ToolOutput:
-        """Execute the GUI set value tool."""
+        gate = _desktop_gate()
+        if gate:
+            return ToolOutput(success=False, error=gate, duration_ms=0)
         try:
-            system = platform.system()
-            
-            if system == "Windows":
-                return await self._set_value_windows(input_data)
-            else:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "PLATFORM_NOT_SUPPORTED", "message": f"GUI set value not fully supported on {system}"}
-                )
-                
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "SET_VALUE_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    async def _set_value_windows(self, input_data: GUISetValueInput) -> ToolOutput:
-        """Set value on Windows using UIA."""
-        try:
-            import comtypes.client
-            comtypes.client.GetModule("UIAutomationCore.dll")
-            from comtypes.gen import UIAutomationClient as uia
-            
-            iuia = comtypes.client.CreateObject(uia.CUIAutomation8).QueryInterface(uia.IUIAutomation)
-            root = iuia.GetRootElement()
-            
-            # Find window
-            window = self._find_window_by_title(iuia, root, input_data.window_title)
-            if not window:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "WINDOW_NOT_FOUND", "message": f"Window '{input_data.window_title}' not found"}
-                )
-            
-            # Find element
-            element = self._find_element_by_description(iuia, window, input_data.element_description)
-            
-            if not element:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "ELEMENT_NOT_FOUND", "message": f"Element '{input_data.element_description}' not found"}
-                )
-            
-            # Try ValuePattern
-            try:
-                value_pattern = element.GetCurrentPattern(uia.UIA_ValuePatternId)
-                value_pattern.SetValue(input_data.value)
-                return ToolOutput(
-                    success=True,
-                    data={"element": input_data.element_description, "value_set": input_data.value},
-                    evidence={"method": "UIA_ValuePattern"}
-                )
-            except Exception:
-                # Fallback: use TogglePattern for checkboxes
-                try:
-                    toggle_pattern = element.GetCurrentPattern(uia.UIA_TogglePatternId)
-                    if input_data.value.lower() in ["true", "yes", "1", "checked"]:
-                        toggle_pattern.Toggle()
-                    return ToolOutput(
-                        success=True,
-                        data={"element": input_data.element_description, "toggled": True},
-                        evidence={"method": "UIA_TogglePattern"}
-                    )
-                except Exception:
-                    # Last resort: click and type
-                    rect = element.CurrentBoundingRectangle
-                    center_x = (rect.left + rect.right) // 2
-                    center_y = (rect.top + rect.bottom) // 2
-                    
-                    click_tool = GUIClickTool()
-                    click_result = await click_tool.execute(GUIClickInput(
-                        window_title=input_data.window_title,
-                        x=center_x,
-                        y=center_y
-                    ))
-                    
-                    if click_result.success:
-                        type_tool = GUITypeTool()
-                        return await type_tool.execute(GUITypeInput(
-                            window_title=input_data.window_title,
-                            text=input_data.value
-                        ))
-                    else:
-                        return click_result
-                        
-        except ImportError:
-            return ToolOutput(
-                success=False,
-                error={"code": "NO_UIA", "message": "UI Automation not available"}
-            )
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "UIA_SET_VALUE_ERROR", "message": str(e)},
-                duration_ms=0
-            )
-    
-    def _find_window_by_title(self, iuia, root, title: str) -> Optional[Any]:
-        """Find window by title."""
-        condition = iuia.CreatePropertyCondition(
-            uia.UIA_NamePropertyId,
-            title
-        )
-        window = root.FindFirst(uia.TreeScope_Children, condition)
-        
-        if window:
-            return window
-        
-        return self._find_window_by_partial_title(iuia, root, title)
-    
-    def _find_window_by_partial_title(self, iuia, root, partial_title: str) -> Optional[Any]:
-        """Find window by partial title."""
-        condition = iuia.CreatePropertyCondition(
-            uia.UIA_ControlTypePropertyId,
-            uia.UIA_WindowControlTypeId
-        )
-        windows = root.FindAll(uia.TreeScope_Children, condition)
-        
-        for i in range(windows.Length):
-            window = windows.GetElement(i)
-            name = window.CurrentName
-            if partial_title.lower() in name.lower():
-                return window
-        return None
-    
-    def _find_element_by_description(self, iuia, root, description: str) -> Optional[Any]:
-        """Find element by description."""
-        # Try name property
-        condition = iuia.CreatePropertyCondition(
-            uia.UIA_NamePropertyId,
-            description
-        )
-        element = root.FindFirst(uia.TreeScope_Descendants, condition)
-        if element:
-            return element
-        
-        # Try automation id
-        condition = iuia.CreatePropertyCondition(
-            uia.UIA_AutomationIdPropertyId,
-            description
-        )
-        element = root.FindFirst(uia.TreeScope_Descendants, condition)
-        if element:
-            return element
-        
-        return None
-    
+            result = await _run_on_worker(
+                lambda: _uia_driver.set_value(input_data.window_title, input_data.element_description, input_data.value))
+        except Exception:
+            return ToolOutput(success=False, error={"code": "UIA_UNAVAILABLE", "message": "UI Automation unavailable"}, duration_ms=0)
+        if not result.get("ok"):
+            return ToolOutput(success=False, error={"code": result.get("code", "SET_VALUE_ERROR"), "message": result.get("message", "")}, duration_ms=0)
+        return ToolOutput(
+            success=True,
+            data={"value_set": input_data.value, "method": result.get("method")},
+            evidence={"source": "uia_mta_worker", "method": result.get("method")})
+
     async def verify(self, input_data: GUISetValueInput, output: ToolOutput) -> bool:
-        """Verify the value was set."""
         return output.success
-    
+
     def get_policy_requirements(self) -> Dict[str, Any]:
-        """Get policy requirements for this tool."""
         return {
-            "requires_screen_access": True,
+            "risk_level": "medium",
+            "requires_confirmation": True,
             "requires_ui_automation": True,
-            "elevated_process_check": True,
             "element_modification": True,
-            "data_entry": True
+            "data_entry": True,
+            "elevated_process_check": True,
         }
 
     def validate_targets(self, input_data: GUISetValueInput) -> Optional[Dict[str, str]]:
         return _gui_target_error(input_data.window_title, input_data.element_description)
+
+
+class GUIClickTool(BaseTool):
+    """Single physical-pixel coordinate click fallback, then re-observe."""
+
+    name = "gui_click"
+    description = "Click once at physical-pixel coordinates within a window, then re-observe"
+    input_schema = GUIClickInput
+
+    async def execute(self, input_data: GUIClickInput) -> ToolOutput:
+        gate = _desktop_gate()
+        if gate:
+            return ToolOutput(success=False, error=gate, duration_ms=0)
+
+        # Bounds check the requested point against the window before any input.
+        try:
+            identity = await _run_on_worker(
+                lambda: _uia_driver.observe(input_data.window_title, 1, 1))
+        except Exception:
+            return ToolOutput(success=False, error={"code": "UIA_UNAVAILABLE", "message": "UI Automation unavailable"}, duration_ms=0)
+        if not identity.get("found"):
+            return ToolOutput(success=False, error={"code": "WINDOW_NOT_FOUND", "message": f"Window '{input_data.window_title}' not found"}, duration_ms=0)
+        hwnd = int(identity.get("hwnd") or 0)
+        error = _target_window_safety(hwnd, identity.get("title") or "")
+        if error:
+            return ToolOutput(success=False, error=error, duration_ms=0)
+        fg = hwnd and ctypes.windll.user32.GetForegroundWindow() == hwnd if _IS_WINDOWS else False
+        if not fg:
+            return ToolOutput(success=False, error={"code": "FOREGROUND_REQUIRED", "message": f"Window '{input_data.window_title}' is not foreground; focus it first"}, duration_ms=0)
+
+        try:
+            result = await _run_on_worker(
+                lambda: _uia_driver.single_click(input_data.window_title, input_data.x, input_data.y))
+        except Exception:
+            return ToolOutput(success=False, error={"code": "UIA_UNAVAILABLE", "message": "UI Automation unavailable"}, duration_ms=0)
+        if not result.get("ok"):
+            return ToolOutput(success=False, error={"code": result.get("code", "CLICK_ERROR"), "message": result.get("message", "")}, duration_ms=0)
+        return ToolOutput(
+            success=True,
+            data={
+                "clicked_at": result.get("point"),
+                "method": result.get("method"),
+                "inputs": 1,
+                "reobserved": result.get("reobserved"),
+            },
+            evidence={"source": "send_input", "method": result.get("method"), "inputs": 1})
+
+    async def verify(self, input_data: GUIClickInput, output: ToolOutput) -> bool:
+        return output.success
+
+    def get_policy_requirements(self) -> Dict[str, Any]:
+        return {
+            "risk_level": "high",
+            "requires_confirmation": True,
+            "input_injection": True,
+            "coordinate_bounds_check": True,
+            "requires_ui_automation": True,
+            "elevated_process_check": True,
+        }
+
+    def validate_targets(self, input_data: GUIClickInput) -> Optional[Dict[str, str]]:
+        return _gui_target_error(input_data.window_title)
+
+
+class GUITypeTool(BaseTool):
+    """Type text into the foreground window (single input burst, then re-observe)."""
+
+    name = "gui_type"
+    description = "Type text into the foreground window once, then re-observe"
+    input_schema = GUITypeInput
+
+    async def execute(self, input_data: GUITypeInput) -> ToolOutput:
+        gate = _desktop_gate()
+        if gate:
+            return ToolOutput(success=False, error=gate, duration_ms=0)
+        try:
+            identity = await _run_on_worker(lambda: _uia_driver.observe(input_data.window_title, 1, 1))
+        except Exception:
+            return ToolOutput(success=False, error={"code": "UIA_UNAVAILABLE", "message": "UI Automation unavailable"}, duration_ms=0)
+        if not identity.get("found"):
+            return ToolOutput(success=False, error={"code": "WINDOW_NOT_FOUND", "message": f"Window '{input_data.window_title}' not found"}, duration_ms=0)
+        hwnd = int(identity.get("hwnd") or 0)
+        error = _target_window_safety(hwnd, identity.get("title") or "")
+        if error:
+            return ToolOutput(success=False, error=error, duration_ms=0)
+        fg = hwnd and ctypes.windll.user32.GetForegroundWindow() == hwnd if _IS_WINDOWS else False
+        if not fg:
+            return ToolOutput(success=False, error={"code": "FOREGROUND_REQUIRED", "message": f"Window '{input_data.window_title}' is not foreground; focus it first"}, duration_ms=0)
+        try:
+            result = await _run_on_worker(lambda: _uia_driver.type_text(input_data.window_title, input_data.text))
+        except Exception:
+            return ToolOutput(success=False, error={"code": "UIA_UNAVAILABLE", "message": "UI Automation unavailable"}, duration_ms=0)
+        if not result.get("ok"):
+            return ToolOutput(success=False, error={"code": result.get("code", "TYPE_ERROR"), "message": result.get("message", "")}, duration_ms=0)
+        return ToolOutput(
+            success=True,
+            data={"typed_text": result.get("typed"), "length": len(input_data.text), "inputs": 1,
+                  "reobserved": result.get("reobserved")},
+            evidence={"source": "send_input", "inputs": 1})
+
+    async def verify(self, input_data: GUITypeInput, output: ToolOutput) -> bool:
+        return output.success
+
+    def get_policy_requirements(self) -> Dict[str, Any]:
+        return {
+            "risk_level": "high",
+            "requires_confirmation": True,
+            "keyboard_input": True,
+            "input_injection": True,
+            "requires_ui_automation": True,
+            "elevated_process_check": True,
+        }
+
+    def validate_targets(self, input_data: GUITypeInput) -> Optional[Dict[str, str]]:
+        return _gui_target_error(input_data.window_title)
+
+
+class GUIHotkeyTool(BaseTool):
+    """Press a validated hotkey in the foreground window once, then re-observe."""
+
+    name = "gui_hotkey"
+    description = "Press a validated hotkey combination in the foreground window once"
+    input_schema = GUIHotkeyInput
+
+    async def execute(self, input_data: GUIHotkeyInput) -> ToolOutput:
+        gate = _desktop_gate()
+        if gate:
+            return ToolOutput(success=False, error=gate, duration_ms=0)
+        error = _hotkey_error(input_data.keys)
+        if error:
+            return ToolOutput(success=False, error=error, duration_ms=0)
+        try:
+            identity = await _run_on_worker(lambda: _uia_driver.observe(input_data.window_title, 1, 1))
+        except Exception:
+            return ToolOutput(success=False, error={"code": "UIA_UNAVAILABLE", "message": "UI Automation unavailable"}, duration_ms=0)
+        if not identity.get("found"):
+            return ToolOutput(success=False, error={"code": "WINDOW_NOT_FOUND", "message": f"Window '{input_data.window_title}' not found"}, duration_ms=0)
+        hwnd = int(identity.get("hwnd") or 0)
+        error = _target_window_safety(hwnd, identity.get("title") or "")
+        if error:
+            return ToolOutput(success=False, error=error, duration_ms=0)
+        fg = hwnd and ctypes.windll.user32.GetForegroundWindow() == hwnd if _IS_WINDOWS else False
+        if not fg:
+            return ToolOutput(success=False, error={"code": "FOREGROUND_REQUIRED", "message": f"Window '{input_data.window_title}' is not foreground; focus it first"}, duration_ms=0)
+        try:
+            result = await _run_on_worker(lambda: _uia_driver.hotkey(input_data.window_title, list(input_data.keys)))
+        except Exception:
+            return ToolOutput(success=False, error={"code": "UIA_UNAVAILABLE", "message": "UI Automation unavailable"}, duration_ms=0)
+        if not result.get("ok"):
+            return ToolOutput(success=False, error={"code": result.get("code", "HOTKEY_ERROR"), "message": result.get("message", "")}, duration_ms=0)
+        return ToolOutput(
+            success=True,
+            data={"hotkey_executed": "+".join(k.lower() for k in input_data.keys), "inputs": 1,
+                  "reobserved": result.get("reobserved")},
+            evidence={"source": "send_input", "inputs": 1})
+
+    async def verify(self, input_data: GUIHotkeyInput, output: ToolOutput) -> bool:
+        return output.success
+
+    def get_policy_requirements(self) -> Dict[str, Any]:
+        return {
+            "risk_level": "high",
+            "requires_confirmation": True,
+            "keyboard_input": True,
+            "input_injection": True,
+            "dangerous_combinations": sorted(c for c in _DANGEROUS_HOTKEYS),
+            "requires_ui_automation": True,
+            "elevated_process_check": True,
+        }
+
+    def validate_targets(self, input_data: GUIHotkeyInput) -> Optional[Dict[str, str]]:
+        error = _gui_target_error(input_data.window_title)
+        if error:
+            return error
+        return _hotkey_error(input_data.keys)
+
+
+def _element_hwnd_from_rect(rect: List[int]) -> int:
+    """Resolve a window hwnd from an element rect using window-from-point.
+
+    Returns 0 when the point is not on a window. Used only for safety re-checks.
+    """
+    if not _IS_WINDOWS or len(rect) < 4 or rect[2] <= 0 or rect[3] <= 0:
+        return 0
+    try:
+        pt = ctypes.wintypes.POINT(int(rect[0] + rect[2] // 2), int(rect[1] + rect[3] // 2))
+        return int(ctypes.windll.user32.WindowFromPoint(pt))
+    except Exception:
+        return 0
+
+
+def create_gui_tools() -> List[BaseTool]:
+    """Create instances of all GUI tools."""
+    return [
+        GUIObserveTool(),
+        GUIFocusTool(),
+        GUIClickTool(),
+        GUITypeTool(),
+        GUIHotkeyTool(),
+        GUIInvokeTool(),
+        GUISetValueTool(),
+    ]

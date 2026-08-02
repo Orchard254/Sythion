@@ -163,6 +163,47 @@ Chocolatey, Homebrew, apt, and any `sudo`/`-y` invocation are removed. The
 executor policy gate additionally blocks install/uninstall with
 `ELEVATION_NOT_ALLOWED` (standard-user actions only) as defense in depth.
 
+## Reliable Windows GUI automation (implemented, fixture-app gate pending)
+
+GUI tools (`backend/tools/gui_tools.py`) are Windows-only in v1. Every UI
+Automation call runs on one dedicated background COM MTA worker thread
+(`_UIAWorker`, thread name `jarvis-uia-mta`), never on the FastAPI event loop
+or the dashboard UI thread. Live UIA handles never cross threads: the driver
+re-finds the target window from fresh evidence on every call and returns only
+plain data; tool code dispatches via `asyncio.to_thread` so the loop is never
+blocked.
+
+Safety rules enforced in code:
+
+- Desktop gate: locked sessions or the secure desktop deny every GUI action
+  (`SESSION_LOCKED`).
+- Target window safety: hidden, minimized, elevated (integrity RID >= 12288),
+  UAC (`Consent UI Class`), and secure-desktop/security-title surfaces are
+  denied (`TARGET_NOT_VISIBLE`, `TARGET_MINIMIZED`,
+  `ELEVATED_TARGET_DENIED`, `SECURITY_SURFACE_DENIED`).
+- Patterns first: `gui_invoke`/`gui_set_value` use the native UIA
+  Invoke/Value patterns and never fall back to a guessed click or coordinate
+  entry (`NO_INVOKE_PATTERN`, `NO_VALUE_PATTERN`).
+- Bounded fallback: `gui_click` is a single physical-pixel click bounded to
+  the window rect; `gui_type`/`gui_hotkey` are single input bursts. All
+  foreground input tools require the target window to be foreground
+  (`FOREGROUND_REQUIRED`), report `inputs: 1`, and return a fresh
+  re-observation (`reobserved`) after the input — never a guessed second
+  click.
+- Hotkeys: `ctrl+alt+delete`, `ctrl+shift+esc`, and `win+l` are rejected
+  (`DANGEROUS_HOTKEY_REJECTED`); every key must be on a fixed whitelist.
+- Observation is bounded (`_MAX_UI_TREE_DEPTH=3`, `_MAX_UI_ELEMENTS=60`,
+  `_MAX_WINDOW_TITLES=20`) and every identity records `hwnd`, `pid`, runtime
+  id, and `observed_at`. OCR/visual observation is capped at
+  `_OCR_MAX_AGE_SECONDS=5.0`; the OCR engine is not bundled in v1, so
+  `gui_observe(use_ocr=True)` returns `available: false` with an honest reason
+  instead of guessing or persisting raw screenshots.
+
+Known v1 limitation: coordinate mapping (`_absolute_xy`) normalizes DPI
+against the primary monitor's virtual screen; true per-monitor DPI awareness
+is deferred. `create_gui_tools()` is not yet wired into the sidecar executor —
+that wiring is gated behind the dedicated fixture-application test (TODO #82).
+
 ## Milestone gate
 
 No feature work beyond Phase A may proceed until the owner approves this

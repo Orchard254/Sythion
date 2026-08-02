@@ -178,7 +178,11 @@ async def test_invalid_package_id_rejected_before_install(full_tool_executor):
 async def test_gui_target_requires_window_title(full_tool_executor, monkeypatch):
     called = _spy_execute(full_tool_executor, "gui_focus", monkeypatch)
 
-    out = await full_tool_executor.execute_tool("gui_focus", {"window_title": ""})
+    out = await full_tool_executor.execute_tool(
+        "gui_focus",
+        {"window_title": ""},
+        policy_context=PolicyContext(direct_user_instruction=True),
+    )
     assert not out.success
     assert out.error["code"] == "TARGET_REQUIRED"
     assert called == []
@@ -191,6 +195,7 @@ async def test_gui_element_target_required(full_tool_executor, monkeypatch):
     out = await full_tool_executor.execute_tool(
         "gui_invoke",
         {"window_title": "Notepad", "element_description": "  "},
+        policy_context=PolicyContext(direct_user_instruction=True),
     )
     assert not out.success
     assert out.error["code"] == "ELEMENT_TARGET_REQUIRED"
