@@ -23,6 +23,7 @@ from backend.api.schemas import (
     ToolExecutionRequest, ToolExecutionResponse,
     VoiceStartResponse, VoiceAudioInput,
     SecretWriteRequest, SecretStatusResponse, SecretsListResponse,
+    ModelSelectRequest, ModelSelectResponse, OnboardingStatusResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -598,6 +599,57 @@ async def list_models():
     except Exception as e:
         logger.error(f"Failed to list models: {e}")
         raise HTTPException(status_code=503, detail=f"Failed to fetch models: {str(e)}")
+
+
+@router.get("/onboarding", response_model=OnboardingStatusResponse)
+async def onboarding_status():
+    """Return onboarding status: key configured, selected model, onboarded flag."""
+    from backend.core.secrets import has_secret, OLLAMA_API_KEY
+    from backend.core.config import resolve_selected_model, settings
+
+    selected = resolve_selected_model()
+    api_key_ok = has_secret(OLLAMA_API_KEY) or bool(settings.ollama_api_key)
+    return OnboardingStatusResponse(
+        api_key_configured=api_key_ok,
+        selected_model=selected,
+        onboarded=bool(selected),
+    )
+
+
+@router.post("/onboarding/models", response_model=ModelSelectResponse)
+async def select_model(body: ModelSelectRequest):
+    """Select one exact authenticated Cloud model ID and persist it.
+
+    The model must be present in the authenticated model list; a stale,
+    retyped, or arbitrary ID is rejected so the sidecar never runs against a
+    model it cannot use. Only the non-secret model ID is persisted.
+    """
+    from backend.core.profile import set_selected_model
+    from backend.adapters.ollama_adapter import get_adapter
+
+    adapter = get_adapter()
+    try:
+        models = await adapter.list_models()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Failed to fetch models: {str(e)}")
+
+    model_ids = {
+        model_id
+        for model in models
+        for model_id in (model.get("name"), model.get("model"))
+        if isinstance(model_id, str)
+    }
+    if body.model_id not in model_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{body.model_id}' is not in the authenticated model list",
+        )
+
+    set_selected_model(body.model_id)
+    # Refresh the live adapter so capability checks use the new selection.
+    adapter.selected_model = body.model_id
+    adapter._capability_profile = None
+    return ModelSelectResponse(selected_model=body.model_id, persisted=True)
 
 
 @router.post("/chat/completions")

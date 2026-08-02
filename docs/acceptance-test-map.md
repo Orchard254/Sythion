@@ -25,6 +25,7 @@ milestone can be accepted.
 | Desktop lifecycle | Packaged app enforces single instance, launches one sidecar, shuts it down cleanly, and recovers stale leases | A | partial |
 | Sidecar handshake | Launcher writes a private per-launch token file; sidecar reads it, binds an ephemeral loopback port, and writes port+token back for the launcher | A | passing |
 | Cloud capability | Onboarding lists authenticated model IDs and proves one fake read-only native tool call before the provider is usable | B | passing |
+| Cloud onboarding | Selecting an arbitrary/stale model ID is rejected; the exact returned ID is persisted as non-secret profile metadata and takes effect on restart | B | passing |
 | Local API trust | Wrong token, wrong origin, non-loopback client, and unauthenticated WebSocket cannot invoke or observe sidecar operations | A | passing |
 | UIA threading | All UIA calls run only through one COM MTA worker; handles are reacquired for each fresh observation | D | planned |
 | Voice assets | STT/TTS assets never download at startup; explicit installation verifies pinned version, license, and checksum | E | planned |

@@ -57,6 +57,22 @@ def generate_control_token() -> str:
     return settings.control_token or secrets.token_urlsafe(32)
 
 
+def resolve_selected_model() -> str:
+    """Return the active selected Cloud model ID.
+
+    Precedence:
+      1. Environment override (JARVIS_SELECTED_MODEL, dev convenience).
+      2. Persisted non-secret profile metadata (set during onboarding).
+
+    This is the single resolution point for the selected model; callers must
+    not read Settings.selected_model directly.
+    """
+    if settings.selected_model:
+        return settings.selected_model
+    from .profile import get_selected_model
+    return get_selected_model()
+
+
 def validate_startup_config():
     """Validate critical configuration at startup.
 
@@ -73,11 +89,13 @@ def validate_startup_config():
             "set JARVIS_OLLAMA_API_KEY for development. Tasks will fail until "
             "this is set."
         ))
-    if not settings.selected_model:
+    if not resolve_selected_model():
         issues.append((
             "error",
-            "No model selected. Set JARVIS_SELECTED_MODEL in backend/.env "
-            "(e.g. minimax-m3:cloud). Tasks will fail until this is set."
+            "No model selected. Select one from the authenticated Cloud model "
+            "list via POST /api/v1/onboarding/models (or set "
+            "JARVIS_SELECTED_MODEL for development). Tasks will fail until "
+            "this is set."
         ))
 
     if settings.max_actions_per_task < 1:

@@ -6,7 +6,7 @@ Handles authentication, model selection, and tool calls.
 import httpx
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
-from ..core.config import settings
+from ..core.config import settings, resolve_selected_model
 from ..core.secrets import resolve_ollama_api_key
 
 
@@ -26,7 +26,7 @@ class OllamaCloudAdapter:
     def __init__(self):
         self.base_url = settings.ollama_cloud_base_url
         self.api_key = resolve_ollama_api_key(settings.ollama_api_key)
-        self.selected_model = settings.selected_model
+        self.selected_model = resolve_selected_model()
         self._client: Optional[httpx.AsyncClient] = None
         self._capability_profile: Optional[ProviderCapabilityProfile] = None
 

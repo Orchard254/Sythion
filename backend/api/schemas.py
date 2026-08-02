@@ -291,6 +291,28 @@ class ModelDecisionRunSkill(BaseModel):
     inputs: Dict[str, Any]
 
 
+# Onboarding Schemas
+
+class ModelSelectRequest(BaseModel):
+    """Schema for selecting one exact authenticated Cloud model ID."""
+    model_config = {"protected_namespaces": ()}
+
+    model_id: str = Field(..., min_length=1, max_length=256)
+
+
+class ModelSelectResponse(BaseModel):
+    """Schema confirming the persisted model selection (non-secret metadata)."""
+    selected_model: str
+    persisted: bool
+
+
+class OnboardingStatusResponse(BaseModel):
+    """Schema for onboarding status (never contains secret values)."""
+    api_key_configured: bool
+    selected_model: str
+    onboarded: bool
+
+
 # Secret Schemas
 
 class SecretWriteRequest(BaseModel):

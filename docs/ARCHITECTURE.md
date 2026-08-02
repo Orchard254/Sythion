@@ -73,6 +73,15 @@ components, but these gaps prevent a safe milestone gate:
 | Optional/stub voice components and unpinned downloads | Voice lifecycle, local-only processing, and asset integrity are unproven | Select, pin, checksum, and explicitly install assets before voice milestone |
 | Documentation reports conflicting phase/test counts | The release status is not reliable | Replace Phase claims only after the listed gates are executed |
 
+## Cloud onboarding (implemented)
+
+Onboarding (`GET /api/v1/onboarding`, `POST /api/v1/onboarding/models`)
+lists the authenticated Cloud model IDs and requires selection of one exact
+returned ID; an arbitrary, stale, or retyped ID is rejected. Only the
+non-secret model ID is persisted, to `profile.json` under the user-local data
+directory (`backend/core/profile.py`). `resolve_selected_model` is the single
+resolution point: environment override first, then persisted profile metadata.
+
 ## Milestone gate
 
 No feature work beyond Phase A may proceed until the owner approves this
