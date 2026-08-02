@@ -31,6 +31,18 @@ def load_control_token():
     token = os.environ.get("JARVIS_CONTROL_TOKEN", "")
     if token:
         return token
+    # New Phase A location: the per-launch token file written by the launcher
+    # (%LOCALAPPDATA%\JARVIS\token.json).
+    try:
+        data_dir = os.environ.get("LOCALAPPDATA")
+        if data_dir:
+            token_path = os.path.join(data_dir, "JARVIS", "token.json")
+            if os.path.exists(token_path):
+                with open(token_path, encoding="utf-8") as f:
+                    return json.load(f).get("token", "")
+    except Exception:
+        pass
+    # Legacy location kept for existing installations.
     try:
         with open(os.path.join(os.path.expanduser("~"), ".jarvis", "control_token"), encoding="utf-8") as f:
             return f.read().strip()

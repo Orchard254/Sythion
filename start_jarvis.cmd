@@ -1,6 +1,7 @@
 @echo off
-REM JARVIS - one-command launcher.
+REM JARVIS - one-command dev launcher.
 REM Starts the backend + frontend dev servers and opens the dashboard.
+REM Development-only; production starts the sidecar from the Tauri shell.
 setlocal
 
 cd /d "%~dp0"
@@ -31,16 +32,19 @@ popd
 
 :deps_done
 
-REM Development-only bridge. Production starts the sidecar from the Tauri shell.
-for /f %%i in ('python -c "import secrets; print(secrets.token_urlsafe(32))"') do set "JARVIS_CONTROL_TOKEN=%%i"
+REM Phase A handshake: launch_sidecar.py writes the per-launch token file,
+REM starts the sidecar, and waits for the handshake file with the bound port.
+REM The token is never put on a command line (visible in process listings).
+echo Starting JARVIS backend on http://127.0.0.1:%BACKEND_PORT% ...
+start "JARVIS Backend" cmd /c "python scripts\launch_sidecar.py --port %BACKEND_PORT% --dev --no-open"
+
+REM The launcher writes the token file before spawning the sidecar; read it
+REM for the health check and the frontend.
+powershell -NoProfile -Command "$f=Join-Path $env:LOCALAPPDATA 'JARVIS\token.json'; $i=0; while(!(Test-Path $f) -and $i -lt 30){Start-Sleep 1; $i++}; if(Test-Path $f){$j=Get-Content $f | ConvertFrom-Json; Write-Output $j.token}else{exit 1}" > "%TEMP%\jarvis_token.txt" 2>nul
+set /p JARVIS_CONTROL_TOKEN=<"%TEMP%\jarvis_token.txt"
+del "%TEMP%\jarvis_token.txt" >nul 2>&1
 set "JARVIS_DEVELOPMENT_MODE=true"
 set "VITE_JARVIS_CONTROL_TOKEN=%JARVIS_CONTROL_TOKEN%"
-if not exist "%USERPROFILE%\.jarvis" mkdir "%USERPROFILE%\.jarvis" >nul 2>&1
-> "%USERPROFILE%\.jarvis\control_token" echo %JARVIS_CONTROL_TOKEN%
-
-REM ---------- Start backend ----------
-echo Starting JARVIS backend on http://127.0.0.1:%BACKEND_PORT% ...
-start "JARVIS Backend" cmd /c "python -m uvicorn backend.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
 
 REM ---------- Wait for backend health ----------
 set /a tries=0
@@ -68,7 +72,7 @@ echo Backend is healthy.
 
 REM ---------- Start frontend ----------
 echo Starting JARVIS dashboard on http://localhost:%FRONTEND_PORT% ...
-start "JARVIS Frontend" cmd /c "npm --prefix frontend run dev"
+start "JARVIS Frontend" cmd /c "set VITE_JARVIS_CONTROL_TOKEN=%JARVIS_CONTROL_TOKEN% && npm --prefix frontend run dev"
 
 ping -n 3 127.0.0.1 >nul
 start "" "http://localhost:%FRONTEND_PORT%"
@@ -77,7 +81,7 @@ echo.
 echo JARVIS development environment is running.
 echo   Dashboard : http://localhost:%FRONTEND_PORT%
 echo   Backend   : http://127.0.0.1:%BACKEND_PORT%
-echo   Logs      : %USERPROFILE%\.jarvis\jarvis.log
+echo   Logs      : %LOCALAPPDATA%\JARVIS\logs\jarvis.log
 echo   Mode      : development-only; use the packaged Tauri app for production
 echo.
 echo The backend and frontend each run in their own console window. Close

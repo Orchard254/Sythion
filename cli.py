@@ -32,6 +32,19 @@ DEVELOPMENT_MODE = os.environ.get("JARVIS_DEVELOPMENT_MODE", "").lower() in {"1"
 def _load_control_token():
     if CONTROL_TOKEN:
         return CONTROL_TOKEN
+    # New Phase A location: the per-launch token file written by the launcher
+    # (%LOCALAPPDATA%\JARVIS\token.json).
+    try:
+        import json as _json
+        data_dir = os.environ.get("LOCALAPPDATA")
+        if data_dir:
+            token_path = os.path.join(data_dir, "JARVIS", "token.json")
+            if os.path.exists(token_path):
+                with open(token_path, encoding="utf-8") as f:
+                    return _json.load(f).get("token", "")
+    except Exception:
+        pass
+    # Legacy location kept for existing installations.
     try:
         with open(os.path.join(os.path.expanduser("~"), ".jarvis", "control_token"), encoding="utf-8") as f:
             token = f.read().strip()
@@ -47,7 +60,8 @@ def api(path, method="GET", data=None):
     if not token:
         raise SystemExit(
             "No control token found. Start JARVIS with start_jarvis.cmd, then run the CLI "
-            "from a terminal where JARVIS_CONTROL_TOKEN is set (or read ~/.jarvis/control_token)."
+            "from a terminal where JARVIS_CONTROL_TOKEN is set (or read "
+            "%LOCALAPPDATA%\\JARVIS\\token.json)."
         )
     req.add_header("X-Control-Token", token)
     req.add_header("Origin", "http://localhost:3000" if DEVELOPMENT_MODE else "tauri://localhost")
