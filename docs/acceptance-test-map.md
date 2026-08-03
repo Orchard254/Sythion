@@ -31,6 +31,8 @@ milestone can be accepted.
 | Model failure | Invalid, parallel, malformed, unavailable, rate-limited, stale-model, and exhausted-budget decisions cause no repeated mutation or local fallback | B | passing |
 | Per-task budgets | Cloud request, input/output token, action, repair, and elapsed-time budgets are tracked per task; exhaustion fails the task honestly with the matching code and records an evidence-safe snapshot event | B | passing |
 | Desktop lifecycle | Packaged app enforces single instance, launches one sidecar, shuts it down cleanly, and recovers stale leases | A | partial |
+| Desktop shell build | The Tauri shell compiles end-to-end (strict capabilities/CSP, bridge command, sidecar launcher, global-stop shortcut) on `windows-latest` | A | partial |
+| Global stop | `POST /api/v1/stop` cancels the most recent active task without owning the runner lease; the Rust shell registers a global shortcut that calls it | E | passing |
 | Sidecar handshake | Launcher writes a private per-launch token file; sidecar reads it, binds an ephemeral loopback port, and writes port+token back for the launcher | A | passing |
 | Cloud capability | Onboarding lists authenticated model IDs and proves one fake read-only native tool call before the provider is usable | B | passing |
 | Cloud onboarding | Selecting an arbitrary/stale model ID is rejected; the exact returned ID is persisted as non-secret profile metadata and takes effect on restart | B | passing |
@@ -43,11 +45,19 @@ milestone can be accepted.
 ## Phase A: packaging and ledger spike
 
 1. Tauri starts the fixed sidecar with fresh token and receives ephemeral port.
+   *Implemented in Rust (`src-tauri/src/sidecar.rs`): writes the private
+   token file, spawns exactly one `uvicorn`, polls `sidecar.json`, and exposes
+   the resolved base URL + token via the single `get_bridge_config` command.
+   Buildable via `npx --prefix frontend tauri build --no-bundle` (CI:
+   `.github/workflows/ci.yml` → `tauri-build`).*
 2. Sidecar accepts only loopback, authenticated, packaged-origin requests.
 3. A SQLite WAL migration creates tasks, immutable events, lease, skills, and
    settings metadata with short transactions.
 4. Single-instance/profile lock and clean shutdown leave no orphan sidecar.
+   *The shell keeps the spawned `Child` and kills it on exit.*
 5. No real OS mutation is registered or reachable.
+   *Capabilities grant only `core:default`; shell/process/fs/automation
+   plugins are not installed, so the renderer cannot touch the OS.*
 
 ## Phase B: trusted text core
 
@@ -75,13 +85,15 @@ milestone can be accepted.
   invoke/value effects verified). Fixture gate passed; `create_gui_tools()` is
   wired into the sidecar executor for general actions.
 - **E:** visible-window voice capture, locally pinned VAD/STT/TTS, editable
-  transcripts, local/global stop, privacy UX, and audit viewer.
+  transcripts, local/global stop, privacy UX, and audit viewer. *Global stop:
+  `POST /api/v1/stop` (`backend/tests/test_stop_api.py`, 5 tests) plus the
+  Rust `Ctrl+Shift+X` shortcut wired to it (`src-tauri/src/main.rs`).*
 - **F:** declarative skills, proposed-skill review, retention/purge, installer
   lifecycle, clean-machine verification, signing/distribution plan.
   *Executed: `backend/tests/test_skill_engine.py`, `test_skills_api.py`,
   `test_retention.py`, and `backend/tests/acceptance/test_skill_lifecycle.py`.
-  Release/installer plan: `docs/release-plan.md`. Remaining: packaged Tauri
-  shell + interactive clean-machine release run.*
+  Release/installer plan: `docs/release-plan.md`. Remaining: interactive
+  clean-machine release run.*
 
 ## Evidence policy
 

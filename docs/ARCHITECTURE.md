@@ -4,7 +4,10 @@
 The Rust-free sidecar foundation (per-launch token handshake, ephemeral port
 file, profile single-instance lock, LocalAppData storage with user-only ACLs,
 version endpoint, desktop frontend build/lint) is implemented and tested. The
-packaged Tauri shell that drives the handshake is the remaining Phase A item.
+Tauri shell that drives the handshake is now scaffolded
+(`src-tauri/`: Rust sidecar launcher, strict capabilities/CSP, bridge command,
+global-stop shortcut) and buildable on `windows-latest` via the CI `tauri-build`
+job; the interactive clean-machine release run remains the manual gate.
 
 ## Decision
 
@@ -72,6 +75,33 @@ components, but these gaps prevent a safe milestone gate:
 | GUI fallbacks use generic input simulation | No proven UIA MTA ownership, target freshness, integrity, or one-action safety | Rebuild GUI adapter around a dedicated UIA worker and fixture-only tests |
 | Optional/stub voice components and unpinned downloads | Voice lifecycle, local-only processing, and asset integrity are unproven | Select, pin, checksum, and explicitly install assets before voice milestone |
 | Documentation reports conflicting phase/test counts | The release status is not reliable | Replace Phase claims only after the listed gates are executed |
+
+## Tauri desktop shell (implemented)
+
+The packaged shell (`src-tauri/`) is the only production entrypoint:
+
+- **Sidecar launch + handshake** (`src/sidecar.rs`): writes a fresh random
+  token to `%LOCALAPPDATA%\JARVIS\token.json`, picks a free loopback port,
+  spawns exactly one `python -m uvicorn backend.main:app` with
+  `JARVIS_HANDSHAKE_TOKEN_FILE` + `JARVIS_PORT` (never the token on the command
+  line), and polls `sidecar.json` for the bound port. The spawned `Child` is
+  kept and killed on app exit, so no orphan sidecar survives.
+- **Bridge command** (`get_bridge_config`): the single IPC surface the
+  renderer may call. Returns the sidecar base URL + control token; the frontend
+  polls it until the sidecar reports ready (`frontend/src/services/bridge.ts`).
+- **Global stop** (`src/main.rs`): registers `Ctrl+Shift+X` via
+  `tauri-plugin-global-shortcut`; on press it calls `POST /api/v1/stop` with the
+  handshake token. `/stop` cancels the most recent non-terminal task without
+  owning the runner lease (the running executor renews the lease itself), so
+  the shortcut works exactly when a task is active.
+- **Strict capabilities/CSP**: `capabilities/default.json` grants only
+  `core:default`; the shell/process/fs/automation plugins are not installed at
+  all, so the renderer cannot reach the OS beyond the read-only bridge command.
+  `tauri.conf.json` sets a CSP that pins `script-src 'self'` and allows
+  `connect-src` only to loopback.
+
+Dev still runs through `start_jarvis.cmd` (browser + Vite proxy); it is
+explicitly dev-only and does not grant desktop capabilities.
 
 ## Cloud onboarding (implemented)
 

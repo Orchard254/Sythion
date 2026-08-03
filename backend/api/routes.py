@@ -270,6 +270,49 @@ async def cancel_task(task_id: str, db: Session = Depends(get_db)):
         await runner.release_lease()
 
 
+@router.post("/stop", response_model=TaskResponse)
+async def stop_active_task(db: Session = Depends(get_db)):
+    """Stop the most recently active task.
+
+    Global-stop entrypoint used by the desktop shell's global shortcut (and
+    available to the voice pipeline). Cancels the newest task that is still
+    in a non-terminal state so a stop always has something to act on without
+    requiring a caller to know the task id.
+
+    Unlike per-task cancel, this does not need to own the runner lease: the
+    actively-running executor renews the lease itself, so requiring it here
+    would make the shortcut a no-op exactly when it is most needed.
+    """
+    runner = get_runner(db)
+    active_states = [
+        TaskState.CREATED.value,
+        TaskState.RUNNING.value,
+        TaskState.WAITING_FOR_USER.value,
+        TaskState.INTERRUPTED.value,
+        TaskState.PAUSED.value,
+    ]
+    task = (
+        db.query(Task)
+        .filter(Task.state.in_(active_states))
+        .order_by(Task.updated_at.desc())
+        .first()
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="No active task to stop")
+
+    updated_task = await runner.force_cancel(task.id)
+    logger.info(f"Global stop cancelled task {task.id}")
+
+    return TaskResponse(
+        id=updated_task.id,
+        original_request=updated_task.original_request,
+        state=TaskState(updated_task.state),
+        created_at=updated_task.created_at,
+        updated_at=updated_task.updated_at,
+        version=updated_task.version
+    )
+
+
 @router.post("/tasks/{task_id}/resume", response_model=TaskResponse)
 async def resume_task(task_id: str, db: Session = Depends(get_db)):
     """Resume an interrupted task.

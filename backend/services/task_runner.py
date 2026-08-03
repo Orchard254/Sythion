@@ -346,6 +346,35 @@ class TaskRunner:
             terminal_reason="cancelled_by_user",
         )
 
+    async def force_cancel(self, task_id: str) -> Task:
+        """Cancel a task without owning the runner lease.
+
+        Used by the global-stop path (`POST /api/v1/stop`). The actively
+        running executor holds and renews the lease itself, so requiring it
+        here would make a stop a no-op exactly when it is most needed. The
+        cancelled state is terminal and observed by the executor before its
+        next OS action, so forcing it is safe.
+        """
+        task = self.db.query(Task).filter_by(id=task_id).first()
+        if not task:
+            raise RuntimeError(f"Task {task_id} not found")
+
+        old_state = task.state
+        if TaskState.CANCELLED.value not in ALLOWED_TRANSITIONS.get(old_state, set()):
+            raise RuntimeError(f"Invalid task state transition: {old_state} -> cancelled")
+
+        task.state = TaskState.CANCELLED.value
+        task.version += 1
+        task.updated_at = datetime.utcnow()
+        task.terminal_reason = "cancelled_by_user"
+        self._append_event(task_id, "task.cancelled", {
+            "reason": "user_requested",
+            "via": "global_stop",
+        })
+        self.db.commit()
+        self.db.refresh(task)
+        return task
+
 
 # NOTE: TaskRunner instances are short-lived per-request objects. They
 # hold a reference to a DB session, which must NOT be cached across

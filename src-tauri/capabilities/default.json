@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Strict default capability for the main window. Grants only the core webview APIs the dashboard needs to call the Rust bridge command. Denies shell, process, filesystem, and automation: those plugins are not installed and their permissions are not granted, so the renderer cannot touch the OS beyond the single read-only get_bridge_config command.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}

@@ -1,6 +1,31 @@
 import { useState, useEffect } from 'react';
 import { useAppStore } from '../store/appStore';
-import { healthService, taskService } from '../services/api';
+import { healthService, taskService, configureBridge } from '../services/api';
+import { resolveBridgeConfig, isTauri } from '../services/bridge';
+
+const BRIDGE_TIMEOUT_MS = 60_000;
+
+async function initBridge(): Promise<void> {
+  if (!isTauri()) {
+    configureBridge(await resolveBridgeConfig());
+    return;
+  }
+
+  const deadline = Date.now() + BRIDGE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const config = await resolveBridgeConfig();
+      if (config) {
+        configureBridge(config);
+        return;
+      }
+    } catch {
+      // Sidecar not ready yet; poll again.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error('JARVIS sidecar did not become ready');
+}
 
 export function useAppInit() {
   const { 
@@ -18,6 +43,8 @@ export function useAppInit() {
       setLoading(true);
       
       try {
+        await initBridge();
+
         // Check health
         const health = await healthService.check();
         setHealthStatus(health);

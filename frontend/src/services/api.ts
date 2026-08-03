@@ -3,8 +3,25 @@ import type { Task, HealthStatus, ToolInfo, TaskEvent, VoiceAssets } from '../ty
 
 const API_BASE_URL = '/api/v1';
 
-// Get control token from sessionStorage (set by Tauri on launch)
+// Runtime bridge configuration, set by the Tauri shell (or the dev launcher)
+// before the first API call. baseURL defaults to the Vite-proxied path so the
+// browser dev path works until the bridge config is resolved.
+let bridgeBaseUrl: string | null = null;
+let bridgeControlToken: string | null = null;
+
+export function configureBridge(cfg: { baseUrl: string; controlToken: string }) {
+  bridgeBaseUrl = cfg.baseUrl;
+  bridgeControlToken = cfg.controlToken || null;
+  apiClient.defaults.baseURL = bridgeBaseUrl;
+}
+
+// Get control token: bridge config first, then sessionStorage (Tauri preload),
+// then the dev environment.
 const getControlToken = () => {
+  if (bridgeControlToken) {
+    return bridgeControlToken;
+  }
+
   const desktopToken = sessionStorage.getItem('jarvis_control_token');
   if (desktopToken) {
     return desktopToken;
@@ -19,7 +36,7 @@ const getControlToken = () => {
 
 // Create axios instance with authentication
 const apiClient = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: bridgeBaseUrl || API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },

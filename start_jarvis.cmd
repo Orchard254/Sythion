@@ -1,6 +1,13 @@
 @echo off
-REM JARVIS - one-command dev launcher.
-REM Starts the backend + frontend dev servers and opens the dashboard.
+REM JARVIS - one-command DEVELOPMENT launcher.
+REM Starts the backend + frontend dev servers and opens the dashboard in the
+REM browser. This browser path is dev-only: it does not enforce the packaged
+REM desktop capabilities or the trusted global stop shortcut.
+REM
+REM PRODUCTION: build and run the Tauri shell instead
+REM   npm --prefix frontend run tauri -- build        (produces src-tauri/target/release/jarvis.exe)
+REM   run src-tauri\target\release\jarvis.exe         (spawns the sidecar, hosts the dashboard, registers the stop shortcut)
+REM
 REM Development-only; production starts the sidecar from the Tauri shell.
 setlocal
 

@@ -1,8 +1,9 @@
 # JARVIS Release Plan
 
 **Status:** Plan (Phase F). The sidecar backend, dashboard, voice, and skills
-are feature-complete and test-backed; the packaged desktop shell (Phase A
-remainder) and a clean-machine release run are the remaining gates.
+are feature-complete and test-backed; the packaged desktop shell is scaffolded
+(`src-tauri/`, CI-buildable via the `tauri-build` job). Remaining gates: the
+executed clean-machine release run and the signing/update pipeline.
 
 ## 1. Distribution model
 
@@ -66,8 +67,12 @@ remainder) and a clean-machine release run are the remaining gates.
 
 ## 7. Remaining gates before release
 
-- [ ] Packaged Tauri shell (Phase A remainder): capabilities, CSP, shell/process
-      denial, single sidecar.
+- [x] Packaged Tauri shell (Phase A remainder): capabilities, CSP, shell/process
+      denial, single sidecar, global-stop shortcut. *(`src-tauri/` scaffolded;
+      `npx --prefix frontend tauri build --no-bundle` compiles it; CI
+      `tauri-build` job is the executed build gate)*
 - [ ] Interactive clean-machine run of all mandatory acceptance tests.
 - [ ] EV signing pipeline + reproducible builds in CI.
 - [ ] Version-check + update UX wired to `GET /api/v1/version`.
+- [ ] Bundle the pinned Python runtime + wheels with the signed installer so
+      the packaged shell's `python -m uvicorn` launch needs no user Python.

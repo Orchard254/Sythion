@@ -30,7 +30,7 @@ function AppContent() {
         <h2>Connection Error</h2>
         <p>{error || 'Unable to connect to JARVIS backend'}</p>
         <p style={styles.errorHint}>
-          Make sure the backend server is running on port 8000
+          Restart the JARVIS app, or in development re-run start_jarvis.cmd.
         </p>
       </div>
     );

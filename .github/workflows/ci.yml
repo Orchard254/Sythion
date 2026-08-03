@@ -55,3 +55,32 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  tauri-build:
+    name: Tauri shell build (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build the desktop shell (compile only, no bundle)
+        run: npx --prefix frontend tauri build --no-bundle
+
+      - name: Assert the shell binary was produced
+        run: Test-Path "src-tauri/target/release/jarvis.exe"
