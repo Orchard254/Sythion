@@ -14,6 +14,7 @@ from backend.tools.system_tools import create_system_tools
 from backend.tools.file_tools import create_file_tools
 from backend.tools.app_tools import create_app_tools
 from backend.tools.package_tools import create_package_tools
+from backend.tools.gui_tools import create_gui_tools
 
 
 @pytest.fixture
@@ -24,6 +25,7 @@ def full_tool_executor():
         + list(create_file_tools())
         + list(create_app_tools())
         + list(create_package_tools())
+        + list(create_gui_tools())
     ):
         ex.register_tool(tool)
     return ex

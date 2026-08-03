@@ -163,7 +163,7 @@ Chocolatey, Homebrew, apt, and any `sudo`/`-y` invocation are removed. The
 executor policy gate additionally blocks install/uninstall with
 `ELEVATION_NOT_ALLOWED` (standard-user actions only) as defense in depth.
 
-## Reliable Windows GUI automation (implemented, fixture-app gate pending)
+## Reliable Windows GUI automation (implemented)
 
 GUI tools (`backend/tools/gui_tools.py`) are Windows-only in v1. Every UI
 Automation call runs on one dedicated background COM MTA worker thread
@@ -176,14 +176,18 @@ blocked.
 Safety rules enforced in code:
 
 - Desktop gate: locked sessions or the secure desktop deny every GUI action
-  (`SESSION_LOCKED`).
+  (`SESSION_LOCKED`). The gate uses the *input desktop name* (`Winlogon`/
+  `Secure` = locked or UAC secure desktop) rather than `GetForegroundWindow`,
+  which can be 0 for legitimate background processes.
 - Target window safety: hidden, minimized, elevated (integrity RID >= 12288),
   UAC (`Consent UI Class`), and secure-desktop/security-title surfaces are
   denied (`TARGET_NOT_VISIBLE`, `TARGET_MINIMIZED`,
   `ELEVATED_TARGET_DENIED`, `SECURITY_SURFACE_DENIED`).
 - Patterns first: `gui_invoke`/`gui_set_value` use the native UIA
   Invoke/Value patterns and never fall back to a guessed click or coordinate
-  entry (`NO_INVOKE_PATTERN`, `NO_VALUE_PATTERN`).
+  entry (`NO_INVOKE_PATTERN`, `NO_VALUE_PATTERN`). Pattern handles returned by
+  `GetCurrentPattern` are queried to their concrete comtypes interface before
+  use.
 - Bounded fallback: `gui_click` is a single physical-pixel click bounded to
   the window rect; `gui_type`/`gui_hotkey` are single input bursts. All
   foreground input tools require the target window to be foreground
@@ -198,11 +202,19 @@ Safety rules enforced in code:
   `_OCR_MAX_AGE_SECONDS=5.0`; the OCR engine is not bundled in v1, so
   `gui_observe(use_ocr=True)` returns `available: false` with an honest reason
   instead of guessing or persisting raw screenshots.
+- Window discovery uses `TreeScope_Descendants` from the UIA root because on
+  some desktop layouts the root's direct child is a virtual desktop pane and
+  top-level windows are nested under it.
+
+General enablement gate (TODO #82) passed: `create_gui_tools()` is wired into
+the sidecar executor (`main.py`, `api/routes.py`) after the dedicated fixture
+application (`scripts/gui_fixture_app.py`) exercised the real driver over the
+real MTA worker. GUI tools remain excluded from the model-visible subset by
+`requires_screen_access`/`requires_ui_automation`.
 
 Known v1 limitation: coordinate mapping (`_absolute_xy`) normalizes DPI
 against the primary monitor's virtual screen; true per-monitor DPI awareness
-is deferred. `create_gui_tools()` is not yet wired into the sidecar executor —
-that wiring is gated behind the dedicated fixture-application test (TODO #82).
+is deferred.
 
 ## Milestone gate
 

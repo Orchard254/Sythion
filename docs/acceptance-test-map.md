@@ -63,13 +63,16 @@ milestone can be accepted.
 - **C:** scoped test-file mutation and registered app launch/focus, each with
   deterministic policy, preconditions, verifier, cancellation, and recovery.
 - **D:** dedicated MTA UIA worker dispatch; locked-session / secure-desktop
-  gate; elevated/UAC/security-surface denial; dangerous-hotkey rejection;
-  UIA-pattern-first with no coordinate fallback for invoke/set-value;
-  single-shot bounded coordinate input with re-observe; bounded observation;
-  OCR unavailability honesty. *Executed against a fake driver*
-  (`backend/tests/test_gui_tools.py`, 42 tests); the fixture-application gate
-  (TODO #82) must pass before `create_gui_tools()` is wired into the sidecar
-  executor for general actions.
+  gate (input-desktop-name based); elevated/UAC/security-surface denial;
+  dangerous-hotkey rejection; UIA-pattern-first with no coordinate fallback
+  for invoke/set-value; single-shot bounded coordinate input with re-observe;
+  bounded observation; OCR unavailability honesty. *Executed against a fake
+  driver* (`backend/tests/test_gui_tools.py`, 43 tests) **and against the real
+  driver on the dedicated fixture application**
+  (`scripts/gui_fixture_app.py` +
+  `backend/tests/acceptance/test_gui_fixture.py`, 4 tests, observe/focus/
+  invoke/value effects verified). Fixture gate passed; `create_gui_tools()` is
+  wired into the sidecar executor for general actions.
 - **E:** visible-window voice capture, locally pinned VAD/STT/TTS, editable
   transcripts, local/global stop, privacy UX, and audit viewer.
 - **F:** declarative skills, proposed-skill review, retention/purge, installer

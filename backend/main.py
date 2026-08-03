@@ -80,6 +80,7 @@ async def lifespan(app: FastAPI):
     from .tools.file_tools import create_file_tools
     from .tools.app_tools import create_app_tools
     from .tools.package_tools import create_package_tools
+    from .tools.gui_tools import create_gui_tools
     
     for tool in create_system_tools():
         tool_executor.register_tool(tool)
@@ -88,6 +89,8 @@ async def lifespan(app: FastAPI):
     for tool in create_app_tools():
         tool_executor.register_tool(tool)
     for tool in create_package_tools():
+        tool_executor.register_tool(tool)
+    for tool in create_gui_tools():
         tool_executor.register_tool(tool)
         
     logger.info(f"Registered {len(tool_executor.list_tools())} tools")

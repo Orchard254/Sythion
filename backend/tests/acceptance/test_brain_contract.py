@@ -18,6 +18,7 @@ from backend.tools.system_tools import create_system_tools
 from backend.tools.file_tools import create_file_tools
 from backend.tools.app_tools import create_app_tools
 from backend.tools.package_tools import create_package_tools
+from backend.tools.gui_tools import create_gui_tools
 
 
 @pytest.fixture
@@ -28,6 +29,7 @@ def full_tool_executor():
         + list(create_file_tools())
         + list(create_app_tools())
         + list(create_package_tools())
+        + list(create_gui_tools())
     ):
         ex.register_tool(tool)
     return ex
@@ -62,6 +64,11 @@ def test_model_visible_tools_are_read_only_subset(db_session, full_tool_executor
     assert "app_close" not in visible
     assert "package_install" not in visible
     assert "package_uninstall" not in visible
+
+    # GUI tools are registered but never model-visible (screen access / UIA).
+    assert "gui_observe" not in visible
+    assert "gui_click" not in visible
+    assert "gui_focus" not in visible
 
     # No raw implementation or artifact leaks into the visible metadata.
     for t in engine._model_visible_tools():

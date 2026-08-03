@@ -40,6 +40,7 @@ def get_tool_executor() -> ToolExecutor:
         from backend.tools.file_tools import create_file_tools
         from backend.tools.app_tools import create_app_tools
         from backend.tools.package_tools import create_package_tools
+        from backend.tools.gui_tools import create_gui_tools
         
         for tool in create_system_tools():
             get_tool_executor._executor.register_tool(tool)
@@ -48,6 +49,8 @@ def get_tool_executor() -> ToolExecutor:
         for tool in create_app_tools():
             get_tool_executor._executor.register_tool(tool)
         for tool in create_package_tools():
+            get_tool_executor._executor.register_tool(tool)
+        for tool in create_gui_tools():
             get_tool_executor._executor.register_tool(tool)
             
     return get_tool_executor._executor

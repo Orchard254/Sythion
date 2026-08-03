@@ -17,10 +17,19 @@ import ctypes
 import os
 import platform
 import queue
+import sys
 import threading
 import time
 from concurrent.futures import Future
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+# comtypes auto-initializes COM on its first import using sys.coinit_flags
+# (defaulting to STA). The dedicated UIA worker initializes COM as MTA, so any
+# subsequent comtypes import on that thread must also request MTA or
+# CoInitializeEx raises RPC_E_CHANGED_MODE. gui_tools is the only comtypes
+# consumer in JARVIS, so this global is safe to set here.
+if not hasattr(sys, "coinit_flags"):
+    sys.coinit_flags = 0x0  # COINIT_MULTITHREADED
 
 from tools.executor import BaseTool
 from api.schemas import (
@@ -103,16 +112,27 @@ def _hotkey_error(keys: List[str]) -> Optional[Dict[str, str]]:
 # --------------------------------------------------------------------------
 
 def _session_accepts_input() -> bool:
-    """False when the session is locked or on the secure desktop."""
+    """False when the session is locked or on the secure desktop.
+
+    GetForegroundWindow() can legitimately be 0 for a background process even on
+    an interactive desktop, so the reliable lock signal is the *input* desktop
+    name: when the workstation is locked or a UAC/secure desktop is active, the
+    input desktop is "Winlogon" (or the open fails entirely).
+    """
     if not _IS_WINDOWS:
         return False
     try:
-        if ctypes.windll.user32.GetForegroundWindow() == 0:
-            return False
         desktop = ctypes.windll.user32.OpenInputDesktop(0, False, 0x0001)  # DESKTOP_READOBJECTS
         if not desktop:
             return False
-        ctypes.windll.user32.CloseDesktop(desktop)
+        try:
+            name = ctypes.create_unicode_buffer(256)
+            ctypes.windll.user32.GetUserObjectInformationW(
+                desktop, 2, name, ctypes.sizeof(name), None)  # UOI_NAME = 2
+            if name.value.strip().lower() in ("winlogon", "secure"):
+                return False
+        finally:
+            ctypes.windll.user32.CloseDesktop(desktop)
         return True
     except (AttributeError, OSError):
         return False
@@ -239,7 +259,9 @@ class _UIADriver:
         uia = self._session()
         root = uia.GetRootElement()
         wcond = uia.CreatePropertyCondition(_uia.UIA_ControlTypePropertyId, _uia.UIA_WindowControlTypeId)
-        result = root.FindAll(1, wcond)  # TreeScope_Children
+        # TreeScope_Descendants: on some desktop layouts the root's direct
+        # child is a virtual desktop pane and top-level windows are nested.
+        result = root.FindAll(2, wcond)
         windows = []
         for i in range(result.Length):
             if i >= _MAX_WINDOW_TITLES:
@@ -266,12 +288,14 @@ class _UIADriver:
     def _find_window(self, uia, root, title: str):
         from comtypes.gen import UIAutomationClient as _uia
         exact = uia.CreatePropertyCondition(_uia.UIA_NamePropertyId, title)
-        found = root.FindFirst(1, exact)  # TreeScope_Children
+        # TreeScope_Descendants: top-level windows can be nested under a
+        # virtual desktop pane on some desktop layouts.
+        found = root.FindFirst(2, exact)
         if found:
             return found
         # Bounded partial match over window controls.
         wcond = uia.CreatePropertyCondition(_uia.UIA_ControlTypePropertyId, _uia.UIA_WindowControlTypeId)
-        windows = root.FindAll(1, wcond)
+        windows = root.FindAll(2, wcond)
         for i in range(windows.Length):
             if i >= _MAX_WINDOW_TITLES:
                 break
@@ -328,6 +352,24 @@ class _UIADriver:
             pass
         return node
 
+    def _current_pattern(self, uia, element, pattern_id: int, interface) -> Any:
+        """Fetch a UIA pattern and QI it to its concrete comtypes interface.
+
+        ``GetCurrentPattern`` returns a generic ``POINTER(IUnknown)``; the
+        generated module provides concrete interfaces (e.g.
+        ``IUIAutomationInvokePattern``) that expose the pattern's methods.
+        """
+        try:
+            ptr = element.GetCurrentPattern(pattern_id)
+        except Exception:
+            return None
+        if not ptr:
+            return None
+        try:
+            return ptr.QueryInterface(interface)
+        except Exception:
+            return None
+
     def focus(self, window_title: str) -> Dict[str, Any]:
         from comtypes.gen import UIAutomationClient as _uia
         uia = self._session()
@@ -338,9 +380,10 @@ class _UIADriver:
         identity = self._window_identity(uia, element)
         hwnd = identity["hwnd"]
         try:
-            pattern = element.GetCurrentPattern(_uia.UIA_WindowPatternId)
-            pattern.SetWindowVisualState(0)  # WindowVisualState_Normal
-            pattern.WaitForInputIdle(2000)
+            pattern = self._current_pattern(uia, element, _uia.UIA_WindowPatternId, _uia.IUIAutomationWindowPattern)
+            if pattern is not None:
+                pattern.SetWindowVisualState(0)  # WindowVisualState_Normal
+                pattern.WaitForInputIdle(2000)
         except Exception:
             pass
         if hwnd:
@@ -416,7 +459,10 @@ class _UIADriver:
             return {"ok": False, "code": "ELEMENT_NOT_FOUND", "message": f"No element matching '{description}'"}
         target = element[0]
         try:
-            pattern = target.GetCurrentPattern(_uia.UIA_InvokePatternId)
+            pattern = self._current_pattern(uia, target, _uia.UIA_InvokePatternId, _uia.IUIAutomationInvokePattern)
+            if pattern is None:
+                return {"ok": False, "code": "NO_INVOKE_PATTERN",
+                        "message": f"Element '{description}' has no Invoke pattern; JARVIS does not guess a fallback click"}
             pattern.Invoke()
             return {"ok": True, "method": "uia_invoke", "element": found["element"]}
         except Exception:
@@ -438,7 +484,10 @@ class _UIADriver:
             return {"ok": False, "code": "ELEMENT_NOT_FOUND", "message": f"No element matching '{description}'"}
         target = element[0]
         try:
-            pattern = target.GetCurrentPattern(_uia.UIA_ValuePatternId)
+            pattern = self._current_pattern(uia, target, _uia.UIA_ValuePatternId, _uia.IUIAutomationValuePattern)
+            if pattern is None:
+                return {"ok": False, "code": "NO_VALUE_PATTERN",
+                        "message": f"Element '{description}' has no Value pattern; JARVIS does not guess a fallback"}
             pattern.SetValue(value)
             return {"ok": True, "method": "uia_value", "element": found["element"]}
         except Exception:

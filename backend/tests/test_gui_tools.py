@@ -8,6 +8,7 @@ Tests substitute a fake driver at ``tools.gui_tools._uia_driver`` while the real
 MTA worker thread still handles dispatch.
 """
 import asyncio
+import ctypes
 import threading
 
 import pytest
@@ -148,14 +149,34 @@ class TestDesktopGate:
         monkeypatch.setattr("tools.gui_tools._session_accepts_input", lambda: True)
         assert _desktop_gate() is None
 
-    def test_session_accepts_input_rejects_no_foreground_window(self, monkeypatch):
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.GetForegroundWindow", lambda: 0)
+    def test_session_accepts_input_rejects_no_input_desktop(self, monkeypatch):
+        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.OpenInputDesktop", lambda *a, **k: 0)
         assert _session_accepts_input() is False
 
     def test_session_accepts_input_rejects_secure_desktop(self, monkeypatch):
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.GetForegroundWindow", lambda: 1)
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.OpenInputDesktop", lambda *a, **k: 0)
+        def fake_open(*a, **k):
+            return 1
+        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.OpenInputDesktop", fake_open)
+
+        def fake_getinfo(h, info, buf, size, needed):
+            ctypes_string = ctypes.create_unicode_buffer("Winlogon")
+            ctypes.memmove(buf, ctypes_string, (len(ctypes_string.value) + 1) * 2)
+            return 1
+        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.GetUserObjectInformationW", fake_getinfo)
         assert _session_accepts_input() is False
+
+    def test_session_accepts_input_accepts_default_desktop(self, monkeypatch):
+        def fake_open(*a, **k):
+            return 1
+        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.OpenInputDesktop", fake_open)
+
+        def fake_getinfo(h, info, buf, size, needed):
+            ctypes_string = ctypes.create_unicode_buffer("Default")
+            ctypes.memmove(buf, ctypes_string, (len(ctypes_string.value) + 1) * 2)
+            return 1
+        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.GetUserObjectInformationW", fake_getinfo)
+        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.CloseDesktop", lambda h: 1)
+        assert _session_accepts_input() is True
 
 
 class TestTargetWindowSafety:

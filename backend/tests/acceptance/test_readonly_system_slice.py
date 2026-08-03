@@ -15,6 +15,7 @@ from backend.services.task_execution_loop import TaskExecutionLoop
 from backend.services.model_engine import DecisionType
 from backend.tools.executor import ToolExecutor
 from backend.tools.system_tools import create_system_tools
+from backend.tools.gui_tools import create_gui_tools
 from backend.models.database import TaskEvent
 
 
@@ -102,6 +103,8 @@ async def test_readonly_system_tool_is_model_visible(db_session):
     ex = ToolExecutor()
     for tool in create_system_tools():
         ex.register_tool(tool)
+    for tool in create_gui_tools():
+        ex.register_tool(tool)
 
     engine = ModelDecisionEngine(db_session, ex)
     names = {t["name"] for t in engine._model_visible_tools()}
@@ -109,8 +112,11 @@ async def test_readonly_system_tool_is_model_visible(db_session):
     assert "system_battery" in names
     assert "system_disk" in names
 
-    # Mutating tools must never be in the model-visible subset.
+    # Mutating / screen-access tools must never be in the model-visible subset,
+    # even when registered.
     assert "file_delete" not in names
     assert "app_launch" not in names
     assert "package_install" not in names
     assert "gui_click" not in names
+    assert "gui_observe" not in names
+    assert "gui_focus" not in names
