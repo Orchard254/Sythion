@@ -91,6 +91,15 @@ def _validate_value(key: str, raw_value: Any) -> str:
         if value < 1:
             raise ValueError(f"Setting {key} must be >= 1")
         return str(value)
+    if key == "file_roots":
+        import json
+
+        if isinstance(raw_value, str):
+            raw_value = raw_value.split(",")
+        if not isinstance(raw_value, list):
+            raise ValueError("Setting file_roots must be a list")
+        roots = [str(r).strip() for r in raw_value if str(r).strip()]
+        return json.dumps(roots)
     # String values: reject control characters and cap length.
     text = str(raw_value)
     if len(text) > 4096:

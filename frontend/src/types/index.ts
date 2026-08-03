@@ -37,6 +37,19 @@ export interface HealthStatus {
   cloud_configured: boolean;
 }
 
+export interface VoiceAssets {
+  stt_installed: boolean;
+  stt_model: string;
+  stt_version: string;
+  stt_license: string;
+  stt_sha256_verified: boolean;
+  tts_provider: string;
+  tts_voice: string;
+  assets_dir: string;
+  downloads_on_import: boolean;
+  downloads_on_startup: boolean;
+}
+
 export interface ToolInfo {
   name: string;
   description: string;

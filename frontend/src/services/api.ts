@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Task, HealthStatus, ToolInfo } from '../types';
+import type { Task, HealthStatus, ToolInfo, TaskEvent, VoiceAssets } from '../types';
 
 const API_BASE_URL = '/api/v1';
 
@@ -70,40 +70,86 @@ export const taskService = {
     const response = await apiClient.post(`/tasks/${taskId}/reply`, { answer });
     return response.data;
   },
+
+  events: async (taskId: string, afterSequence = 0): Promise<TaskEvent[]> => {
+    const response = await apiClient.get(`/tasks/${taskId}/events`, {
+      params: { after_sequence: afterSequence },
+    });
+    return response.data.events || [];
+  },
 };
 
+export interface VoiceSegment {
+  segment_id: string;
+  text: string;
+  stop_detected: boolean;
+  audio_deleted: boolean;
+  stt_available: boolean;
+}
+
+export interface VoiceStartResult {
+  session_id: string;
+  status: string;
+  stt_available: boolean;
+  recording_enabled: boolean;
+}
+
+export interface VoiceAudioResult {
+  session_id: string;
+  segments: VoiceSegment[];
+  is_speaking: boolean;
+  stt_available: boolean;
+}
+
 export const voiceService = {
-  startSession: async (): Promise<string> => {
-    // For now, generate a client-side session ID
-    // In production, this would call the backend to start a session
-    return crypto.randomUUID();
+  startSession: async (): Promise<VoiceStartResult> => {
+    const response = await apiClient.post('/voice/start');
+    return response.data;
+  },
+
+  sendAudioFrame: async (sessionId: string, pcm16Mono: Uint8Array): Promise<VoiceAudioResult> => {
+    const audioBase64 = arrayBufferToBase64(pcm16Mono);
+    const response = await apiClient.post(`/voice/${sessionId}/audio`, {
+      session_id: sessionId,
+      audio_data: audioBase64,
+      sample_rate: 16000,
+      channels: 1,
+    });
+    return response.data;
   },
 
   endSession: async (sessionId: string): Promise<void> => {
-    // Client-side cleanup - backend session ends automatically
-    console.log(`Voice session ended: ${sessionId}`);
+    await apiClient.post(`/voice/${sessionId}/end`);
   },
 
-  transcribeAudio: async (audioData: Uint8Array): Promise<{ text: string }> => {
-    // Convert to blob and send to backend
-    const copy = Uint8Array.from(audioData);
-    const blob = new Blob([copy], { type: 'audio/wav' });
-    const formData = new FormData();
-    formData.append('audio', blob, 'recording.wav');
+  speak: async (text: string): Promise<{ success: boolean }> => {
+    const response = await apiClient.post('/voice/speak', { text });
+    return response.data;
+  },
 
-    const response = await fetch(`${API_BASE_URL}/voice/transcribe`, {
-      method: 'POST',
-      headers: {
-        'X-Control-Token': getControlToken() || '',
-      },
-      body: formData,
-    });
+  assets: async (): Promise<VoiceAssets> => {
+    const response = await apiClient.get('/voice/assets');
+    return response.data;
+  },
+};
 
-    if (!response.ok) {
-      throw new Error(`Transcription failed: ${response.statusText}`);
-    }
+export interface AppSettings {
+  voice_enabled: boolean;
+  voice_recording_enabled: boolean;
+  voice_tts_voice: string;
+  retention_days: number;
+  file_roots: string[];
+}
 
-    return response.json();
+export const settingsService = {
+  get: async (): Promise<AppSettings> => {
+    const response = await apiClient.get('/settings');
+    return response.data;
+  },
+
+  update: async (updates: Record<string, string | boolean | number>): Promise<AppSettings> => {
+    const response = await apiClient.put('/settings', updates);
+    return response.data.settings || {};
   },
 };
 
@@ -114,15 +160,13 @@ export const toolService = {
   },
 };
 
-export const settingsService = {
-  get: async (): Promise<Record<string, string>> => {
-    const response = await apiClient.get('/settings');
-    return response.data.settings || {};
-  },
-
-  update: async (key: string, value: string): Promise<void> => {
-    await apiClient.put('/settings', { key, value });
-  },
-};
+function arrayBufferToBase64(buffer: Uint8Array): string {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < buffer.length; i += chunkSize) {
+    binary += String.fromCharCode(...buffer.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
 
 export default apiClient;

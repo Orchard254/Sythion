@@ -1,16 +1,46 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { taskService, voiceService } from '../services/api';
+import { taskService, voiceService, settingsService } from '../services/api';
 import { useAppStore } from '../store/appStore';
+import { useVoiceCapture } from '../hooks/useVoiceCapture';
 
 export function Dashboard() {
   const [newTaskRequest, setNewTaskRequest] = useState('');
-  const { tasks, activeTaskId, setActiveTask, setTasks, isVoiceEnabled, setVoiceEnabled } = useAppStore();
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isListening, setIsListening] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState('Idle');
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const voiceSessionIdRef = useRef<string | null>(null);
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [voiceAssets, setVoiceAssets] = useState<{
+    stt_installed: boolean;
+    stt_sha256_verified: boolean;
+    tts_voice: string;
+  } | null>(null);
+  const [settingsError, setSettingsError] = useState('');
+
+  const {
+    tasks,
+    activeTaskId,
+    setActiveTask,
+    setTasks,
+    isVoiceEnabled,
+    setVoiceEnabled,
+    transcriptDraft,
+    setTranscriptDraft,
+    voiceSttAvailable,
+    retentionDays,
+    setRetentionDays,
+    fileRoots,
+    setFileRoots,
+    activeTaskEvents,
+    setActiveTaskEvents,
+  } = useAppStore();
+
+  const stopScheduledRef = useRef(false);
+
+  const {
+    isListening,
+    stopDetected,
+    toggleListening,
+    clearStopDetected,
+  } = useVoiceCapture();
 
   const pollTasks = useCallback(async () => {
     try {
@@ -25,13 +55,19 @@ export function Dashboard() {
     t.state === 'running' || t.state === 'waiting_for_user' || t.state === 'interrupted'
   );
 
-  // Load tasks on mount
+  const activeTask = tasks.find((t) => t.id === activeTaskId) || null;
+
+  // Load tasks + voice assets + settings on mount
   useEffect(() => {
     pollTasks();
-  }, [pollTasks]);
+    voiceService.assets().then(setVoiceAssets).catch(() => {});
+    settingsService.get().then((s) => {
+      setRetentionDays(s.retention_days);
+      setFileRoots(s.file_roots || []);
+    }).catch(() => {});
+  }, [pollTasks, setRetentionDays, setFileRoots]);
 
   // Adaptive polling: fast while any task is in flight, slow when idle.
-  // Self-scheduling timeout so the interval adjusts to activity.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
     let cancelled = false;
@@ -50,29 +86,59 @@ export function Dashboard() {
     };
   }, [hasActiveTasks, pollTasks]);
 
-  const handleCreateTask = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newTaskRequest.trim() || isSubmitting) return;
+  // Fetch event timeline for the expanded/active task.
+  useEffect(() => {
+    if (!activeTask) {
+      setActiveTaskEvents([]);
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const events = await taskService.events(activeTask.id);
+        if (!cancelled) setActiveTaskEvents(events);
+      } catch {
+        if (!cancelled) setActiveTaskEvents([]);
+      }
+    };
+    load();
+    const timer = setInterval(load, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [activeTask, setActiveTaskEvents]);
 
-    setIsSubmitting(true);
+  const handleCreateTask = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const request = transcriptDraft.trim() || newTaskRequest.trim();
+    if (!request) return;
+
+    // A spoken stop was detected: never submit it as a task.
+    if (stopDetected) {
+      clearStopDetected();
+      setTranscriptDraft('');
+      setNewTaskRequest('');
+      setVoiceStatus('Stop phrase detected — not submitted');
+      return;
+    }
+
     try {
-      const task = await taskService.create(newTaskRequest);
+      const task = await taskService.create(request);
       setTasks([...tasks, task]);
       setNewTaskRequest('');
+      setTranscriptDraft('');
       setActiveTask(task.id);
       pollTasks();
     } catch (error) {
       console.error('Failed to create task:', error);
-    } finally {
-      setIsSubmitting(false);
     }
   };
 
   const handleCancelTask = async (taskId: string) => {
     try {
       await taskService.cancel(taskId);
-      // Update local state
-      setTasks(tasks.map(t => 
+      setTasks(tasks.map((t) =>
         t.id === taskId ? { ...t, state: 'cancelled' as const } : t
       ));
       if (activeTaskId === taskId) {
@@ -87,7 +153,7 @@ export function Dashboard() {
   const handleResumeTask = async (taskId: string) => {
     try {
       const task = await taskService.resume(taskId);
-      setTasks(tasks.map(t => 
+      setTasks(tasks.map((t) =>
         t.id === taskId ? { ...t, state: task.state } : t
       ));
       setActiveTask(task.id);
@@ -97,85 +163,54 @@ export function Dashboard() {
     }
   };
 
-  const startVoiceListening = useCallback(async () => {
-    if (!isVoiceEnabled || !navigator.mediaDevices) {
-      console.warn('Voice not enabled or not supported');
-      return;
-    }
-
-    try {
-      // Start voice session
-      const sessionId = await voiceService.startSession();
-      voiceSessionIdRef.current = sessionId;
-
-      // Request microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
-
-      mediaRecorder.onstop = async () => {
-        // Send accumulated audio for transcription
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
-        const arrayBuffer = await audioBlob.arrayBuffer();
-        const uint8Array = new Uint8Array(arrayBuffer);
-        
-        try {
-          const transcription = await voiceService.transcribeAudio(uint8Array);
-          if (transcription.text) {
-            setNewTaskRequest(transcription.text);
-            setVoiceStatus(`Heard: "${transcription.text}"`);
-            
-            // Optionally auto-submit
-            // await handleCreateTask(new Event('submit') as any);
-          }
-        } catch (error) {
-          console.error('Transcription failed:', error);
-          setVoiceStatus('Transcription failed');
-        }
-        
-        // Stop all tracks
-        stream.getTracks().forEach(track => track.stop());
-      };
-
-      // Start recording
-      mediaRecorder.start(1000); // Send data every second
-      setIsListening(true);
-      setVoiceStatus('Listening...');
-      
-    } catch (error) {
-      console.error('Failed to start voice listening:', error);
-      setVoiceStatus('Error: ' + (error as Error).message);
-    }
-  }, [isVoiceEnabled]);
-
-  const stopVoiceListening = useCallback(() => {
-    if (mediaRecorderRef.current && isListening) {
-      mediaRecorderRef.current.stop();
-      setIsListening(false);
-      setVoiceStatus('Processing...');
-      
-      // End voice session
-      if (voiceSessionIdRef.current) {
-        voiceService.endSession(voiceSessionIdRef.current);
-        voiceSessionIdRef.current = null;
+  const handleToggleVoice = async () => {
+    if (isVoiceEnabled) {
+      setVoiceEnabled(false);
+    } else {
+      setVoiceEnabled(true);
+      try {
+        await toggleListening();
+      } catch (error) {
+        setVoiceStatus('Microphone unavailable: ' + (error as Error).message);
       }
     }
-  }, [isListening]);
+  };
 
-  const toggleVoiceListening = () => {
-    if (isListening) {
-      stopVoiceListening();
-    } else {
-      startVoiceListening();
+  const handleSpeakResult = async () => {
+    if (!activeTask?.final_result) return;
+    // Local TTS only for the concise evidence-based final result.
+    await voiceService.speak(activeTask.final_result.slice(0, 500));
+  };
+
+  const handleSaveSettings = async () => {
+    setSettingsError('');
+    try {
+      const updated = await settingsService.update({
+        retention_days: retentionDays,
+        file_roots: fileRoots.join(','),
+        voice_recording_enabled: false,
+      });
+      setRetentionDays(Number(updated.retention_days) || retentionDays);
+      setFileRoots(updated.file_roots ?? fileRoots);
+      setShowSettings(false);
+    } catch (error) {
+      setSettingsError((error as Error).message || 'Failed to save settings');
     }
   };
+
+  // Drafted stop: if the user typed a stop phrase, still allow submit (they
+  // confirmed). Only a spoken stop is treated as an interrupt. We cancel the
+  // running task when a spoken stop arrives while a task is active.
+  useEffect(() => {
+    if (stopDetected && hasActiveTasks && activeTaskId && !stopScheduledRef.current) {
+      stopScheduledRef.current = true;
+      handleCancelTask(activeTaskId).finally(() => {
+        stopScheduledRef.current = false;
+        clearStopDetected();
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stopDetected, hasActiveTasks, activeTaskId]);
 
   return (
     <div style={styles.container}>
@@ -183,7 +218,14 @@ export function Dashboard() {
         <h1 style={styles.title}>JARVIS</h1>
         <div style={styles.controls}>
           <button
-            onClick={() => setVoiceEnabled(!isVoiceEnabled)}
+            onClick={() => setShowSettings(!showSettings)}
+            style={styles.button}
+            title="Settings"
+          >
+            ⚙ Settings
+          </button>
+          <button
+            onClick={handleToggleVoice}
             style={{
               ...styles.button,
               backgroundColor: isVoiceEnabled ? '#4CAF50' : '#666',
@@ -193,7 +235,7 @@ export function Dashboard() {
             🎤 Voice {isVoiceEnabled ? 'On' : 'Off'}
           </button>
           <button
-            onClick={toggleVoiceListening}
+            onClick={toggleListening}
             disabled={!isVoiceEnabled}
             style={{
               ...styles.button,
@@ -208,25 +250,135 @@ export function Dashboard() {
         </div>
       </header>
 
+      {showSettings && (
+        <div style={styles.settingsPanel}>
+          <h3 style={styles.sectionTitle}>Settings</h3>
+          <label style={styles.settingRow}>
+            Retention (days)
+            <input
+              type="number"
+              min={1}
+              value={retentionDays}
+              onChange={(e) => setRetentionDays(Math.max(1, Number(e.target.value) || 90))}
+              style={styles.input}
+            />
+          </label>
+          <label style={styles.settingRow}>
+            Approved file roots (comma separated)
+            <input
+              type="text"
+              value={fileRoots.join(', ')}
+              onChange={(e) =>
+                setFileRoots(
+                  e.target.value.split(',').map((r) => r.trim()).filter(Boolean)
+                )
+              }
+              style={styles.input}
+            />
+          </label>
+          <div style={styles.assetRow}>
+            <strong>Voice assets:</strong>{' '}
+            {voiceAssets
+              ? `STT ${voiceAssets.stt_installed ? 'installed' : 'not installed'}${
+                  voiceAssets.stt_sha256_verified ? ' (checksum verified)' : ''
+                } · TTS ${voiceAssets.tts_voice || 'unavailable'}`
+              : 'loading…'}
+            {' '}
+            <span style={styles.assetNote}>No downloads on startup.</span>
+          </div>
+          {settingsError && <div style={styles.errorText}>{settingsError}</div>}
+          <div style={styles.settingsActions}>
+            <button onClick={handleSaveSettings} style={styles.button}>
+              Save
+            </button>
+            <button
+              onClick={() => setShowSettings(false)}
+              style={{ ...styles.button, backgroundColor: '#666' }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
       <main style={styles.main}>
         {/* New Task Form */}
         <form onSubmit={handleCreateTask} style={styles.form}>
           <input
             type="text"
-            value={newTaskRequest}
-            onChange={(e) => setNewTaskRequest(e.target.value)}
-            placeholder="What would you like me to do?"
+            value={transcriptDraft || newTaskRequest}
+            onChange={(e) => {
+              setTranscriptDraft('');
+              setNewTaskRequest(e.target.value);
+            }}
+            placeholder="What would you like me to do? (or use voice)"
             style={styles.input}
-            disabled={isSubmitting}
           />
-          <button 
-            type="submit" 
-            style={styles.submitButton}
-            disabled={!newTaskRequest.trim() || isSubmitting}
-          >
-            {isSubmitting ? 'Creating...' : 'Submit'}
+          <button type="submit" style={styles.submitButton}>
+            {stopDetected ? 'Stop detected' : 'Submit'}
           </button>
         </form>
+
+        {/* Privacy / voice status strip */}
+        {(isListening || stopDetected || voiceSttAvailable !== null) && (
+          <div style={styles.privacyStrip}>
+            {isListening && (
+              <span style={{ color: '#f44336' }}>● Listening — capture stops when the dashboard hides</span>
+            )}
+            {stopDetected && (
+              <span style={{ color: '#FF9800' }}> Spoken stop detected — cancelling active task</span>
+            )}
+            {voiceSttAvailable === false && (
+              <span style={{ color: '#888' }}>
+                {' '}Local STT not installed — use Settings to install pinned model.
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Active Task Detail Card */}
+        {activeTask && (
+          <div style={styles.taskDetailCard}>
+            <div style={styles.taskDetailHeader}>
+              <span style={styles.taskDetailTitle}>Active task</span>
+              <span style={{ ...styles.taskState, color: getStateColor(activeTask.state) }}>
+                {activeTask.state}
+              </span>
+            </div>
+            <p style={styles.taskRequest}>
+              <strong>Goal:</strong> {activeTask.normalized_goal || activeTask.original_request}
+            </p>
+            <div style={styles.taskDetailGrid}>
+              <span><strong>State:</strong> {activeTask.state}</span>
+              <span><strong>Current action:</strong> {activeTask.active_action_id || '—'}</span>
+              <span><strong>Actions run:</strong> {countActions(activeTaskEvents)}</span>
+              <span><strong>Elapsed:</strong> {elapsedSince(activeTask.created_at)}</span>
+            </div>
+            {activeTask.pending_question && (
+              <p style={styles.pendingQuestion}>
+                <strong>Clarification:</strong> {activeTask.pending_question}
+              </p>
+            )}
+            {activeTask.final_result && (
+              <p style={styles.taskResult}>{activeTask.final_result}</p>
+            )}
+            {(activeTask.state === 'running' || activeTask.state === 'waiting_for_user') && (
+              <button onClick={() => handleCancelTask(activeTask.id)} style={styles.stopButton}>
+                ■ Stop
+              </button>
+            )}
+            {activeTask.state === 'interrupted' && (
+              <button onClick={() => handleResumeTask(activeTask.id)} style={styles.resumeButton}>
+                Resume
+              </button>
+            )}
+            {activeTask.final_result && (
+              <button onClick={handleSpeakResult} style={styles.button}>
+                🔊 Speak result
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Tasks List */}
         <div style={styles.tasksSection}>
@@ -236,46 +388,81 @@ export function Dashboard() {
           ) : (
             <div style={styles.taskList}>
               {tasks.map((task) => (
-                <div
-                  key={task.id}
-                  onClick={() => setActiveTask(task.id)}
-                  style={{
-                    ...styles.taskCard,
-                    borderLeft: `4px solid ${getStateColor(task.state)}`,
-                    backgroundColor: activeTaskId === task.id ? '#333' : '#2a2a2a',
-                  }}
-                >
-                  <div style={styles.taskHeader}>
-                    <span style={styles.taskState}>{task.state}</span>
-                    <span style={styles.taskDate}>
-                      {new Date(task.created_at).toLocaleDateString()}
-                    </span>
+                <div key={task.id}>
+                  <div
+                    onClick={() => setActiveTask(task.id)}
+                    style={{
+                      ...styles.taskCard,
+                      borderLeft: `4px solid ${getStateColor(task.state)}`,
+                      backgroundColor: activeTaskId === task.id ? '#333' : '#2a2a2a',
+                    }}
+                  >
+                    <div style={styles.taskHeader}>
+                      <span style={styles.taskState}>{task.state}</span>
+                      <span style={styles.taskDate}>
+                        {new Date(task.created_at).toLocaleString()}
+                      </span>
+                    </div>
+                    <p style={styles.taskRequest}>{task.original_request}</p>
+                    {task.final_result && (
+                      <p style={styles.taskResult}>{task.final_result}</p>
+                    )}
+                    <div style={styles.taskActions}>
+                      {(task.state === 'running' || task.state === 'waiting_for_user') && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleCancelTask(task.id);
+                          }}
+                          style={styles.cancelButton}
+                        >
+                          Cancel
+                        </button>
+                      )}
+                      {task.state === 'interrupted' && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleResumeTask(task.id);
+                          }}
+                          style={styles.resumeButton}
+                        >
+                          Resume
+                        </button>
+                      )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setExpandedTaskId(expandedTaskId === task.id ? null : task.id);
+                        }}
+                        style={styles.timelineButton}
+                      >
+                        {expandedTaskId === task.id ? 'Hide timeline' : 'Timeline'}
+                      </button>
+                    </div>
                   </div>
-                  <p style={styles.taskRequest}>{task.original_request}</p>
-                  {task.final_result && (
-                    <p style={styles.taskResult}>{task.final_result}</p>
-                  )}
-                  {task.state === 'running' && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleCancelTask(task.id);
-                      }}
-                      style={styles.cancelButton}
-                    >
-                      Cancel
-                    </button>
-                  )}
-                  {task.state === 'interrupted' && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleResumeTask(task.id);
-                      }}
-                      style={styles.resumeButton}
-                    >
-                      Resume
-                    </button>
+                  {expandedTaskId === task.id && activeTaskId === task.id && (
+                    <div style={styles.timeline}>
+                      <h4 style={styles.timelineTitle}>Event timeline</h4>
+                      {activeTaskEvents.length === 0 ? (
+                        <p style={styles.emptyMessage}>No events yet.</p>
+                      ) : (
+                        <ul style={styles.timelineList}>
+                          {activeTaskEvents.map((ev) => (
+                            <li key={ev.sequence_num} style={styles.timelineItem}>
+                              <span style={styles.timelineSeq}>#{ev.sequence_num}</span>{' '}
+                              <span style={styles.timelineType}>{ev.event_type}</span>
+                              <span style={styles.timelineDate}>
+                                {new Date(ev.created_at).toLocaleTimeString()}
+                              </span>
+                              <div style={styles.timelineData}>
+                                {formatEventData(ev.event_data)}
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
                   )}
                 </div>
               ))}
@@ -285,6 +472,28 @@ export function Dashboard() {
       </main>
     </div>
   );
+}
+
+function countActions(events: Array<{ event_type: string }>): number {
+  return events.filter((e) => e.event_type === 'action.started').length;
+}
+
+function elapsedSince(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0) return '0s';
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${seconds % 60}s`;
+}
+
+function formatEventData(data: Record<string, unknown>): string {
+  try {
+    const json = JSON.stringify(data);
+    return json.length > 200 ? json.slice(0, 200) + '…' : json;
+  } catch {
+    return '{}';
+  }
 }
 
 function getStateColor(state: string): string {
@@ -327,6 +536,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   controls: {
     display: 'flex',
     gap: '12px',
+    alignItems: 'center',
   },
   button: {
     padding: '8px 16px',
@@ -335,6 +545,30 @@ const styles: { [key: string]: React.CSSProperties } = {
     color: '#fff',
     cursor: 'pointer',
     fontSize: '14px',
+    backgroundColor: '#2196F3',
+  },
+  settingsPanel: {
+    padding: '16px 24px',
+    borderBottom: '1px solid #333',
+    backgroundColor: '#222',
+  },
+  settingRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    marginBottom: '12px',
+    fontSize: '14px',
+  },
+  assetRow: {
+    marginBottom: '12px',
+    fontSize: '14px',
+  },
+  assetNote: {
+    color: '#888',
+  },
+  settingsActions: {
+    display: 'flex',
+    gap: '12px',
   },
   main: {
     flex: 1,
@@ -344,7 +578,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   form: {
     display: 'flex',
     gap: '12px',
-    marginBottom: '24px',
+    marginBottom: '16px',
   },
   input: {
     flex: 1,
@@ -364,8 +598,59 @@ const styles: { [key: string]: React.CSSProperties } = {
     cursor: 'pointer',
     fontSize: '16px',
   },
+  privacyStrip: {
+    display: 'flex',
+    gap: '16px',
+    marginBottom: '16px',
+    padding: '8px 12px',
+    backgroundColor: '#241a1a',
+    borderRadius: '4px',
+    fontSize: '13px',
+  },
+  taskDetailCard: {
+    padding: '16px',
+    borderRadius: '4px',
+    backgroundColor: '#222',
+    border: '1px solid #333',
+    marginBottom: '24px',
+  },
+  taskDetailHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '8px',
+  },
+  taskDetailTitle: {
+    fontSize: '14px',
+    textTransform: 'uppercase',
+    color: '#888',
+  },
+  taskDetailGrid: {
+    display: 'flex',
+    gap: '24px',
+    flexWrap: 'wrap',
+    marginBottom: '8px',
+    fontSize: '14px',
+  },
+  pendingQuestion: {
+    marginBottom: '8px',
+    color: '#FF9800',
+    fontSize: '14px',
+  },
+  stopButton: {
+    marginTop: '8px',
+    marginRight: '8px',
+    padding: '10px 20px',
+    border: 'none',
+    borderRadius: '4px',
+    backgroundColor: '#f44336',
+    color: '#fff',
+    cursor: 'pointer',
+    fontWeight: 'bold',
+    fontSize: '14px',
+  },
   tasksSection: {
-    marginTop: '24px',
+    marginTop: '8px',
   },
   sectionTitle: {
     fontSize: '18px',
@@ -410,6 +695,10 @@ const styles: { [key: string]: React.CSSProperties } = {
     color: '#4CAF50',
     marginTop: '8px',
   },
+  taskActions: {
+    display: 'flex',
+    gap: '8px',
+  },
   cancelButton: {
     marginTop: '8px',
     padding: '6px 12px',
@@ -430,10 +719,64 @@ const styles: { [key: string]: React.CSSProperties } = {
     cursor: 'pointer',
     fontSize: '12px',
   },
+  timelineButton: {
+    marginTop: '8px',
+    padding: '6px 12px',
+    border: 'none',
+    borderRadius: '4px',
+    backgroundColor: '#444',
+    color: '#fff',
+    cursor: 'pointer',
+    fontSize: '12px',
+  },
+  timeline: {
+    padding: '12px 16px',
+    backgroundColor: '#1f1f1f',
+    borderRadius: '0 0 4px 4px',
+    borderTop: '1px solid #333',
+  },
+  timelineTitle: {
+    margin: '0 0 8px',
+    fontSize: '13px',
+    color: '#aaa',
+  },
+  timelineList: {
+    listStyle: 'none',
+    padding: 0,
+    margin: 0,
+    maxHeight: '300px',
+    overflowY: 'auto',
+  },
+  timelineItem: {
+    padding: '6px 0',
+    borderBottom: '1px solid #2a2a2a',
+    fontSize: '13px',
+  },
+  timelineSeq: {
+    color: '#666',
+  },
+  timelineType: {
+    color: '#2196F3',
+    marginRight: '8px',
+  },
+  timelineDate: {
+    color: '#666',
+    fontSize: '12px',
+  },
+  timelineData: {
+    color: '#999',
+    fontSize: '12px',
+    marginTop: '2px',
+    wordBreak: 'break-all',
+  },
   voiceStatus: {
     fontSize: '12px',
     color: '#aaa',
     marginLeft: '12px',
     alignSelf: 'center',
+  },
+  errorText: {
+    color: '#f44336',
+    marginBottom: '8px',
   },
 };
