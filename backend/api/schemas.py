@@ -17,6 +17,7 @@ class TaskState(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     INTERRUPTED = "interrupted"
+    PAUSED = "paused"
 
 
 # Task Schemas
@@ -45,9 +46,8 @@ class TaskResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     terminal_reason: Optional[str] = None
-    
-    class Config:
-        from_attributes = True
+
+    model_config = {"from_attributes": True}
 
 
 class TaskListResponse(BaseModel):
@@ -66,9 +66,8 @@ class TaskEventResponse(BaseModel):
     event_data: Dict[str, Any]
     sequence_num: int
     created_at: datetime
-    
-    class Config:
-        from_attributes = True
+
+    model_config = {"from_attributes": True}
 
 
 # Tool Execution Schemas
@@ -289,6 +288,48 @@ class ModelDecisionRunSkill(BaseModel):
     """Schema for run_skill model decision."""
     skill_id: str
     inputs: Dict[str, Any]
+
+
+# Skills Schemas
+
+class SkillSubmitRequest(BaseModel):
+    """Owner submission of a validated, versioned declarative skill.
+
+    Submissions always enter as proposals and require explicit review and
+    enablement before they become live skills.
+    """
+    skill_id: str = Field(..., min_length=1, max_length=128)
+    definition: Dict[str, Any]
+
+
+class SkillStateRequest(BaseModel):
+    """Request to enable or disable a live skill."""
+    state: str = Field(..., pattern="^(enabled|disabled)$")
+
+
+class PurgeRequest(BaseModel):
+    """Owner-triggered complete-record purge.
+
+    Provide either a retention window (`days`) or an exact `task_id`.
+    Receipts are non-sensitive; task content is never retained after purge.
+    """
+    days: Optional[int] = None
+    task_id: Optional[str] = None
+    reason: str = "owner_requested"
+
+
+class PurgeReceiptResponse(BaseModel):
+    """Non-sensitive purge receipt."""
+    task_id: str
+    reason: str
+    purged_at: datetime
+    event_count: int
+
+
+class RetentionRunResponse(BaseModel):
+    """Result of a retention/purge run."""
+    receipts: List[PurgeReceiptResponse]
+    purged_count: int
 
 
 # Onboarding Schemas

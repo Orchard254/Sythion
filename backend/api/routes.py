@@ -11,9 +11,8 @@ from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from sqlalchemy.orm import Session
 
-from backend.models.database import get_db
+from backend.models.database import get_db, Skill, Task
 from backend.services.task_runner import get_runner, TaskRunner
-from backend.services.skills_system import get_registry, initialize_default_skills
 from backend.services.task_execution_loop import run_task
 from backend.adapters.ollama_adapter import get_adapter, format_tools_for_ollama
 from backend.tools.executor import ToolExecutor
@@ -25,6 +24,8 @@ from backend.api.schemas import (
     VoiceSegmentResponse,
     SecretWriteRequest, SecretStatusResponse, SecretsListResponse,
     ModelSelectRequest, ModelSelectResponse, OnboardingStatusResponse,
+    SkillSubmitRequest, SkillStateRequest,
+    PurgeRequest, PurgeReceiptResponse, RetentionRunResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -128,11 +129,10 @@ async def create_task(
                 terminal_reason=task.terminal_reason
             )
 
-        # Initialize skills registry if not done
-        registry = get_registry()
-        if len(registry.list_skills()) == 0:
-            initialize_default_skills()
-        
+        # Count enabled skills for the execution-start event (no prototype
+        # registry; skills are validated, versioned declarative workflows).
+        enabled_skills = db.query(Skill).filter_by(state="enabled").count()
+
         # Get available tools for LLM
         tool_metadata = []
         for name in tool_executor.list_tools():
@@ -152,7 +152,7 @@ async def create_task(
             event_type="task.execution_started",
             event_data={
                 "tools_available": len(tool_metadata),
-                "skills_available": len(registry.list_skills()),
+                "skills_available": enabled_skills,
                 "started_at": task.created_at.isoformat()
             }
         )
@@ -292,12 +292,18 @@ async def resume_task(task_id: str, db: Session = Depends(get_db)):
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
         
-        # Only interrupted tasks can be resumed
-        if task.state != TaskState.INTERRUPTED.value:
+        # Only interrupted or paused tasks can be resumed
+        if task.state not in (TaskState.INTERRUPTED.value, TaskState.PAUSED.value):
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot resume task in state {task.state}. Only interrupted tasks can be resumed."
+                detail=f"Cannot resume task in state {task.state}. Only interrupted or paused tasks can be resumed."
             )
+
+        note = (
+            "Task resumed after interruption. Will re-observe before continuing."
+            if task.state == TaskState.INTERRUPTED.value
+            else "Task resumed after pause. Skill re-verified before its next step."
+        )
         
         # Transition back to running
         updated_task = await runner.transition_state(
@@ -306,7 +312,7 @@ async def resume_task(task_id: str, db: Session = Depends(get_db)):
             event_type="task.resumed",
             event_data={
                 "resumed_at": datetime.utcnow().isoformat(),
-                "note": "Task resumed after interruption. Will re-observe before continuing."
+                "note": note
             }
         )
         
@@ -457,78 +463,213 @@ async def list_tools(tool_executor: ToolExecutor = Depends(get_tool_executor)):
 
 
 @router.get("/skills", response_model=List[Dict[str, Any]])
-async def list_skills(category: Optional[str] = None):
-    """List all available skills."""
-    registry = get_registry()
-    
-    # Initialize if empty
-    if len(registry.list_skills()) == 0:
-        initialize_default_skills()
-    
-    if category:
-        from backend.services.skills_system import SkillCategory
-        try:
-            cat = SkillCategory(category)
-            skills = registry.list_skills(category=cat)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid category: {category}")
-    else:
-        skills = registry.list_skills()
-    
-    return [
-        {
-            "id": s.id,
-            "name": s.name,
-            "description": s.description,
-            "category": s.category.value,
-            "parameters": [
-                {
-                    "name": p.name,
-                    "type": p.type,
-                    "description": p.description,
-                    "required": p.required,
-                    "default": p.default
-                }
-                for p in s.parameters
-            ],
-            "risk_level": s.risk_level,
-            "requires_confirmation": s.requires_confirmation
-        }
-        for s in skills
-    ]
+async def list_skills(db: Session = Depends(get_db)):
+    """List all skills with their current validated version summary."""
+    from backend.services.skill_engine import list_skill_summaries
+    return list_skill_summaries(db)
+
+
+@router.post("/skills", response_model=Dict[str, Any])
+async def submit_skill(
+    request: SkillSubmitRequest,
+    db: Session = Depends(get_db),
+    tool_executor: ToolExecutor = Depends(get_tool_executor),
+):
+    """Submit a declarative skill for review.
+
+    Submissions are validated and stored as proposals. Every skill requires
+    explicit owner review and enablement (`POST /skills/proposals/{id}/approve`)
+    before it can run; proposed skills are never executed.
+    """
+    from backend.services.skill_engine import (
+        SkillDefinition,
+        ValidationError,
+        allowed_tool_names,
+        definition_to_json,
+        validate_definition,
+        get_skill,
+        ProposedSkill,
+    )
+
+    try:
+        definition = SkillDefinition.model_validate(request.definition)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    errors = validate_definition(definition, allowed_tool_names(tool_executor))
+    if errors:
+        raise HTTPException(status_code=422, detail=errors)
+
+    if get_skill(db, request.skill_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Skill {request.skill_id} already exists (update via a new version on the existing skill)",
+        )
+
+    proposal = ProposedSkill(
+        skill_id=request.skill_id,
+        definition=definition_to_json(definition),
+        trace_ids="[]",
+        status="proposed",
+        validation_errors="[]",
+    )
+    db.add(proposal)
+    db.commit()
+    db.refresh(proposal)
+    return {
+        "proposal_id": proposal.id,
+        "skill_id": request.skill_id,
+        "status": "proposed",
+        "detail": "Submitted for review. Approve via POST /skills/proposals/{id}/approve.",
+    }
+
+
+@router.get("/skills/proposals")
+async def list_proposals(
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """List proposed skills awaiting explicit owner review."""
+    from backend.services.skill_engine import list_proposals as engine_list
+    return engine_list(db, status=status)
+
+
+@router.post("/skills/proposals/{proposal_id}/approve")
+async def approve_proposal(
+    proposal_id: int,
+    db: Session = Depends(get_db),
+    tool_executor: ToolExecutor = Depends(get_tool_executor),
+):
+    """Explicitly review and enable a proposed skill as a live, versioned skill."""
+    from backend.services.skill_engine import (
+        approve_proposal as engine_approve,
+        get_proposal,
+    )
+
+    proposal = get_proposal(db, proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail=f"Proposal {proposal_id} not found")
+    try:
+        skill = engine_approve(db, proposal, tool_executor)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {
+        "skill_id": skill.id,
+        "state": skill.state,
+        "detail": "Skill enabled with a validated, versioned definition.",
+    }
+
+
+@router.post("/skills/proposals/{proposal_id}/reject")
+async def reject_proposal(
+    proposal_id: int,
+    db: Session = Depends(get_db),
+):
+    """Explicitly reject a proposed skill (never executed)."""
+    from backend.services.skill_engine import get_proposal, reject_proposal as engine_reject
+
+    proposal = get_proposal(db, proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail=f"Proposal {proposal_id} not found")
+    try:
+        updated = engine_reject(db, proposal)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"proposal_id": updated.id, "status": updated.status}
+
+
+@router.post("/skills/generate")
+async def generate_skill_proposals(
+    db: Session = Depends(get_db),
+    tool_executor: ToolExecutor = Depends(get_tool_executor),
+):
+    """Scan verified successful traces and propose skills for >=2 materially
+    similar runs. Nothing is executed automatically; proposals await review."""
+    from backend.services.skill_engine import (
+        Task,
+        maybe_generate_proposal,
+    )
+
+    completed = (
+        db.query(Task)
+        .filter_by(state="completed")
+        .order_by(Task.created_at.asc())
+        .all()
+    )
+    created = []
+    for task in completed:
+        proposal = maybe_generate_proposal(db, task.id, tool_executor)
+        if proposal is not None:
+            created.append(proposal.id)
+    return {"generated": created}
 
 
 @router.get("/skills/{skill_id}")
-async def get_skill(skill_id: str):
-    """Get a specific skill definition."""
-    registry = get_registry()
-    skill = registry.get(skill_id)
-    
+async def get_skill(skill_id: str, db: Session = Depends(get_db)):
+    """Get a skill's detail and all validated versions."""
+    from backend.services.skill_engine import get_skill_detail
+
+    detail = get_skill_detail(db, skill_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail=f"Skill {skill_id} not found")
+    return detail
+
+
+@router.post("/skills/{skill_id}/state", response_model=Dict[str, Any])
+async def set_skill_state(
+    skill_id: str,
+    request: SkillStateRequest,
+    db: Session = Depends(get_db),
+):
+    """Enable or disable a live skill.
+
+    Disabling a skill before a task's next unstarted step pauses that task.
+    """
+    from backend.services.skill_engine import set_skill_state as engine_set
+
+    skill = engine_set(db, skill_id, request.state)
     if not skill:
         raise HTTPException(status_code=404, detail=f"Skill {skill_id} not found")
-    
-    d = skill.definition
-    return {
-        "id": d.id,
-        "name": d.name,
-        "description": d.description,
-        "category": d.category.value,
-        "parameters": [
-            {
-                "name": p.name,
-                "type": p.type,
-                "description": p.description,
-                "required": p.required,
-                "default": p.default,
-                "enum": p.enum
-            }
-            for p in d.parameters
-        ],
-        "returns": d.returns,
-        "examples": d.examples,
-        "risk_level": d.risk_level,
-        "requires_confirmation": d.requires_confirmation
-    }
+    return {"skill_id": skill.id, "state": skill.state}
+
+
+@router.post("/retention/purge", response_model=RetentionRunResponse)
+async def purge_records(request: PurgeRequest, db: Session = Depends(get_db)):
+    """Purge complete task records (task + full audit events).
+
+    Either `days` (retention window, defaulting to the configured
+    `retention_days`) or an exact `task_id` is required. Every purge writes a
+    non-sensitive receipt; task content is never retained.
+    """
+    from backend.services.retention import (
+        get_retention_days,
+        purge_expired,
+        purge_task,
+    )
+
+    if request.task_id is not None:
+        receipt = purge_task(db, request.task_id, reason=request.reason)
+        if receipt is None:
+            raise HTTPException(status_code=404, detail=f"Task {request.task_id} not found")
+        receipts = [receipt]
+    else:
+        days = request.days or get_retention_days(db)
+        if days < 1:
+            raise HTTPException(status_code=400, detail="days must be >= 1")
+        receipts = purge_expired(db, days=days)
+
+    return RetentionRunResponse(
+        receipts=[PurgeReceiptResponse(**r) for r in receipts],
+        purged_count=len(receipts),
+    )
+
+
+@router.get("/retention/receipts", response_model=List[PurgeReceiptResponse])
+async def list_purge_receipts(db: Session = Depends(get_db)):
+    """List non-sensitive purge receipts (identity + timing only)."""
+    from backend.services.retention import list_purge_receipts as engine_receipts
+
+    return [PurgeReceiptResponse(**r) for r in engine_receipts(db)]
 
 
 @router.get("/settings", response_model=SettingsResponse)

@@ -19,9 +19,10 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_TRANSITIONS = {
     TaskState.CREATED.value: {TaskState.RUNNING.value, TaskState.CANCELLED.value, TaskState.INTERRUPTED.value},
-    TaskState.RUNNING.value: {TaskState.WAITING_FOR_USER.value, TaskState.COMPLETED.value, TaskState.FAILED.value, TaskState.CANCELLED.value, TaskState.INTERRUPTED.value},
+    TaskState.RUNNING.value: {TaskState.WAITING_FOR_USER.value, TaskState.COMPLETED.value, TaskState.FAILED.value, TaskState.CANCELLED.value, TaskState.INTERRUPTED.value, TaskState.PAUSED.value},
     TaskState.WAITING_FOR_USER.value: {TaskState.RUNNING.value, TaskState.CANCELLED.value, TaskState.INTERRUPTED.value},
     TaskState.INTERRUPTED.value: {TaskState.RUNNING.value},
+    TaskState.PAUSED.value: {TaskState.RUNNING.value, TaskState.CANCELLED.value},
     TaskState.COMPLETED.value: set(),
     TaskState.FAILED.value: set(),
     TaskState.CANCELLED.value: set(),

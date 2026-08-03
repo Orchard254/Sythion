@@ -23,7 +23,6 @@ from .api.schemas import HealthResponse, ErrorResponse
 from .api.routes import router as api_router
 from .tools.executor import ToolExecutor
 from .tools.system_tools import create_system_tools
-from .services.skills_system import initialize_default_skills
 
 import logging
 
@@ -94,10 +93,6 @@ async def lifespan(app: FastAPI):
         tool_executor.register_tool(tool)
         
     logger.info(f"Registered {len(tool_executor.list_tools())} tools")
-    
-    # Initialize skills system
-    initialize_default_skills()
-    logger.info("Skills system initialized")
     
     # Phase A handshake: expose the bound port + token to the launcher. The
     # launcher pre-selects a free port (JARVIS_PORT or --port) and reads this

@@ -43,10 +43,11 @@ class Settings(BaseSettings):
     voice_enabled: bool = True
     stt_model_path: str = ""  # Path to pinned STT model
     tts_voice_name: str = ""  # Name of pinned TTS voice
-    
-    class Config:
-        env_prefix = "JARVIS_"
-        env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+
+    model_config = {
+        "env_prefix": "JARVIS_",
+        "env_file": os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"),
+    }
 
 
 settings = Settings()

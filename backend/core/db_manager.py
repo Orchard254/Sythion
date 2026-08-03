@@ -10,6 +10,13 @@ import os
 from ..models.database import Base
 
 
+def _table_exists(conn, table_name: str) -> bool:
+    rows = conn.execute(text(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=:t"
+    ), {"t": table_name}).fetchall()
+    return bool(rows)
+
+
 class DatabaseManager:
     """Manages SQLite database connections with WAL mode."""
     
@@ -50,6 +57,26 @@ class DatabaseManager:
             }
             if "idempotency_key" not in task_columns:
                 conn.execute(text("ALTER TABLE tasks ADD COLUMN idempotency_key VARCHAR"))
+
+            # Phase F: skills gain a category column (existing DBs).
+            skill_columns = {
+                row[1] for row in conn.execute(text("PRAGMA table_info(skills)"))
+            }
+            if "category" not in skill_columns:
+                conn.execute(text("ALTER TABLE skills ADD COLUMN category VARCHAR DEFAULT 'custom'"))
+
+            # Phase F: skill versions gain a content hash; proposals carry the
+            # requested live skill id. New tables are created by create_all.
+            sv_columns = {
+                row[1] for row in conn.execute(text("PRAGMA table_info(skill_versions)"))
+            }
+            if "definition_hash" not in sv_columns:
+                conn.execute(text("ALTER TABLE skill_versions ADD COLUMN definition_hash VARCHAR"))
+            prop_columns = {
+                row[1] for row in conn.execute(text("PRAGMA table_info(proposed_skills)"))
+            } if _table_exists(conn, "proposed_skills") else set()
+            if "skill_id" not in prop_columns:
+                conn.execute(text("ALTER TABLE proposed_skills ADD COLUMN skill_id VARCHAR"))
 
             conn.execute(text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_idempotency_key "

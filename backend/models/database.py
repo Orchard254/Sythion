@@ -64,7 +64,7 @@ class Task(Base):
     
     __table_args__ = (
         CheckConstraint(
-            "state IN ('created', 'running', 'waiting_for_user', 'completed', 'failed', 'cancelled', 'interrupted')",
+            "state IN ('created', 'running', 'waiting_for_user', 'completed', 'failed', 'cancelled', 'interrupted', 'paused')",
             name="check_task_state"
         ),
     )
@@ -111,6 +111,7 @@ class Skill(Base):
     id = Column(String, primary_key=True)
     name = Column(String, nullable=False)
     description = Column(Text)
+    category = Column(String, default="custom")
     state = Column(String, default="enabled")
     created_at = Column(DateTime, default=datetime.utcnow)
     
@@ -127,11 +128,47 @@ class SkillVersion(Base):
     skill_id = Column(String, ForeignKey("skills.id"), nullable=False)
     version = Column(String, nullable=False)
     definition = Column(Text, nullable=False)
+    definition_hash = Column(String)
     validation_result = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationship
     skill = relationship("Skill", back_populates="versions")
+
+
+class ProposedSkill(Base):
+    """Skills awaiting explicit owner review and enablement.
+
+    Every skill must be explicitly reviewed and enabled by the owner before it
+    becomes a live, versioned skill. Proposed skills are never executed.
+    """
+
+    __tablename__ = "proposed_skills"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    skill_id = Column(String)  # requested live skill id (owner-submitted); None for auto-generated
+    definition = Column(Text, nullable=False)
+    trace_ids = Column(Text)  # JSON list of source task IDs (empty for owner-submitted)
+    status = Column(String, default="proposed")  # proposed | enabled | rejected
+    validation_errors = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    decided_at = Column(DateTime)
+
+
+class PurgeReceipt(Base):
+    """Non-sensitive receipt for a completed-record purge.
+
+    Receipts contain only identity and timing metadata (task ID, reason, purge
+    time, event count). They never contain task content or request text.
+    """
+
+    __tablename__ = "purge_receipts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(String, nullable=False)
+    reason = Column(String)
+    purged_at = Column(DateTime, default=datetime.utcnow)
+    event_count = Column(Integer, default=0)
 
 
 class SettingsMetadata(Base):

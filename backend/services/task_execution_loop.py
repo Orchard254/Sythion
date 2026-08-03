@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from backend.services.task_runner import TaskRunner
 from backend.services.model_engine import ModelDecisionEngine, ModelDecisionError, DecisionType
-from backend.services.skills_system import get_registry, SkillResult
+from backend.services.skill_engine import execute_skill
 from backend.tools.executor import PolicyContext, ToolExecutor, ToolOutput
 from backend.models.database import Task, TaskEvent
 from backend.api.schemas import TaskState
@@ -182,10 +182,13 @@ class TaskExecutionLoop:
                     TaskState.COMPLETED.value,
                     TaskState.FAILED.value,
                     TaskState.CANCELLED.value,
-                    TaskState.WAITING_FOR_USER.value
+                    TaskState.WAITING_FOR_USER.value,
+                    TaskState.PAUSED.value,
                 ]:
                     logger.info(f"Task {task_id} reached state: {task.state}")
                     await self._record_budget_snapshot(task_id, budget)
+                    if task.state == TaskState.COMPLETED.value:
+                        await self._propose_skill_from_trace(task_id)
                     break
                     
         except Exception as e:
@@ -202,6 +205,23 @@ class TaskExecutionLoop:
                 await heartbeat
             except (asyncio.CancelledError, Exception):
                 pass
+
+    async def _propose_skill_from_trace(self, task_id: str) -> None:
+        """Best-effort proposal generation after a verified successful task.
+
+        A proposed skill is only created after two materially similar verified
+        successful traces; proposals are never executed automatically.
+        """
+        try:
+            from backend.services.skill_engine import maybe_generate_proposal
+            proposal = maybe_generate_proposal(self.db, task_id, self.tool_executor)
+            if proposal is not None:
+                logger.info(
+                    "Generated proposed skill %s from verified trace of task %s",
+                    proposal.id, task_id,
+                )
+        except Exception as exc:  # pragma: no cover - best-effort
+            logger.warning("Proposal generation failed for task %s: %s", task_id, exc)
 
     async def _record_budget_snapshot(self, task_id: str, budget: TaskBudget) -> None:
         """Record an evidence-safe summary of per-task budget usage."""
@@ -411,45 +431,46 @@ class TaskExecutionLoop:
         task_id: str,
         params: Dict[str, Any]
     ) -> bool:
-        """Execute a skill."""
+        """Execute a declarative skill workflow.
+
+        The enabled validated skill version is pinned to the task. If the skill
+        is disabled before its next unstarted step the task is paused instead
+        of running against a stale definition.
+        """
         skill_id = params.get('skill_id')
         inputs = params.get('inputs', {})
         
         if not skill_id:
             logger.error("run_skill called without skill_id")
             return False
-        
-        registry = get_registry()
-        skill = registry.get(skill_id)
-        
-        if not skill:
-            logger.error(f"Skill not found: {skill_id}")
-            return False
-        
-        # Execute skill
-        result: SkillResult = await skill.execute(**inputs)
-        
-        # Record event
-        await self.runner.transition_state(
+        if isinstance(inputs, str):
+            try:
+                inputs = json.loads(inputs)
+            except json.JSONDecodeError:
+                inputs = {}
+        if not isinstance(inputs, dict):
+            inputs = {}
+
+        outcome = await execute_skill(
+            db=self.db,
+            runner=self.runner,
             task_id=task_id,
-            new_state=TaskState.RUNNING,  # Stay in running
-            event_type="skill.executed",
-            event_data={
-                "skill_id": skill_id,
-                "skill_name": skill.definition.name,
-                "success": result.success,
-                "output": str(result.output)[:500] if result.output else None,
-                "error": result.error,
-                "evidence": result.evidence,
-                "duration_ms": result.duration_ms
-            }
+            skill_id=skill_id,
+            inputs=inputs,
+            tool_executor=self.tool_executor,
         )
-        
-        if result.success:
-            logger.info(f"Skill {skill_id} executed successfully")
+
+        if outcome.paused:
+            logger.info(
+                f"Task {task_id} paused: skill {skill_id} disabled before its next step"
+            )
+            return False
+
+        if outcome.success:
+            logger.info(f"Skill {skill_id} executed successfully (version {outcome.version})")
             return True
         else:
-            logger.warning(f"Skill {skill_id} failed: {result.error}")
+            logger.warning(f"Skill {skill_id} failed: {outcome.error}")
             return False
     
     async def _execute_tool(

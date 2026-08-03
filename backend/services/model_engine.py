@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 
 from backend.adapters.ollama_adapter import get_adapter, format_tools_for_ollama
 from backend.tools.executor import ToolExecutor
-from backend.services.skills_system import get_registry
 from backend.api.schemas import TaskState
 from backend.core.budgets import TaskBudget, BudgetExceededError
 from pydantic import BaseModel, Field
@@ -429,11 +428,6 @@ Always think step-by-step and prefer observation before action."""
         tool_metadata = list(self._model_visible_tools())
         tool_metadata.extend(self._decision_tools())
         formatted_tools = format_tools_for_ollama(tool_metadata)
-        
-        # Add skills as callable tools
-        registry = get_registry()
-        skills = registry.list_skills()
-        # Skills are called via run_skill decision type, not as separate tools
         
         try:
             # Call Ollama Cloud
