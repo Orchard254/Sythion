@@ -256,6 +256,48 @@ Executed gates: `backend/tests/test_voice_pipeline.py` (22),
 (10), and `backend/tests/acceptance/test_voice_privacy.py` (5). The acceptance
 map "Voice assets" row is marked passing.
 
+## Declarative skills and retention (implemented)
+
+The prototype `skills_system.py` (executable Python handlers) was replaced by
+`backend/services/skill_engine.py`: skills are pure declarative, versioned
+workflows over the policy-filtered read-only tool subset.
+
+- **Restrictive references**: step inputs are literal scalars or exactly one of
+  `inputs.<field>` (a declared skill parameter) or
+  `steps.<step_id>.output.<field>` (output of an earlier step). Forward and
+  unknown references are rejected.
+- **Rejected content**: executable code (`eval(`, `exec(`, `__import__`,
+  `subprocess`, backticks, …), template/expression syntax (`{{ }}`), nested
+  structures, coordinate keys/literals, and secret-shaped keys are refused at
+  validation time. Every definition is validated before storage and its
+  `definition_hash` is recorded on the version row.
+- **Version pinning**: `execute_skill` pins the enabled validated version to
+  the task (`tasks.selected_skill_version`). Before every unstarted step the
+  pin is re-verified in the DB; if the skill was disabled or the enabled
+  version changed, the task transitions to `PAUSED` (`task.paused` event) and
+  never runs against a stale definition. Re-enabling lets the owner resume
+  (`POST /api/v1/tasks/{id}/resume`).
+- **Proposals require review**: a proposed skill is generated only after ≥2
+  materially similar *verified successful* traces (`maybe_generate_proposal`,
+  called on task completion). Proposals are never executed; they become live,
+  versioned skills only through explicit `POST /api/v1/skills/proposals/{id}/approve`
+  (or are marked `rejected`). Owner-authored definitions also enter as
+  proposals.
+- **Retention + purge** (`backend/services/retention.py`): owner-configurable
+  `retention_days` (default 90) purges complete task+event records older than
+  the window. `POST /api/v1/retention/purge` and
+  `POST /api/v1/tasks/{id}`-scoped purge write **non-sensitive purge receipts**
+  (`purge_receipts`: task id, reason, time, event count) — never request text.
+- **API**: `GET/POST /skills`, `GET /skills/proposals`,
+  `POST /skills/proposals/{id}/approve|reject`, `POST /skills/generate`,
+  `POST /skills/{id}/state`, `POST /retention/purge`, `GET /retention/receipts`.
+
+Executed gates: `backend/tests/test_skill_engine.py` (38),
+`backend/tests/test_skills_api.py` (13), `backend/tests/test_retention.py` (13),
+and `backend/tests/acceptance/test_skill_lifecycle.py` (6). The acceptance map
+"Skill lifecycle" and "Retention & purge" rows are marked passing. The release
+and distribution plan lives in `docs/release-plan.md`.
+
 ## Milestone gate
 
 No feature work beyond Phase A may proceed until the owner approves this

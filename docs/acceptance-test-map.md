@@ -26,7 +26,8 @@ milestone can be accepted.
 | Tool discovery | Model context is policy-filtered and bounded; it never contains full directories, raw UI trees, screenshots, or thinking | B | passing |
 | Target validation | Empty, wildcard, out-of-root file targets and invalid app/package IDs and missing GUI window titles are rejected deterministically before any OS action | B | passing |
 | Brain contract | Model-visible tools are the policy-filtered read-only subset exposed directly (no `execute_tool` wrapper); tool output reaches the model only as a bounded `model_summary`; context carries the current task state; reasoning/thinking fields are stripped from model responses | B | passing |
-| Skill lifecycle | Skills validate restrictive references, pin versions, require explicit enablement, and stop before an unstarted disabled step | F | planned |
+| Skill lifecycle | Skills validate restrictive references, pin versions, require explicit enablement, and stop before an unstarted disabled step | F | passing |
+| Retention & purge | Owner-configurable retention (default 90 days) purges complete task+event records; purge leaves only non-sensitive receipts | F | passing |
 | Model failure | Invalid, parallel, malformed, unavailable, rate-limited, stale-model, and exhausted-budget decisions cause no repeated mutation or local fallback | B | passing |
 | Per-task budgets | Cloud request, input/output token, action, repair, and elapsed-time budgets are tracked per task; exhaustion fails the task honestly with the matching code and records an evidence-safe snapshot event | B | passing |
 | Desktop lifecycle | Packaged app enforces single instance, launches one sidecar, shuts it down cleanly, and recovers stale leases | A | partial |
@@ -77,6 +78,10 @@ milestone can be accepted.
   transcripts, local/global stop, privacy UX, and audit viewer.
 - **F:** declarative skills, proposed-skill review, retention/purge, installer
   lifecycle, clean-machine verification, signing/distribution plan.
+  *Executed: `backend/tests/test_skill_engine.py`, `test_skills_api.py`,
+  `test_retention.py`, and `backend/tests/acceptance/test_skill_lifecycle.py`.
+  Release/installer plan: `docs/release-plan.md`. Remaining: packaged Tauri
+  shell + interactive clean-machine release run.*
 
 ## Evidence policy
 

@@ -159,12 +159,12 @@
 ## Phase 3: Skills & Recovery
 
 ### S-3.1 Skill System
-- [ ] Declarative skill definition format
-- [ ] Skill registration and validation
-- [ ] Skill versioning
-- [ ] Skill enable/disable
-- [ ] run_skill tool implementation
-- [ ] Skill proposal and review workflow
+- [x] Declarative skill definition format
+- [x] Skill registration and validation
+- [x] Skill versioning
+- [x] Skill enable/disable
+- [x] run_skill tool implementation
+- [x] Skill proposal and review workflow
 
 ### S-3.2 Crash Recovery
 - [ ] Lease heartbeat mechanism

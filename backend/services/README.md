@@ -37,42 +37,29 @@ if await runner.acquire_lease():
     await runner.release_lease()
 ```
 
-### 2. Skills System (`skills_system.py`)
-Composable skill framework for LLM-invoked actions:
-- **Skill Registry**: Central registration and discovery of skills
-- **Skill Definitions**: Typed parameters, descriptions, risk levels
-- **Execution Engine**: Async execution with validation and error handling
-- **Prompt Generation**: Auto-generate skill documentation for LLM context
-- **Categories**: SYSTEM, FILE, APPLICATION, PACKAGE, COMMUNICATION, BROWSER, MEDIA, CUSTOM
+### 2. Skill Engine (`skill_engine.py`)
+Declarative, validated, versioned skills for owner-reviewed workflows
+(Phase F). Replaces the prototype `skills_system.py` (executable-handler
+registry):
+- **Declarative definitions**: ordered steps calling the policy-filtered
+  read-only tool subset; no executable code.
+- **Restrictive references**: only `inputs.<field>` and
+  `steps.<step_id>.output.<field>` resolve; templates, coordinates, and
+  secret-shaped keys are rejected.
+- **Version pinning**: a validated version is pinned to each running task and
+  re-verified before every step; a disabled skill pauses the task.
+- **Proposals**: skills enter as proposals (auto-generated only after >=2
+  materially similar verified successful traces, or owner-submitted) and
+  require explicit review and enablement.
 
-**Built-in Skills:**
-- `system.get_time`: Get current date/time
-- `system.get_battery`: Get battery status
-- `file.read`: Read file contents
-
-**Usage:**
+**Typical usage (via API):**
 ```python
-from services.skills_system import get_registry, initialize_default_skills
-
-# Initialize default skills
-initialize_default_skills()
-
-# Get registry
-registry = get_registry()
-
-# List all skills
-skills = registry.list_skills()
-
-# Search skills
-results = registry.search_skills("battery")
-
-# Get skill and execute
-skill = registry.get("system.get_time")
-result = await skill.execute()
-print(result.output)  # ISO format datetime
-
-# Generate prompts for LLM
-prompts = registry.get_all_prompts()
+# Submit a declarative definition for review:
+POST /api/v1/skills            {"skill_id": "wf.1", "definition": {...}}
+# Enable it:
+POST /api/v1/skills/proposals/1/approve
+# Disable / enable:
+POST /api/v1/skills/wf.1/state {"state": "disabled"}
 ```
 
 ### 3. Ollama Adapter (`jarvis_backend/services/ollama_adapter.py`)
@@ -149,12 +136,13 @@ await processor.start_listening(on_speech)
 services/
 ├── __init__.py              # Service exports
 ├── task_runner.py           # Task state machine
-├── skills_system.py         # Skill registry & execution
+├── skill_engine.py          # Declarative versioned skills (Phase F)
+├── retention.py             # Retention + complete-record purge (Phase F)
 └── jarvis_backend/
     └── services/
         ├── __init__.py
         ├── ollama_adapter.py    # LLM inference
-        └── voice_service.py     # Voice processing
+        └── voice_service.py     # Voice processing (prototype, superseded by backend/services/voice_pipeline.py)
 ```
 
 ## Dependencies
