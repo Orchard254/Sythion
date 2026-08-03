@@ -216,6 +216,46 @@ Known v1 limitation: coordinate mapping (`_absolute_xy`) normalizes DPI
 against the primary monitor's virtual screen; true per-monitor DPI awareness
 is deferred.
 
+## Voice and privacy (implemented)
+
+The dashboard owns microphone permission and capture. The sidecar never opens
+the microphone: it only receives short mono 16 kHz PCM frames over the
+authenticated loopback connection (`POST /api/v1/voice/{session}/audio`) and
+returns completed-text segments for the editable transcript.
+
+- **Pinned assets, no startup downloads** (`backend/core/voice_assets.py`): one
+  STT model (`vosk-model-small-en-us-0.15`, Apache-2.0) is pinned by version,
+  license, and SHA-256 (`30f262…942498`). TTS is the OS-local SAPI5 engine
+  (pyttsx3); preferred voices are pinned by name. Nothing downloads at import
+  or startup; `POST /api/v1/voice/assets/install` is the single explicit,
+  owner-initiated, checksum-verified install path. The install refuses
+  tampered archives and path-traversal members and writes a verification
+  marker only after a verified extraction.
+- **Local VAD + completed-segment STT** (`backend/services/voice_pipeline.py`):
+  a session-scoped WebRTC VAD (webrtcvad) assembles utterances; a segment
+  completes after a sustained-silence threshold, then the local Vosk STT
+  transcribes it. There is no word-by-word interim promise — the transcript is
+  a near-live editable draft at segment completion.
+- **Local spoken stop**: every completed segment runs through
+  `detect_stop_phrase()` (word-boundary check for `stop`, `halt`, `cancel`,
+  `stop it`, `please stop`) and the result is returned as `stop_detected` so
+  the dashboard can cancel instead of submitting.
+- **Raw-audio lifecycle**: raw PCM is held in memory only while an utterance
+  is being assembled and is discarded immediately after transcription. A
+  separate owner setting (`voice_recording_enabled`) can opt into retaining
+  segment audio; session end hard-deletes whatever remains. Raw audio never
+  crosses the API boundary.
+- **Local TTS**: `POST /api/v1/voice/speak` uses SAPI5 (pyttsx3) only, and the
+  endpoint bounds text length to keep final-result narration concise.
+- **Settings** (`backend/core/settings_store.py`): whitelisted non-secret keys
+  (voice toggles, TTS voice, retention, file roots) persist to the
+  `settings_metadata` table; secrets remain in the write-only secret store.
+
+Executed gates: `backend/tests/test_voice_pipeline.py` (22), 
+`backend/tests/test_voice_assets.py` (10), `backend/tests/test_voice_api.py`
+(10), and `backend/tests/acceptance/test_voice_privacy.py` (5). The acceptance
+map "Voice assets" row is marked passing.
+
 ## Milestone gate
 
 No feature work beyond Phase A may proceed until the owner approves this

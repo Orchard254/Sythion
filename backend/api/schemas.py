@@ -340,7 +340,7 @@ class SettingsUpdate(BaseModel):
 
 
 class SettingsResponse(BaseModel):
-    """Schema for settings response."""
+    """Schema for settings response (non-secret values only)."""
     host: str
     port: int
     ollama_cloud_base_url: str
@@ -349,6 +349,9 @@ class SettingsResponse(BaseModel):
     max_actions_per_task: int
     max_cloud_requests_per_task: int
     voice_enabled: bool
+    voice_recording_enabled: bool = False
+    voice_tts_voice: str = ""
+    retention_days: int = 90
 
 
 # Health Check Schemas
@@ -367,6 +370,8 @@ class VoiceStartResponse(BaseModel):
     """Schema for voice session start response."""
     session_id: str
     status: str
+    stt_available: bool = False
+    recording_enabled: bool = False
 
 
 class VoiceAudioInput(BaseModel):
@@ -375,6 +380,37 @@ class VoiceAudioInput(BaseModel):
     audio_data: str  # Base64 encoded PCM
     sample_rate: int = 16000
     channels: int = 1
+
+
+class VoiceSegmentResponse(BaseModel):
+    """Schema for a completed speech segment (editable transcript unit)."""
+    segment_id: str
+    text: str
+    stop_detected: bool
+    audio_deleted: bool
+    stt_available: bool
+
+
+class VoiceAudioResponse(BaseModel):
+    """Schema for the audio-frame response."""
+    session_id: str
+    segments: List[VoiceSegmentResponse]
+    is_speaking: bool
+    stt_available: bool = False
+
+
+class VoiceAssetsResponse(BaseModel):
+    """Schema for pinned voice-asset status (never downloads)."""
+    stt_installed: bool
+    stt_model: str
+    stt_version: str
+    stt_license: str
+    stt_sha256_verified: bool
+    tts_provider: str
+    tts_voice: str
+    assets_dir: str
+    downloads_on_import: bool
+    downloads_on_startup: bool
 
 
 # Error Response Schema

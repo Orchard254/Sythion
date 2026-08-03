@@ -34,8 +34,8 @@ milestone can be accepted.
 | Cloud capability | Onboarding lists authenticated model IDs and proves one fake read-only native tool call before the provider is usable | B | passing |
 | Cloud onboarding | Selecting an arbitrary/stale model ID is rejected; the exact returned ID is persisted as non-secret profile metadata and takes effect on restart | B | passing |
 | Local API trust | Wrong token, wrong origin, non-loopback client, and unauthenticated WebSocket cannot invoke or observe sidecar operations | A | passing |
-| UIA threading | All UIA calls run only through one COM MTA worker; handles are reacquired for each fresh observation | D | planned |
-| Voice assets | STT/TTS assets never download at startup; explicit installation verifies pinned version, license, and checksum | E | planned |
+| UIA threading | All UIA calls run only through one COM MTA worker; handles are reacquired for each fresh observation | D | passing |
+| Voice assets | STT/TTS assets never download at startup; explicit installation verifies pinned version, license, and checksum | E | passing |
 | Event stream | Slow/disconnected clients cannot delay work; replay from `after_sequence` reconstructs exactly the committed timeline | B | passing |
 | Clean-machine release | Install, launch, stop, restart, upgrade, uninstall, and stale-sidecar recovery pass on an interactive Windows test machine | F | planned |
 

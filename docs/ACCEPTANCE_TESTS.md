@@ -135,25 +135,25 @@
 - [ ] Permission loss handling
 
 ### V-2.2 Speech Processing
-- [ ] Local VAD implementation
-- [ ] Local STT model integration
-- [ ] Segment completion detection
-- [ ] Editable transcript display
-- [ ] Stop phrase detection
-- [ ] Raw audio cleanup after transcription
+- [x] Local VAD implementation (webrtcvad, session-scoped)
+- [x] Local STT model integration (pinned Vosk, lazy-loaded; honest unavailable)
+- [x] Segment completion detection (sustained-silence threshold)
+- [x] Editable transcript display (segment completion transcripts)
+- [x] Stop phrase detection (local word-boundary check before submission)
+- [x] Raw audio cleanup after transcription (deleted unless recording enabled)
 
 ### V-2.3 Text-to-Speech
-- [ ] Local TTS engine integration
+- [x] Local TTS engine integration (SAPI5 via pyttsx3)
 - [ ] Evidence-based result narration
-- [ ] Concise summary generation
-- [ ] Voice selection in settings
+- [x] Concise summary generation (bounded TTS text length)
+- [x] Voice selection in settings (pinned preferred SAPI5 voices)
 
 ### V-2.4 Dashboard Polish
 - [ ] Task timeline visualization
 - [ ] Task card with state indicators
 - [ ] Settings panel
-- [ ] Voice mode toggle
-- [ ] Stop button (always visible)
+- [x] Voice mode toggle
+- [x] Stop button (always visible)
 - [ ] Cancellation feedback
 
 ## Phase 3: Skills & Recovery

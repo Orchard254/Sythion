@@ -21,7 +21,8 @@ from backend.api.schemas import (
     TaskCreate, TaskResponse, TaskListResponse, TaskReply,
     TaskState, HealthResponse, SettingsResponse,
     ToolExecutionRequest, ToolExecutionResponse,
-    VoiceStartResponse, VoiceAudioInput,
+    VoiceStartResponse, VoiceAudioInput, VoiceAudioResponse, VoiceAssetsResponse,
+    VoiceSegmentResponse,
     SecretWriteRequest, SecretStatusResponse, SecretsListResponse,
     ModelSelectRequest, ModelSelectResponse, OnboardingStatusResponse,
 )
@@ -531,19 +532,26 @@ async def get_skill(skill_id: str):
 
 
 @router.get("/settings", response_model=SettingsResponse)
-async def get_settings():
-    """Get current application settings."""
+async def get_settings(db: Session = Depends(get_db)):
+    """Get current application settings (non-secret values only)."""
     from backend.core.config import settings
-    
+    from backend.core.settings_store import get_settings as load_persisted
+
+    persisted = load_persisted(db)
+    file_roots = settings.file_roots or persisted.get("file_roots", [])
+
     return SettingsResponse(
         host=settings.host,
         port=settings.port,
         ollama_cloud_base_url=settings.ollama_cloud_base_url,
         selected_model=settings.selected_model,
-        file_roots=settings.file_roots,
+        file_roots=file_roots,
         max_actions_per_task=settings.max_actions_per_task,
         max_cloud_requests_per_task=settings.max_cloud_requests_per_task,
-        voice_enabled=settings.voice_enabled
+        voice_enabled=bool(persisted.get("voice_enabled", settings.voice_enabled)),
+        voice_recording_enabled=bool(persisted.get("voice_recording_enabled", False)),
+        voice_tts_voice=str(persisted.get("voice_tts_voice", "") or ""),
+        retention_days=int(persisted.get("retention_days", 90) or 90),
     )
 
 
@@ -575,19 +583,26 @@ async def delete_secret(name: str):
 
 
 @router.put("/settings")
-async def update_settings(request: Request):
-    """Update application settings."""
-    # Note: In production, settings should be persisted to a config file
-    # For now, this is a stub that acknowledges the request
+async def update_settings(request: Request, db: Session = Depends(get_db)):
+    """Update non-secret settings.
+
+    Only whitelisted keys are accepted; secrets never travel through this
+    endpoint (use the write-only secret store under /secrets instead).
+    """
+    from backend.core.settings_store import update_settings as persist_settings
+
     data = await request.json()
-    
-    # Validate and update settings would go here
-    # For security, most settings should only be configurable via Tauri frontend
-    
+    if not isinstance(data, dict) or not data:
+        raise HTTPException(status_code=400, detail="A non-empty settings object is required")
+
+    try:
+        updated = persist_settings(db, data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     return {
-        "message": "Settings update acknowledged",
-        "updated_keys": list(data.keys()),
-        "note": "Some settings require application restart"
+        "message": "Settings updated",
+        "settings": updated,
     }
 
 
@@ -685,88 +700,122 @@ async def chat_completion(request: Request):
 
 # Voice API Endpoints
 
+@router.get("/voice/assets", response_model=VoiceAssetsResponse)
+async def voice_assets_status():
+    """Report pinned voice-asset status. Never downloads anything."""
+    from backend.core.voice_assets import asset_status
+
+    return VoiceAssetsResponse(**asset_status())
+
+
+@router.post("/voice/assets/install", response_model=VoiceAssetsResponse)
+async def voice_assets_install():
+    """Explicitly install the pinned voice assets (owner-initiated only).
+
+    This is the single explicit install path; nothing downloads at import or
+    startup. Runs synchronously and verifies the pinned SHA-256 before use.
+    """
+    from backend.core.voice_assets import install_voice_assets
+
+    try:
+        status = install_voice_assets()
+    except Exception as e:
+        logger.error("Voice asset installation failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Voice asset install failed: {str(e)}")
+    return VoiceAssetsResponse(**status)
+
+
 @router.post("/voice/start", response_model=VoiceStartResponse)
-async def start_voice_session():
-    """Start a new voice processing session."""
-    from backend.jarvis_backend.services.voice_service import get_voice_processor, VoiceConfig
-    
-    config = VoiceConfig(
-        sample_rate=16000,
-        channels=1,
-        vad_sensitivity=0.5,
-        silence_duration_ms=1000
-    )
-    
-    processor = get_voice_processor(config, use_windows_audio=False)
-    session_id = await processor.start_voice_session()
-    
+async def start_voice_session(db: Session = Depends(get_db)):
+    """Start a new voice session (local VAD + STT, no audio captured by sidecar)."""
+    from backend.services.voice_pipeline import get_voice_manager
+    from backend.core.settings_store import get_setting
+
+    recording_enabled = get_setting(db, "voice_recording_enabled") == "true"
+    manager = get_voice_manager()
+    session_id = manager.start_session(recording_enabled=recording_enabled)
+
     return VoiceStartResponse(
         session_id=session_id,
-        status="listening"
+        status="listening",
+        stt_available=manager.stt_available(),
+        recording_enabled=recording_enabled,
     )
 
 
-@router.post("/voice/{session_id}/audio")
+@router.post("/voice/{session_id}/audio", response_model=VoiceAudioResponse)
 async def process_voice_audio(session_id: str, audio_input: VoiceAudioInput):
-    """Process audio frame from voice session."""
-    from backend.jarvis_backend.services.voice_service import get_voice_processor, VoiceConfig
+    """Feed a short PCM frame; return any completed segments (local processing)."""
+    from backend.services.voice_pipeline import get_voice_manager
     import base64
-    
-    # In production, maintain session state in memory/redis
-    config = VoiceConfig(
-        sample_rate=audio_input.sample_rate,
-        channels=audio_input.channels
-    )
-    
-    processor = get_voice_processor(config, use_windows_audio=False)
-    
-    # Decode base64 audio data
+
+    if audio_input.session_id != session_id:
+        raise HTTPException(status_code=400, detail="Session ID mismatch")
+
     try:
         audio_data = base64.b64decode(audio_input.audio_data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid audio data: {str(e)}")
-    
-    # Process audio and get transcription
-    text = await processor.process_voice_input(audio_data)
-    
-    return {
-        "session_id": session_id,
-        "vad_state": processor.get_vad_state(),
-        "transcription": text or "",
-        "is_speaking": processor.get_vad_state() == "speaking"
-    }
+
+    if audio_input.channels != 1:
+        raise HTTPException(status_code=400, detail="Only mono (1 channel) audio is supported")
+
+    manager = get_voice_manager()
+    completed = manager.feed_pcm(session_id, audio_data)
+    session = manager.get_session(session_id)
+    is_speaking = bool(session and session.speaking)
+
+    return VoiceAudioResponse(
+        session_id=session_id,
+        segments=[_segment_to_schema(s) for s in completed],
+        is_speaking=is_speaking,
+        stt_available=manager.stt_available(),
+    )
 
 
 @router.post("/voice/{session_id}/end")
 async def end_voice_session(session_id: str):
-    """End a voice session."""
-    from backend.jarvis_backend.services.voice_service import get_voice_processor, VoiceConfig
-    
-    config = VoiceConfig()
-    processor = get_voice_processor(config, use_windows_audio=False)
-    await processor.end_voice_session(session_id)
-    
-    return {"session_id": session_id, "status": "ended"}
+    """End a voice session; flush the final segment and delete raw audio."""
+    from backend.services.voice_pipeline import get_voice_manager
+
+    manager = get_voice_manager()
+    results = manager.end_session(session_id)
+
+    return {
+        "session_id": session_id,
+        "status": "ended",
+        "segments": [_segment_to_schema(s) for s in results],
+    }
 
 
 @router.post("/voice/speak")
 async def speak_text(request: Request):
-    """Convert text to speech."""
-    from backend.jarvis_backend.services.voice_service import get_voice_processor, VoiceConfig
+    """Convert text to speech (local/offline TTS only)."""
+    from backend.services.voice_pipeline import get_voice_manager
     import json
-    
+
     data = await request.json()
-    text = data.get("text", "")
-    
+    text = (data.get("text") or "").strip()
+
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
-    
-    config = VoiceConfig()
-    processor = get_voice_processor(config, use_windows_audio=False)
-    
-    success = await processor.speak_text(text)
-    
+    if len(text) > 1000:
+        raise HTTPException(status_code=400, detail="Text is too long for TTS")
+
+    manager = get_voice_manager()
+    success = manager.speak(text)
+
     return {
         "success": success,
-        "text": text[:100] + "..." if len(text) > 100 else text
+        "text": text[:100] + "..." if len(text) > 100 else text,
     }
+
+
+def _segment_to_schema(segment) -> VoiceSegmentResponse:
+    return VoiceSegmentResponse(
+        segment_id=segment.segment_id,
+        text=segment.text,
+        stop_detected=segment.stop_detected,
+        audio_deleted=segment.audio_bytes_deleted,
+        stt_available=segment.stt_available,
+    )
