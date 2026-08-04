@@ -6,7 +6,7 @@ import pytest
 from backend.adapters.ollama_adapter import OllamaCloudAdapter, ProviderCapabilityError
 
 
-def capability_transport(selected_model: str, tool_name: str = "jarvis_capability_probe"):
+def capability_transport(selected_model: str, tool_name: str = "sythion_capability_probe"):
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == "Bearer test-key"
         if request.url.path == "/api/tags":
@@ -85,4 +85,59 @@ async def test_capability_probe_rejects_plain_text_or_wrong_tool_call():
 
     with pytest.raises(ProviderCapabilityError, match="valid native tool call"):
         await adapter.ensure_capabilities()
+    await adapter.close()
+
+
+def rate_limited_transport():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": "rate limited"})
+
+    return httpx.MockTransport(handler)
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_probe_reports_clean_message():
+    adapter = OllamaCloudAdapter()
+    adapter.api_key = "test-key"
+    adapter.selected_model = "available-model"
+    adapter._client = httpx.AsyncClient(
+        base_url="https://ollama.com",
+        headers={"Authorization": "Bearer test-key"},
+        transport=rate_limited_transport(),
+    )
+
+    with pytest.raises(ProviderCapabilityError, match="Rate limit exceeded"):
+        await adapter.ensure_capabilities()
+    assert adapter._capability_failed_at is not None
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_capability_is_cached_for_a_cooldown(monkeypatch):
+    adapter = OllamaCloudAdapter()
+    adapter.api_key = "test-key"
+    adapter.selected_model = "available-model"
+    calls = {"n": 0}
+    transport = rate_limited_transport()
+    adapter._client = httpx.AsyncClient(
+        base_url="https://ollama.com",
+        headers={"Authorization": "Bearer test-key"},
+        transport=transport,
+    )
+
+    async def _count_send(request, *args, **kwargs):
+        calls["n"] += 1
+        return httpx.Response(429, json={"error": "rate limited"})
+
+    monkeypatch.setattr(transport, "handle_async_request", _count_send)
+
+    with pytest.raises(ProviderCapabilityError, match="Rate limit exceeded"):
+        await adapter.ensure_capabilities()
+    first_calls = calls["n"]
+
+    # A second attempt inside the cooldown window must fail locally without
+    # contacting the provider again.
+    with pytest.raises(ProviderCapabilityError, match="retry in"):
+        await adapter.ensure_capabilities()
+    assert calls["n"] == first_calls
     await adapter.close()

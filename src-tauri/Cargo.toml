@@ -1,8 +1,8 @@
 [package]
-name = "jarvis"
+name = "sythion"
 version = "0.1.0"
-description = "JARVIS desktop shell - spawns the Python sidecar and hosts the dashboard"
-authors = ["JARVIS"]
+description = "Sythion (Synth) desktop shell - spawns the Python sidecar and hosts the dashboard"
+authors = ["Sythion (Synth)"]
 edition = "2021"
 
 [build-dependencies]

@@ -1,5 +1,5 @@
 """
-Non-secret JARVIS profile metadata.
+Non-secret Sythion (Synth) profile metadata.
 
 Only non-secret configuration (currently the selected Cloud model ID) is
 persisted here, under the user-only LocalAppData directory. Secrets live in

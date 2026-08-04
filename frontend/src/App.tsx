@@ -28,9 +28,9 @@ function AppContent() {
     return (
       <div style={styles.errorContainer}>
         <h2>Connection Error</h2>
-        <p>{error || 'Unable to connect to JARVIS backend'}</p>
+        <p>{error || 'Unable to connect to Sythion (Synth) backend'}</p>
         <p style={styles.errorHint}>
-          Restart the JARVIS app, or in development re-run start_jarvis.cmd.
+          Restart the Sythion (Synth) app, or in development re-run start_sythion.cmd.
         </p>
       </div>
     );

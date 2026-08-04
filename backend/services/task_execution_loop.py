@@ -1,11 +1,12 @@
 """
-Core Task Execution Loop for JARVIS.
+Core Task Execution Loop for Sythion (Synth).
 Integrates model decisions, tool execution, and state management.
 """
 
 import asyncio
 import json
 import logging
+import os
 import uuid
 from typing import Dict, Any, Optional, List
 from datetime import datetime
@@ -37,6 +38,30 @@ class TaskExecutionLoop:
     
     MAX_ACTIONS_PER_TASK = 50
     MAX_REPAIR_ATTEMPTS = 2
+
+    # Repeated identical failing calls are a no-progress signal: after a call
+    # has failed once, an identical (tool, params) proposal is refused and the
+    # model is told to change approach; after REPEAT_HARD_FAIL_LIMIT identical
+    # proposals the task fails instead of burning more model tokens.
+    REPEAT_BLOCK_AFTER_FAILURES = 1
+    REPEAT_HARD_FAIL_LIMIT = 3
+
+    # Repeated identical *successful* calls are also no-progress: the action
+    # works but changes nothing, so the model is just spinning. After
+    # REPEAT_SPIN_BLOCK_LIMIT consecutive identical proposals the call is
+    # refused; after REPEAT_SPIN_FAIL_LIMIT the task fails instead of burning
+    # the whole action budget on unchanged re-executions.
+    REPEAT_SPIN_BLOCK_LIMIT = 3
+    REPEAT_SPIN_FAIL_LIMIT = 5
+
+    # Provider-side failures (rate limit, cloud outage, retired/unavailable
+    # model) are not repairable: no different model decision can fix them, so
+    # retrying only amplifies the outage and delays honest failure.
+    _NON_REPAIRABLE_CODES = frozenset({
+        "CLOUD_ERROR",
+        "RATE_LIMITED",
+        "MODEL_UNAVAILABLE",
+    })
     
     def __init__(
         self,
@@ -48,6 +73,14 @@ class TaskExecutionLoop:
         self.runner = task_runner
         self.tool_executor = tool_executor
         self.model_engine = ModelDecisionEngine(db_session, tool_executor)
+        # fingerprint -> number of times the model has proposed this exact
+        # (tool, params) call (failed executions + refused repeats).
+        self._call_attempts: Dict[str, int] = {}
+        # Consecutive-run tracking for the spin guard: the fingerprint of the
+        # last proposed EXECUTE_TOOL call and how many times it was proposed
+        # in a row (resets whenever a different call is proposed).
+        self._last_call_fp: Optional[str] = None
+        self._run_len: int = 0
         
     async def execute_task(self, task_id: str) -> None:
         """
@@ -111,6 +144,39 @@ class TaskExecutionLoop:
                 if task.state == TaskState.CANCELLED.value:
                     logger.info(f"Task {task_id} was cancelled")
                     break
+
+                # Check for pending action (approval/denial)
+                if task.pending_action:
+                    try:
+                        pending = json.loads(task.pending_action)
+                    except (json.JSONDecodeError, TypeError):
+                        pending = {}
+                    p_status = pending.get("status")
+                    p_tool = pending.get("tool_name")
+                    p_params = pending.get("params", {})
+                    if p_status == "approved" and p_tool:
+                        logger.info(f"Executing approved pending action: {p_tool}")
+                        task.pending_action = None
+                        self.db.commit()
+                        action_count += 1
+                        budget.record_action()
+                        await self._execute_tool(
+                            task_id,
+                            {"tool_name": p_tool, "params": p_params},
+                            approved_by_user=True,
+                        )
+                        continue
+                    elif p_status == "denied":
+                        logger.info(f"Skipping denied pending action: {p_tool}")
+                        task.pending_action = None
+                        self.db.commit()
+                        await self.runner.transition_state(
+                            task_id=task_id,
+                            new_state=TaskState.RUNNING,
+                            event_type="action.denied",
+                            event_data={"tool_name": p_tool, "params": p_params},
+                        )
+                        continue
                 
                 # Get event history for context
                 events = self._get_event_history(task_id)
@@ -136,6 +202,15 @@ class TaskExecutionLoop:
                     await self._fail_task(task_id, code=e.code, message=e.message)
                     break
                 except ModelDecisionError as e:
+                    if e.code in self._NON_REPAIRABLE_CODES:
+                        # Provider-side (rate limit, cloud outage, retired
+                        # model): fail honestly on the first attempt instead of
+                        # burning repair attempts against a dead provider.
+                        logger.warning(
+                            f"Non-repairable model failure {e.code}: {e.message}"
+                        )
+                        await self._fail_task(task_id, code=e.code, message=e.message)
+                        break
                     repair_attempts += 1
                     budget.record_repair()
                     logger.warning(f"Model decision error (attempt {repair_attempts}): {e.message}")
@@ -163,6 +238,94 @@ class TaskExecutionLoop:
                     logger.info(f"Task {task_id} was cancelled during decision; not executing")
                     break
 
+                # Repeat-failure guard: an identical call that already failed
+                # is never re-run unchanged. Refusing the repeat (instead of
+                # executing and re-asking) stops the model from burning tokens
+                # on a dead-end; if it keeps proposing the same call the task
+                # fails honestly and quickly.
+                fingerprint = None
+                if decision_type == DecisionType.EXECUTE_TOOL:
+                    fingerprint = self._call_fingerprint(params)
+                    attempts = self._call_attempts.get(fingerprint, 0)
+                    # Track consecutive identical proposals for the spin guard;
+                    # any different call resets the run.
+                    if self._last_call_fp != fingerprint:
+                        self._last_call_fp = fingerprint
+                        self._run_len = 0
+                    self._run_len += 1
+                    if attempts >= self.REPEAT_HARD_FAIL_LIMIT:
+                        await self._fail_task(
+                            task_id,
+                            code="REPEATED_ACTION_FAILURE",
+                            message=(
+                                f"Action {self._call_label(params)} was proposed "
+                                f"{attempts} times without progress; aborting instead of "
+                                "repeating the same failing approach"
+                            ),
+                        )
+                        break
+                    if attempts >= self.REPEAT_BLOCK_AFTER_FAILURES:
+                        await self.runner.transition_state(
+                            task_id=task_id,
+                            new_state=TaskState.RUNNING,
+                            event_type="action.repeat_blocked",
+                            event_data={
+                                "tool_name": params.get("tool_name"),
+                                "params": params.get("params", {}),
+                                "attempts": attempts,
+                                "reason": (
+                                    f"This exact action was already attempted {attempts} "
+                                    "time(s) without success and is now blocked. Propose a "
+                                    "different action, or complete/fail the task."
+                                ),
+                            },
+                        )
+                        self._call_attempts[fingerprint] = attempts + 1
+                        logger.warning(
+                            f"Blocked repeated failing action for task {task_id}: "
+                            f"{self._call_label(params)}"
+                        )
+                        continue
+                    # Spin guard: identical calls that keep succeeding but change
+                    # nothing are refused, then fail the task, so the model can't
+                    # burn the whole budget re-confirming the same state.
+                    if self._run_len >= self.REPEAT_SPIN_FAIL_LIMIT:
+                        await self._fail_task(
+                            task_id,
+                            code="SPINNING_ACTION",
+                            message=(
+                                f"Action {self._call_label(params)} was proposed "
+                                f"{self._run_len} consecutive times successfully without "
+                                "changing the result; aborting instead of spinning"
+                            ),
+                        )
+                        break
+                    if self._run_len >= self.REPEAT_SPIN_BLOCK_LIMIT:
+                        await self.runner.transition_state(
+                            task_id=task_id,
+                            new_state=TaskState.RUNNING,
+                            event_type="action.spin_blocked",
+                            event_data={
+                                "tool_name": params.get("tool_name"),
+                                "params": params.get("params", {}),
+                                "run_length": self._run_len,
+                                "reason": (
+                                    f"This exact action has already succeeded "
+                                    f"{self._run_len - 1} consecutive time(s) with no "
+                                    "change. It is blocked. Proceed to the next step, "
+                                    "try a different action, or complete/fail the task."
+                                ),
+                            },
+                        )
+                        logger.warning(
+                            f"Blocked repeated spinning action for task {task_id}: "
+                            f"{self._call_label(params)}"
+                        )
+                        continue
+                else:
+                    self._last_call_fp = None
+                    self._run_len = 0
+
                 # Execute the decision
                 action_count += 1
                 budget.record_action()
@@ -171,7 +334,14 @@ class TaskExecutionLoop:
                     decision_type=decision_type,
                     params=params
                 )
-                
+
+                if fingerprint:
+                    if success:
+                        self._call_attempts.pop(fingerprint, None)
+                    else:
+                        self._call_attempts[fingerprint] = \
+                            self._call_attempts.get(fingerprint, 0) + 1
+
                 if not success:
                     # Action failed - let model decide next step
                     logger.warning(f"Action failed for task {task_id}, continuing loop")
@@ -275,6 +445,28 @@ class TaskExecutionLoop:
             for e in events
         ]
     
+    @staticmethod
+    def _call_fingerprint(params: Dict[str, Any]) -> str:
+        """Canonical identity of an EXECUTE_TOOL decision: tool + sorted params."""
+        if not isinstance(params, dict):
+            return ""
+        tool_name = params.get("tool_name")
+        tool_params = params.get("params", {})
+        if isinstance(tool_params, str):
+            try:
+                tool_params = json.loads(tool_params)
+            except (json.JSONDecodeError, TypeError):
+                tool_params = {}
+        if not isinstance(tool_params, dict):
+            tool_params = {}
+        return f"{tool_name}|{json.dumps(tool_params, sort_keys=True, default=str, ensure_ascii=False)}"
+
+    @classmethod
+    def _call_label(cls, params: Dict[str, Any]) -> str:
+        """Human-readable, length-bounded label for logs and failure messages."""
+        label = cls._call_fingerprint(params)
+        return label if len(label) <= 160 else label[:157] + "..."
+
     async def _execute_decision(
         self,
         task_id: str,
@@ -348,7 +540,13 @@ class TaskExecutionLoop:
         return True
 
     def _completion_precondition_error(self, task_id: str) -> Optional[str]:
-        """Return why evidence does not permit a successful completion."""
+        """Return why evidence does not permit a successful completion.
+
+        Only *mutating* tool failures block completion.  Read-only observation
+        failures (e.g. app_focus returning WINDOW_NOT_FOUND, or app_list
+        finding no matches) are normal exploration steps and must never
+        prevent a task from completing after a subsequent success.
+        """
         task = self.db.query(Task).filter_by(id=task_id).first()
         if not task:
             return "Task no longer exists"
@@ -357,14 +555,20 @@ class TaskExecutionLoop:
 
         for event in self._get_event_history(task_id):
             event_type = event["event_type"]
-            event_data = event["event_data"]
             if event_type in {"action.uncertain", "task.interrupted"}:
                 return "An action outcome is uncertain"
-            if event_type == "tool.executed":
-                if not event_data.get("success", False):
-                    return "A tool action failed and has no recorded resolution"
-                if event_data.get("mutating") and event_data.get("verification") != "passed":
-                    return "A mutating action has no confirmed verification"
+
+        mutating_events = [
+            e["event_data"]
+            for e in self._get_event_history(task_id)
+            if e.get("event_type") == "tool.executed" and e.get("event_data", {}).get("mutating")
+        ]
+        if mutating_events:
+            last_mutating = mutating_events[-1]
+            if not last_mutating.get("success", False):
+                return "The final mutating tool action failed and has no recorded resolution"
+            if last_mutating.get("verification") != "passed":
+                return "The final mutating action has no confirmed verification"
 
         return None
     
@@ -476,7 +680,8 @@ class TaskExecutionLoop:
     async def _execute_tool(
         self,
         task_id: str,
-        params: Dict[str, Any]
+        params: Dict[str, Any],
+        approved_by_user: bool = False,
     ) -> bool:
         """Execute a tool."""
         tool_name = params.get('tool_name')
@@ -497,13 +702,42 @@ class TaskExecutionLoop:
         mutating = bool(policy.get("mutating") or policy.get("destructive") or
                         policy.get("risk_level") in {"medium", "high"})
 
-        # Cancel request may have arrived between the model call and here: never
-        # commit an action_started record for a task that is already cancelled.
         task = await self.runner.get_task(task_id)
         if not task:
             raise RuntimeError(f"Task {task_id} not found")
         if task.state == TaskState.CANCELLED.value:
             logger.info(f"Task {task_id} cancelled before tool '{tool_name}'; not executing")
+            return False
+
+        from backend.core.config import settings
+        active_autonomy = os.environ.get("SYTHION_AUTONOMY_LEVEL", settings.autonomy_level)
+        requires_confirmation = bool(policy.get("requires_confirmation"))
+        is_destructive = bool(policy.get("destructive"))
+        needs_prompt = requires_confirmation and not approved_by_user and (active_autonomy != "autonomous" or is_destructive)
+        if needs_prompt:
+            events = self._get_event_history(task_id)
+            was_denied = any(
+                e.get("event_type") == "action.denied"
+                and e.get("event_data", {}).get("tool_name") == tool_name
+                for e in events
+            )
+            if was_denied:
+                logger.info(f"Skipping execution of tool '{tool_name}' because it was previously denied by user")
+                return False
+
+            pending_data = json.dumps({
+                "tool_name": tool_name,
+                "params": tool_params,
+                "status": "awaiting",
+            })
+            await self.runner.transition_state(
+                task_id=task_id,
+                new_state=TaskState.WAITING_FOR_USER,
+                event_type="action.pending_approval",
+                event_data={"tool_name": tool_name, "params": tool_params},
+                pending_question=f"Do you approve executing tool '{tool_name}'?",
+                pending_action=pending_data,
+            )
             return False
 
         action_id = str(uuid.uuid4()) if mutating else None
@@ -533,6 +767,8 @@ class TaskExecutionLoop:
         model_summary = result.model_summary
         if not model_summary and result.data is not None:
             model_summary = json.dumps(result.data, default=str)[:200]
+        if not model_summary and result.error is not None:
+            model_summary = json.dumps(result.error, default=str)[:200]
         await self.runner.transition_state(
             task_id=task_id,
             new_state=TaskState.RUNNING,  # Stay in running

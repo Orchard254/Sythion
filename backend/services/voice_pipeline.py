@@ -2,7 +2,7 @@
 Local voice pipeline: VAD, completed-segment STT, stop detection, TTS, and
 strict raw-audio lifecycle.
 
-Privacy contract (JARVIS_FINAL_HANDOFF_BRIEF.md:174-186):
+Privacy contract (Sythion (Synth)_FINAL_HANDOFF_BRIEF.md:174-186):
 - The dashboard owns microphone permission and capture; the sidecar only
   receives short PCM frames over the authenticated loopback connection.
 - VAD and STT run locally in the sidecar. Segments are transcribed only when

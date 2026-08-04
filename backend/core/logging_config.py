@@ -1,8 +1,8 @@
 """
-Central logging configuration for JARVIS.
+Central logging configuration for Sythion (Synth).
 
 Sets up:
-- A rotating UTF-8 file handler at ~/.jarvis/jarvis.log (or JARVIS_LOG_DIR)
+- A rotating UTF-8 file handler at ~/.sythion/sythion.log (or Sythion (Synth)_LOG_DIR)
 - A console handler mirroring the same records
 - A single consistent level for all app loggers
 
@@ -16,10 +16,10 @@ import sys
 
 
 def default_log_path() -> str:
-    """Default location for the JARVIS log file."""
-    env_dir = os.environ.get("JARVIS_LOG_DIR", "")
+    """Default location for the Sythion (Synth) log file."""
+    env_dir = os.environ.get("SYTHION_LOG_DIR", "")
     if env_dir:
-        return os.path.join(env_dir, "jarvis.log")
+        return os.path.join(env_dir, "sythion.log")
     from .storage import log_path
     return log_path()
 
@@ -35,7 +35,7 @@ def configure_logging(level: int = logging.INFO) -> None:
     to invoke from both uvicorn startup and test fixtures.
     """
     root = logging.getLogger()
-    if any(getattr(h, "_jarvis_handler", False) for h in root.handlers):
+    if any(getattr(h, "_sythion_handler", False) for h in root.handlers):
         return
 
     root.setLevel(level)
@@ -53,16 +53,16 @@ def configure_logging(level: int = logging.INFO) -> None:
         )
         file_handler.setFormatter(formatter)
         file_handler.setLevel(level)
-        file_handler._jarvis_handler = True
+        file_handler._sythion_handler = True
         root.addHandler(file_handler)
     except OSError as e:
         # Logging should never crash startup; fall back to console only.
-        sys.stderr.write(f"JARVIS: could not open log file {log_path}: {e}\n")
+        sys.stderr.write(f"Sythion (Synth): could not open log file {log_path}: {e}\n")
 
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setFormatter(formatter)
     console_handler.setLevel(level)
-    console_handler._jarvis_handler = True
+    console_handler._sythion_handler = True
     root.addHandler(console_handler)
 
     # Keep library noise (httpx, uvicorn access logs) from flooding the file.

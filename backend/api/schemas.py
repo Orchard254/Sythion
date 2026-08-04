@@ -257,6 +257,12 @@ class GUIHotkeyInput(ToolInput):
     keys: List[str]
 
 
+class GUIPasteInput(ToolInput):
+    """Input for clipboard paste execution."""
+    window_title: str
+    text: Optional[str] = None
+
+
 # Control Tool Schemas
 
 class CancelTaskInput(ToolInput):
@@ -477,3 +483,30 @@ class ToolExecutionResponse(BaseModel):
     output: Optional[Any] = None
     error: Optional[str] = None
     evidence: Optional[str] = None
+
+
+# Memory Tool Schemas
+
+class MemoryStoreInput(ToolInput):
+    """Input for storing or updating a persistent memory entry."""
+    key: str
+    value: str
+    category: Optional[str] = "user_preference"
+
+
+class MemoryRecallInput(ToolInput):
+    """Input for searching or recalling stored memories."""
+    query: Optional[str] = None
+    category: Optional[str] = None
+
+
+# Web Tool Schemas
+
+class WebSearchInput(ToolInput):
+    """Input for searching the internet."""
+    query: str
+
+
+class WebFetchInput(ToolInput):
+    """Input for fetching web page content."""
+    url: str

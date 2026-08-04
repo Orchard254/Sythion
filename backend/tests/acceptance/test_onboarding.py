@@ -42,7 +42,7 @@ def _models_transport():
 @pytest.fixture
 def isolated_profile(tmp_path, monkeypatch):
     """Point the profile file at a temp path so tests never touch the real one."""
-    monkeypatch.setenv("JARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SYTHION_DATA_DIR", str(tmp_path))
     profile_module.save_profile.__globals__["data_dir"] = lambda: str(tmp_path)
     profile_module.profile_path.__globals__["data_dir"] = lambda: str(tmp_path)
     return tmp_path

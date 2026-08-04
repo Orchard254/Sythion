@@ -18,7 +18,7 @@ export function isTauri(): boolean {
 export async function resolveBridgeConfig(): Promise<BridgeConfig> {
   if (!isTauri()) {
     const controlToken = import.meta.env.DEV
-      ? import.meta.env.VITE_JARVIS_CONTROL_TOKEN || ''
+      ? import.meta.env.VITE_SYTHION_CONTROL_TOKEN || ''
       : '';
     return { baseUrl: '/api/v1', controlToken };
   }

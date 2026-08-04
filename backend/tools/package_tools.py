@@ -1,5 +1,5 @@
 """
-Package Management Tools for JARVIS
+Package Management Tools for Sythion (Synth)
 
 v1 is Windows-only and restricts package actions to fixed-argument `winget`
 operations with exact package ids. No other package manager is invoked, no
@@ -240,7 +240,7 @@ class PackageInstallTool(BaseTool):
                 if success else None,
                 error=None if success else {
                     "code": "INSTALL_FAILED",
-                    "message": f"Failed to install {package_id} (agreements or elevation may be required; JARVIS does not auto-accept)",
+                    "message": f"Failed to install {package_id} (agreements or elevation may be required; Sythion (Synth) does not auto-accept)",
                     "detail": (result.stderr or result.stdout).strip()[:2000]
                 },
                 evidence={"source": "package_manager_install"}

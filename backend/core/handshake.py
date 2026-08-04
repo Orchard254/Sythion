@@ -2,11 +2,11 @@
 Sidecar startup handshake (Phase A contract).
 
 The packaged Tauri shell and the Python sidecar coordinate exactly once per
-launch through a private, user-ACL-protected file in the JARVIS data dir:
+launch through a private, user-ACL-protected file in the Sythion (Synth) data dir:
 
 1. Launcher creates the data dir and writes ``token.json`` (fresh random token,
    user-only ACLs) *before* spawning the sidecar.
-2. Launcher starts the sidecar with ``JARVIS_HANDSHAKE_TOKEN_FILE`` pointing at
+2. Launcher starts the sidecar with ``Sythion (Synth)_HANDSHAKE_TOKEN_FILE`` pointing at
    that file.
 3. Sidecar reads the token, binds 127.0.0.1 on an ephemeral port, then writes
    ``sidecar.json`` with ``{ "port": N, "token": "..." }``.
@@ -27,7 +27,7 @@ TOKEN_FILE_NAME = "token.json"
 
 def token_file_path() -> str:
     """Return the launcher->sidecar token file path."""
-    env_path = os.environ.get("JARVIS_HANDSHAKE_TOKEN_FILE", "")
+    env_path = os.environ.get("SYTHION_HANDSHAKE_TOKEN_FILE", "")
     if env_path:
         return env_path
     return os.path.join(data_dir(), TOKEN_FILE_NAME)

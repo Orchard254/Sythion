@@ -1,5 +1,5 @@
 """
-Core configuration and constants for JARVIS backend.
+Core configuration and constants for Sythion (Synth) backend.
 """
 
 from pydantic_settings import BaseSettings
@@ -16,9 +16,10 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
     
-    # Security
+    # Security & Autonomy
     control_token: str = ""  # Set per-launch by Tauri
     development_mode: bool = False  # Enables the Vite dashboard only; never for packaged releases
+    autonomy_level: str = "guarded"  # "guarded" (default/contract) or "autonomous" (accessibility/unattended mode)
     
     # Database
     database_path: str = ""  # Set to user's local app data on Windows
@@ -45,7 +46,7 @@ class Settings(BaseSettings):
     tts_voice_name: str = ""  # Name of pinned TTS voice
 
     model_config = {
-        "env_prefix": "JARVIS_",
+        "env_prefix": "SYTHION_",
         "env_file": os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"),
     }
 
@@ -62,7 +63,7 @@ def resolve_selected_model() -> str:
     """Return the active selected Cloud model ID.
 
     Precedence:
-      1. Environment override (JARVIS_SELECTED_MODEL, dev convenience).
+      1. Environment override (SYTHION_SELECTED_MODEL, dev convenience).
       2. Persisted non-secret profile metadata (set during onboarding).
 
     This is the single resolution point for the selected model; callers must
@@ -87,7 +88,7 @@ def validate_startup_config():
             "error",
             "No Ollama API key configured. Store one via "
             "PUT /api/v1/secrets/ollama_api_key (write-only secret store) or "
-            "set JARVIS_OLLAMA_API_KEY for development. Tasks will fail until "
+            "set SYTHION_OLLAMA_API_KEY for development. Tasks will fail until "
             "this is set."
         ))
     if not resolve_selected_model():
@@ -95,7 +96,7 @@ def validate_startup_config():
             "error",
             "No model selected. Select one from the authenticated Cloud model "
             "list via POST /api/v1/onboarding/models (or set "
-            "JARVIS_SELECTED_MODEL for development). Tasks will fail until "
+            "SYTHION_SELECTED_MODEL for development). Tasks will fail until "
             "this is set."
         ))
 

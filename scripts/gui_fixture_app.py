@@ -1,5 +1,5 @@
 """
-JARVIS GUI fixture application (Phase D, TODO #82).
+Sythion (Synth) GUI fixture application (Phase D, TODO #82).
 
 A minimal native Win32 window used to exercise the real UIA driver end to end.
 It exposes, through standard Win32 controls and their built-in UIA providers:
@@ -26,7 +26,7 @@ import sys
 import win32con
 import win32gui
 
-CLASS_NAME = "JarvisGuiFixtureWindow"
+CLASS_NAME = "SythionGuiFixtureWindow"
 STATIC_ID = 100
 BUTTON_ID = 101
 EDIT_ID = 102
@@ -108,9 +108,9 @@ class FixtureApp:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="JARVIS GUI fixture app")
+    parser = argparse.ArgumentParser(description="Sythion (Synth) GUI fixture app")
     parser.add_argument("--hwnds-path", required=True)
-    parser.add_argument("--title", default="JARVIS GUI Fixture")
+    parser.add_argument("--title", default="Sythion (Synth) GUI Fixture")
     args = parser.parse_args()
 
     app = FixtureApp(args.title, args.hwnds_path)

@@ -5,7 +5,7 @@ import { useAppStore } from '../store/appStore';
 /**
  * Dashboard-owned microphone capture.
  *
- * Privacy rules (JARVIS_FINAL_HANDOFF_BRIEF.md:176):
+ * Privacy rules (Sythion (Synth)_FINAL_HANDOFF_BRIEF.md:176):
  * - Capture runs only while the dashboard is visible AND voice mode is on.
  * - It stops on close, minimize, lock, permission loss, or toggle-off.
  * - The dashboard only sends short 16 kHz mono PCM frames over the

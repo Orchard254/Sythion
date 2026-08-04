@@ -1,10 +1,11 @@
 """
-Model Decision Engine for JARVIS.
+Model Decision Engine for Sythion (Synth).
 Handles LLM orchestration, context building, and decision parsing.
 """
 
 import json
 import logging
+import os
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from sqlalchemy.orm import Session
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 class CompleteTaskInput(BaseModel):
     """Input for complete_task decision."""
-    result: str = Field(..., description="Final result of the task")
+    result: str = Field(..., description="The user-facing response message or result text. MUST be written directly to the user (e.g., 'Hello! I am doing well, how can I help you?'), NEVER a meta-summary of what you did.")
 
 
 class FailTaskInput(BaseModel):
@@ -88,9 +89,9 @@ class ModelDecisionEngine:
         self.decision_history: List[Dict[str, Any]] = []
         
     def _build_system_prompt(self) -> str:
-        """Build the system prompt for JARVIS behavior."""
+        """Build the system prompt for Sythion (Synth) behavior."""
         available_tools = ", ".join(t["name"] for t in self._model_visible_tools()) or "(none registered)"
-        return f"""You are JARVIS, a Windows 10/11 personal desktop assistant.
+        return f"""You are Sythion (Synth), an intelligent Windows 10/11 personal desktop assistant built for autonomous daily planning, device interaction, and task execution.
 
 Your role is to help users accomplish tasks on their Windows computer through safe, verified actions.
 
@@ -99,25 +100,40 @@ IMPORTANT RULES:
 2. Always observe state before taking actions
 3. Verify after every mutating operation
 4. Respect user privacy - never access files outside approved roots
-5. Do not automate browsers or execute arbitrary shell commands
+5. Do not execute arbitrary shell commands or automate browsers through the shell; however, controlling the currently focused desktop window with the gui_* tools (gui_hotkey, gui_type, gui_click, gui_paste) is allowed when the user asked you to, e.g. sending Ctrl+L or Ctrl+T and typing a URL into the focused browser window
 6. Handle errors gracefully with honest failure messages
 7. Ask for clarification when targets are ambiguous
 8. Stop immediately if the user cancels
+9. Never repeat a tool call that already failed with the same arguments; change your approach or fail the task honestly
+10. Never repeat the same tool call that already succeeded, either - if re-running it changes nothing, move on to the next step or fail the task honestly
+
+REAL-TIME RISK EVALUATION & AUTONOMY GUIDANCE:
+- Perform a real-time risk assessment before executing any mutating tool.
+- SAFE / REVERSIBLE ACTIONS (e.g. launching registered applications, creating new scratch files, focusing windows, reading system status, daily planning, organizing tasks): Execute immediately and autonomously without unnecessary interruptions.
+- DESTRUCTIVE / IRREVERSIBLE ACTIONS (e.g. deleting existing files/folders, overwriting non-empty files, uninstalling software, closing windows with potential unsaved work): You MUST call `request_user_input` first to state the specific risk, target, and impact, and ask for explicit user confirmation before touching the target.
+
+REAL-TIME MEMORY MANAGEMENT:
+- You can store user preferences, habits, profile facts, or app mappings to persistent memory using `memory_store`.
+- Call `memory_store(key="...", value="...", category="...")` whenever the user mentions a preference (e.g. "I prefer Notepad++"), profile detail, or explicit instruction ("remember this").
+- Persistent memories are automatically retrieved and injected into your prompt for every task.
+
+REAL-TIME WEB SEARCH & INTERNET ACCESS:
+- You can search the live internet for real-time news, weather, documentation, or facts using `web_search`.
+- You can fetch and read web page content using `web_fetch`.
+- Use `web_search` whenever the user asks for online information, current events, or external web lookups.
 
 AVAILABLE TOOLS (call one directly by its exact name):
 {available_tools}
 
 DECISION TYPES:
-1. complete_task - When the task is fully accomplished
+1. complete_task - MANDATORY for all completion and conversational turns. You MUST call complete_task for EVERY response, conversational remark, or task result (e.g. call complete_task(result="Understood! What would you like to work on next?")). NEVER output raw text without a tool call.
 2. fail_task - When you cannot complete the task (after max 2 repair attempts)
-3. request_user_input - When you need clarification or user confirmation
+3. request_user_input - When you need clarification, user confirmation for destructive actions, or additional parameters
 4. run_skill - To execute a registered skill workflow
 
-Call any listed tool directly with its parameters. To finish, call complete_task
-with the final result. To ask a question, call request_user_input.
+Call any listed tool directly with its parameters. To finish, call complete_task with the final result message. To ask a question or request confirmation, call request_user_input.
 
-You MUST call a tool to get real information (like the current time). Do NOT
-answer from memory - use a tool to query the system first.
+You MUST call a tool to get real information (like the current time). Do NOT answer from memory - use a tool to query the system first.
 
 Always think step-by-step and prefer observation before action."""
 
@@ -127,26 +143,35 @@ Always think step-by-step and prefer observation before action."""
         Phase B exposes only read-only, confirmation-free tools with no screen,
         UI-tree, or privacy-sensitive output. Mutating and GUI tools remain
         registered and policy-gated at the executor but are never model-visible
-        until their milestone gate passes (Phase C+).
+        until their milestone gate passes (Phase C+). The single exception is
+        app-internal mutations (`app_internal`): they change only Sythion's own
+        persistent memory, are reversible, and are instructed by the system
+        prompt, so they stay callable in normal mode.
         """
         visible = []
+        from backend.core.config import settings
+        active_autonomy = os.environ.get("SYTHION_AUTONOMY_LEVEL", settings.autonomy_level)
         for name in self.tool_executor.list_tools():
             tool = self.tool_executor.get_tool(name)
             if not tool:
                 continue
             reqs = tool.get_policy_requirements()
-            if reqs.get("mutating") or reqs.get("destructive"):
+            if reqs.get("requires_admin"):
                 continue
-            if reqs.get("requires_confirmation"):
-                continue
-            if reqs.get("risk_level") in {"medium", "high"}:
-                continue
-            if (
-                reqs.get("privacy_sensitive")
-                or reqs.get("requires_screen_access")
-                or reqs.get("requires_ui_automation")
-            ):
-                continue
+            if active_autonomy != "autonomous":
+                if reqs.get("mutating") or reqs.get("destructive"):
+                    if not reqs.get("app_internal"):
+                        continue
+                if reqs.get("requires_confirmation"):
+                    continue
+                if reqs.get("risk_level") in {"medium", "high"}:
+                    continue
+                if (
+                    reqs.get("privacy_sensitive")
+                    or reqs.get("requires_screen_access")
+                    or reqs.get("requires_ui_automation")
+                ):
+                    continue
             visible.append({
                 "name": tool.name,
                 "description": tool.description,
@@ -221,6 +246,17 @@ Always think step-by-step and prefer observation before action."""
             
         if pending_question:
             user_content += f"\nPENDING QUESTION (awaiting your next action after user response): {pending_question}\n"
+
+        # Fetch active persistent memories from DB
+        try:
+            from backend.models.database import MemoryEntry
+            memories = self.db.query(MemoryEntry).order_by(MemoryEntry.updated_at.desc()).limit(20).all()
+            if memories:
+                user_content += "\nPERSISTENT MEMORY & USER PREFERENCES:\n"
+                for m in memories:
+                    user_content += f"- [{m.category}] {m.key}: {m.value}\n"
+        except Exception as e:
+            logger.warning(f"Could not load memory entries: {e}")
         
         # Add recent event history (last 10 events)
         if event_history:

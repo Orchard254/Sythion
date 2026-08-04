@@ -37,7 +37,7 @@ from backend.api.schemas import (
     GUISetValueInput,
 )
 
-FIXTURE_TITLE = "JARVIS GUI Fixture"
+FIXTURE_TITLE = "Sythion (Synth) GUI Fixture"
 
 
 def _fixture_script() -> str:
@@ -67,7 +67,7 @@ def fixture_window():
     if gate:
         pytest.skip(f"no interactive desktop available: {gate['code']}")
 
-    tmpdir = tempfile.mkdtemp(prefix="jarvis-fixture-")
+    tmpdir = tempfile.mkdtemp(prefix="sythion-fixture-")
     hwnds_path = os.path.join(tmpdir, "hwnds.json")
     proc = subprocess.Popen(
         [sys.executable, _fixture_script(), "--hwnds-path", hwnds_path, "--title", FIXTURE_TITLE],

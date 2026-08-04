@@ -1,4 +1,4 @@
-# JARVIS Acceptance Test Map
+# Sythion (Synth) Acceptance Test Map
 
 ## Phase -1: Foundation & Tooling
 

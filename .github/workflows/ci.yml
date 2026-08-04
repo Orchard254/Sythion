@@ -83,4 +83,4 @@ jobs:
         run: npx --prefix frontend tauri build --no-bundle
 
       - name: Assert the shell binary was produced
-        run: Test-Path "src-tauri/target/release/jarvis.exe"
+        run: Test-Path "src-tauri/target/release/sythion.exe"

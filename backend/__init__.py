@@ -1,5 +1,5 @@
 """
-JARVIS Backend - Python FastAPI Sidecar
+Sythion (Synth) Backend - Python FastAPI Sidecar
 Windows 10/11 Personal Desktop Assistant
 """
 

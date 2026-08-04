@@ -170,6 +170,35 @@ async def test_app_close_graceful_succeeds_when_window_gone(app_executor, monkey
 
 
 @pytest.mark.asyncio
+async def test_app_focus_resolves_registry_guid_to_display_name(app_executor, monkeypatch):
+    """app_list returns registry GUIDs as `id`; app_focus must accept them and
+    focus via UI Automation using the resolved display name."""
+    guid = "{CCFFC2EC-F561-3EF1-8038-F3608B52F935}"
+    monkeypatch.setattr("backend.tools.app_tools._display_name_for_identifier", lambda app_id: "Google Chrome")
+    focused = {}
+
+    def _fake_focus(title):
+        focused["title"] = title
+        return {"ok": True, "window": {"hwnd": 7, "title": "gemma4 - Google Chrome", "pid": 1234, "foreground": True}}
+
+    monkeypatch.setattr("tools.gui_tools._uia_driver", types.SimpleNamespace(focus=_fake_focus))
+
+    async def _patched_run(fn):
+        return fn()
+
+    monkeypatch.setattr("tools.gui_tools._run_on_worker", _patched_run)
+    monkeypatch.setattr("tools.gui_tools._desktop_gate", lambda: None)
+    monkeypatch.setattr("tools.gui_tools._target_window_safety", lambda hwnd, title: None)
+
+    out = await _run(app_executor, "app_focus", {"app_id": guid})
+    assert out.success
+    assert focused["title"] == "Google Chrome"
+    assert out.data["window_handle"] == 7
+    assert out.data["title"] == "gemma4 - Google Chrome"
+    assert out.data["app_id"] == "Google Chrome"
+
+
+@pytest.mark.asyncio
 async def test_app_list_registry_discovery_returns_identities(app_executor, monkeypatch):
     """app_list returns the same registered identities launch resolves."""
     discovered = [
@@ -180,3 +209,39 @@ async def test_app_list_registry_discovery_returns_identities(app_executor, monk
     out = await _run(app_executor, "app_list", {"search_term": "alp"})
     assert out.success
     assert out.data["applications"] == [discovered[0]]
+
+
+def test_derive_exe_app_paths_fallback_resolves_chrome(monkeypatch):
+    """A Chrome-style entry (no DisplayIcon/InstallLocation) resolves via App Paths."""
+    from backend.tools import app_tools as at
+    exe = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    monkeypatch.setattr(at, "_registry_value", lambda key, name: None)
+    monkeypatch.setattr(at, "_local_existing", lambda path: True)
+    monkeypatch.setattr(at, "_iter_app_paths_entries", lambda: [("chrome", exe)])
+    assert at._derive_exe(object(), "Google Chrome", "") == exe
+
+
+def test_derive_exe_app_paths_skips_unrelated_stem(monkeypatch):
+    from backend.tools import app_tools as at
+    monkeypatch.setattr(at, "_registry_value", lambda key, name: None)
+    monkeypatch.setattr(at, "_local_existing", lambda path: True)
+    monkeypatch.setattr(at, "_iter_app_paths_entries", lambda: [("vlc", r"C:\x\vlc.exe")])
+    assert at._derive_exe(object(), "Google Chrome", "") is None
+
+
+def test_derive_exe_app_paths_skips_missing_file(monkeypatch):
+    from backend.tools import app_tools as at
+    monkeypatch.setattr(at, "_registry_value", lambda key, name: None)
+    monkeypatch.setattr(at, "_local_existing", lambda path: False)
+    monkeypatch.setattr(at, "_iter_app_paths_entries", lambda: [("chrome", r"C:\missing\chrome.exe")])
+    assert at._derive_exe(object(), "Google Chrome", "") is None
+
+
+def test_derive_exe_uninstall_icon_wins_over_app_paths(monkeypatch):
+    from backend.tools import app_tools as at
+    real = r"C:\real\app.exe"
+    app_paths = r"C:\other\app.exe"
+    monkeypatch.setattr(at, "_registry_value", lambda key, name: real if name == "DisplayIcon" else None)
+    monkeypatch.setattr(at, "_local_existing", lambda path: True)
+    monkeypatch.setattr(at, "_iter_app_paths_entries", lambda: [("app", app_paths)])
+    assert at._derive_exe(object(), "App", "") == real

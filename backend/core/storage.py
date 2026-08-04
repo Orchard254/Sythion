@@ -1,9 +1,9 @@
 """
-User-local data storage for JARVIS.
+User-local data storage for Sythion (Synth).
 
 All persistent data lives under the current user's LocalAppData directory
 with user-only Windows ACLs, per the approved data-lifecycle contract
-(JARVIS_FINAL_HANDOFF_BRIEF.md:65). Paths are centralized here so the
+(Sythion (Synth)_FINAL_HANDOFF_BRIEF.md:65). Paths are centralized here so the
 database, logs, handshake, and profile lock always agree.
 """
 
@@ -16,8 +16,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Legacy ~/.jarvis fallback (kept for migration; production uses LocalAppData).
-LEGACY_DATA_DIR = os.path.join(os.path.expanduser("~"), ".jarvis")
+# Legacy ~/.sythion fallback (kept for migration; production uses LocalAppData).
+LEGACY_DATA_DIR = os.path.join(os.path.expanduser("~"), ".sythion")
 
 
 def _local_app_data_dir() -> Optional[str]:
@@ -30,19 +30,19 @@ def _local_app_data_dir() -> Optional[str]:
 
 
 def data_dir() -> str:
-    """Return (and create) the user-local JARVIS data directory.
+    """Return (and create) the user-local Sythion (Synth) data directory.
 
-    Windows: ``%LOCALAPPDATA%\\JARVIS``. Non-Windows: a temp-scoped fallback so
+    Windows: ``%LOCALAPPDATA%\\Sythion (Synth)``. Non-Windows: a temp-scoped fallback so
     tests and non-production runs still work. The directory is created with
     user-only ACLs on Windows.
     """
-    env_dir = os.environ.get("JARVIS_DATA_DIR", "")
+    env_dir = os.environ.get("SYTHION_DATA_DIR", "")
     if env_dir:
         base = env_dir
     elif _local_app_data_dir():
-        base = os.path.join(_local_app_data_dir(), "JARVIS")
+        base = os.path.join(_local_app_data_dir(), "Sythion (Synth)")
     else:
-        base = os.path.join(tempfile.gettempdir(), "jarvis-data")
+        base = os.path.join(tempfile.gettempdir(), "sythion-data")
 
     _ensure_private_dir(base)
     return base
@@ -51,7 +51,7 @@ def data_dir() -> str:
 def _ensure_private_dir(path: str) -> None:
     """Create ``path`` if needed and lock it down to the current user on Windows."""
     if os.path.exists(path) and not os.path.isdir(path):
-        raise NotADirectoryError(f"JARVIS data path exists and is not a directory: {path}")
+        raise NotADirectoryError(f"Sythion (Synth) data path exists and is not a directory: {path}")
 
     os.makedirs(path, exist_ok=True)
 
@@ -66,7 +66,7 @@ def _restrict_acl_windows(path: str) -> None:
     """Replace the ACL of ``path`` with one granting only the current user.
 
     Removes inherited permissions so other local users and the well-known
-    Users group cannot read or modify JARVIS data. Uses pywin32 directly
+    Users group cannot read or modify Sythion (Synth) data. Uses pywin32 directly
     (no subprocess) to keep the sidecar single-process.
     """
     import win32api
@@ -102,7 +102,7 @@ def _restrict_acl_windows(path: str) -> None:
 
 def database_path() -> str:
     """Return the SQLite database file path."""
-    return os.path.join(data_dir(), "jarvis.db")
+    return os.path.join(data_dir(), "sythion.db")
 
 
 def log_dir() -> str:
@@ -112,7 +112,7 @@ def log_dir() -> str:
 
 def log_path() -> str:
     """Return the main log file path."""
-    return os.path.join(log_dir(), "jarvis.log")
+    return os.path.join(log_dir(), "sythion.log")
 
 
 def handshake_path() -> str:
@@ -126,7 +126,7 @@ def lock_path() -> str:
 
 
 def migrate_legacy_data_dir() -> bool:
-    """Copy legacy ~/.jarvis data into LocalAppData if LocalAppData is empty.
+    """Copy legacy ~/.sythion data into LocalAppData if LocalAppData is empty.
 
     Returns True when a migration occurred. Non-destructive: the legacy
     directory is left in place.

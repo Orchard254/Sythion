@@ -1,7 +1,7 @@
 """
 Voice asset pinning and explicit owner-initiated installation.
 
-Policy (JARVIS_FINAL_HANDOFF_BRIEF.md:182): choose one STT model and one TTS
+Policy (Sythion (Synth)_FINAL_HANDOFF_BRIEF.md:182): choose one STT model and one TTS
 voice, pin their version/license/checksum, and either bundle them in the signed
 installer or offer an explicit owner-initiated verified download. Voice assets
 are NEVER downloaded at import or application startup; every download is
@@ -137,7 +137,7 @@ def _stt_checksum_verified() -> bool:
     manually copied model without the marker reports unverified rather than
     silently trusting it.
     """
-    marker = os.path.join(stt_model_path(), ".jarvis-verified")
+    marker = os.path.join(stt_model_path(), ".sythion-verified")
     return os.path.isfile(marker)
 
 
@@ -217,7 +217,7 @@ def _download_pinned_archive() -> "tuple[str, bool]":
     """
     import urllib.request
 
-    fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="jarvis-stt-")
+    fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="sythion-stt-")
     os.close(fd)
     logger.info("Downloading pinned STT model from %s", STT_MODEL_URL)
     try:
@@ -285,7 +285,7 @@ def _extract_stt_model(archive_path: str) -> None:
             shutil.rmtree(final_dir, ignore_errors=True)
         os.replace(extracted, final_dir)
         # Write the verification marker only after a successful move.
-        with open(os.path.join(final_dir, ".jarvis-verified"), "w") as f:
+        with open(os.path.join(final_dir, ".sythion-verified"), "w") as f:
             f.write(_expected_checksum() + "\n")
     finally:
         shutil.rmtree(staging, ignore_errors=True)

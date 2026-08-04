@@ -34,7 +34,7 @@ async def test_write_is_atomic_and_verified(file_executor, tmp_path):
     assert out.data["verified"] is True
     assert out.evidence["verification"] == "passed"
     assert target.read_text(encoding="utf-8") == "first"
-    assert not (tmp_path / "atomic.txt.jarvis-tmp").exists()
+    assert not (tmp_path / "atomic.txt.sythion-tmp").exists()
 
 
 @pytest.mark.asyncio
@@ -105,7 +105,7 @@ async def test_cancelled_write_leaves_previous_content(file_executor, tmp_path, 
     assert out.error["code"] == "CANCELLED"
     assert target.read_text(encoding="utf-8") == "original"
     # No temp file left behind.
-    assert not (tmp_path / "guarded.txt.jarvis-tmp").exists()
+    assert not (tmp_path / "guarded.txt.sythion-tmp").exists()
 
 
 @pytest.mark.asyncio

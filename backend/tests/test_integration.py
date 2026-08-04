@@ -1,5 +1,5 @@
 """
-Integration tests for JARVIS core systems.
+Integration tests for Sythion (Synth) core systems.
 Tests the model decision engine, task execution loop, and API integration.
 """
 
@@ -53,7 +53,7 @@ class TestModelDecisionEngine:
         engine = ModelDecisionEngine(db_session, tool_executor)
         prompt = engine._build_system_prompt()
         
-        assert "JARVIS" in prompt
+        assert "Sythion (Synth)" in prompt
         assert "Windows 10/11" in prompt
         assert "IMPORTANT RULES" in prompt
         assert "AVAILABLE TOOLS" in prompt

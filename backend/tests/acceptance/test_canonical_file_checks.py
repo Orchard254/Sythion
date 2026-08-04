@@ -30,10 +30,10 @@ def _can_create_symlinks() -> bool:
     if not hasattr(os, "symlink"):
         return False
     try:
-        probe = os.path.join(os.environ.get("TEMP", "."), "jarvis_link_probe")
+        probe = os.path.join(os.environ.get("TEMP", "."), "sythion_link_probe")
         if os.path.exists(probe):
             os.remove(probe)
-        target = os.path.join(os.environ.get("TEMP", "."), "jarvis_link_probe_target")
+        target = os.path.join(os.environ.get("TEMP", "."), "sythion_link_probe_target")
         if os.path.exists(target):
             os.remove(target)
         os.symlink(target, probe)

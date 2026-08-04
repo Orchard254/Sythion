@@ -1,5 +1,5 @@
 """
-Authentication middleware for JARVIS API.
+Authentication middleware for Sythion (Synth) API.
 Validates the per-launch control token on all requests.
 """
 

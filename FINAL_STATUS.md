@@ -1,4 +1,4 @@
-# 🎯 JARVIS - Final Project Status
+# 🎯 Sythion (Synth) - Final Project Status
 
 ## Executive Summary
 
@@ -7,7 +7,7 @@
 > baseline is [`docs/architecture.md`](docs/architecture.md), with required
 > gates in [`docs/acceptance-test-map.md`](docs/acceptance-test-map.md).
 
-**JARVIS** is a Windows 10/11 desktop assistant with LLM-powered task execution, tool use, GUI automation, and a voice pipeline abstraction. The project has achieved **Phase 3 Complete** status with a working backend, browser dashboard, and 74 passing tests. Note: voice STT/TTS run in stub mode unless the optional Whisper/SAPI5 components are installed, and a Tauri desktop shell is planned but not yet built.
+**Sythion (Synth)** is a Windows 10/11 desktop assistant with LLM-powered task execution, tool use, GUI automation, and a voice pipeline abstraction. The project has achieved **Phase 3 Complete** status with a working backend, browser dashboard, and 74 passing tests. Note: voice STT/TTS run in stub mode unless the optional Whisper/SAPI5 components are installed, and a Tauri desktop shell is planned but not yet built.
 
 ---
 
@@ -112,7 +112,7 @@
 | `backend/services/model_engine.py` | 351 | LLM orchestration |
 | `backend/services/task_execution_loop.py` | 406 | Core execution loop |
 | `backend/tools/gui_tools.py` | 1,449 | GUI automation |
-| `backend/jarvis_backend/services/voice_service.py` | 348 | Voice pipeline |
+| `backend/sythion_backend/services/voice_service.py` | 348 | Voice pipeline |
 | `backend/api/routes.py` | 427 | REST API endpoints |
 | `backend/tests/test_integration.py` | 357 | Integration tests |
 | `backend/tests/test_gui_tools.py` | 503 | GUI tool tests |
@@ -126,21 +126,21 @@
 
 ### Backend
 ```bash
-cd jarvis/backend
+cd sythion/backend
 pip install -r requirements.txt
 python -m uvicorn backend.main:app --reload
 ```
 
 ### Frontend
 ```bash
-cd jarvis/frontend
+cd sythion/frontend
 npm install
 npm run dev
 ```
 
 ### Run Tests
 ```bash
-cd jarvis/backend
+cd sythion/backend
 pytest tests/ -v
 ```
 

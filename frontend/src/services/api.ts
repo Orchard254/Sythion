@@ -22,13 +22,13 @@ const getControlToken = () => {
     return bridgeControlToken;
   }
 
-  const desktopToken = sessionStorage.getItem('jarvis_control_token');
+  const desktopToken = sessionStorage.getItem('sythion_control_token');
   if (desktopToken) {
     return desktopToken;
   }
 
   if (import.meta.env.DEV) {
-    return import.meta.env.VITE_JARVIS_CONTROL_TOKEN || '';
+    return import.meta.env.VITE_SYTHION_CONTROL_TOKEN || '';
   }
 
   return '';

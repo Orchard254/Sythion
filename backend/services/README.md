@@ -1,6 +1,6 @@
-# JARVIS Backend Services
+# Sythion (Synth) Backend Services
 
-This directory contains the core backend services for the JARVIS AI assistant.
+This directory contains the core backend services for the Sythion (Synth) AI assistant.
 
 ## Services Implemented
 
@@ -62,7 +62,7 @@ POST /api/v1/skills/proposals/1/approve
 POST /api/v1/skills/wf.1/state {"state": "disabled"}
 ```
 
-### 3. Ollama Adapter (`jarvis_backend/services/ollama_adapter.py`)
+### 3. Ollama Adapter (`sythion_backend/services/ollama_adapter.py`)
 LLM inference service for local/remote Ollama instances:
 - **Chat Completions**: Multi-turn conversation support
 - **Streaming**: Async streaming responses
@@ -72,7 +72,7 @@ LLM inference service for local/remote Ollama instances:
 
 **Usage:**
 ```python
-from jarvis_backend.services import OllamaAdapter, OllamaConfig, ChatMessage
+from sythion_backend.services import OllamaAdapter, OllamaConfig, ChatMessage
 
 config = OllamaConfig(
     base_url="http://localhost:11434",
@@ -97,7 +97,7 @@ if await adapter.health_check():
         print(chunk, end="", flush=True)
 ```
 
-### 4. Voice Service (`jarvis_backend/services/voice_service.py`)
+### 4. Voice Service (`sythion_backend/services/voice_service.py`)
 Voice processing pipeline (VAD, STT, TTS):
 - **VAD (Voice Activity Detection)**: Energy-based speech detection
 - **STT (Speech-to-Text)**: Whisper integration for transcription
@@ -106,7 +106,7 @@ Voice processing pipeline (VAD, STT, TTS):
 
 **Usage:**
 ```python
-from jarvis_backend.services import VoiceProcessor, VoiceConfig
+from sythion_backend.services import VoiceProcessor, VoiceConfig
 
 config = VoiceConfig(
     sample_rate=16000,
@@ -117,7 +117,7 @@ config = VoiceConfig(
 processor = VoiceProcessor(config)
 
 # Speak text
-await processor.speak_text("Hello, I am JARVIS")
+await processor.speak_text("Hello, I am Sythion (Synth)")
 
 # Transcribe audio
 audio_data = b"..."  # Raw audio bytes
@@ -138,7 +138,7 @@ services/
 ├── task_runner.py           # Task state machine
 ├── skill_engine.py          # Declarative versioned skills (Phase F)
 ├── retention.py             # Retention + complete-record purge (Phase F)
-└── jarvis_backend/
+└── sythion_backend/
     └── services/
         ├── __init__.py
         ├── ollama_adapter.py    # LLM inference
@@ -157,7 +157,7 @@ services/
 
 Run service tests:
 ```bash
-cd /workspace/jarvis/backend
+cd /workspace/sythion/backend
 python -m pytest services/ -v
 ```
 

@@ -24,7 +24,7 @@ async function initBridge(): Promise<void> {
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  throw new Error('JARVIS sidecar did not become ready');
+  throw new Error('Sythion (Synth) sidecar did not become ready');
 }
 
 export function useAppInit() {

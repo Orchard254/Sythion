@@ -1,8 +1,8 @@
 //! Sidecar launch + startup handshake (Phase A contract), implemented in Rust.
 //!
 //! Replicates `scripts/launch_sidecar.py` for the packaged shell:
-//!   1. Write a fresh per-launch token to `%LOCALAPPDATA%\JARVIS\token.json`.
-//!   2. Spawn exactly one Python sidecar with `JARVIS_HANDSHAKE_TOKEN_FILE`.
+//!   1. Write a fresh per-launch token to `%LOCALAPPDATA%\Sythion (Synth)\token.json`.
+//!   2. Spawn exactly one Python sidecar with `Sythion (Synth)_HANDSHAKE_TOKEN_FILE`.
 //!   3. Poll `sidecar.json` for the bound port + token.
 //!   4. Publish the resolved base URL + token to the frontend bridge.
 //!
@@ -41,9 +41,9 @@ fn local_app_data_dir() -> PathBuf {
 }
 
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("JARVIS_DATA_DIR")
+    std::env::var_os("Sythion (Synth)_DATA_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| local_app_data_dir().join("JARVIS"))
+        .unwrap_or_else(|| local_app_data_dir().join("Sythion (Synth)"))
 }
 
 fn generate_token() -> String {
@@ -74,12 +74,12 @@ fn write_token_file(dir: &PathBuf, token: &str) -> PathBuf {
 }
 
 fn resolve_python() -> (PathBuf, PathBuf) {
-    if let Ok(exe) = std::env::var("JARVIS_PYTHON") {
+    if let Ok(exe) = std::env::var("Sythion (Synth)_PYTHON") {
         if !exe.is_empty() {
             return (PathBuf::from(exe), std::env::current_dir().unwrap_or_default());
         }
     }
-    if let Ok(dir) = std::env::var("JARVIS_SIDECAR_DIR") {
+    if let Ok(dir) = std::env::var("Sythion (Synth)_SIDECAR_DIR") {
         if !dir.is_empty() {
             return (PathBuf::from("python"), PathBuf::from(dir));
         }
@@ -131,9 +131,9 @@ pub fn spawn_sidecar() -> Result<Child, String> {
         .arg("127.0.0.1")
         .arg("--port")
         .arg(port.to_string())
-        .env("JARVIS_HANDSHAKE_TOKEN_FILE", &token_file)
-        .env("JARVIS_PORT", port.to_string())
-        .env("JARVIS_DEVELOPMENT_MODE", "false")
+        .env("Sythion (Synth)_HANDSHAKE_TOKEN_FILE", &token_file)
+        .env("Sythion (Synth)_PORT", port.to_string())
+        .env("Sythion (Synth)_DEVELOPMENT_MODE", "false")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -164,11 +164,11 @@ pub fn spawn_watcher(app_handle: tauri::AppHandle) {
                 .map(|c| c.try_wait().ok().flatten().is_some())
                 .unwrap_or(false);
             if child_exited {
-                eprintln!("[jarvis] sidecar exited before writing its handshake");
+                eprintln!("[sythion] sidecar exited before writing its handshake");
                 return;
             }
             std::thread::sleep(Duration::from_millis(500));
         }
-        eprintln!("[jarvis] timed out waiting for the sidecar handshake");
+        eprintln!("[sythion] timed out waiting for the sidecar handshake");
     });
 }

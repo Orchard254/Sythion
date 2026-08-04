@@ -26,6 +26,7 @@ from tools.gui_tools import (
     _desktop_gate,
     _target_window_safety,
     _hotkey_error,
+    _key_vk,
     _is_elevated,
     _session_accepts_input,
 )
@@ -110,7 +111,7 @@ class TestUIAWorker:
 
         assert worker.run(probe) == 42
         assert worker.run(probe) == 42
-        assert names == ["jarvis-uia-mta", "jarvis-uia-mta"]
+        assert names == ["sythion-uia-mta", "sythion-uia-mta"]
         worker.stop()
 
     def test_worker_propagates_call_exceptions(self):
@@ -262,6 +263,11 @@ class TestHotkeyValidation:
         assert _hotkey_error(["ctrl", "c"]) is None
         assert _hotkey_error(["ctrl", "v"]) is None
 
+    def test_return_is_enter_alias(self):
+        assert _hotkey_error(["Return"]) is None
+        assert _hotkey_error(["return"]) is None
+        assert _key_vk("return") == _key_vk("enter") == 0x0D
+
 
 # --------------------------------------------------------------------------
 # Tool execute paths (fake driver on the real MTA worker).
@@ -317,7 +323,21 @@ class TestGUIFocusTool:
         result = await tool.execute(GUIFocusInput(window_title="Notepad"))
         assert result.success is True
         assert result.data["focused_window"] == "Notepad"
+        assert result.data["hwnd"] == 0x1234
         assert gui_env.calls[0][0] == "focus"
+
+    @pytest.mark.asyncio
+    async def test_focus_reports_actual_window_not_requested_title(self, gui_env, monkeypatch):
+        # The driver substring-matches "Chrome" and focuses "Usage - Chrome";
+        # the tool must report what actually got focus, not what was requested.
+        monkeypatch.setattr(
+            gui_env, "focus",
+            lambda *a: {"ok": True, "window": {"hwnd": 0x1234, "title": "Usage - Chrome", "foreground": True}})
+        tool = GUIFocusTool()
+        result = await tool.execute(GUIFocusInput(window_title="Chrome"))
+        assert result.success is True
+        assert result.data["focused_window"] == "Usage - Chrome"
+        assert result.data["hwnd"] == 0x1234
 
     @pytest.mark.asyncio
     async def test_focus_window_not_found(self, gui_env, monkeypatch):

@@ -1,5 +1,5 @@
 """
-Tool executor framework for JARVIS.
+Tool executor framework for Sythion (Synth).
 Executes typed tools with policy evaluation and verification.
 """
 
@@ -248,7 +248,7 @@ class ToolExecutor:
         if requirements.get("requires_admin"):
             return {
                 "code": "ELEVATION_NOT_ALLOWED",
-                "message": "JARVIS only performs standard-user actions",
+                "message": "Sythion (Synth) only performs standard-user actions",
             }
         if requirements.get("requires_confirmation") and not (
             policy_context and policy_context.direct_user_instruction

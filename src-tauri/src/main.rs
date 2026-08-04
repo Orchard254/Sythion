@@ -49,7 +49,7 @@ fn register_stop_shortcut(app: &tauri::App) {
     let stop = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyX);
     match app.handle().global_shortcut().register(stop) {
         Ok(()) => {}
-        Err(e) => eprintln!("[jarvis] could not register global stop shortcut: {e}"),
+        Err(e) => eprintln!("[sythion] could not register global stop shortcut: {e}"),
     }
 }
 
@@ -59,7 +59,7 @@ fn create_main_window(app: &mut tauri::App) -> tauri::Result<()> {
         "main",
         tauri::WebviewUrl::App("index.html".into()),
     )
-    .title("JARVIS")
+    .title("Sythion (Synth)")
     .inner_size(1200.0, 800.0)
     .min_inner_size(800.0, 600.0)
     .build()?;
@@ -86,7 +86,7 @@ fn main() {
                     sidecar::spawn_watcher(app_handle);
                 }
                 Err(e) => {
-                    eprintln!("[jarvis] failed to launch the sidecar: {e}");
+                    eprintln!("[sythion] failed to launch the sidecar: {e}");
                     return Err(e.into());
                 }
             }
@@ -94,7 +94,7 @@ fn main() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while building JARVIS application");
+        .expect("error while building Sythion (Synth) application");
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {

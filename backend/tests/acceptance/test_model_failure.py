@@ -109,6 +109,33 @@ async def test_rate_limited_no_local_fallback(db_session, task_runner):
 
 
 @pytest.mark.asyncio
+async def test_rate_limited_fails_on_first_attempt_no_repair(db_session, task_runner):
+    """A rate-limited provider fails the task immediately, never amplifying
+    the outage with repeated repair calls."""
+    await task_runner.acquire_lease()
+    task = await task_runner.create_task("Fetch data")
+    await task_runner.transition_state(task.id, TaskState.RUNNING, "task.execution_started", {})
+
+    loop = TaskExecutionLoop(db_session, task_runner, tool_executor=None)
+    decision_calls = {"n": 0}
+
+    async def _rate_limited(*args, **kwargs):
+        decision_calls["n"] += 1
+        raise ModelDecisionError("CLOUD_ERROR", "Ollama Cloud request failed: Rate limit exceeded")
+
+    loop.model_engine.make_decision = _rate_limited
+
+    await loop.execute_task(task.id)
+
+    task = await task_runner.get_task(task.id)
+    assert task.state == TaskState.FAILED.value
+    assert _failed_code(db_session, task.id) == "CLOUD_ERROR"
+    # One call only - no repair retries against a rate-limited provider.
+    assert decision_calls["n"] == 1
+    await task_runner.release_lease()
+
+
+@pytest.mark.asyncio
 async def test_budget_exhaustion_fails_without_further_actions(db_session, task_runner):
     """Exceeding the per-task action budget stops the loop."""
     await task_runner.acquire_lease()
@@ -122,7 +149,7 @@ async def test_budget_exhaustion_fails_without_further_actions(db_session, task_
 
     async def _always_tool(*args, **kwargs):
         decision_calls["n"] += 1
-        return DecisionType.EXECUTE_TOOL, {"tool_name": "system_time", "params": {}}
+        return DecisionType.EXECUTE_TOOL, {"tool_name": "system_time", "params": {"n": decision_calls["n"]}}
 
     async def _tool(*args, **kwargs):
         return None

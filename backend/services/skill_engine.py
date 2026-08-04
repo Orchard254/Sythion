@@ -261,7 +261,8 @@ def allowed_tool_names(tool_executor: Any) -> Dict[str, Any]:
 
     Mirrors the model-visible filter: skills are validated workflows and may
     never reach mutating, destructive, confirmation-required, medium/high-risk,
-    privacy-sensitive, screen, or UIA tools.
+    privacy-sensitive, screen, or UIA tools. App-internal mutations
+    (`app_internal`) are exempt for the same reason as in the model filter.
     """
     allowed = {}
     for name in tool_executor.list_tools():
@@ -270,7 +271,8 @@ def allowed_tool_names(tool_executor: Any) -> Dict[str, Any]:
             continue
         reqs = tool.get_policy_requirements()
         if reqs.get("mutating") or reqs.get("destructive"):
-            continue
+            if not reqs.get("app_internal"):
+                continue
         if reqs.get("requires_confirmation"):
             continue
         if reqs.get("risk_level") in {"medium", "high"}:

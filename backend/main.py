@@ -1,5 +1,5 @@
 """
-FastAPI application for JARVIS backend.
+FastAPI application for Sythion (Synth) backend.
 """
 
 from fastapi import FastAPI, Request, Depends
@@ -10,7 +10,7 @@ import sys
 import uuid
 
 # Ensure the backend directory is importable so bare `tools.*` and
-# `jarvis_backend.*` imports inside tool/service modules resolve regardless
+# `sythion_backend.*` imports inside tool/service modules resolve regardless
 # of the current working directory.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):
     profile_lock = acquire_profile_lock()
     if profile_lock is None:
         raise RuntimeError(
-            "Another JARVIS sidecar holds the profile lock; refusing to start a second instance"
+            "Another Sythion (Synth) sidecar holds the profile lock; refusing to start a second instance"
         )
     
     # Startup: prefer the launcher-provided per-launch token (Phase A handshake),
@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI):
     from .core.handshake import read_launch_token, write_handshake
     handshake_token = read_launch_token()
     control_token = handshake_token or generate_control_token()
-    logger.info(f"JARVIS starting with control token: {control_token[:8]}...")
+    logger.info(f"Sythion (Synth) starting with control token: {control_token[:8]}...")
 
     # Validate critical configuration early so misconfig is obvious at boot
     from .core.config import validate_startup_config
@@ -74,28 +74,15 @@ async def lifespan(app: FastAPI):
     # Initialize tool executor
     tool_executor = ToolExecutor()
     
-    # Register all tools
-    from .tools.system_tools import create_system_tools
-    from .tools.file_tools import create_file_tools
-    from .tools.app_tools import create_app_tools
-    from .tools.package_tools import create_package_tools
-    from .tools.gui_tools import create_gui_tools
-    
-    for tool in create_system_tools():
-        tool_executor.register_tool(tool)
-    for tool in create_file_tools():
-        tool_executor.register_tool(tool)
-    for tool in create_app_tools():
-        tool_executor.register_tool(tool)
-    for tool in create_package_tools():
-        tool_executor.register_tool(tool)
-    for tool in create_gui_tools():
-        tool_executor.register_tool(tool)
+    # Register all tools through the single shared factory so the executor
+    # used by the API/routes (and thus the model) always matches this one.
+    from .tools.registry import register_all_tools
+    register_all_tools(tool_executor)
         
     logger.info(f"Registered {len(tool_executor.list_tools())} tools")
     
     # Phase A handshake: expose the bound port + token to the launcher. The
-    # launcher pre-selects a free port (JARVIS_PORT or --port) and reads this
+    # launcher pre-selects a free port (Sythion (Synth)_PORT or --port) and reads this
     # file to learn where the sidecar is listening.
     from .core.handshake import write_handshake
     try:
@@ -107,14 +94,14 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown
-    logger.info("JARVIS shutting down...")
+    logger.info("Sythion (Synth) shutting down...")
     if profile_lock is not None:
         profile_lock.release()
         profile_lock = None
 
 
 app = FastAPI(
-    title="JARVIS Backend",
+    title="Sythion (Synth) Backend",
     description="Windows 10/11 Personal Desktop Assistant API",
     version="0.1.0",
     lifespan=lifespan

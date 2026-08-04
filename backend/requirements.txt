@@ -1,4 +1,4 @@
-# JARVIS Backend Requirements
+# Sythion Backend Requirements
 # Python dependencies for the FastAPI sidecar
 
 # Web framework

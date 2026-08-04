@@ -1,4 +1,4 @@
-# JARVIS Real-World Testing Guide
+# Sythion (Synth) Real-World Testing Guide
 
 ## ✅ System Readiness Status
 
@@ -13,15 +13,15 @@
 
 ### 1. LLM Connection (CRITICAL)
 
-JARVIS requires **Ollama Cloud API credentials** to make decisions:
+Sythion (Synth) requires **Ollama Cloud API credentials** to make decisions:
 
 ```bash
-# Create .env file in jarvis/backend/
-cd jarvis/backend
+# Create .env file in sythion/backend/
+cd sythion/backend
 cat > .env << EOF
-JARVIS_OLLAMA_CLOUD_BASE_URL=https://ollama.com
-JARVIS_OLLAMA_API_KEY=your_api_key_here
-JARVIS_SELECTED_MODEL=qwen2.5:7b
+Sythion (Synth)_OLLAMA_CLOUD_BASE_URL=https://ollama.com
+Sythion (Synth)_OLLAMA_API_KEY=your_api_key_here
+Sythion (Synth)_SELECTED_MODEL=qwen2.5:7b
 EOF
 ```
 
@@ -34,7 +34,7 @@ EOF
 
 **Verify connection:**
 ```bash
-cd jarvis/backend
+cd sythion/backend
 python -c "from backend.adapters.ollama_adapter import get_adapter; import asyncio; adapter = get_adapter(); print('Connected:', asyncio.run(adapter.check_health()))"
 ```
 
@@ -44,30 +44,30 @@ Define approved directories for file operations:
 
 ```bash
 # Add to .env file
-JARVIS_FILE_ROOTS=/home/user/Documents,/home/user/Downloads
+Sythion (Synth)_FILE_ROOTS=/home/user/Documents,/home/user/Downloads
 ```
 
 On Windows:
 ```
-JARVIS_FILE_ROOTS=C:\Users\YourName\Documents,C:\Users\YourName\Downloads
+Sythion (Synth)_FILE_ROOTS=C:\Users\YourName\Documents,C:\Users\YourName\Downloads
 ```
 
 ### 3. Database Path
 
 ```bash
 # Add to .env file
-JARVIS_DATABASE_PATH=/home/user/.local/share/jarvis/jarvis.db
+Sythion (Synth)_DATABASE_PATH=/home/user/.local/share/sythion/sythion.db
 ```
 
 On Windows:
 ```
-JARVIS_DATABASE_PATH=C:\Users\YourName\AppData\Local\JARVIS\jarvis.db
+Sythion (Synth)_DATABASE_PATH=C:\Users\YourName\AppData\Local\Sythion (Synth)\sythion.db
 ```
 
 ## 🚀 Starting the Backend
 
 ```bash
-cd jarvis/backend
+cd sythion/backend
 pip install -r requirements.txt
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
@@ -187,4 +187,4 @@ python -c "import webrtcvad, whispercpp, pyttsx3; print('Voice deps OK')"
 
 ---
 
-**Support**: Check `/workspace/jarvis/docs/` for architecture details and API documentation.
+**Support**: Check `/workspace/sythion/docs/` for architecture details and API documentation.

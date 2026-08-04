@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-Successfully completed **Phase 3 Sprint 1 & 2** of the JARVIS project, implementing:
+Successfully completed **Phase 3 Sprint 1 & 2** of the Sythion (Synth) project, implementing:
 1. **Crash Recovery Foundation** - Stale lease detection and interrupted task resumption
 2. **Voice Pipeline Enhancement** - Production-ready VAD, STT, and TTS implementations for Windows
 
@@ -40,7 +40,7 @@ pyttsx3==2.98                    # Windows TTS
 webrtcvad==2.0.10                # Voice activity detection
 ```
 
-#### Voice Service (`jarvis_backend/services/voice_service.py`)
+#### Voice Service (`sythion_backend/services/voice_service.py`)
 
 **New Components:**
 
@@ -156,7 +156,7 @@ No State Change                            Add Audit Event
 | File | Lines Changed | Purpose |
 |------|---------------|---------|
 | `backend/requirements.txt` | +3 | Added numpy, openai-whisper |
-| `backend/jarvis_backend/services/voice_service.py` | +260 | PyAudioVAD, WindowsSAPI5TTS, enhanced VoiceProcessor |
+| `backend/sythion_backend/services/voice_service.py` | +260 | PyAudioVAD, WindowsSAPI5TTS, enhanced VoiceProcessor |
 | `frontend/src/components/Dashboard.tsx` | +150 | Voice controls, resume button, status display |
 | `frontend/src/services/api.ts` | +40 | voiceService, taskService.resume() |
 
@@ -189,7 +189,7 @@ No State Change                            Add Audit Event
 ### Backend Voice Processing
 
 ```python
-from jarvis_backend.services.voice_service import get_voice_processor, VoiceConfig
+from sythion_backend.services.voice_service import get_voice_processor, VoiceConfig
 
 # Create processor with Windows-optimized settings
 config = VoiceConfig(

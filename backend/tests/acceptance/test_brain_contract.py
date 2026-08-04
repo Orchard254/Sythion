@@ -1,7 +1,7 @@
 """
 Acceptance gate: model brain contract (Phase B).
 
-The approved contract (JARVIS_FINAL_HANDOFF_BRIEF.md:117-138) requires:
+The approved contract (Sythion (Synth)_FINAL_HANDOFF_BRIEF.md:117-138) requires:
 - Only a policy-filtered subset of read-only tools are model-visible, exposed
   directly (no execute_tool wrapper).
 - Control functions are exactly: request_user_input, run_skill, complete_task,
@@ -74,6 +74,47 @@ def test_model_visible_tools_are_read_only_subset(db_session, full_tool_executor
     for t in engine._model_visible_tools():
         assert "input_schema" not in t["description"]
         assert len(t["description"]) <= 200
+
+
+def test_app_internal_memory_store_is_model_visible(db_session, full_tool_executor):
+    """memory_store mutates only Sythion's own memory, so it stays callable
+    in normal mode; OS mutations remain hidden."""
+    from backend.tools.memory_tools import MemoryStoreTool, MemoryRecallTool
+
+    full_tool_executor.register_tool(MemoryStoreTool())
+    full_tool_executor.register_tool(MemoryRecallTool())
+
+    engine = ModelDecisionEngine(db_session, full_tool_executor)
+    visible = {t["name"] for t in engine._model_visible_tools()}
+
+    # memory_store / memory_recall are the assistant's own persistent memory
+    # and are instructed by the system prompt, so they must be callable.
+    assert "memory_store" in visible
+    assert "memory_recall" in visible
+
+    # OS/user-state mutations are still never model-visible.
+    assert "file_write" not in visible
+    assert "app_launch" not in visible
+
+    # The system prompt lists memory_store as a directly callable tool.
+    prompt = engine._build_system_prompt()
+    assert "memory_store" in prompt
+
+
+def test_app_internal_memory_store_is_skill_visible(db_session, full_tool_executor):
+    """Skills mirror the model-visible subset, so memory tools are usable in
+    validated workflows while OS mutations are not."""
+    from backend.services.skill_engine import allowed_tool_names
+    from backend.tools.memory_tools import MemoryStoreTool, MemoryRecallTool
+
+    full_tool_executor.register_tool(MemoryStoreTool())
+    full_tool_executor.register_tool(MemoryRecallTool())
+
+    allowed = allowed_tool_names(full_tool_executor)
+    assert "memory_store" in allowed
+    assert "memory_recall" in allowed
+    assert "file_write" not in allowed
+    assert "app_launch" not in allowed
 
 
 def test_system_prompt_teaches_direct_tool_calls(db_session, full_tool_executor):

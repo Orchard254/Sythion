@@ -28,8 +28,8 @@ from backend.core.storage import data_dir, _restrict_acl_windows
 
 @pytest.fixture
 def isolated_data_dir(tmp_path, monkeypatch):
-    """Redirect JARVIS_DATA_DIR to a temp dir for the test."""
-    monkeypatch.setenv("JARVIS_DATA_DIR", str(tmp_path))
+    """Redirect SYTHION_DATA_DIR to a temp dir for the test."""
+    monkeypatch.setenv("SYTHION_DATA_DIR", str(tmp_path))
     return str(tmp_path)
 
 

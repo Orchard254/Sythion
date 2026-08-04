@@ -1,5 +1,5 @@
 """
-File System Tools for JARVIS
+File System Tools for Sythion (Synth)
 Implements file operations: read, write, list, create, delete, move, copy
 """
 import os
@@ -66,7 +66,7 @@ async def _atomic_write_text(
         raise ValueError(f"Target is a directory: {path}")
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".jarvis-tmp")
+    tmp = path.with_name(path.name + ".sythion-tmp")
     try:
         with open(tmp, "w", encoding="utf-8", newline="") as f:
             f.write(final_content)
@@ -104,7 +104,7 @@ class _CancelledError(Exception):
 def _approved_roots() -> List[Path]:
     """Return the configured file roots, or safe defaults when unset.
 
-    When JARVIS_FILE_ROOTS is empty we fall back to the user's home directory
+    When Sythion (Synth)_FILE_ROOTS is empty we fall back to the user's home directory
     and the process working directory so file tools remain usable but still
     cannot reach outside the user's own data (e.g. C:\\Windows, other users).
     """

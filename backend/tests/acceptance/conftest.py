@@ -1,5 +1,5 @@
 """
-Shared fixtures for the JARVIS acceptance-test suite.
+Shared fixtures for the Sythion (Synth) acceptance-test suite.
 
 These are the runnable versions of the "planned" gates in
 docs/acceptance-test-map.md. Each test file maps to one acceptance area and

@@ -1,4 +1,4 @@
-# JARVIS Architecture Decision Record
+# Sythion (Synth) Architecture Decision Record
 
 **Status:** Phase -1 decision record accepted; Phase A remediation in progress.
 The Rust-free sidecar foundation (per-launch token handshake, ephemeral port
@@ -11,7 +11,7 @@ job; the interactive clean-machine release run remains the manual gate.
 
 ## Decision
 
-JARVIS v1 is a Windows 10/11, standard-user personal desktop assistant. It is
+Sythion (Synth) v1 is a Windows 10/11, standard-user personal desktop assistant. It is
 a visible, single-task application: the owner submits a typed or in-window
 voice request, watches durable events, can stop the work, and receives only
 verified outcomes or an explicit failure/uncertainty.
@@ -70,7 +70,7 @@ components, but these gaps prevent a safe milestone gate:
 | No Tauri project or packaged sidecar handshake | Browser dashboard is not the required local trust boundary | Build and test the Tauri shell before enabling mutation tools |
 | No packaged token handshake exists yet | The authenticated API boundary now rejects missing/wrong tokens and untrusted origins, but the browser launcher cannot securely supply a per-launch token | Build the Tauri shell and startup handshake before production use |
 | API keys are documented/configured via `.env` | Production secret-handling policy is violated | Replace with Credential Manager-backed write-only secret storage |
-| Fallback database/log directory is `~/.jarvis` | Required LocalAppData location and ACL policy are not enforced | Move storage, create user-only ACLs, and test failure handling |
+| Fallback database/log directory is `~/.sythion` | Required LocalAppData location and ACL policy are not enforced | Move storage, create user-only ACLs, and test failure handling |
 | Cross-platform app and GUI subprocess paths exist | v1 Windows-only and `winget`-only subprocess boundary is violated | Remove or isolate non-Windows paths; register Windows apps by identity only |
 | GUI fallbacks use generic input simulation | No proven UIA MTA ownership, target freshness, integrity, or one-action safety | Rebuild GUI adapter around a dedicated UIA worker and fixture-only tests |
 | Optional/stub voice components and unpinned downloads | Voice lifecycle, local-only processing, and asset integrity are unproven | Select, pin, checksum, and explicitly install assets before voice milestone |
@@ -81,9 +81,9 @@ components, but these gaps prevent a safe milestone gate:
 The packaged shell (`src-tauri/`) is the only production entrypoint:
 
 - **Sidecar launch + handshake** (`src/sidecar.rs`): writes a fresh random
-  token to `%LOCALAPPDATA%\JARVIS\token.json`, picks a free loopback port,
+  token to `%LOCALAPPDATA%\Sythion (Synth)\token.json`, picks a free loopback port,
   spawns exactly one `python -m uvicorn backend.main:app` with
-  `JARVIS_HANDSHAKE_TOKEN_FILE` + `JARVIS_PORT` (never the token on the command
+  `Sythion (Synth)_HANDSHAKE_TOKEN_FILE` + `Sythion (Synth)_PORT` (never the token on the command
   line), and polls `sidecar.json` for the bound port. The spawned `Child` is
   kept and killed on app exit, so no orphan sidecar survives.
 - **Bridge command** (`get_bridge_config`): the single IPC surface the
@@ -100,7 +100,7 @@ The packaged shell (`src-tauri/`) is the only production entrypoint:
   `tauri.conf.json` sets a CSP that pins `script-src 'self'` and allows
   `connect-src` only to loopback.
 
-Dev still runs through `start_jarvis.cmd` (browser + Vite proxy); it is
+Dev still runs through `start_sythion.cmd` (browser + Vite proxy); it is
 explicitly dev-only and does not grant desktop capabilities.
 
 ## Cloud onboarding (implemented)
@@ -181,7 +181,7 @@ validated to a plain registered display name. The resolved executable comes
 from the registry and is launched with no arguments and no shell. Graceful
 `app_close` posts `WM_CLOSE` and then probes: a still-open window is surfaced
 as an unsaved-work prompt (`UNSAVED_WORK_PROMPT`) that the user must answer;
-JARVIS never auto-chooses Save or Discard and never escalates to a force kill.
+Sythion (Synth) never auto-chooses Save or Discard and never escalates to a force kill.
 Non-Windows app paths are removed.
 
 ## Package restrictions (implemented)
@@ -197,7 +197,7 @@ executor policy gate additionally blocks install/uninstall with
 
 GUI tools (`backend/tools/gui_tools.py`) are Windows-only in v1. Every UI
 Automation call runs on one dedicated background COM MTA worker thread
-(`_UIAWorker`, thread name `jarvis-uia-mta`), never on the FastAPI event loop
+(`_UIAWorker`, thread name `sythion-uia-mta`), never on the FastAPI event loop
 or the dashboard UI thread. Live UIA handles never cross threads: the driver
 re-finds the target window from fresh evidence on every call and returns only
 plain data; tool code dispatches via `asyncio.to_thread` so the loop is never
@@ -348,6 +348,6 @@ touched. Write-only endpoints: `GET /api/v1/secrets`, `PUT
 ## References
 
 - Product requirements and non-negotiable safety rules:
-  `C:\Ai\JARVIS_FINAL_HANDOFF_BRIEF.md`
+  `C:\Ai\Sythion (Synth)_FINAL_HANDOFF_BRIEF.md`
 - Executable verification plan:
-  `C:\Ai\jarvis\docs\acceptance-test-map.md`
+  `C:\Ai\sythion\docs\acceptance-test-map.md`

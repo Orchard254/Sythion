@@ -1,5 +1,5 @@
 """
-GUI Tools for JARVIS -- Phase D: Reliable Windows GUI automation.
+GUI Tools for Sythion (Synth) -- Phase D: Reliable Windows GUI automation.
 
 Windows-only. Every UI Automation call runs on one dedicated background COM MTA
 worker thread -- never on the FastAPI event loop or the dashboard UI thread --
@@ -27,21 +27,36 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # (defaulting to STA). The dedicated UIA worker initializes COM as MTA, so any
 # subsequent comtypes import on that thread must also request MTA or
 # CoInitializeEx raises RPC_E_CHANGED_MODE. gui_tools is the only comtypes
-# consumer in JARVIS, so this global is safe to set here.
+# consumer in Sythion (Synth), so this global is safe to set here.
 if not hasattr(sys, "coinit_flags"):
     sys.coinit_flags = 0x0  # COINIT_MULTITHREADED
 
-from tools.executor import BaseTool
-from api.schemas import (
-    ToolOutput,
-    GUIObserveInput,
-    GUIFocusInput,
-    GUIInvokeInput,
-    GUISetValueInput,
-    GUIClickInput,
-    GUITypeInput,
-    GUIHotkeyInput,
-)
+try:
+    from backend.tools.executor import BaseTool
+    from backend.api.schemas import (
+        ToolOutput,
+        GUIObserveInput,
+        GUIFocusInput,
+        GUIInvokeInput,
+        GUISetValueInput,
+        GUIClickInput,
+        GUITypeInput,
+        GUIHotkeyInput,
+        GUIPasteInput,
+    )
+except ImportError:
+    from tools.executor import BaseTool
+    from api.schemas import (
+        ToolOutput,
+        GUIObserveInput,
+        GUIFocusInput,
+        GUIInvokeInput,
+        GUISetValueInput,
+        GUIClickInput,
+        GUITypeInput,
+        GUIHotkeyInput,
+        GUIPasteInput,
+    )
 
 _IS_WINDOWS = os.name == "nt"
 
@@ -58,7 +73,7 @@ _OCR_MAX_AGE_SECONDS = 5.0
 _SECURITY_WINDOW_TITLE_FRAGMENTS = ("user account control",)
 _SECURITY_WINDOW_CLASSES = {"Consent UI Class", "SecureDesktop"}
 
-# Hotkeys JARVIS never synthesizes, even when a window is foreground.
+# Hotkeys Sythion (Synth) never synthesizes, even when a window is foreground.
 _DANGEROUS_HOTKEYS = {
     ("alt", "ctrl", "delete"),
     ("ctrl", "esc", "shift"),
@@ -70,7 +85,7 @@ _VALID_HOTKEY_KEYS = {
     "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
     "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
-    "ctrl", "alt", "shift", "win", "enter", "tab", "space", "backspace",
+    "ctrl", "alt", "shift", "win", "enter", "return", "tab", "space", "backspace",
     "delete", "escape", "esc", "home", "end", "up", "down", "left", "right",
     "-", "=", "[", "]", ";", "'", ",", ".", "/", "\\",
 }
@@ -287,6 +302,7 @@ class _UIADriver:
 
     def _find_window(self, uia, root, title: str):
         from comtypes.gen import UIAutomationClient as _uia
+        import re
         exact = uia.CreatePropertyCondition(_uia.UIA_NamePropertyId, title)
         # TreeScope_Descendants: top-level windows can be nested under a
         # virtual desktop pane on some desktop layouts.
@@ -296,12 +312,26 @@ class _UIADriver:
         # Bounded partial match over window controls.
         wcond = uia.CreatePropertyCondition(_uia.UIA_ControlTypePropertyId, _uia.UIA_WindowControlTypeId)
         windows = root.FindAll(2, wcond)
+        target_lower = title.lower().strip()
+        # Pass 1: Case-insensitive substring match
         for i in range(windows.Length):
             if i >= _MAX_WINDOW_TITLES:
                 break
             win = windows.GetElement(i)
-            if title.lower() in (win.CurrentName or "").lower():
+            cname = (win.CurrentName or "").lower()
+            if target_lower in cname or cname in target_lower:
                 return win
+
+        # Pass 2: Token-based fallback (e.g. '*helo ddddd - Notepad' -> 'Notepad')
+        tokens = [t.strip() for t in re.split(r"[-—:]", target_lower) if len(t.strip()) >= 3]
+        for token in reversed(tokens):
+            for i in range(windows.Length):
+                if i >= _MAX_WINDOW_TITLES:
+                    break
+                win = windows.GetElement(i)
+                if token in (win.CurrentName or "").lower():
+                    return win
+
         return None
 
     def _window_identity(self, uia, element) -> Dict[str, Any]:
@@ -462,12 +492,12 @@ class _UIADriver:
             pattern = self._current_pattern(uia, target, _uia.UIA_InvokePatternId, _uia.IUIAutomationInvokePattern)
             if pattern is None:
                 return {"ok": False, "code": "NO_INVOKE_PATTERN",
-                        "message": f"Element '{description}' has no Invoke pattern; JARVIS does not guess a fallback click"}
+                        "message": f"Element '{description}' has no Invoke pattern; Sythion (Synth) does not guess a fallback click"}
             pattern.Invoke()
             return {"ok": True, "method": "uia_invoke", "element": found["element"]}
         except Exception:
             return {"ok": False, "code": "NO_INVOKE_PATTERN",
-                    "message": f"Element '{description}' has no Invoke pattern; JARVIS does not guess a fallback click"}
+                    "message": f"Element '{description}' has no Invoke pattern; Sythion (Synth) does not guess a fallback click"}
 
     def set_value(self, window_title: str, description: str, value: str) -> Dict[str, Any]:
         from comtypes.gen import UIAutomationClient as _uia
@@ -487,12 +517,12 @@ class _UIADriver:
             pattern = self._current_pattern(uia, target, _uia.UIA_ValuePatternId, _uia.IUIAutomationValuePattern)
             if pattern is None:
                 return {"ok": False, "code": "NO_VALUE_PATTERN",
-                        "message": f"Element '{description}' has no Value pattern; JARVIS does not guess a fallback"}
+                        "message": f"Element '{description}' has no Value pattern; Sythion (Synth) does not guess a fallback"}
             pattern.SetValue(value)
             return {"ok": True, "method": "uia_value", "element": found["element"]}
         except Exception:
             return {"ok": False, "code": "NO_VALUE_PATTERN",
-                    "message": f"Element '{description}' has no Value pattern; JARVIS does not guess a fallback"}
+                    "message": f"Element '{description}' has no Value pattern; Sythion (Synth) does not guess a fallback"}
 
     # -- physical-pixel fallback input (single-shot; re-observes afterwards) --
 
@@ -618,13 +648,27 @@ def _send_mouse_click(x: int, y: int) -> None:
 
 
 def _send_unicode_text(text: str) -> None:
-    down_events = [_unicode_input(ch, 0) for ch in text]
-    up_events = [_unicode_input(ch, _KEYEVENTF_KEYUP) for ch in text]
-    _send_input(*(down_events + up_events))
+    """Type text by sending each character as a sequential key-down + key-up pair.
+
+    Previously this function batched ALL key-down events first, then ALL
+    key-up events in one SendInput call.  The OS keyboard queue interpreted
+    this as a simultaneous chord — not a sequence — causing characters to be
+    dropped, repeated, or reordered (e.g. 'hello world' → 'helo ddddd').
+
+    The fix sends each character individually: down, up, next char.
+    A small inter-character delay (2 ms) prevents the input queue from
+    merging adjacent events on fast machines.
+    """
+    for ch in text:
+        _send_input(
+            _unicode_input(ch, 0),
+            _unicode_input(ch, _KEYEVENTF_KEYUP),
+        )
+        time.sleep(0.002)  # 2 ms inter-character delay
 
 
 _VK_MAP = {
-    "enter": 0x0D, "tab": 0x09, "space": 0x20, "backspace": 0x08,
+    "enter": 0x0D, "return": 0x0D, "tab": 0x09, "space": 0x20, "backspace": 0x08,
     "delete": 0x2E, "escape": 0x1B, "esc": 0x1B, "home": 0x24, "end": 0x23,
     "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
     "ctrl": 0x11, "alt": 0x12, "shift": 0x10, "win": 0x5B,
@@ -681,7 +725,7 @@ class _UIAWorker:
                     self._lock.acquire()
                 self._thread = None
             self._stop_sent = False
-            self._thread = threading.Thread(target=self._run, name="jarvis-uia-mta", daemon=True)
+            self._thread = threading.Thread(target=self._run, name="sythion-uia-mta", daemon=True)
             self._thread.start()
 
     def _run(self) -> None:
@@ -858,7 +902,12 @@ class GUIFocusTool(BaseTool):
             return ToolOutput(success=False, error=error, duration_ms=0)
         return ToolOutput(
             success=True,
-            data={"focused_window": input_data.window_title, "foreground": window.get("foreground")},
+            data={
+                "focused_window": window.get("title") or input_data.window_title,
+                "hwnd": window.get("hwnd"),
+                "pid": window.get("pid"),
+                "foreground": window.get("foreground"),
+            },
             evidence={"source": "uia_mta_worker", "method": "window_pattern"})
 
     async def verify(self, input_data: GUIFocusInput, output: ToolOutput) -> bool:
@@ -1138,6 +1187,57 @@ class GUIHotkeyTool(BaseTool):
         return _hotkey_error(input_data.keys)
 
 
+class GUIPasteTool(BaseTool):
+    """Paste text into a target window via clipboard/input synthesis."""
+
+    name = "gui_paste"
+    description = "Paste text into a visible, foreground window"
+    input_schema = GUIPasteInput
+
+    async def execute(self, input_data: GUIPasteInput) -> ToolOutput:
+        if not _IS_WINDOWS:
+            return ToolOutput(success=False, error={"code": "NOT_SUPPORTED", "message": "Windows only"}, duration_ms=0)
+        identity = self.observe(input_data.window_title, 1, 1)
+        if not identity.get("found"):
+            return ToolOutput(success=False, error={"code": "WINDOW_NOT_FOUND", "message": f"Window '{input_data.window_title}' not found"}, duration_ms=0)
+        hwnd = int(identity.get("hwnd") or 0)
+        error = _target_window_safety(hwnd, identity.get("title") or "")
+        if error:
+            return ToolOutput(success=False, error=error, duration_ms=0)
+        fg = hwnd and ctypes.windll.user32.GetForegroundWindow() == hwnd if _IS_WINDOWS else False
+        if not fg:
+            return ToolOutput(success=False, error={"code": "FOREGROUND_REQUIRED", "message": f"Window '{input_data.window_title}' is not foreground; focus it first"}, duration_ms=0)
+        try:
+            result = await _run_on_worker(lambda: _uia_driver.hotkey(input_data.window_title, ["ctrl", "v"]))
+        except Exception:
+            return ToolOutput(success=False, error={"code": "UIA_UNAVAILABLE", "message": "UI Automation unavailable"}, duration_ms=0)
+        if not result.get("ok"):
+            return ToolOutput(success=False, error={"code": result.get("code", "PASTE_ERROR"), "message": result.get("message", "")}, duration_ms=0)
+        return ToolOutput(
+            success=True,
+            data={"pasted": True, "inputs": 1, "reobserved": result.get("reobserved")},
+            evidence={"source": "clipboard_paste", "inputs": 1})
+
+    def observe(self, window_title: str, max_depth: int, max_elements: int):
+        return _uia_driver.observe(window_title, max_depth, max_elements)
+
+    async def verify(self, input_data: GUIPasteInput, output: ToolOutput) -> bool:
+        return output.success
+
+    def get_policy_requirements(self) -> Dict[str, Any]:
+        return {
+            "risk_level": "high",
+            "requires_confirmation": True,
+            "clipboard_access": True,
+            "input_injection": True,
+            "requires_ui_automation": True,
+            "elevated_process_check": True,
+        }
+
+    def validate_targets(self, input_data: GUIPasteInput) -> Optional[Dict[str, str]]:
+        return _gui_target_error(input_data.window_title)
+
+
 def _element_hwnd_from_rect(rect: List[int]) -> int:
     """Resolve a window hwnd from an element rect using window-from-point.
 
@@ -1160,6 +1260,7 @@ def create_gui_tools() -> List[BaseTool]:
         GUIClickTool(),
         GUITypeTool(),
         GUIHotkeyTool(),
+        GUIPasteTool(),
         GUIInvokeTool(),
         GUISetValueTool(),
     ]

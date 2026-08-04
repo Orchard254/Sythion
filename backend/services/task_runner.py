@@ -4,6 +4,7 @@ Manages single task execution with durable state.
 """
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timedelta
@@ -318,6 +319,20 @@ class TaskRunner:
             },
             active_action_id=action_id,
         )
+
+    async def set_pending_action_status(self, task_id: str, status: str) -> None:
+        """Set the status field inside task.pending_action JSON."""
+        task = self.db.query(Task).filter_by(id=task_id).first()
+        if not task or not task.pending_action:
+            return
+        try:
+            data = json.loads(task.pending_action)
+        except (json.JSONDecodeError, TypeError):
+            data = {}
+        data["status"] = status
+        task.pending_action = json.dumps(data)
+        task.updated_at = datetime.utcnow()
+        self.db.commit()
 
     async def get_task(self, task_id: str) -> Optional[Task]:
         """Get a task by ID."""

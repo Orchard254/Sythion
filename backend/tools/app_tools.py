@@ -1,5 +1,5 @@
 """
-Application Tools for JARVIS
+Application Tools for Sythion (Synth)
 Implements application management: list, launch, focus, close.
 
 v1 targets Windows only. App discovery reads the registered-uninstall registry
@@ -43,7 +43,7 @@ def _validate_app_id(app_id: str) -> None:
 def _app_target_error(app_id: str) -> Optional[Dict[str, str]]:
     """Deterministic, side-effect-free validation of an app target."""
     try:
-        _validate_app_id(app_id)
+        _validate_app_id(_display_name_for_identifier(app_id))
     except ValueError as e:
         return {"code": "INVALID_APP_ID", "message": str(e)}
     return None
@@ -86,19 +86,107 @@ def _derive_exe(subkey, display_name: str, install_location: str) -> Optional[st
         candidate = os.path.join(install_location, display_name + ".exe")
         if _local_existing(candidate):
             return candidate
+    return _app_paths_exe(display_name)
+
+
+def _iter_app_paths_entries():
+    """Yield (stem, default_value) pairs from the App Paths hive.
+
+    App Paths (`name.exe` keys whose default value is the full executable
+    path) is a trusted, registry-only source: Chrome and several store apps
+    omit DisplayIcon/InstallLocation in the uninstall hive. Like the uninstall
+    hives it is written by installers, never by the model (#66).
+    """
+    import winreg
+    hives = [
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths"),
+    ]
+    for hkey, path in hives:
+        try:
+            key = winreg.OpenKey(hkey, path)
+        except OSError:
+            continue
+        try:
+            i = 0
+            while True:
+                try:
+                    subkey_name = winreg.EnumKey(key, i)
+                except OSError:
+                    break
+                i += 1
+                try:
+                    subkey = winreg.OpenKey(key, subkey_name)
+                except OSError:
+                    continue
+                try:
+                    default = _registry_value(subkey, "")
+                finally:
+                    winreg.CloseKey(subkey)
+                if default:
+                    yield os.path.splitext(subkey_name)[0].lower(), str(default)
+        finally:
+            winreg.CloseKey(key)
+
+
+def _app_paths_exe(display_name: str) -> Optional[str]:
+    """Resolve an executable via App Paths when the uninstall entry has none.
+
+    The candidate is matched when the App Paths stem (e.g. "chrome" from
+    "chrome.exe") appears as a token of the registered display name (e.g.
+    "Google Chrome"), then verified to exist on disk before it is returned.
+    """
+    if not display_name:
+        return None
+    tokens = set(re.findall(r"[a-z0-9]+", str(display_name).lower()))
+    if not tokens:
+        return None
+    for stem, raw in _iter_app_paths_entries():
+        if stem not in tokens:
+            continue
+        candidate = str(raw).strip().strip('"')
+        if candidate.lower().endswith((".exe", ".com", ".bat", ".cmd")) and _local_existing(candidate):
+            return candidate
     return None
 
 
+def _builtin_windows_apps() -> List[Dict[str, Any]]:
+    """Return built-in Windows System32 utilities (Notepad, Calculator, Paint, etc.)."""
+    sys_root = os.environ.get("SystemRoot", r"C:\Windows")
+    sys32 = os.path.join(sys_root, "System32")
+    candidates = [
+        ("Notepad", "notepad.exe"),
+        ("Calculator", "calc.exe"),
+        ("Paint", "mspaint.exe"),
+        ("Task Manager", "taskmgr.exe"),
+        ("Snipping Tool", "SnippingTool.exe"),
+    ]
+    builtins = []
+    for name, filename in candidates:
+        exe = os.path.join(sys32, filename)
+        if _local_existing(exe):
+            builtins.append({
+                "id": name,
+                "name": name,
+                "publisher": "Microsoft Corporation",
+                "version": "OS Built-in",
+                "install_location": sys32,
+                "exe": exe,
+            })
+    return builtins
+
+
 def _windows_registered_apps() -> List[Dict[str, Any]]:
-    """Enumerate applications registered in the Windows uninstall hives."""
+    """Enumerate applications registered in the Windows uninstall hives and OS built-ins."""
     import winreg
     registry_paths = [
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
         (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
     ]
-    apps = []
-    seen_ids = set()
+    apps = _builtin_windows_apps()
+    seen_ids = {a["name"] for a in apps}
     for hkey, path in registry_paths:
         try:
             key = winreg.OpenKey(hkey, path)
@@ -151,6 +239,18 @@ def _resolve_registered_app(app_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _display_name_for_identifier(app_id: str) -> str:
+    """Resolve an app_list `id` (registry GUID, e.g. `{...}`) to its display
+    name so it can be matched against window titles. Non-GUID identifiers are
+    returned unchanged."""
+    if not app_id.startswith("{"):
+        return app_id
+    for app in _windows_registered_apps():
+        if app.get("id") == app_id and app.get("name"):
+            return str(app["name"])
+    return app_id
+
+
 class AppListTool(BaseTool):
     """List installed applications."""
 
@@ -174,6 +274,8 @@ class AppListTool(BaseTool):
                 apps = [a for a in apps if needle in (a["name"] or "").lower()]
 
             apps.sort(key=lambda x: (x["name"] or "").lower())
+            names = [a["name"] for a in apps[:30] if a.get("name")]
+            model_summary = f"Found {len(apps)} installed applications: {', '.join(names)}"
 
             return ToolOutput(
                 success=True,
@@ -183,6 +285,7 @@ class AppListTool(BaseTool):
                     "platform": "windows",
                     "applications": apps[:100],
                 },
+                model_summary=model_summary,
                 evidence={"source": "system_application_registry"}
             )
         except Exception as e:
@@ -244,6 +347,26 @@ class AppLaunchTool(BaseTool):
                     duration_ms=0
                 )
 
+            # Focus-First Check: If an open window matches this application, bring it to front
+            # instead of spawning a duplicate process.
+            try:
+                focus_tool = AppFocusTool()
+                focus_res = await focus_tool.execute(AppFocusInput(app_id=app_id))
+                if focus_res.success:
+                    return ToolOutput(
+                        success=True,
+                        data={
+                            "app_id": app_id,
+                            "platform": "windows",
+                            "method": "focused_existing",
+                            "exe": exe,
+                        },
+                        model_summary=f"Focused existing open window for '{app_id}'",
+                        evidence={"source": "windows_focus_existing"}
+                    )
+            except Exception:
+                pass
+
             subprocess.Popen([exe], shell=False)
             return ToolOutput(
                 success=True,
@@ -292,48 +415,55 @@ class AppFocusTool(BaseTool):
                 )
 
             app_id = input_data.app_id
+            # app_list returns registry GUIDs as `id`; resolve to the display
+            # name so it can be validated and matched against window titles.
+            app_id = _display_name_for_identifier(app_id)
             _validate_app_id(app_id)
 
+            # Raw win32gui.SetForegroundWindow fails under the Windows
+            # foreground-lock restriction, so focus goes through the same
+            # UI Automation mechanism gui_focus uses (which reliably brings
+            # the window forward), with the same desktop/safety gates.
+            from tools.gui_tools import (
+                _desktop_gate,
+                _run_on_worker,
+                _target_window_safety,
+                _uia_driver,
+            )
+            gate = _desktop_gate()
+            if gate:
+                return ToolOutput(success=False, error=gate, duration_ms=0)
+
             try:
-                import win32gui
-                import win32con
-            except ImportError:
+                result = await _run_on_worker(lambda: _uia_driver.focus(app_id))
+            except Exception:
                 return ToolOutput(
                     success=False,
-                    error={"code": "WINDOWS_API_ERROR", "message": "pywin32 not available"},
+                    error={"code": "UIA_UNAVAILABLE", "message": "UI Automation unavailable"},
                     duration_ms=0
                 )
-
-            def enum_windows(hwnd, results):
-                if win32gui.IsWindowVisible(hwnd):
-                    title = win32gui.GetWindowText(hwnd)
-                    if app_id.lower() in title.lower():
-                        results.append(hwnd)
-                return True
-
-            windows = []
-            win32gui.EnumWindows(enum_windows, windows)
-
-            if not windows:
+            if not result.get("ok"):
                 return ToolOutput(
                     success=False,
-                    error={"code": "WINDOW_NOT_FOUND", "message": f"No window found matching '{app_id}'"},
+                    error={"code": result.get("code", "FOCUS_ERROR"), "message": result.get("message", "")},
                     duration_ms=0
                 )
-
-            hwnd = windows[0]
-            if win32gui.IsIconic(hwnd):
-                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            win32gui.SetForegroundWindow(hwnd)
+            window = result.get("window", {})
+            error = _target_window_safety(int(window.get("hwnd") or 0), window.get("title") or "")
+            if error:
+                return ToolOutput(success=False, error=error, duration_ms=0)
 
             return ToolOutput(
                 success=True,
                 data={
                     "app_id": app_id,
-                    "window_handle": hwnd,
-                    "platform": "windows"
+                    "window_handle": window.get("hwnd"),
+                    "title": window.get("title"),
+                    "pid": window.get("pid"),
+                    "foreground": window.get("foreground"),
+                    "platform": "windows",
                 },
-                evidence={"source": "win32gui"}
+                evidence={"source": "uia_mta_worker"}
             )
         except Exception as e:
             return ToolOutput(
@@ -373,6 +503,9 @@ class AppCloseTool(BaseTool):
 
             app_id = input_data.app_id
             force = input_data.force
+            # app_list returns registry GUIDs as `id`; resolve to the display
+            # name so it can be validated and matched against window titles.
+            app_id = _display_name_for_identifier(app_id)
             _validate_app_id(app_id)
             if "*" in app_id:
                 raise ValueError("Wildcard app ids are not allowed")
@@ -406,10 +539,12 @@ class AppCloseTool(BaseTool):
                     duration_ms=0
                 )
 
+            title_needle = app_id.lower()
+
             def enum_windows(hwnd, results):
                 if win32gui.IsWindowVisible(hwnd):
                     title = win32gui.GetWindowText(hwnd)
-                    if app_id.lower() in title.lower():
+                    if title_needle in title.lower():
                         results.append(hwnd)
                 return True
 

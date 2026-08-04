@@ -110,7 +110,7 @@ class TestInstall:
         assert status["stt_sha256_verified"] is True
         model_dir = os.path.join(assets_dir, "vosk-model-small-en-us-0.15")
         assert os.path.isfile(os.path.join(model_dir, "am", "final.mdl"))
-        assert os.path.isfile(os.path.join(model_dir, ".jarvis-verified"))
+        assert os.path.isfile(os.path.join(model_dir, ".sythion-verified"))
 
     def test_install_refuses_tampered_archive(self, tmp_path, monkeypatch):
         """A checksum mismatch aborts installation and leaves nothing installed."""
@@ -151,7 +151,7 @@ class TestInstall:
 
         first = voice_assets.install_voice_assets(archive_path=str(archive))
         marker = os.path.join(
-            assets_dir, "vosk-model-small-en-us-0.15", ".jarvis-verified"
+            assets_dir, "vosk-model-small-en-us-0.15", ".sythion-verified"
         )
         mtime_before = os.path.getmtime(marker)
 

@@ -215,7 +215,7 @@ export function Dashboard() {
   return (
     <div style={styles.container}>
       <header style={styles.header}>
-        <h1 style={styles.title}>JARVIS</h1>
+        <h1 style={styles.title}>Sythion (Synth)</h1>
         <div style={styles.controls}>
           <button
             onClick={() => setShowSettings(!showSettings)}

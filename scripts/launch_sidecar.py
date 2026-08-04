@@ -1,12 +1,12 @@
 """
-JARVIS sidecar launcher (Phase A handshake reference).
+Sythion (Synth) sidecar launcher (Phase A handshake reference).
 
 This is the launcher-side half of the startup handshake contract that the
 Tauri shell will implement in Rust. For development it starts the Python
 sidecar exactly the way the packaged app will:
 
 1. Write a fresh per-launch token to the private token file.
-2. Start the sidecar (uvicorn) with JARVIS_HANDSHAKE_TOKEN_FILE set.
+2. Start the sidecar (uvicorn) with Sythion (Synth)_HANDSHAKE_TOKEN_FILE set.
 3. Wait for the sidecar handshake file to appear with the bound port.
 4. Print the resolved port + token.
 
@@ -52,7 +52,7 @@ def pick_port(preferred: int) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Start the JARVIS sidecar via the handshake contract")
+    parser = argparse.ArgumentParser(description="Start the Sythion (Synth) sidecar via the handshake contract")
     parser.add_argument("--port", type=int, default=8000, help="Preferred loopback port (default 8000)")
     parser.add_argument("--no-open", action="store_true", help="Do not open the dashboard")
     parser.add_argument("--dev", action="store_true", help="Run in development mode (Vite origin allowed)")
@@ -64,8 +64,8 @@ def main() -> int:
     print(f"[launcher] starting sidecar on 127.0.0.1:{port}")
 
     env = dict(os.environ)
-    env["JARVIS_HANDSHAKE_TOKEN_FILE"] = token_file_path()
-    env["JARVIS_DEVELOPMENT_MODE"] = "true" if args.dev else "false"
+    env["Sythion (Synth)_HANDSHAKE_TOKEN_FILE"] = token_file_path()
+    env["Sythion (Synth)_DEVELOPMENT_MODE"] = "true" if args.dev else "false"
 
     # Remove the handshake file so we can distinguish this launch from a stale one.
     try:
@@ -73,7 +73,7 @@ def main() -> int:
     except OSError:
         pass
 
-    log_dir = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "JARVIS", "logs")
+    log_dir = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Sythion (Synth)", "logs")
     os.makedirs(log_dir, exist_ok=True)
     with open(os.path.join(log_dir, "sidecar.out.log"), "ab") as out, \
          open(os.path.join(log_dir, "sidecar.err.log"), "ab") as err:

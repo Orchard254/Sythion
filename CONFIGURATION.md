@@ -1,11 +1,11 @@
-# JARVIS Configuration Guide
+# Sythion (Synth) Configuration Guide
 
 ## Quick Start
 
-1. **Create `.env` file** in `jarvis/backend/` directory with your API key:
+1. **Create `.env` file** in `sythion/backend/` directory with your API key:
    ```bash
-   JARVIS_OLLAMA_API_KEY=your_actual_api_key_here
-   JARVIS_SELECTED_MODEL=minimax-m3:cloud
+   Sythion (Synth)_OLLAMA_API_KEY=your_actual_api_key_here
+   Sythion (Synth)_SELECTED_MODEL=minimax-m3:cloud
    ```
 
 2. **Get your Ollama API Key:**
@@ -16,28 +16,28 @@
 
 3. **Start the backend:**
    ```bash
-   cd jarvis
+   cd sythion
    python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
    ```
-   or use the one-command launcher: `start_jarvis.cmd`
+   or use the one-command launcher: `start_sythion.cmd`
 
 ---
 
 ## Environment Setup
 
-JARVIS requires environment variables to be set for production use. Create a `.env` file in the `jarvis/backend/` directory or set system environment variables with the `JARVIS_` prefix.
+Sythion (Synth) requires environment variables to be set for production use. Create a `.env` file in the `sythion/backend/` directory or set system environment variables with the `Sythion (Synth)_` prefix.
 
 ## Required Configuration
 
 ### Ollama Cloud (LLM Provider)
 
-JARVIS uses Ollama Cloud for LLM inference. You must configure:
+Sythion (Synth) uses Ollama Cloud for LLM inference. You must configure:
 
 ```bash
 # Ollama Cloud API credentials
-JARVIS_OLLAMA_CLOUD_BASE_URL=https://ollama.com
-JARVIS_OLLAMA_API_KEY=your_api_key_here
-JARVIS_SELECTED_MODEL=minimax-m3:cloud  # Or another supported model
+Sythion (Synth)_OLLAMA_CLOUD_BASE_URL=https://ollama.com
+Sythion (Synth)_OLLAMA_API_KEY=your_api_key_here
+Sythion (Synth)_SELECTED_MODEL=minimax-m3:cloud  # Or another supported model
 ```
 
 **Getting Your API Key:**
@@ -61,7 +61,7 @@ curl -H "Authorization: Bearer YOUR_API_KEY" https://ollama.com/api/tags
 
 ```bash
 # SQLite database location (Windows example)
-JARVIS_DATABASE_PATH=C:\Users\YourName\AppData\Local\JARVIS\jarvis.db
+Sythion (Synth)_DATABASE_PATH=C:\Users\YourName\AppData\Local\Sythion (Synth)\sythion.db
 ```
 
 ### File Roots (Security)
@@ -70,20 +70,20 @@ Define approved directories for file operations:
 
 ```bash
 # Comma-separated list of allowed directories
-JARVIS_FILE_ROOTS=C:\Users\YourName\Documents,C:\Users\YourName\Downloads
+Sythion (Synth)_FILE_ROOTS=C:\Users\YourName\Documents,C:\Users\YourName\Downloads
 ```
 
 ### Voice Configuration (Optional)
 
 ```bash
 # Enable/disable voice features
-JARVIS_VOICE_ENABLED=true
+Sythion (Synth)_VOICE_ENABLED=true
 
 # STT model path (whisper.cpp model)
-JARVIS_STT_MODEL_PATH=C:\models\ggml-base.bin
+Sythion (Synth)_STT_MODEL_PATH=C:\models\ggml-base.bin
 
 # TTS voice name (Windows SAPI5)
-JARVIS_TTS_VOICE_NAME=Microsoft Zira Desktop
+Sythion (Synth)_TTS_VOICE_NAME=Microsoft Zira Desktop
 ```
 
 ### Security Token
@@ -97,14 +97,14 @@ so the API currently works without a token while bound to 127.0.0.1.
 After configuration, test connectivity:
 
 ```bash
-cd jarvis/backend
+cd sythion/backend
 python -c "from backend.core.config import settings; print('Config OK:', bool(settings.ollama_api_key))"
 ```
 
 Or, with the backend running, run the end-to-end smoke test:
 
 ```bash
-cd jarvis
+cd sythion
 python scripts/smoke_test.py --all
 ```
 

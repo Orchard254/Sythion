@@ -1,7 +1,7 @@
 """
 Profile single-instance lock.
 
-One JARVIS sidecar may run per local profile. The lock is an exclusive,
+One Sythion (Synth) sidecar may run per local profile. The lock is an exclusive,
 advisory lock file in the private data dir. Because the file is only advisory,
 we pair it with a PID owner check: if the previous holder's process is gone,
 the lock is stale and may be reclaimed. This mirrors the task-runner lease
@@ -171,5 +171,5 @@ def acquire_profile_lock() -> Optional[ProfileLock]:
     lock = ProfileLock()
     if lock.acquire():
         return lock
-    logger.warning("Another JARVIS sidecar holds the profile lock")
+    logger.warning("Another Sythion (Synth) sidecar holds the profile lock")
     return None

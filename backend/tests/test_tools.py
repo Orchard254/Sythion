@@ -1,5 +1,5 @@
 """
-Comprehensive unit tests for JARVIS tool framework
+Comprehensive unit tests for Sythion (Synth) tool framework
 """
 import pytest
 import asyncio

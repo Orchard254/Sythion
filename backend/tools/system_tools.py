@@ -1,5 +1,5 @@
 """
-System read tools for JARVIS.
+System read tools for Sythion (Synth).
 Direct OS APIs for reading system state.
 """
 
@@ -167,6 +167,8 @@ class SystemProcessesTool(BaseTool):
             # Sort by name and limit
             processes.sort(key=lambda x: x['name'].lower())
             processes = processes[:input_data.limit]
+            names = sorted(list({p["name"] for p in processes if p.get("name")}))
+            model_summary = f"Running processes ({len(processes)} shown): {', '.join(names[:25])}"
             
             return ToolOutput(
                 success=True,
@@ -175,6 +177,7 @@ class SystemProcessesTool(BaseTool):
                     "limit": input_data.limit,
                     "processes": processes,
                 },
+                model_summary=model_summary,
                 evidence={"source": "psutil_processes"}
             )
         except Exception as e:

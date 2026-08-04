@@ -1,5 +1,5 @@
 """
-Database models and schema definitions for JARVIS.
+Database models and schema definitions for Sythion (Synth).
 """
 
 from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey, CheckConstraint
@@ -54,6 +54,7 @@ class Task(Base):
     active_action_id = Column(String)
     selected_skill_version = Column(String)
     pending_question = Column(Text)
+    pending_action = Column(Text)
     final_result = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -178,4 +179,18 @@ class SettingsMetadata(Base):
     
     key = Column(String, primary_key=True)
     value = Column(String, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MemoryEntry(Base):
+    """Persistent real-time memory storage for user preferences, facts, and profile info."""
+
+    __tablename__ = "memory_entries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    category = Column(String, default="user_preference", index=True)
+    key = Column(String, nullable=False, unique=True, index=True)
+    value = Column(Text, nullable=False)
+    source_task_id = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

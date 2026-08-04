@@ -1,5 +1,5 @@
 """
-Write-only secret storage for JARVIS.
+Write-only secret storage for Sythion (Synth).
 
 Policy (docs/ARCHITECTURE.md): secrets never enter `.env`, SQLite, logs, task
 events, exports, or model context. The production backend is Windows Credential
@@ -26,7 +26,7 @@ KNOWN_SECRETS = frozenset({OLLAMA_API_KEY})
 
 # Credential Manager target name prefix. Credentials are stored per-user under
 # this namespace so unrelated generic credentials are never touched.
-_CM_TARGET_PREFIX = "JARVIS/"
+_CM_TARGET_PREFIX = "Sythion (Synth)/"
 
 
 def _cm_target(name: str) -> str:
@@ -72,7 +72,7 @@ class CredentialManagerStore:
             "CredentialBlob": value,  # win32cred stores as UTF-16 internally
             "Persist": win32cred.CRED_PERSIST_LOCAL_MACHINE,
             "UserName": os.environ.get("USERNAME", ""),
-            "Comment": "JARVIS secret",
+            "Comment": "Sythion (Synth) secret",
         }
         win32cred.CredWrite(cred, 0)
 
@@ -111,7 +111,7 @@ _store: Optional[SecretStore] = None
 
 def _default_store() -> SecretStore:
     """Return the production backend, or the in-memory one off-Windows/dev."""
-    backend = os.environ.get("JARVIS_SECRET_BACKEND", "").lower()
+    backend = os.environ.get("SYTHION_SECRET_BACKEND", "").lower()
     if backend == "memory":
         return MemoryStore()
     try:

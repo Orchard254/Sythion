@@ -1,4 +1,4 @@
-# JARVIS - Windows 10/11 Personal Desktop Assistant
+# Sythion (Synth) - Windows 10/11 Personal Desktop Assistant
 
 > **Architecture gate:** This repository contains an exploratory prototype,
 > not a production-ready Phase 3 release. The current source of truth is the
@@ -22,13 +22,13 @@
 ### 1. Configure Environment
 
 ```bash
-cd jarvis/backend
+cd sythion/backend
 cat > .env << EOF
-JARVIS_OLLAMA_CLOUD_BASE_URL=https://ollama.com
-JARVIS_OLLAMA_API_KEY=your_api_key_here
-JARVIS_SELECTED_MODEL=minimax-m3:cloud
-JARVIS_FILE_ROOTS=C:/Users/YourName/Documents,C:/Users/YourName/Downloads
-JARVIS_DATABASE_PATH=C:/Users/YourName/AppData/Local/JARVIS/jarvis.db
+Sythion (Synth)_OLLAMA_CLOUD_BASE_URL=https://ollama.com
+Sythion (Synth)_OLLAMA_API_KEY=your_api_key_here
+Sythion (Synth)_SELECTED_MODEL=minimax-m3:cloud
+Sythion (Synth)_FILE_ROOTS=C:/Users/YourName/Documents,C:/Users/YourName/Downloads
+Sythion (Synth)_DATABASE_PATH=C:/Users/YourName/AppData/Local/Sythion (Synth)/sythion.db
 EOF
 ```
 
@@ -42,29 +42,29 @@ cd frontend && npm install
 ### 3. Run Everything (one command)
 
 ```bat
-start_jarvis.cmd
+start_sythion.cmd
 ```
 
 This starts the backend and dashboard, waits for the backend to be healthy,
 and opens the dashboard in your browser. Logs are written to
-`%USERPROFILE%\.jarvis\jarvis.log`.
+`%USERPROFILE%\.sythion\sythion.log`.
 
 ### 3b. Run manually (backend)
 
 ```bash
-cd jarvis
+cd sythion
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
 > **Note (Windows)**: No `PYTHONPATH` setup is required. The backend
 > automatically adds its own directory to `sys.path` and loads the `.env`
 > file from `backend/`. If you don't have a `.env` file, set the API key
-> inline first (PowerShell: `$env:JARVIS_OLLAMA_API_KEY="your_key"`).
+> inline first (PowerShell: `$env:Sythion (Synth)_OLLAMA_API_KEY="your_key"`).
 
 ### 3c. Run manually (frontend dashboard)
 
 ```bash
-cd jarvis/frontend
+cd sythion/frontend
 npm run dev
 ```
 
@@ -147,7 +147,7 @@ check against the running backend. Exit code 0 = all checks passed.
 
 Run tests:
 ```bash
-cd jarvis/backend
+cd sythion/backend
 python -m pytest tests/ -v
 ```
 
@@ -156,7 +156,7 @@ python -m pytest tests/ -v
 ## 🏗️ Architecture
 
 ```
-jarvis/
+sythion/
 ├── backend/              # FastAPI sidecar
 │   ├── api/             # REST endpoints
 │   ├── adapters/        # Ollama Cloud, external services

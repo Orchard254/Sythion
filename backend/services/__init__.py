@@ -1,4 +1,4 @@
-"""Services module for JARVIS backend."""
+"""Services module for Sythion (Synth) backend."""
 from .task_runner import TaskRunner, get_runner
 
 __all__ = [

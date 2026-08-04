@@ -1,4 +1,4 @@
-# JARVIS Acceptance-Test Map
+# Sythion (Synth) Acceptance-Test Map
 
 **Status:** Gates marked `passing` have an executable suite in
 `backend/tests/acceptance/` (run from `backend/` via

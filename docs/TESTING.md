@@ -54,7 +54,7 @@ Run from the repository root against a running sidecar
 3. Packaging check: `python -c "import backend.main"` import gate and a
    deterministic build check (future: wheel/exe signing).
 4. Tauri shell build on `windows-latest` (`npx --prefix frontend tauri build
-   --no-bundle`) and an assertion that `src-tauri/target/release/jarvis.exe`
+   --no-bundle`) and an assertion that `src-tauri/target/release/sythion.exe`
    was produced.
 
 ## Notes

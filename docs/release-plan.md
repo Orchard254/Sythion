@@ -1,4 +1,4 @@
-# JARVIS Release Plan
+# Sythion (Synth) Release Plan
 
 **Status:** Plan (Phase F). The sidecar backend, dashboard, voice, and skills
 are feature-complete and test-backed; the packaged desktop shell is scaffolded
@@ -19,8 +19,8 @@ executed clean-machine release run and the signing/update pipeline.
 
 1. MSIX or WiX bundle runs per-user (`perMachine=false`) — no admin required.
 2. Installs the signed Tauri exe, the embedded Python runtime, and the sidecar
-   payload under `%LOCALAPPDATA%\JARVIS`.
-3. Creates the `%LOCALAPPDATA%\JARVIS` profile (DB, logs, settings) with
+   payload under `%LOCALAPPDATA%\Sythion (Synth)`.
+3. Creates the `%LOCALAPPDATA%\Sythion (Synth)` profile (DB, logs, settings) with
    user-only ACLs (existing `backend/core/storage.py` behavior).
 4. Registers a single auto-start entry so the tray app resumes the sidecar on
    sign-in (no service, standard-user only).
@@ -31,7 +31,7 @@ executed clean-machine release run and the signing/update pipeline.
 
 1. New versions are delivered as a signed installer/MSIX with a version bump;
    `GET /api/v1/version` drives the in-app update prompt.
-2. Upgrade preserves `%LOCALAPPDATA%\JARVIS` (DB + settings + voice assets) —
+2. Upgrade preserves `%LOCALAPPDATA%\Sythion (Synth)` (DB + settings + voice assets) —
    never re-installs the STT/TTS model or re-runs onboarding.
 3. `db_manager._apply_migrations()` applies additive SQLite migrations at
    startup; no destructive schema change may ship.
@@ -42,7 +42,7 @@ executed clean-machine release run and the signing/update pipeline.
 ## 4. Uninstall
 
 1. MSIX/WiX uninstall removes app files and the auto-start entry.
-2. **Keeps** `%LOCALAPPDATA%\JARVIS` profile data by default (user data is not
+2. **Keeps** `%LOCALAPPDATA%\Sythion (Synth)` profile data by default (user data is not
    silently destroyed); the uninstaller offers an explicit "also delete my
    data" checkbox, which then runs the full-record purge before deletion.
 3. Sidecar is stopped cleanly before payload removal; stale leases are
@@ -54,7 +54,7 @@ executed clean-machine release run and the signing/update pipeline.
 - Backend wheels are built and signed in CI (deterministic builds,
   `signtool` on the exe/dll/wheel artifacts).
 - The manifest/handshake files never embed the certificate or any secret.
-- Dev builds run with `JARVIS_DEV` and are visibly unsigned (no impersonation
+- Dev builds run with `Sythion (Synth)_DEV` and are visibly unsigned (no impersonation
   of the signed channel).
 
 ## 6. Distribution

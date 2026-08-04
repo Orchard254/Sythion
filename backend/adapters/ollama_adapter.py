@@ -1,8 +1,9 @@
 """
-Ollama Cloud adapter for JARVIS.
+Ollama Cloud adapter for Sythion (Synth).
 Handles authentication, model selection, and tool calls.
 """
 
+import time
 import httpx
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
@@ -11,7 +12,24 @@ from ..core.secrets import resolve_ollama_api_key
 
 
 class ProviderCapabilityError(RuntimeError):
-    """A selected Cloud provider/model cannot safely execute JARVIS decisions."""
+    """A selected Cloud provider/model cannot safely execute Sythion (Synth) decisions."""
+
+
+# After a capability probe fails (e.g. rate limit/outage), wait this long before
+# probing again so a dead provider is not re-contacted on every task.
+_CAPABILITY_FAILURE_COOLDOWN_SECONDS = 60
+
+
+def _friendly_http_error(exc: Exception) -> str:
+    """Map httpx failures to a short, user-safe message."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status == 429:
+            return "Rate limit exceeded - try again later"
+        if status == 401:
+            return "Invalid API key"
+        return f"HTTP error {status}"
+    return str(exc)
 
 
 @dataclass(frozen=True)
@@ -29,6 +47,7 @@ class OllamaCloudAdapter:
         self.selected_model = resolve_selected_model()
         self._client: Optional[httpx.AsyncClient] = None
         self._capability_profile: Optional[ProviderCapabilityProfile] = None
+        self._capability_failed_at: Optional[float] = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with authentication."""
@@ -60,7 +79,7 @@ class OllamaCloudAdapter:
             data = response.json()
             return data.get("models", [])
         except Exception as e:
-            raise RuntimeError(f"Failed to list models: {str(e)}")
+            raise RuntimeError(f"Failed to list models: {_friendly_http_error(e)}")
 
     async def ensure_capabilities(self) -> ProviderCapabilityProfile:
         """Fail closed until the selected Cloud model proves native tool support."""
@@ -71,9 +90,22 @@ class OllamaCloudAdapter:
         if not self.selected_model:
             raise ProviderCapabilityError("No Cloud model has been selected")
 
+        # Negative cache: a recent probe/list failure (rate limit, outage) is
+        # not retried on every task, which would keep the provider hot.
+        if self._capability_failed_at is not None:
+            remaining = _CAPABILITY_FAILURE_COOLDOWN_SECONDS - (
+                time.monotonic() - self._capability_failed_at
+            )
+            if remaining > 0:
+                raise ProviderCapabilityError(
+                    f"Cloud provider unavailable (rate limit or outage); "
+                    f"retry in {int(remaining)}s"
+                )
+
         try:
             models = await self.list_models()
         except RuntimeError as exc:
+            self._capability_failed_at = time.monotonic()
             raise ProviderCapabilityError(f"Model listing failed: {exc}") from exc
 
         model_ids = {
@@ -92,7 +124,7 @@ class OllamaCloudAdapter:
                 f"Selected model '{self.selected_model}' is unavailable"
             )
 
-        probe_tool_name = "jarvis_capability_probe"
+        probe_tool_name = "sythion_capability_probe"
         payload = {
             "model": self.selected_model,
             "messages": [{
@@ -103,7 +135,7 @@ class OllamaCloudAdapter:
                 "type": "function",
                 "function": {
                     "name": probe_tool_name,
-                    "description": "Non-mutating JARVIS provider capability check.",
+                    "description": "Non-mutating Sythion (Synth) provider capability check.",
                     "parameters": {"type": "object", "properties": {}},
                 },
             }],
@@ -115,7 +147,10 @@ class OllamaCloudAdapter:
             response.raise_for_status()
             tool_calls = response.json().get("message", {}).get("tool_calls", [])
         except httpx.HTTPError as exc:
-            raise ProviderCapabilityError(f"Native tool probe failed: {exc}") from exc
+            self._capability_failed_at = time.monotonic()
+            raise ProviderCapabilityError(
+                f"Native tool probe failed: {_friendly_http_error(exc)}"
+            ) from exc
 
         if len(tool_calls) != 1 or tool_calls[0].get("function", {}).get("name") != probe_tool_name:
             raise ProviderCapabilityError("Selected model did not return one valid native tool call")

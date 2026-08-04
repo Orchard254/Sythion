@@ -18,7 +18,7 @@ def _transport(selected_model: str):
             return httpx.Response(200, json={"models": [{"name": selected_model}]})
         if request.url.path == "/api/chat":
             return httpx.Response(200, json={
-                "message": {"tool_calls": [{"function": {"name": "jarvis_capability_probe", "arguments": {}}}]}
+                "message": {"tool_calls": [{"function": {"name": "sythion_capability_probe", "arguments": {}}}]}
             })
         return httpx.Response(404)
 
