@@ -780,10 +780,24 @@ class TaskExecutionLoop:
             return False
 
         from backend.core.config import settings
+        from backend.core.importance_classifier import Importance, classify_action
         active_autonomy = os.environ.get("SYTHION_AUTONOMY_LEVEL", settings.autonomy_level)
-        requires_confirmation = bool(policy.get("requires_confirmation"))
-        needs_prompt = requires_confirmation and not approved_by_user and active_autonomy != "autonomous"
-        if needs_prompt:
+        classification = classify_action(
+            tool_name,
+            policy,
+            tool_params,
+            autonomy_level=active_autonomy,
+            direct_user_instruction=bool(task.original_request.strip()),
+        )
+        if classification == Importance.FORBIDDEN:
+            logger.warning("Action %s blocked: forbidden by importance classifier", tool_name)
+            return False
+        needs_approval = (
+            classification == Importance.CONSEQUENTIAL
+            and not approved_by_user
+            and active_autonomy != "autonomous"
+        )
+        if needs_approval:
             events = self._get_event_history(task_id)
             was_denied = any(
                 e.get("event_type") == "action.denied"

@@ -611,3 +611,35 @@ import + AST parse clean.
 process/`--reload` restart without a lease are marked `interrupted` on the next
 stale-lease takeover (`_mark_task_interrupted`, task_runner.py) and pruned by
 `retention.py`; no code change needed.
+
+## Importance classifier (2026-08-07, entry 34 — VERIFIED)
+
+**What**: Deterministic policy gate that classifies every planned tool action as
+ROUTINE (auto-execute), CONSEQUENTIAL (requires owner approval), or FORBIDDEN
+(hard-blocked).  Lives in `core/importance_classifier.py` (bottom layer, no
+`api`/`tools` imports).
+
+**Why**: Replaces the ad-hoc `requires_confirmation` check with a testable
+contract that considers tool policy *and* context (parameters, autonomy mode).
+Per owner directive: "The deciding gate must be a policy layer (importance
+classifier), not the model's in-context judgment."
+
+**Contract**:
+- FORBIDDEN: `package_install`/`package_uninstall` (blocklist), `requires_admin`
+  → hard-blocked regardless of autonomy mode.
+- CONSEQUENTIAL: `risk_level: high` or `destructive` or `requires_confirmation`
+  or `risk_level: medium`, OR input-aware escalation (system paths like
+  `C:\Windows\…`, loopback URLs like `http://127.0.0.1/…`).  In guarded mode
+  these are staged for approval; in autonomous mode they execute directly.
+- ROUTINE: everything else → auto-execute.
+
+**Integration**: `task_execution_loop.py:_execute_tool()` calls
+`classify_action()` instead of checking `requires_confirmation` directly.
+The `needs_approval()` convenience predicate wraps classification + autonomy
+check.  `executor.py`'s `DIRECT_INSTRUCTION_REQUIRED` check (ensuring the
+model doesn't execute confirmation-required tools without a user instruction)
+remains as a separate, complementary guard.
+
+**Tests**: 25 acceptance tests in `test_importance_classifier.py` covering
+forbidden/consequential/routine classification, autonomy mode interaction,
+input-aware escalation, and edge cases.  Full suite: 639 passed / 2 skipped.
