@@ -38,3 +38,20 @@ Before trusting any fact about this repo, read `docs/KNOWLEDGE.md` — it is the
 
 - Commit messages use a `Phase X: <summary>` prefix (see `git log`). No PR templates.
 - README test counts are stale: the suite is ~408 tests, not 74.
+
+## Project Memory
+
+At the start of every session, call `memory_get_state` before reading
+any files — this is your "what's built, designed, blocked" snapshot.
+
+When you finish building or designing something, call `memory_write`
+immediately (category: component or state) — e.g. "built the
+importance classifier, not yet integrated with task_execution_loop."
+Don't batch this for later; write it the moment it's true.
+
+When direction changes — a plan gets scrapped, an approach gets
+replaced — call `memory_supersede` on the old plan/decision rather than
+just writing the new one and leaving the old one active.
+
+Before assuming you know something about the project, call
+`memory_query` first.
