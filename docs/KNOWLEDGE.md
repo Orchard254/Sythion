@@ -643,3 +643,38 @@ remains as a separate, complementary guard.
 **Tests**: 25 acceptance tests in `test_importance_classifier.py` covering
 forbidden/consequential/routine classification, autonomy mode interaction,
 input-aware escalation, and edge cases.  Full suite: 639 passed / 2 skipped.
+
+## L3 tool-authoring end-to-end verified (2026-08-07, entry 35 — VERIFIED)
+
+**What**: The full L3 self-growth pipeline works end-to-end. Model asks for a
+capability → calls `system_capabilities` → sees the gap → calls `tool_propose`
+→ proposal enters validation → sandbox → owner approval flow.
+
+**Verified run** (task `5e939445`):
+1. Model called `system_capabilities` → identified no volume tool in the
+   registered toolset.
+2. Model called `tool_propose` with `name: system_volume`, a description,
+   implementation code, and `input_schema`.
+3. First attempt: `input_schema` was passed as a string (`'{}'`) instead of a
+   dict — Ollama Cloud quirk. Pydantic validation caught it
+   (`INVALID_INPUT`). Model retried automatically.
+4. Second attempt: `input_schema` was a proper dict. Validation caught
+   `ctypes` as a forbidden import (`TOOL_VALIDATION_FAILED`). This is correct
+   — `ctypes` is blocked by the security contract.
+5. Model reported back honestly: "I don't have a tool... unable to propose one
+   because the necessary libraries (like ctypes) are restricted."
+
+**What works**: capability introspection, gap detection, tool proposal creation,
+validation (forbidden imports), honest failure reporting, automatic retry on
+validation errors.
+
+**Open**: `ctypes` is forbidden by design. A volume tool using Core Audio COM
+via `comtypes` (already a dependency) would pass validation. The model's
+implementation choice (`ctypes` + `pycaw`) is not the right approach for this
+codebase. Future prompt iteration could guide the model toward `comtypes`-based
+implementations, or the known-gaps list could include implementation hints.
+
+**Prompt iteration** (entry 32 superseded): prompt now says "NEVER say 'I don't
+have a tool for that' without first checking system_capabilities and considering
+whether tool_propose could create one." The model followed this instruction
+correctly.
