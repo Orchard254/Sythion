@@ -677,3 +677,56 @@ implementations, or the known-gaps list could include implementation hints.
 have a tool for that' without first checking system_capabilities and considering
 whether tool_propose could create one." The model followed this instruction
 correctly.
+
+## Voice-first approval architecture (2026-08-07, entry 37 — DESIGN)
+
+**Problem**: The current approval flow is text-based (CLI/web API). In a
+voice-only interaction model, there is no way to approve consequential actions.
+The task parks in `WAITING_FOR_USER` with a `pending_question` but nothing
+speaks the question, listens for the answer, or parses it as approve/deny.
+
+**Current flow (broken for voice)**:
+1. Model decides tool needs confirmation → parks in `WAITING_FOR_USER`
+2. `pending_question` is set (e.g. "Do you approve executing tool 'X'?")
+3. User must manually reply via `/tasks/{id}/reply` API endpoint
+4. Voice pipeline is separate — no connection to approval flow
+
+**Key tension**: Voice is conversational (back-and-forth in real time) but the
+approval flow is request-response (ask now, reply later via different channel).
+
+**Design questions to resolve**:
+1. **Where does the approval conversation live?**
+   - *Inline*: the main task enters "awaiting approval" state and the voice
+     loop handles the back-and-forth on the same task.
+   - *Sub-task*: approval spawns a separate short-lived task for the
+     yes/no conversation, then resumes the main task.
+   - *Pre-cached*: importance classifier auto-approves routine actions so
+     most actions never need approval at all — only truly consequential
+     ones reach the user.
+
+2. **What's the voice approval protocol?**
+   - TTS speaks the pending question
+   - STT listens for the user's answer
+   - Parser interprets "yes"/"approve"/"go ahead" → approve
+   - Parser interprets "no"/"deny"/"reject"/"stop" → deny
+   - Resume the task after parsing
+
+3. **How much auto-approve?**
+   - The importance classifier already classifies ROUTINE/CONSEQUENTIAL/FORBIDDEN
+   - ROUTINE actions could auto-approve (zero friction)
+   - CONSEQUENTIAL actions need voice approval
+   - FORBIDDEN actions are hard-blocked
+   - This minimizes the number of approval interruptions
+
+4. **Edge cases**:
+   - What if the user doesn't answer? (timeout → deny by default)
+   - What if the user says something ambiguous? (ask again or default deny)
+   - What if the voice pipeline is not active? (fall back to text reply)
+
+**Integration points**:
+- `task_execution_loop.py`: where `pending_question` is set (line 821)
+- `voice_pipeline.py`: TTS speak + STT listen cycle
+- `importance_classifier.py`: already classifies actions
+- `/tasks/{id}/reply` endpoint: already handles resume
+
+**Status**: Design pending. Not implemented yet.
