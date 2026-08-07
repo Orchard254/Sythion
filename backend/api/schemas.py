@@ -131,6 +131,11 @@ class SystemCapabilitiesInput(ToolInput):
     pass
 
 
+class SystemVolumeInput(ToolInput):
+    """Input for the volume control tool."""
+    pass
+
+
 class ToolProposeInput(ToolInput):
     """Input for proposing a new tool."""
     name: str = Field(..., min_length=1, max_length=64, description="Tool name (lowercase, underscores)")

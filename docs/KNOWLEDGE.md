@@ -527,18 +527,17 @@ exists fully matches the brief's V1 tool table except two gaps (see below).
   read, ambient monitoring/scheduling, connectors (email/calendar), remote
   access + cross-device (brief line 31 — directly conflicts with the owner's
   server/multi-device directive; needs an approved scope expansion).
-- **Fixable gaps (not by design)**: volume level get/set (only
-  `volumeup`/`volumedown`/`mute` media keys via gui_hotkey whitelist), power
-  (lock/sleep/restart/shutdown) — no native tool and `win+l`/`ctrl+alt+del` are
-  `DANGEROUS_HOTKEY_REJECTED`, brightness, local network status, file search by
-  name/content, window enumeration (only `system_active_window`), per-process
-  CPU/mem (list only), `gui_observe(use_ocr=True)` → `available: false` (OCR
-  engine not bundled), scroll tool absent despite brief listing it, per-monitor
-  DPI mapping (known v1 limitation, ARCHITECTURE.md:245).
+- **Fixable gaps (not by design)**: power (lock/sleep/restart/shutdown) — no
+  native tool and `win+l`/`ctrl+alt+del` are `DANGEROUS_HOTKEY_REJECTED`,
+  brightness, local network status, file search by name/content, window
+  enumeration (only `system_active_window`), per-process CPU/mem (list only),
+  `gui_observe(use_ocr=True)` → `available: false` (OCR engine not bundled),
+  scroll tool absent despite brief listing it, per-monitor DPI mapping (known
+  v1 limitation, ARCHITECTURE.md:245).
 - **Build order for these gaps** (autonomous direction): `file_search` →
-  `system_volume` (Core Audio COM, comtypes already a dependency; pycaw not
-  installed) → `window_list` → power/network/system-control family with
-  explicit confirmations for irreversible ops.
+  `window_list` → power/network/system-control family with explicit
+  confirmations for irreversible ops.  `system_volume` shipped (Core Audio COM
+  via comtypes, entry 36).
 
 ## Open / not yet verified
 

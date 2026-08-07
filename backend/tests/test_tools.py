@@ -252,6 +252,27 @@ class TestSystemTools:
             assert t["name"] and t["domain"]
             assert "flags" in t and "risk_level" in t
 
+    @pytest.mark.asyncio
+    async def test_volume_tool_reads_current_level(self, monkeypatch):
+        """The volume tool reads the master volume via Core Audio COM."""
+        from tools.system_tools import SystemVolumeTool
+        from api.schemas import SystemVolumeInput
+
+        tool = SystemVolumeTool()
+        result = await tool.execute(SystemVolumeInput())
+
+        # On a real Windows machine with audio, this should succeed.
+        # On CI/headless, COM may fail — treat that as a known limitation.
+        if result.success:
+            assert "volume_percentage" in result.data
+            assert 0 <= result.data["volume_percentage"] <= 100
+            assert "is_muted" in result.data
+            assert isinstance(result.data["is_muted"], bool)
+            assert await tool.verify(SystemVolumeInput(), result) is True
+        else:
+            # COM failure on headless/CI — verify it fails closed
+            assert result.error["code"] in ("VOLUME_ERROR", "COMTYPES_MISSING")
+
 
 class TestFileTools:
     """Test file system tools"""

@@ -23,6 +23,7 @@ try:
         SystemActiveWindowInput,
         SystemFileRootsInput,
         SystemCapabilitiesInput,
+        SystemVolumeInput,
         ToolProposeInput,
     )
 except ImportError:
@@ -36,6 +37,7 @@ except ImportError:
         SystemActiveWindowInput,
         SystemFileRootsInput,
         SystemCapabilitiesInput,
+        SystemVolumeInput,
         ToolProposeInput,
     )
 
@@ -419,6 +421,69 @@ class SystemCapabilitiesTool(BaseTool):
         return {"risk_level": "none", "requires_confirmation": False, "read_only": True}
 
 
+class SystemVolumeTool(BaseTool):
+    """Get the current system volume level.
+
+    Uses the Windows Core Audio API via comtypes to read the master volume.
+    Read-only: returns the current volume percentage and mute state.
+    """
+
+    name = "system_volume"
+    description = "Get the current system volume level as a percentage (0-100) and mute state"
+    input_schema = SystemVolumeInput
+
+    async def execute(self, input_data: SystemVolumeInput) -> ToolOutput:
+        try:
+            import comtypes
+            import comtypes.client
+            from comtypes import CLSCTX_ALL
+
+            # Core Audio COM interfaces
+            MMDeviceEnumerator = comtypes.gen.MMDeviceAPI.IMMDeviceEnumerator
+            IAudioEndpointVolume = comtypes.gen.MMDeviceAPI.IAudioEndpointVolume
+
+            # Create device enumerator
+            enumerator = comtypes.client.CreateObject(
+                "{BCDE0395-E52F-467C-8E3D-C4579291692E}",
+                interface=MMDeviceEnumerator,
+            )
+
+            # Get default audio endpoint (eRender = 0, eConsole = 0)
+            device = enumerator.GetDefaultAudioEndpoint(0, 0)
+
+            # Get volume interface
+            volume = device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+
+            # Read volume
+            level = volume.GetMasterVolumeLevelScalar()
+            muted = volume.GetMute()
+
+            return ToolOutput(
+                success=True,
+                data={
+                    "volume_percentage": round(level * 100, 1),
+                    "is_muted": bool(muted),
+                },
+                evidence={"source": "core_audio_com"},
+            )
+        except ImportError:
+            return ToolOutput(
+                success=False,
+                error={"code": "COMTYPES_MISSING", "message": "comtypes package not installed"},
+            )
+        except Exception as e:
+            return ToolOutput(
+                success=False,
+                error={"code": "VOLUME_ERROR", "message": str(e)},
+            )
+
+    async def verify(self, input_data: SystemVolumeInput, output: ToolOutput) -> bool:
+        return output.success and "volume_percentage" in (output.data or {})
+
+    def get_policy_requirements(self) -> Dict[str, Any]:
+        return {"risk_level": "none", "requires_confirmation": False, "read_only": True}
+
+
 class ToolProposeTool(BaseTool):
     """Propose a new tool for validation, sandbox testing, and owner approval.
 
@@ -523,6 +588,7 @@ def create_system_tools() -> list:
         SystemDiskTool(),
         SystemProcessesTool(),
         SystemActiveWindowTool(),
+        SystemVolumeTool(),
         SystemFileRootsTool(),
         SystemCapabilitiesTool(),
         ToolProposeTool(),
