@@ -6,10 +6,12 @@ after proving one fake read-only native tool call. Unauthenticated or stale
 providers fail closed.
 """
 
+import json
+
 import httpx
 import pytest
 
-from backend.adapters.ollama_adapter import OllamaCloudAdapter, ProviderCapabilityError
+from backend.adapters.ollama_adapter import NUM_CTX, OllamaCloudAdapter, ProviderCapabilityError
 
 
 def _transport(selected_model: str):
@@ -17,6 +19,7 @@ def _transport(selected_model: str):
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": selected_model}]})
         if request.url.path == "/api/chat":
+            assert json.loads(request.content)["num_ctx"] == NUM_CTX
             return httpx.Response(200, json={
                 "message": {"tool_calls": [{"function": {"name": "sythion_capability_probe", "arguments": {}}}]}
             })

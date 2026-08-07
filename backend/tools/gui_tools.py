@@ -44,6 +44,7 @@ try:
         GUIHotkeyInput,
         GUIPasteInput,
     )
+    from backend.core.hotkeys import DANGEROUS_HOTKEYS, HOTKEY_KEYS
 except ImportError:
     from tools.executor import BaseTool
     from api.schemas import (
@@ -57,6 +58,7 @@ except ImportError:
         GUIHotkeyInput,
         GUIPasteInput,
     )
+    from core.hotkeys import DANGEROUS_HOTKEYS, HOTKEY_KEYS
 
 _IS_WINDOWS = os.name == "nt"
 
@@ -74,21 +76,9 @@ _SECURITY_WINDOW_TITLE_FRAGMENTS = ("user account control",)
 _SECURITY_WINDOW_CLASSES = {"Consent UI Class", "SecureDesktop"}
 
 # Hotkeys Sythion (Synth) never synthesizes, even when a window is foreground.
-_DANGEROUS_HOTKEYS = {
-    ("alt", "ctrl", "delete"),
-    ("ctrl", "esc", "shift"),
-    ("l", "win"),
-}
+_DANGEROUS_HOTKEYS = DANGEROUS_HOTKEYS
 
-_VALID_HOTKEY_KEYS = {
-    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
-    "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
-    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-    "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
-    "ctrl", "alt", "shift", "win", "enter", "return", "tab", "space", "backspace",
-    "delete", "escape", "esc", "home", "end", "up", "down", "left", "right",
-    "-", "=", "[", "]", ";", "'", ",", ".", "/", "\\",
-}
+_VALID_HOTKEY_KEYS = HOTKEY_KEYS
 
 
 def _gui_target_error(window_title: str, element_description: Optional[str] = None) -> Optional[Dict[str, str]]:
@@ -548,10 +538,40 @@ class _UIADriver:
             "reobserved": post,
         }
 
+    def _foreground_hwnd(self) -> int:
+        """The currently focused window's hwnd (0 on non-Windows / failure)."""
+        if not _IS_WINDOWS:
+            return 0
+        try:
+            return int(ctypes.windll.user32.GetForegroundWindow() or 0)
+        except (AttributeError, OSError):
+            return 0
+
+    def _require_foreground(self, identity: Dict[str, Any]) -> Optional[Dict[str, str]]:
+        """Re-verify, at send time, that the target window is still foreground.
+
+        The caller-thread check runs before worker dispatch; a user click-away
+        in that gap would otherwise send keystrokes/hotkeys to the wrong window.
+        This runs inside the worker immediately before SendInput to shrink the
+        check-to-send window, using the same FOREGROUND_REQUIRED error path.
+        """
+        hwnd = int(identity.get("hwnd") or 0)
+        if not hwnd:
+            return None
+        if self._foreground_hwnd() != hwnd:
+            return {
+                "code": "FOREGROUND_REQUIRED",
+                "message": f"Window '{identity.get('title')}' is not foreground; focus it first",
+            }
+        return None
+
     def type_text(self, window_title: str, text: str) -> Dict[str, Any]:
         identity = self.observe(window_title, 1, 1)
         if not identity.get("found"):
             return {"ok": False, "code": "WINDOW_NOT_FOUND", "message": f"Window '{window_title}' not found"}
+        error = self._require_foreground(identity)
+        if error:
+            return {"ok": False, **error}
         _send_unicode_text(text)
         post = self.observe(window_title, 1, 1)
         return {"ok": True, "method": "send_input_unicode", "typed": text, "reobserved": post}
@@ -560,6 +580,9 @@ class _UIADriver:
         identity = self.observe(window_title, 1, 1)
         if not identity.get("found"):
             return {"ok": False, "code": "WINDOW_NOT_FOUND", "message": f"Window '{window_title}' not found"}
+        error = self._require_foreground(identity)
+        if error:
+            return {"ok": False, **error}
         _send_hotkey(keys)
         post = self.observe(window_title, 1, 1)
         return {"ok": True, "method": "send_input_hotkey", "keys": list(keys), "reobserved": post}
@@ -672,6 +695,7 @@ _VK_MAP = {
     "delete": 0x2E, "escape": 0x1B, "esc": 0x1B, "home": 0x24, "end": 0x23,
     "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
     "ctrl": 0x11, "alt": 0x12, "shift": 0x10, "win": 0x5B,
+    "volumeup": 0xAF, "volumedown": 0xAE, "mute": 0xAD,
 }
 
 

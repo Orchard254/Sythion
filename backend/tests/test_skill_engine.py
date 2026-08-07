@@ -481,6 +481,117 @@ class TestProposals:
         with pytest.raises(ValueError):
             approve_proposal(db_session, proposal, executor)
 
+    def test_revisited_task_returns_none(self, db_session, executor):
+        _completed_trace_task(db_session, "t1")
+        _completed_trace_task(db_session, "t2")
+        proposal = maybe_generate_proposal(db_session, "t1", executor)
+        assert proposal is not None
+        # The same task contributes its evidence once; nothing new to add.
+        assert maybe_generate_proposal(db_session, "t1", executor) is None
+
+    def test_proposal_accumulates_traces_below_threshold(self, db_session, executor, monkeypatch):
+        from backend.core.config import settings
+        monkeypatch.setattr(settings, "skill_auto_enable_threshold", 5)
+        _completed_trace_task(db_session, "t1")
+        _completed_trace_task(db_session, "t2")
+        proposal = maybe_generate_proposal(db_session, "t1", executor)
+        assert proposal.status == "proposed"
+        assert len(json.loads(proposal.trace_ids)) == 2
+
+        _completed_trace_task(db_session, "t3")
+        again = maybe_generate_proposal(db_session, "t3", executor)
+        assert again.id == proposal.id  # same proposal accumulates, no duplicate
+        assert len(json.loads(proposal.trace_ids)) == 3
+        assert proposal.status == "proposed"
+        assert get_enabled_skill_version(db_session, str(proposal.id)) is None
+
+    def test_proposal_auto_enables_at_threshold(self, db_session, executor, monkeypatch):
+        from backend.core.config import settings
+        monkeypatch.setattr(settings, "skill_auto_enable_threshold", 3)
+        _completed_trace_task(db_session, "t1")
+        _completed_trace_task(db_session, "t2")
+        proposal = maybe_generate_proposal(db_session, "t1", executor)
+        assert proposal.status == "proposed"
+
+        _completed_trace_task(db_session, "t3")
+        proposal = maybe_generate_proposal(db_session, "t3", executor)
+        assert proposal.status == "enabled"
+        enabled = get_enabled_skill_version(db_session, str(proposal.id))
+        assert enabled is not None
+        skill, version = enabled
+        assert len(skill.versions) == 1
+        assert version.definition_hash  # a pinned, versioned live skill
+
+    def test_auto_enable_revalidates_against_current_toolset(self, db_session, executor, monkeypatch):
+        """A proposal whose tool is no longer allowed is never auto-enabled."""
+        from backend.core.config import settings
+        from backend.tools.executor import ToolExecutor
+        monkeypatch.setattr(settings, "skill_auto_enable_threshold", 2)
+        _completed_trace_task(db_session, "t1")
+        _completed_trace_task(db_session, "t2")
+        # file_read is gone from the executor, so the definition can no longer validate.
+        proposal = maybe_generate_proposal(db_session, "t1", ToolExecutor())
+        assert proposal is not None
+        assert proposal.status == "proposed"
+        assert json.loads(proposal.validation_errors)  # re-validation failed
+        assert get_enabled_skill_version(db_session, str(proposal.id)) is None
+
+    def test_rejected_signature_is_never_reproposed_or_auto_enabled(self, db_session, executor, monkeypatch):
+        from backend.core.config import settings
+        from backend.models.database import ProposedSkill
+        monkeypatch.setattr(settings, "skill_auto_enable_threshold", 3)
+        _completed_trace_task(db_session, "t1")
+        _completed_trace_task(db_session, "t2")
+        proposal = maybe_generate_proposal(db_session, "t1", executor)
+        assert proposal.status == "proposed"  # below threshold, awaiting review
+        reject_proposal(db_session, proposal)
+
+        _completed_trace_task(db_session, "t3")
+        _completed_trace_task(db_session, "t4")
+        _completed_trace_task(db_session, "t5")
+        assert maybe_generate_proposal(db_session, "t3", executor) is None
+        assert maybe_generate_proposal(db_session, "t4", executor) is None
+        assert maybe_generate_proposal(db_session, "t5", executor) is None
+
+        rows = db_session.query(ProposedSkill).all()
+        assert len(rows) == 1
+        assert rows[0].status == "rejected"
+        assert get_enabled_skill_version(db_session, str(proposal.id)) is None
+
+    def test_auto_enable_disabled_at_zero_threshold(self, db_session, executor, monkeypatch):
+        from backend.core.config import settings
+        monkeypatch.setattr(settings, "skill_auto_enable_threshold", 0)
+        _completed_trace_task(db_session, "t1")
+        _completed_trace_task(db_session, "t2")
+        proposal = maybe_generate_proposal(db_session, "t1", executor)
+        for tid in ["t3", "t4", "t5", "t6"]:
+            _completed_trace_task(db_session, tid)
+            maybe_generate_proposal(db_session, tid, executor)
+        assert proposal.status == "proposed"
+        assert len(json.loads(proposal.trace_ids)) == 6
+        assert get_enabled_skill_version(db_session, str(proposal.id)) is None
+
+    def test_owner_submitted_proposal_never_auto_enables(self, db_session, executor, monkeypatch):
+        """Owner-submitted proposals carry a skill_id and always need review."""
+        from backend.core.config import settings
+        from backend.models.database import ProposedSkill
+        monkeypatch.setattr(settings, "skill_auto_enable_threshold", 2)
+        proposal = ProposedSkill(
+            skill_id="owner.skill",
+            definition=skill_engine.definition_to_json(make_definition()),
+            trace_ids=json.dumps(["t1", "t2"]),  # even with enough evidence
+            status="proposed",
+            validation_errors="[]",
+        )
+        db_session.add(proposal)
+        db_session.commit()
+        db_session.refresh(proposal)
+
+        assert skill_engine._auto_enable_if_ready(db_session, proposal, executor) is None
+        db_session.refresh(proposal)
+        assert proposal.status == "proposed"
+        assert get_enabled_skill_version(db_session, "owner.skill") is None
+
 
 class TestSummaries:
     def test_list_skill_summaries(self, db_session, executor):

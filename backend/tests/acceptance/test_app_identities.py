@@ -13,6 +13,7 @@ import types
 import pytest
 
 from backend.tools.executor import ToolExecutor, PolicyContext
+from backend.api.schemas import ToolOutput
 from backend.tools.app_tools import create_app_tools
 
 
@@ -42,7 +43,7 @@ async def test_command_line_arguments_impossible(app_executor, monkeypatch):
     """app_launch input has no command-line argument field."""
     from backend.api import schemas as schemas
     fields = schemas.AppLaunchInput.__fields__
-    assert set(fields.keys()) == {"app_id"}
+    assert set(fields.keys()) == {"app_id", "new_instance"}
 
 
 @pytest.mark.asyncio
@@ -94,6 +95,97 @@ async def test_launch_registered_identity_missing_exe(app_executor, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_app_launch_new_instance_true_bypasses_focus(app_executor, monkeypatch, tmp_path):
+    """new_instance=True skips the focus-existing check entirely and launches a
+    fresh process, even when a matching window exists and would otherwise be
+    focused."""
+    exe = tmp_path / "fixture.exe"
+    exe.write_text("", encoding="utf-8")
+    registered = {"id": "ABC-123", "name": "Fixture App", "exe": str(exe)}
+    monkeypatch.setattr("backend.tools.app_tools._resolve_registered_app", lambda app_id: registered)
+    monkeypatch.setattr("backend.tools.app_tools._new_window_argv", lambda exe: [])
+
+    focus_calls = []
+    async def _fake_focus_execute(self, input_data):
+        focus_calls.append(input_data)
+        return ToolOutput(success=True, data={"method": "focused_existing"})
+
+    monkeypatch.setattr("backend.tools.app_tools.AppFocusTool.execute", _fake_focus_execute)
+
+    launched = []
+    def _popen(args, shell):
+        launched.append((list(args), shell))
+
+    monkeypatch.setattr("backend.tools.app_tools.subprocess.Popen", _popen)
+
+    out = await _run(app_executor, "app_launch", {"app_id": "Fixture App", "new_instance": True})
+    assert out.success
+    assert out.data["method"] == "new_instance"
+    assert focus_calls == []
+    assert launched == [([str(exe)], False)]
+
+
+@pytest.mark.asyncio
+async def test_app_launch_new_instance_true_uses_new_window_flag_for_chrome(app_executor, monkeypatch, tmp_path):
+    """Chrome/Edge are single-process apps: a bare Popen would attach to the
+    running instance and reuse its window, so new_instance=True must pass the
+    documented --new-window flag to get a genuinely separate window."""
+    exe = tmp_path / "chrome.exe"
+    exe.write_text("", encoding="utf-8")
+    registered = {"id": "CHROME", "name": "Google Chrome", "exe": str(exe)}
+    monkeypatch.setattr("backend.tools.app_tools._resolve_registered_app", lambda app_id: registered)
+
+    launched = []
+    def _popen(args, shell):
+        launched.append((list(args), shell))
+
+    monkeypatch.setattr("backend.tools.app_tools.subprocess.Popen", _popen)
+
+    out = await _run(app_executor, "app_launch", {"app_id": "Google Chrome", "new_instance": True})
+    assert out.success
+    assert out.data["method"] == "new_instance"
+    assert launched == [([str(exe), "--new-window"], False)]
+
+
+@pytest.mark.asyncio
+async def test_app_launch_new_instance_default_preserves_focus_first(app_executor, monkeypatch, tmp_path):
+    """Regression: new_instance=False (the default) keeps today's exact
+    behavior — focus an existing open window first, and only fall back to a
+    plain launch when focus finds nothing."""
+    exe = tmp_path / "fixture.exe"
+    exe.write_text("", encoding="utf-8")
+    registered = {"id": "ABC-123", "name": "Fixture App", "exe": str(exe)}
+    monkeypatch.setattr("backend.tools.app_tools._resolve_registered_app", lambda app_id: registered)
+    monkeypatch.setattr("backend.tools.app_tools._new_window_argv", lambda exe: [])
+
+    async def _fake_focus_execute(self, input_data):
+        return ToolOutput(success=True, data={"method": "focused_existing"})
+
+    monkeypatch.setattr("backend.tools.app_tools.AppFocusTool.execute", _fake_focus_execute)
+
+    launched = []
+    def _popen(args, shell):
+        launched.append((list(args), shell))
+
+    monkeypatch.setattr("backend.tools.app_tools.subprocess.Popen", _popen)
+
+    out = await _run(app_executor, "app_launch", {"app_id": "Fixture App"})
+    assert out.success
+    assert out.data["method"] == "focused_existing"
+    assert launched == []
+
+    # And when focus finds nothing, the default falls back to a plain launch.
+    async def _fake_focus_execute_fail(self, input_data):
+        return ToolOutput(success=False, error={"code": "WINDOW_NOT_FOUND", "message": "none"})
+
+    monkeypatch.setattr("backend.tools.app_tools.AppFocusTool.execute", _fake_focus_execute_fail)
+    out2 = await _run(app_executor, "app_launch", {"app_id": "Fixture App"})
+    assert out2.success
+    assert out2.data["method"] == "registered_launch"
+    assert launched == [([str(exe)], False)]
+
+
+@pytest.mark.asyncio
 async def test_app_list_non_windows_rejected(app_executor, monkeypatch):
     monkeypatch.setattr(platform, "system", lambda: "Linux")
     out = await _run(app_executor, "app_list", {})
@@ -130,43 +222,60 @@ class _FakeWin32:
     def GetWindowText(self, hwnd):
         return "Fixture App Window"
 
+    def GetWindowThreadProcessId(self, hwnd):
+        return (0, hwnd)
+
     def EnumWindows(self, callback, results):
         self.enum_calls += 1
         if self.enum_calls == 1 or self.window_still_open:
-            results.append(7)
+            results.append((7, 7))
 
     def PostMessage(self, hwnd, msg, w, l):
         self.posted_close.append((hwnd, msg))
 
 
-def _patch_win32(monkeypatch, still_open):
+def _patch_win32(monkeypatch, still_open, process_alive=None):
     fake = _FakeWin32(still_open)
     monkeypatch.setitem(sys.modules, "win32gui", fake)
     win32con = types.SimpleNamespace(WM_CLOSE=0x0010)
     monkeypatch.setitem(sys.modules, "win32con", win32con)
     monkeypatch.setattr("backend.tools.app_tools._UNSAVED_WORK_PROBE_MS", 0)
+    if process_alive is not None:
+        monkeypatch.setattr("backend.tools.app_tools._process_alive", lambda pid: process_alive)
     return fake
 
 
 @pytest.mark.asyncio
 async def test_app_close_graceful_does_not_answer_unsaved_prompt(app_executor, monkeypatch):
-    """A still-open window after WM_CLOSE must be surfaced, never Save/Discarded."""
-    fake = _patch_win32(monkeypatch, still_open=True)
+    """A still-open process after WM_CLOSE must be surfaced, never Save/Discarded."""
+    fake = _patch_win32(monkeypatch, still_open=True, process_alive=True)
     out = await _run(app_executor, "app_close", {"app_id": "Fixture App", "force": False})
     assert not out.success
     assert out.error["code"] == "UNSAVED_WORK_PROMPT"
     # WM_CLOSE was posted once and no taskkill/force action was taken.
     assert fake.posted_close == [(7, 0x0010)]
-    assert fake.enum_calls == 2
 
 
 @pytest.mark.asyncio
 async def test_app_close_graceful_succeeds_when_window_gone(app_executor, monkeypatch):
-    fake = _patch_win32(monkeypatch, still_open=False)
+    """A closed process whose window is gone reports success via WM_CLOSE."""
+    fake = _patch_win32(monkeypatch, still_open=False, process_alive=False)
     out = await _run(app_executor, "app_close", {"app_id": "Fixture App", "force": False})
     assert out.success
     assert out.data["method"] == "wm_close"
+    assert fake.posted_close == [(7, 0x0010)]
     assert fake.enum_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_app_close_prompt_dialog_captured_by_process_liveness(app_executor, monkeypatch):
+    """An unsaved-work prompt whose caption omits the app name is still caught
+    because the process remains alive after WM_CLOSE."""
+    fake = _patch_win32(monkeypatch, still_open=False, process_alive=True)
+    out = await _run(app_executor, "app_close", {"app_id": "Fixture App", "force": False})
+    assert not out.success
+    assert out.error["code"] == "UNSAVED_WORK_PROMPT"
+    assert fake.posted_close == [(7, 0x0010)]
 
 
 @pytest.mark.asyncio

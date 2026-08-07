@@ -104,16 +104,39 @@ class _CancelledError(Exception):
 def _approved_roots() -> List[Path]:
     """Return the configured file roots, or safe defaults when unset.
 
-    When Sythion (Synth)_FILE_ROOTS is empty we fall back to the user's home directory
-    and the process working directory so file tools remain usable but still
-    cannot reach outside the user's own data (e.g. C:\\Windows, other users).
+    Roots are merged from two sources: `SYTHION_FILE_ROOTS` in the environment
+    (boot defaults for this device) and `file_roots` granted at runtime through
+    the settings API (persisted in the DB, applied live without a restart). If
+    the settings store is unavailable we fall back to environment-only roots so
+    a failure can never silently widen access. When nothing is configured we
+    fall back to the user's home directory and the process working directory so
+    file tools remain usable but still cannot reach outside the user's own data
+    (e.g. C:\\Windows, other users).
     """
     try:
         from backend.core.config import settings
+        from backend.core.settings_store import resolved_file_roots
+        from backend.models.database import get_db_manager
     except ImportError:
-        from core.config import settings
-    if settings.file_roots:
-        return [Path(r).expanduser().resolve() for r in settings.file_roots]
+        try:
+            from core.config import settings
+            from core.settings_store import resolved_file_roots
+            from models.database import get_db_manager
+        except ImportError:
+            settings = None
+            resolved_file_roots = None
+            get_db_manager = None
+
+    roots: List[str] = list(settings.file_roots or []) if settings else []
+    if resolved_file_roots is not None and get_db_manager is not None:
+        try:
+            db_mgr = get_db_manager()
+            with db_mgr.get_session() as session:
+                roots = resolved_file_roots(session) or roots
+        except Exception:
+            pass
+    if roots:
+        return [Path(r).expanduser().resolve() for r in roots]
     return [Path.home().resolve(), Path.cwd().resolve()]
 
 

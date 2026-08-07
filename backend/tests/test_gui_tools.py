@@ -268,6 +268,25 @@ class TestHotkeyValidation:
         assert _hotkey_error(["return"]) is None
         assert _key_vk("return") == _key_vk("enter") == 0x0D
 
+    def test_volume_keys_allowed_and_mapped(self):
+        for key in ("volumeup", "volumedown", "mute"):
+            assert _hotkey_error([key]) is None
+        assert _key_vk("volumeup") == 0xAF
+        assert _key_vk("volumedown") == 0xAE
+        assert _key_vk("mute") == 0xAD
+
+    def test_schema_description_lists_whole_whitelist(self):
+        from api.schemas import GUIHotkeyInput
+        from core.hotkeys import HOTKEY_KEYS
+        keys_field = GUIHotkeyInput.model_fields["keys"]
+        desc = keys_field.description or ""
+        assert "JSON array" in desc
+        for key in sorted(HOTKEY_KEYS):
+            assert key in desc
+        # The whitelist the runtime enforces is exactly the set the model sees.
+        from tools.gui_tools import _VALID_HOTKEY_KEYS
+        assert _VALID_HOTKEY_KEYS == HOTKEY_KEYS
+
 
 # --------------------------------------------------------------------------
 # Tool execute paths (fake driver on the real MTA worker).
@@ -395,6 +414,45 @@ class TestGUITypeTool:
         assert result.success is False
         assert result.error["code"] == "FOREGROUND_REQUIRED"
 
+    @pytest.mark.asyncio
+    async def test_type_foreground_changes_between_checks_rejects_send(self, monkeypatch):
+        """TOCTOU regression: caller-thread check passes, then a user click-away
+        changes the foreground window before the worker-side SendInput. The send
+        must be rejected, not silently misdirected."""
+        from tools.gui_tools import _UIADriver
+
+        # Real driver with a stubbed observe (no comtypes); the worker re-check
+        # runs inside type_text right before the (also stubbed) send.
+        driver = _UIADriver()
+        driver.observe = lambda title, depth, count: {
+            "found": True,
+            "title": title,
+            "hwnd": 0x1234,
+            "pid": 999,
+            "observed_at": 0.0,
+        }
+        monkeypatch.setattr("tools.gui_tools._uia_driver", driver)
+        monkeypatch.setattr("tools.gui_tools._desktop_gate", lambda: None)
+        monkeypatch.setattr("tools.gui_tools._target_window_safety", lambda hwnd, title: None)
+
+        sent = []
+        monkeypatch.setattr("tools.gui_tools._send_unicode_text", lambda text: sent.append(text))
+
+        # 1st call (caller-thread check) matches target hwnd 0x1234; 2nd call
+        # (worker-side re-check, immediately before the send) is a different
+        # window the user just clicked.
+        foreground_returns = iter([0x1234, 0x9999])
+        monkeypatch.setattr(
+            "tools.gui_tools.ctypes.windll.user32.GetForegroundWindow",
+            lambda: next(foreground_returns),
+        )
+
+        tool = GUITypeTool()
+        result = await tool.execute(GUITypeInput(window_title="Notepad", text="x"))
+        assert result.success is False
+        assert result.error["code"] == "FOREGROUND_REQUIRED"
+        assert sent == []
+
 
 class TestGUIHotkeyTool:
     @pytest.mark.asyncio
@@ -412,6 +470,40 @@ class TestGUIHotkeyTool:
         assert result.success is False
         assert result.error["code"] == "DANGEROUS_HOTKEY_REJECTED"
         assert gui_env.calls == []
+
+    @pytest.mark.asyncio
+    async def test_hotkey_foreground_changes_between_checks_rejects_send(self, monkeypatch):
+        """TOCTOU regression: caller-thread check passes, then the foreground
+        window changes before the worker-side SendInput. The hotkey must be
+        rejected, not dispatched to the newly-focused window."""
+        from tools.gui_tools import _UIADriver
+
+        driver = _UIADriver()
+        driver.observe = lambda title, depth, count: {
+            "found": True,
+            "title": title,
+            "hwnd": 0x1234,
+            "pid": 999,
+            "observed_at": 0.0,
+        }
+        monkeypatch.setattr("tools.gui_tools._uia_driver", driver)
+        monkeypatch.setattr("tools.gui_tools._desktop_gate", lambda: None)
+        monkeypatch.setattr("tools.gui_tools._target_window_safety", lambda hwnd, title: None)
+
+        sent = []
+        monkeypatch.setattr("tools.gui_tools._send_hotkey", lambda keys: sent.append(list(keys)))
+
+        foreground_returns = iter([0x1234, 0x9999])
+        monkeypatch.setattr(
+            "tools.gui_tools.ctypes.windll.user32.GetForegroundWindow",
+            lambda: next(foreground_returns),
+        )
+
+        tool = GUIHotkeyTool()
+        result = await tool.execute(GUIHotkeyInput(window_title="Notepad", keys=["ctrl", "c"]))
+        assert result.success is False
+        assert result.error["code"] == "FOREGROUND_REQUIRED"
+        assert sent == []
 
 
 class TestGUIInvokeTool:

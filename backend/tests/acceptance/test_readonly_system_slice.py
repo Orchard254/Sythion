@@ -111,6 +111,8 @@ async def test_readonly_system_tool_is_model_visible(db_session):
     assert "system_time" in names
     assert "system_battery" in names
     assert "system_disk" in names
+    assert "system_file_roots" in names
+    assert "system_capabilities" in names
 
     # Mutating / screen-access tools must never be in the model-visible subset,
     # even when registered.

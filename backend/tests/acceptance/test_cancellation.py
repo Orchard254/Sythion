@@ -108,6 +108,11 @@ async def test_executor_cancellation_check_blocks_os_action(db_session, tmp_path
     target = tmp_path / "blocked.txt"
     target.write_text("data", encoding="utf-8")
 
+    monkeypatch.setattr(
+        "backend.tools.file_tools._approved_roots",
+        lambda: [tmp_path],
+    )
+
     called = []
 
     async def _bomb(input_data):

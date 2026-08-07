@@ -35,6 +35,8 @@ async def test_web_search_returns_bounded_headlines(monkeypatch):
         '</channel></rss>'
     )
     monkeypatch.setattr("backend.tools.web_tools._fetch_rss", lambda q, lang: body)
+    monkeypatch.setattr("backend.tools.web_tools._ddg_search", lambda q, max_results: [])
+    monkeypatch.setattr("backend.tools.web_tools._ddg_lite_search", lambda q, max_results: [])
     tool = WebSearchTool()
     inp = types.SimpleNamespace(query="kenya", lang="en", max_results=2)
     out = await tool.execute(inp)
@@ -57,6 +59,7 @@ async def test_web_search_returns_bounded_headlines(monkeypatch):
 async def test_web_search_feed_unreachable(monkeypatch):
     monkeypatch.setattr("backend.tools.web_tools._fetch_rss", lambda q, lang: None)
     monkeypatch.setattr("backend.tools.web_tools._ddg_search", lambda q, max_results: [])
+    monkeypatch.setattr("backend.tools.web_tools._ddg_lite_search", lambda q, max_results: [])
     tool = WebSearchTool()
     out = await tool.execute(types.SimpleNamespace(query="x", lang="en", max_results=1))
     assert not out.success

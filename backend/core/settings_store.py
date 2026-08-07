@@ -11,6 +11,7 @@ being persisted.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -41,6 +42,20 @@ def get_setting(db: Session, key: str) -> Optional[str]:
     return row.value if row else None
 
 
+def set_setting(db: Session, key: str, value: str) -> None:
+    """Persist one non-secret internal setting, bypassing the public whitelist.
+
+    For internal system keys only (e.g. session state) that are never
+    model-configurable through ALLOWED_SETTINGS/update_settings(). The row is
+    upserted; the caller's session owns the commit.
+    """
+    existing = db.query(SettingsMetadata).filter_by(key=key).first()
+    if existing:
+        existing.value = value
+    else:
+        db.add(SettingsMetadata(key=key, value=value))
+
+
 def get_settings(db: Session) -> Dict[str, Any]:
     """Return all persisted non-secret settings as typed values."""
     rows = db.query(SettingsMetadata).all()
@@ -48,6 +63,34 @@ def get_settings(db: Session) -> Dict[str, Any]:
     for row in rows:
         values[row.key] = _coerce_value(row.key, row.value)
     return values
+
+
+def resolved_file_roots(db: Session) -> List[str]:
+    """Approved file roots as enforced today: boot defaults + live grants.
+
+    `SYTHION_FILE_ROOTS` from the environment are the boot defaults for this
+    device; `file_roots` granted at runtime through the settings API (persisted
+    in this table) take effect immediately, without a restart. The two are
+    merged and de-duplicated so a grant adds access rather than replacing it.
+    Returns an empty list when nothing is configured.
+    """
+    from backend.core.config import settings
+
+    raw: List[str] = list(settings.file_roots or [])
+    persisted = get_setting(db, "file_roots")
+    if persisted:
+        parsed = _coerce_value("file_roots", persisted)
+        if isinstance(parsed, list):
+            raw.extend(str(r).strip() for r in parsed if str(r).strip())
+
+    seen = set()
+    merged: List[str] = []
+    for entry in raw:
+        norm_key = os.path.normcase(os.path.expanduser(entry))
+        if norm_key not in seen:
+            seen.add(norm_key)
+            merged.append(entry)
+    return merged
 
 
 def update_settings(db: Session, updates: Dict[str, Any]) -> Dict[str, Any]:

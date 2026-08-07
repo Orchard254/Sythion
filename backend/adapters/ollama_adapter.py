@@ -11,6 +11,13 @@ from ..core.config import settings, resolve_selected_model
 from ..core.secrets import resolve_ollama_api_key
 
 
+# Explicit context window sent on every Ollama Cloud request. The selected
+# model (gemma4:31b) supports 262144 tokens; Sythion's own max_input_tokens
+# cap is 50000, so 64K gives headroom above the input cap without requesting
+# the full 256K (which may cost more / run slower on Ollama Cloud).
+NUM_CTX = 65536
+
+
 class ProviderCapabilityError(RuntimeError):
     """A selected Cloud provider/model cannot safely execute Sythion (Synth) decisions."""
 
@@ -139,6 +146,7 @@ class OllamaCloudAdapter:
                     "parameters": {"type": "object", "properties": {}},
                 },
             }],
+            "num_ctx": NUM_CTX,
             "stream": False,
         }
         try:
@@ -190,6 +198,7 @@ class OllamaCloudAdapter:
                 "tools": tools,
                 "max_tokens": max_tokens,
                 "tool_choice": "auto",
+                "num_ctx": NUM_CTX,
                 "stream": False,
             }
 
@@ -209,6 +218,49 @@ class OllamaCloudAdapter:
         except httpx.ReadTimeout:
             raise RuntimeError(
                 "Request timed out after 300s - the model is taking too long to respond"
+            )
+        except httpx.ConnectError as e:
+            raise RuntimeError(f"Connection error: {e}")
+        except Exception as e:
+            raise RuntimeError(f"Request failed: {type(e).__name__}: {str(e)}")
+
+    async def chat(
+        self,
+        messages: List[Dict[str, Any]],
+        max_tokens: int = 4000,
+        timeout: float = 300.0,
+    ) -> Dict[str, Any]:
+        """Plain chat completion with no tool calling.
+
+        Used by background services (e.g. memory consolidation) that need a
+        free-form LLM judgment rather than a decision loop tool call.
+        """
+        try:
+            client = await self._get_client()
+            payload = {
+                "model": self.selected_model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "num_ctx": NUM_CTX,
+                "stream": False,
+            }
+            response = await client.post(
+                "/api/chat",
+                json=payload,
+                timeout=httpx.Timeout(timeout, connect=30.0),
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                raise RuntimeError("Rate limit exceeded")
+            elif e.response.status_code == 401:
+                raise RuntimeError("Invalid API key")
+            else:
+                raise RuntimeError(f"HTTP error: {e.response.status_code}")
+        except httpx.ReadTimeout:
+            raise RuntimeError(
+                f"Request timed out after {timeout}s - the model is taking too long to respond"
             )
         except httpx.ConnectError as e:
             raise RuntimeError(f"Connection error: {e}")
@@ -266,6 +318,13 @@ def format_tools_for_ollama(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                         prop["type"] = "boolean"
                     elif hasattr(ann, '__origin__') and ann.__origin__ is list:
                         prop["type"] = "array"
+                        item_type = getattr(ann, '__args__', (None,))[0]
+                        if item_type == str:
+                            prop["items"] = {"type": "string"}
+                        elif item_type == int:
+                            prop["items"] = {"type": "integer"}
+                        elif item_type == float:
+                            prop["items"] = {"type": "number"}
                 
                 properties[field_name] = prop
                 

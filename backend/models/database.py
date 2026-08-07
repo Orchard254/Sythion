@@ -2,7 +2,7 @@
 Database models and schema definitions for Sythion (Synth).
 """
 
-from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey, CheckConstraint
+from sqlalchemy import Column, String, Integer, Float, Text, DateTime, ForeignKey, CheckConstraint
 from sqlalchemy.orm import relationship, declarative_base, Session
 from datetime import datetime
 import os
@@ -138,10 +138,13 @@ class SkillVersion(Base):
 
 
 class ProposedSkill(Base):
-    """Skills awaiting explicit owner review and enablement.
+    """Skills awaiting owner review or auto-enablement.
 
-    Every skill must be explicitly reviewed and enabled by the owner before it
-    becomes a live, versioned skill. Proposed skills are never executed.
+    Owner-submitted skills always require explicit review and enablement.
+    Auto-generated proposals start as `proposed`; once their verified trace
+    count reaches the configured threshold (default 5) they are re-validated
+    and auto-enabled as live, versioned skills. Proposed skills are never
+    executed.
     """
 
     __tablename__ = "proposed_skills"
@@ -154,6 +157,31 @@ class ProposedSkill(Base):
     validation_errors = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
     decided_at = Column(DateTime)
+
+
+class ProposedTool(Base):
+    """Model-authored tool proposals awaiting validation and owner approval.
+
+    Every tool must pass validation, sandbox testing, and owner approval before
+    it becomes a live, registered tool. Proposed tools are never executed
+    directly — they are tested in an isolated sandbox first.
+    """
+
+    __tablename__ = "proposed_tools"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, unique=True, nullable=False)
+    description = Column(Text, nullable=False)
+    input_schema_json = Column(Text, nullable=False)  # Pydantic schema as JSON
+    implementation = Column(Text, nullable=False)  # Python source code
+    validation_errors = Column(Text)  # JSON list of validation errors
+    sandbox_result = Column(Text)  # JSON sandbox test result
+    status = Column(String, default="proposed")  # proposed | sandbox_passed | enabled | rejected
+    enabled_mode = Column(String)  # guarded | autonomous (after N uses)
+    successful_uses = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    decided_at = Column(DateTime)
+    enabled_at = Column(DateTime)
 
 
 class PurgeReceipt(Base):
@@ -194,3 +222,72 @@ class MemoryEntry(Base):
     source_task_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MemoryEdge(Base):
+    """Directed relationship between two memory keys or facts (graph edge).
+
+    A link says "source_key --relation--> target_key" (e.g.
+    user_name --prefers--> preferred_editor). target_key may reference an
+    existing memory_entries.key or be free text (a stated fact that has no
+    stored entry of its own). No strict FK integrity is enforced so both
+    endpoint styles are allowed; both columns are indexed for graph walks.
+
+    `status` tracks the edge lifecycle like proposed_skills.status:
+    "active" (live), "stale" (decayed below the review threshold; surfaced
+    for owner review, never auto-deleted), or "removed" (owner-reviewed
+    removal). Only the review endpoints move an edge to "removed"; decay
+    itself never deletes. Existing DBs gain the column via the ALTER TABLE
+    migration in db_manager.py.
+    """
+
+    __tablename__ = "memory_edges"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_key = Column(String, nullable=False, index=True)
+    relation = Column(String, nullable=False)
+    target_key = Column(String, nullable=False, index=True)
+    weight = Column(Float, default=1.0)
+    status = Column(String, default="active", index=True)
+    source_task_id = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MemoryContextLog(Base):
+    """Per-decision memory-context injection stats (validation dump source).
+
+    One row per model context build recording how much persistent memory was
+    available versus injected (relevant entries + one-hop linked neighbors +
+    links surfaced). Written by model_engine._build_context and read by the
+    validation dump report to summarize injection behavior over recent runs.
+    Created by Base.metadata.create_all like the other tables.
+    """
+
+    __tablename__ = "memory_context_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(String, nullable=False, index=True)
+    available = Column(Integer, default=0)
+    relevant = Column(Integer, default=0)
+    connected = Column(Integer, default=0)
+    links = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ConversationTurn(Base):
+    """Compressed summary of a completed task for session continuity (episodic memory).
+
+    Each completed task produces two rows: one role='user' (the request) and
+    one role='assistant' (the result).  This mirrors a natural conversation
+    transcript while keeping token cost minimal (~25 tokens per turn).
+    """
+
+    __tablename__ = "conversation_turns"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String, nullable=False, index=True)
+    task_id = Column(String, nullable=False)
+    role = Column(String, default="user")  # "user" or "assistant"
+    summary = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)

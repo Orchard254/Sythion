@@ -2,19 +2,23 @@
 Web search and fetch tools for Sythion (Synth).
 Allows Sythion to search the internet and read web pages to answer queries.
 
-Supports two search backends:
-1. DuckDuckGo HTML scraping (primary, no API key required)
-2. Google News RSS parsing (legacy, used by acceptance tests)
+Supports three search backends (raced concurrently, Google News RSS preferred):
+1. Google News RSS (preferred; most dependable, no API key required)
+2. DuckDuckGo HTML scraping (fallback, no API key required)
+3. DuckDuckGo Lite (secondary fallback)
 """
 
 import re
 import asyncio
 import html
+import logging
 import time
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
 from typing import Dict, Any, List, Optional, Iterable, Tuple
+
+logger = logging.getLogger(__name__)
 
 try:
     from backend.tools.executor import BaseTool
@@ -42,9 +46,10 @@ _MAX_SNIPPET_CHARS = 300
 _MAX_SEARCH_SUMMARY_CHARS = 2000
 _LOOPBACK_HOSTS = frozenset({"localhost", "localhost.localdomain"})
 
-# Timeouts are deliberately short so a slow/failed backend surfaces fast
-# instead of stalling the server for the full urllib default.
-_SEARCH_TIMEOUT_SECONDS = 6
+# Timeouts are deliberately bounded so a slow/failed backend surfaces instead
+# of stalling the server for the full urllib default. The search budget is the
+# highest common denominator of the slowest backend (RSS often needs ~7s).
+_SEARCH_TIMEOUT_SECONDS = 12
 _FETCH_TIMEOUT_SECONDS = 8
 
 # Transient in-memory result cache (never persisted). Keyed by query so
@@ -57,10 +62,79 @@ _search_cache: Dict[str, Tuple[float, List[Dict[str, str]]]] = {}
 
 def _http_get(url: str, timeout: int = _SEARCH_TIMEOUT_SECONDS,
               max_bytes: Optional[int] = None) -> bytes:
-    """Fetch a URL body with the browser user agent. Returns raw bytes."""
+    """Fetch a URL body with the browser user agent. Returns raw bytes.
+
+    Uses a dedicated opener whose redirect handler re-runs the loopback target
+    gate on every hop, so a public URL cannot smuggle a fetch to a loopback or
+    internal address via a Location redirect.
+    """
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _FETCH_OPENER.open(req, timeout=timeout) as resp:
         return resp.read(max_bytes) if max_bytes else resp.read()
+
+
+# ---------------------------------------------------------------------------
+# SSRF-safe fetching (loopback gate applies to redirects, not just the start)
+# ---------------------------------------------------------------------------
+
+def _url_target_error(url: str) -> Optional[Dict[str, str]]:
+    """Deterministic, side-effect-free URL gate shared by initial validation
+    and every redirect hop.
+
+    Rejects empty/malformed URLs, non-http(s) schemes, and loopback hosts so a
+    social-engineered request (or a public site that redirects there) cannot
+    exfiltrate local services (SSRF). Returns an error dict or None.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return {"code": "TARGET_REQUIRED", "message": "A URL is required"}
+    candidate = raw if raw.startswith(("http://", "https://")) else "https://" + raw
+    parsed = urllib.parse.urlparse(candidate)
+    if parsed.scheme not in ("http", "https"):
+        return {"code": "INVALID_URL_SCHEME", "message": "Only http/https URLs may be fetched"}
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return {"code": "INVALID_URL", "message": "URL must include a host"}
+    if host in _LOOPBACK_HOSTS or host.startswith("127.") or host == "::1":
+        return {"code": "LOOPBACK_TARGET_REJECTED", "message": "Loopback targets are not allowed"}
+    return None
+
+
+class _RedirectTargetRejected(Exception):
+    """A redirect hop failed the loopback gate.
+
+    Carries the exact error dict from the shared `_url_target_error` gate so the
+    executor can fail the fetch with the same code/message pattern as an
+    initially-rejected URL — no new error type is introduced.
+    """
+
+    def __init__(self, error: Dict[str, str]):
+        self.error = error
+        super().__init__(error.get("message", "Redirect target rejected"))
+
+
+class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only after re-running the SSRF target gate per hop.
+
+    urllib's default handler follows `Location` headers transparently, which
+    lets a public URL redirect into a loopback/internal address and bypass the
+    loopback rejection on the requested URL. urllib resolves a relative
+    `Location` to an absolute URL before `redirect_request`, so the hop target
+    here is always an absolute http(s) URL. The stdlib default caps total
+    redirects at 10 (`max_redirections`); we tighten it to 5 so a redirect
+    chain cannot be used as a separate amplification vector.
+    """
+
+    max_redirections = 5
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        error = _url_target_error(newurl)
+        if error:
+            raise _RedirectTargetRejected(error)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_FETCH_OPENER = urllib.request.build_opener(_ValidatingRedirectHandler())
 
 
 # ---------------------------------------------------------------------------
@@ -68,12 +142,25 @@ def _http_get(url: str, timeout: int = _SEARCH_TIMEOUT_SECONDS,
 # ---------------------------------------------------------------------------
 
 def _fetch_rss(query: str, lang: str = "en") -> Optional[str]:
-    """Fetch Google News RSS feed body. Returns None on error."""
-    url = f"https://news.google.com/rss/search?q={urllib.parse.quote(query)}&hl={lang}"
-    try:
-        return _http_get(url, timeout=_SEARCH_TIMEOUT_SECONDS).decode("utf-8", errors="ignore")
-    except Exception:
-        return None
+    """Fetch Google News RSS feed body. Returns None on error.
+
+    This is the most dependable backend, so a slow first attempt gets one
+    retry before we admit failure. The extra `gl`/`ceid` params pin the
+    request to the requested locale instead of whatever CDN edge answers.
+    """
+    url = (
+        "https://news.google.com/rss/search?q=" + urllib.parse.quote(query)
+        + f"&hl={lang}&gl={lang.upper()}&ceid={lang.upper()}:{lang}"
+    )
+    # 8s per attempt keeps a retry inside the search's overall budget while
+    # still being generous for the slow (but reliable) Google News edge.
+    for attempt in range(2):
+        try:
+            return _http_get(url, timeout=8).decode("utf-8", errors="ignore")
+        except Exception:
+            if attempt == 1:
+                return None
+    return None
 
 
 def _parse_feed(body: str, max_results: int = 5) -> List[Dict[str, str]]:
@@ -135,8 +222,38 @@ def _ddg_search(query: str, max_results: int = 5) -> List[Dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Tool classes
+# DuckDuckGo Lite search (tertiary backend)
 # ---------------------------------------------------------------------------
+
+def _ddg_lite_search(query: str, max_results: int = 5) -> List[Dict[str, str]]:
+    """Search DuckDuckGo's Lite endpoint and extract result entries.
+
+    Lite is a separate DDG surface that is frequently still served when the
+    main HTML endpoint rate-limits or blocks us, so it acts as a fallback
+    rather than a duplicate request.
+    """
+    url = "https://lite.duckduckgo.com/lite/?q=" + urllib.parse.quote(query)
+    try:
+        body = _http_get(url, timeout=_SEARCH_TIMEOUT_SECONDS).decode("utf-8", errors="ignore")
+    except Exception:
+        return []
+
+    results = []
+    link_matches = list(re.finditer(
+        r'<a[^>]*rel="nofollow"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+        body, re.IGNORECASE | re.DOTALL))
+    for i in range(min(len(link_matches), max_results)):
+        raw_href, raw_title = link_matches[i].groups()
+        title = html.unescape(re.sub(r'<[^>]+>', '', raw_title)).strip()[:200]
+        if not title:
+            continue
+        actual_url = raw_href
+        if "uddg=" in raw_href:
+            parsed_qs = urllib.parse.parse_qs(urllib.parse.urlparse(raw_href).query)
+            if "uddg" in parsed_qs:
+                actual_url = parsed_qs["uddg"][0]
+        results.append({"title": title, "snippet": "", "url": actual_url})
+    return results
 
 def _cached_search_results(cache_key: str) -> Optional[List[Dict[str, str]]]:
     """Return fresh cached results for a search key, or None on a miss."""
@@ -180,6 +297,11 @@ def _search_summary(query: str, results: List[Dict[str, str]]) -> str:
         lines.append(entry[:400])
     return "\n".join(lines)[:_MAX_SEARCH_SUMMARY_CHARS]
 
+
+# ---------------------------------------------------------------------------
+# Tool classes
+# ---------------------------------------------------------------------------
+
 class WebSearchTool(BaseTool):
     """Search the internet for real-time information."""
 
@@ -197,8 +319,10 @@ class WebSearchTool(BaseTool):
                     duration_ms=0
                 )
 
-            max_results = getattr(input_data, "max_results", 5)
-            lang = getattr(input_data, "lang", "en")
+            # These are real schema fields on WebSearchInput (bounded 1-10 / free
+            # string), so the values the model passes are honored by Pydantic.
+            max_results = input_data.max_results
+            lang = input_data.lang
 
             # Serve repeat/follow-up queries from the transient cache. The
             # network calls are moved off the event loop so a slow backend
@@ -206,42 +330,62 @@ class WebSearchTool(BaseTool):
             cache_key = f"{lang}|{max_results}|{query}"
             results = _cached_search_results(cache_key)
             if results is None:
-                # Race both backends concurrently and prefer RSS results.
-                # The hard cap keeps a hung backend from stalling the tool
-                # for the full sequential timeout sum.
+                # Race every backend concurrently against a single deadline so
+                # a hung backend cannot stall the tool or starve the others,
+                # then prefer RSS and fall back to the first backend that
+                # actually returned something.
                 async def _collect():
-                    rss_task = asyncio.create_task(
-                        asyncio.to_thread(_fetch_rss, query, lang))
-                    ddg_task = asyncio.create_task(
-                        asyncio.to_thread(_ddg_search, query, max_results))
-                    # Prefer RSS: return its results the moment they arrive and
-                    # cancel the slower DDG probe, so the tool never waits on
-                    # the slowest backend. Only fall back to DDG if RSS is
-                    # empty or still running.
-                    rss_done, _ = await asyncio.wait(
-                        {rss_task}, timeout=_SEARCH_TIMEOUT_SECONDS)
-                    if rss_done:
-                        try:
-                            rss_body = rss_task.result()
-                        except Exception:
-                            rss_body = None
-                        parsed = _parse_feed(rss_body, max_results) if rss_body else []
-                        if parsed:
-                            ddg_task.cancel()
-                            return parsed
-                    ddg_done, _ = await asyncio.wait(
-                        {ddg_task}, timeout=_SEARCH_TIMEOUT_SECONDS)
-                    if ddg_done:
-                        try:
-                            res = ddg_task.result()
-                        except Exception:
-                            res = None
-                        return res if isinstance(res, list) else []
-                    return []
+                    loop = asyncio.get_running_loop()
+                    deadline = loop.time() + _SEARCH_TIMEOUT_SECONDS
+                    tasks = {
+                        "rss": asyncio.create_task(
+                            asyncio.to_thread(_fetch_rss, query, lang)),
+                        "ddg": asyncio.create_task(
+                            asyncio.to_thread(_ddg_search, query, max_results)),
+                        "lite": asyncio.create_task(
+                            asyncio.to_thread(_ddg_lite_search, query, max_results)),
+                    }
+                    # RSS always wins, but it can be slow; fallbacks are only
+                    # used when RSS yields nothing by the deadline.
+                    got: Dict[str, List[Dict[str, str]]] = {}
+                    try:
+                        while tasks:
+                            if got.get("rss"):
+                                return got["rss"]
+                            remaining = deadline - loop.time()
+                            if remaining <= 0:
+                                break
+                            done, _ = await asyncio.wait(
+                                tasks.values(), timeout=remaining,
+                                return_when=asyncio.FIRST_COMPLETED)
+                            for task in done:
+                                name = next(n for n, t in tasks.items() if t is task)
+                                del tasks[name]
+                                try:
+                                    value = task.result()
+                                except Exception:
+                                    value = None
+                                if name == "rss":
+                                    parsed = _parse_feed(value, max_results) if value else []
+                                    if parsed:
+                                        got["rss"] = parsed
+                                elif isinstance(value, list) and value:
+                                    got[name] = value
+                            # Keep waiting for RSS when a fallback beat it.
+                            if got.get("rss"):
+                                return got["rss"]
+                        for name in ("rss", "ddg", "lite"):
+                            if name in got:
+                                return got[name]
+                        return []
+                    finally:
+                        # Never leak background tasks when we bail early.
+                        for task in tasks.values():
+                            task.cancel()
 
                 try:
                     results = await asyncio.wait_for(
-                        _collect(), timeout=_SEARCH_TIMEOUT_SECONDS)
+                        _collect(), timeout=_SEARCH_TIMEOUT_SECONDS + 2)
                 except asyncio.TimeoutError:
                     results = []
                 if results:
@@ -295,20 +439,10 @@ class WebFetchTool(BaseTool):
 
         Rejects empty/malformed URLs and loopback targets so a social-engineered
         request cannot exfiltrate local services (SSRF) through the fetch path.
+        The same gate is re-applied on every redirect hop inside the fetch (see
+        `_ValidatingRedirectHandler`), so a redirect cannot bypass it.
         """
-        raw_url = getattr(input_data, "url", "").strip()
-        if not raw_url:
-            return {"code": "TARGET_REQUIRED", "message": "A URL is required"}
-        candidate = raw_url if raw_url.startswith(("http://", "https://")) else "https://" + raw_url
-        parsed = urllib.parse.urlparse(candidate)
-        if parsed.scheme not in ("http", "https"):
-            return {"code": "INVALID_URL_SCHEME", "message": "Only http/https URLs may be fetched"}
-        host = (parsed.hostname or "").lower()
-        if not host:
-            return {"code": "INVALID_URL", "message": "URL must include a host"}
-        if host in _LOOPBACK_HOSTS or host.startswith("127.") or host == "::1":
-            return {"code": "LOOPBACK_TARGET_REJECTED", "message": "Loopback targets are not allowed"}
-        return None
+        return _url_target_error(getattr(input_data, "url", ""))
 
     async def execute(self, input_data: WebFetchInput) -> ToolOutput:
         try:
@@ -350,6 +484,14 @@ class WebFetchTool(BaseTool):
                 data={"url": target_url, "length": len(truncated_text), "content": truncated_text},
                 model_summary=truncated_text,
                 evidence={"source": "http_web_fetch"}
+            )
+        except _RedirectTargetRejected as e:
+            # A redirect hop failed the loopback gate: fail exactly like an
+            # initially-rejected URL (same code/message from the shared gate).
+            return ToolOutput(
+                success=False,
+                error=e.error,
+                duration_ms=0
             )
         except Exception as e:
             return ToolOutput(

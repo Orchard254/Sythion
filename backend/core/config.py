@@ -45,6 +45,15 @@ class Settings(BaseSettings):
     stt_model_path: str = ""  # Path to pinned STT model
     tts_voice_name: str = ""  # Name of pinned TTS voice
 
+    # Memory consolidation (background LLM distillation of conversations)
+    memory_consolidation_enabled: bool = True
+
+    # Skill self-growth (L2): auto-enable a proposal once its verified trace
+    # count reaches this threshold (default 5; 0 or negative restores explicit
+    # owner review of every proposal). Auto-enabling re-validates against the
+    # current read-only tool set and creates a versioned, pinned skill.
+    skill_auto_enable_threshold: int = 5
+
     model_config = {
         "env_prefix": "SYTHION_",
         "env_file": os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"),

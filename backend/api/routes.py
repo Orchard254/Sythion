@@ -606,13 +606,69 @@ async def reject_proposal(
     return {"proposal_id": updated.id, "status": updated.status}
 
 
+@router.get("/memory/edges")
+async def list_memory_edges(
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """List memory edges (default: all), optionally filtered by lifecycle status.
+
+    Edges decay in weight when unused and surface as `stale` for explicit
+    owner review -- they are never auto-deleted. `removed` edges are excluded
+    from recall walks and context injection but kept on record.
+    """
+    from backend.services.memory_consolidation import list_edges as engine_list
+    return engine_list(db, status=status)
+
+
+@router.post("/memory/edges/{edge_id}/reinforce")
+async def reinforce_memory_edge(edge_id: int, db: Session = Depends(get_db)):
+    """Owner review decision: reinforce a stale edge back to active (weight 1.0)."""
+    from backend.services.memory_consolidation import reinforce_edge as engine_reinforce
+
+    try:
+        edge = engine_reinforce(db, edge_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if "not found" in str(exc) else 422, detail=str(exc))
+    return edge
+
+
+@router.post("/memory/edges/{edge_id}/remove")
+async def remove_memory_edge(edge_id: int, db: Session = Depends(get_db)):
+    """Owner review decision: mark a stale edge removed (reviewed; never auto-applied)."""
+    from backend.services.memory_consolidation import remove_edge as engine_remove
+
+    try:
+        edge = engine_remove(db, edge_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if "not found" in str(exc) else 422, detail=str(exc))
+    return edge
+
+
+@router.get("/memory/report")
+async def memory_validation_report(
+    last_n: int = 50,
+    db: Session = Depends(get_db),
+):
+    """Data-only validation dump of the memory system.
+
+    Per-store table counts, memory-context injection stats aggregated from the
+    last `last_n` model-engine rollout-log runs, and the relation vocabulary
+    in use on memory edges. Read-only; contains no implementation details.
+    """
+    from backend.services.validation_report import build_validation_report
+    return build_validation_report(db, last_n=last_n)
+
+
 @router.post("/skills/generate")
 async def generate_skill_proposals(
     db: Session = Depends(get_db),
     tool_executor: ToolExecutor = Depends(get_tool_executor),
 ):
     """Scan verified successful traces and propose skills for >=2 materially
-    similar runs. Nothing is executed automatically; proposals await review."""
+    similar runs. Proposals grow evidence per similar run and are auto-enabled
+    once the trace count reaches the configured threshold (default 5); nothing
+    is executed automatically."""
     from backend.services.skill_engine import (
         Task,
         maybe_generate_proposal,
@@ -663,16 +719,18 @@ async def set_skill_state(
 
 @router.post("/retention/purge", response_model=RetentionRunResponse)
 async def purge_records(request: PurgeRequest, db: Session = Depends(get_db)):
-    """Purge complete task records (task + full audit events).
+    """Purge complete task records (task + full audit events + conversation turns).
 
     Either `days` (retention window, defaulting to the configured
     `retention_days`) or an exact `task_id` is required. Every purge writes a
-    non-sensitive receipt; task content is never retained.
+    non-sensitive receipt; task content is never retained. The windowed run
+    also sweeps expired/orphaned `conversation_turns` (`purged_turns`).
     """
     from backend.services.retention import (
         get_retention_days,
         purge_expired,
         purge_task,
+        purge_turns,
     )
 
     if request.task_id is not None:
@@ -680,15 +738,18 @@ async def purge_records(request: PurgeRequest, db: Session = Depends(get_db)):
         if receipt is None:
             raise HTTPException(status_code=404, detail=f"Task {request.task_id} not found")
         receipts = [receipt]
+        purged_turns = 0
     else:
         days = request.days or get_retention_days(db)
         if days < 1:
             raise HTTPException(status_code=400, detail="days must be >= 1")
         receipts = purge_expired(db, days=days)
+        purged_turns = purge_turns(db, days=days)
 
     return RetentionRunResponse(
         receipts=[PurgeReceiptResponse(**r) for r in receipts],
         purged_count=len(receipts),
+        purged_turns=purged_turns,
     )
 
 
@@ -704,10 +765,13 @@ async def list_purge_receipts(db: Session = Depends(get_db)):
 async def get_settings(db: Session = Depends(get_db)):
     """Get current application settings (non-secret values only)."""
     from backend.core.config import settings
-    from backend.core.settings_store import get_settings as load_persisted
+    from backend.core.settings_store import (
+        get_settings as load_persisted,
+        resolved_file_roots,
+    )
 
     persisted = load_persisted(db)
-    file_roots = settings.file_roots or persisted.get("file_roots", [])
+    file_roots = resolved_file_roots(db)
 
     return SettingsResponse(
         host=settings.host,
@@ -988,3 +1052,120 @@ def _segment_to_schema(segment) -> VoiceSegmentResponse:
         audio_deleted=segment.audio_bytes_deleted,
         stt_available=segment.stt_available,
     )
+
+
+# --- Tool Authoring (L3) --------------------------------------------------
+
+@router.post("/tools/propose")
+async def propose_tool(request: Request, db: Session = Depends(get_db)):
+    """Submit a model-authored tool proposal for validation and approval.
+
+    The proposal is validated, sandbox-tested, and stored. Owner approval
+    is required before the tool becomes live.
+    """
+    from backend.services.tool_authoring import (
+        ToolProposal,
+        validate_tool_proposal,
+        sandbox_test,
+        ProposedTool,
+    )
+
+    data = await request.json()
+    try:
+        proposal = ToolProposal(**data)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    # Validate
+    validation = validate_tool_proposal(proposal)
+    if not validation.valid:
+        raise HTTPException(status_code=422, detail=validation.errors)
+
+    # Sandbox test
+    sandbox = sandbox_test(proposal)
+
+    # Store
+    tool_proposal = ProposedTool(
+        name=proposal.name,
+        description=proposal.description,
+        input_schema_json=json.dumps(proposal.input_schema),
+        implementation=proposal.implementation,
+        validation_errors=json.dumps([]),
+        sandbox_result=json.dumps(sandbox.model_dump()),
+        status="sandbox_passed" if sandbox.passed else "proposed",
+    )
+    db.add(tool_proposal)
+    db.commit()
+    db.refresh(tool_proposal)
+
+    return {
+        "proposal_id": tool_proposal.id,
+        "name": proposal.name,
+        "status": tool_proposal.status,
+        "validation": validation.model_dump(),
+        "sandbox": sandbox.model_dump(),
+        "detail": "Tool proposal submitted. Approve via POST /tools/proposals/{id}/approve.",
+    }
+
+
+@router.get("/tools/proposals")
+async def list_tool_proposals(
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """List tool proposals, optionally filtered by status."""
+    from backend.services.tool_authoring import list_proposed_tools
+    return list_proposed_tools(db, status=status)
+
+
+@router.post("/tools/proposals/{proposal_id}/approve")
+async def approve_tool(
+    proposal_id: int,
+    db: Session = Depends(get_db),
+    tool_executor: ToolExecutor = Depends(get_tool_executor),
+):
+    """Approve a tool proposal and enable it in guarded mode."""
+    from backend.services.tool_authoring import (
+        get_proposed_tool,
+        approve_tool_proposal,
+    )
+
+    proposal = get_proposed_tool(db, proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail=f"Proposal {proposal_id} not found")
+    try:
+        approved = approve_tool_proposal(db, proposal, tool_executor)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {
+        "proposal_id": approved.id,
+        "name": approved.name,
+        "status": approved.status,
+        "enabled_mode": approved.enabled_mode,
+        "detail": "Tool enabled in guarded mode.",
+    }
+
+
+@router.post("/tools/proposals/{proposal_id}/reject")
+async def reject_tool(
+    proposal_id: int,
+    db: Session = Depends(get_db),
+):
+    """Reject a tool proposal."""
+    from backend.services.tool_authoring import (
+        get_proposed_tool,
+        reject_tool_proposal,
+    )
+
+    proposal = get_proposed_tool(db, proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail=f"Proposal {proposal_id} not found")
+    try:
+        rejected = reject_tool_proposal(db, proposal)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {
+        "proposal_id": rejected.id,
+        "name": rejected.name,
+        "status": rejected.status,
+    }

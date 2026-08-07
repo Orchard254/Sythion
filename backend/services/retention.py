@@ -2,12 +2,16 @@
 Owner-configurable task/audit retention and complete-record purge.
 
 Retention: tasks (and their full audit event records) older than the
-owner-configured `retention_days` setting (default 90) can be purged.
+owner-configured `retention_days` setting (default 90) can be purged. The
+episodic conversation transcript (`conversation_turns`) is bounded by the same
+window: every expired turn -- including orphans whose task was already purged --
+is swept so the table cannot grow forever. Durable memory (`memory_entries`,
+`memory_edges`) is exempt: it is not a transcript.
 
-Purge: a complete-record purge deletes the task row and every event row for
-that task, then writes a non-sensitive purge receipt (task ID, reason, purge
-time, event count). Receipts never contain task content, request text, or
-other sensitive material.
+Purge: a complete-record purge deletes the task row, every event row for that
+task, and that task's conversation turns, then writes a non-sensitive purge
+receipt (task ID, reason, purge time, event count). Receipts never contain
+task content, request text, or other sensitive material.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from backend.models.database import (
+    ConversationTurn,
     ProposedSkill,
     PurgeReceipt,
     Task,
@@ -51,12 +56,13 @@ def _count_events(db: Session, task_id: str) -> int:
 
 
 def _delete_complete_record(db: Session, task: Task, reason: str) -> Dict[str, Any]:
-    """Delete a task and its full audit event record, returning a receipt dict.
+    """Delete a task, its full audit event record, and its conversation turns.
 
     Committed atomically so a crash mid-purge cannot leave partial records.
     """
     event_count = _count_events(db, task.id)
-    db.query(TaskEvent).filter_by(task_id=task.id).delete()
+    db.query(ConversationTurn).filter_by(task_id=task.id).delete(synchronize_session=False)
+    db.query(TaskEvent).filter_by(task_id=task.id).delete(synchronize_session=False)
     db.delete(task)
     receipt = PurgeReceipt(
         task_id=task.id,
@@ -86,6 +92,33 @@ def purge_task(db: Session, task_id: str, reason: str = "owner_requested") -> Op
     return _delete_complete_record(db, task, reason)
 
 
+def purge_turns(
+    db: Session,
+    days: Optional[int] = None,
+    now: Optional[datetime] = None,
+) -> int:
+    """Purge conversation_turns older than the retention window.
+
+    The episodic transcript is bounded by the same window as tasks. Any turn
+    older than `days` is deleted -- including orphans whose task row was
+    already purged -- so `conversation_turns` cannot grow forever. Durable
+    memory (`memory_entries` / `memory_edges`) is exempt.
+
+    Returns the number of turn rows deleted.
+    """
+    days = days or get_retention_days(db)
+    cutoff = (now or datetime.utcnow()) - timedelta(days=days)
+    purged = (
+        db.query(ConversationTurn)
+        .filter(ConversationTurn.created_at < cutoff)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    if purged:
+        logger.info("Purged %d conversation turns older than %s", purged, cutoff.isoformat())
+    return purged
+
+
 def purge_expired(
     db: Session,
     days: Optional[int] = None,
@@ -95,7 +128,9 @@ def purge_expired(
 
     Returns a list of non-sensitive purge receipts. Nothing is purged before
     the retention window, and terminal-state tasks at any age within the
-    window are kept for the full window.
+    window are kept for the full window. Each purged task also takes its
+    conversation turns with it (complete-record semantics); expired/orphaned
+    turns are swept separately by purge_turns().
     """
     days = days or get_retention_days(db)
     cutoff = (now or datetime.utcnow()) - timedelta(days=days)

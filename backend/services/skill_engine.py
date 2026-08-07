@@ -12,6 +12,11 @@ No executable code, templates, expressions, loops, branches, coordinates, or
 secret values are permitted. Every definition is validated before storage;
 every skill is versioned; a validated version is pinned to each running task;
 and a skill disabled before its next unstarted step pauses the task.
+
+Self-growth (L2): auto-generated proposals accumulate evidence from materially
+similar verified successful traces and are promoted to live, versioned skills
+once their trace count reaches the configured threshold — always re-validated
+against the current read-only tool set, never executed before enablement.
 """
 
 from __future__ import annotations
@@ -414,6 +419,12 @@ def set_skill_state(db: Session, skill_id: str, state: str) -> Optional[Skill]:
 
 # --- Proposals -------------------------------------------------------------
 
+# Minimum number of materially similar verified successful traces required to
+# *create* a proposal. Auto-enable additionally requires
+# settings.skill_auto_enable_threshold (default 5) accumulated traces, so a
+# proposal is only ever promoted to a live skill on well-evidenced behavior.
+PROPOSAL_MIN_SIMILAR_TRACES = 2
+
 def _task_trace(db: Session, task: Task) -> Optional[List[Dict[str, Any]]]:
     """Return the ordered successful tool-execution trace of a completed task."""
     events = (
@@ -506,15 +517,74 @@ def _proposal_definition(
     )
 
 
+def _auto_enable_if_ready(
+    db: Session,
+    proposal: ProposedSkill,
+    tool_executor: Any,
+) -> Optional[Skill]:
+    """Promote a proposal to a live skill once its verified trace count
+    reaches the configured threshold.
+
+    Promotion re-validates the definition against the *current* read-only tool
+    set (tools can change between runs), then reuses the exact explicit-approval
+    path so the resulting skill is identical to one the owner approved by hand.
+    Returns None when auto-enable is disabled, evidence is below threshold, or
+    re-validation fails (the proposal stays proposed for owner review).
+    """
+    try:
+        from backend.core.config import settings
+    except ImportError:
+        from core.config import settings
+    threshold = getattr(settings, "skill_auto_enable_threshold", 0)
+    if threshold <= 0:
+        return None
+    if proposal.skill_id:
+        # Owner-submitted proposals (skill_id set) always require explicit
+        # review; only auto-generated proposals may self-promote.
+        return None
+    try:
+        trace_ids = json.loads(proposal.trace_ids) if proposal.trace_ids else []
+    except (json.JSONDecodeError, TypeError):
+        trace_ids = []
+    if len(trace_ids) < threshold:
+        return None
+
+    definition = parse_definition(proposal.definition)
+    validation_errors = validate_definition(definition, allowed_tool_names(tool_executor))
+    if validation_errors:
+        proposal.validation_errors = json.dumps(validation_errors)
+        db.commit()
+        logger.warning(
+            "Proposal %s not auto-enabled: re-validation failed: %s",
+            proposal.id, "; ".join(validation_errors),
+        )
+        return None
+
+    skill = approve_proposal(db, proposal, tool_executor)
+    logger.info(
+        "Auto-enabled proposal %s as skill %s (%d verified traces)",
+        proposal.id, skill.id, len(trace_ids),
+    )
+    return skill
+
+
 def maybe_generate_proposal(
     db: Session,
     task_id: str,
     tool_executor: Any,
 ) -> Optional[ProposedSkill]:
-    """Create a proposed skill when >=2 materially similar verified traces exist.
+    """Create or grow a proposed skill from materially similar verified traces.
 
     Called after a task completes successfully. Only completed, verified tasks
     are considered; nothing is ever executed automatically.
+
+    - A proposal is created once >=2 materially similar verified traces exist.
+    - Later tasks with the same signature accumulate onto that proposal (never
+      executed); once the accumulated trace count reaches
+      `settings.skill_auto_enable_threshold` (default 5) the proposal is
+      re-validated against the current tool set and auto-enabled as a live,
+      versioned skill.
+    - A signature the owner rejected is never re-proposed or auto-enabled.
     """
     task = db.query(Task).filter_by(id=task_id).first()
     if not task or task.state != "completed":
@@ -523,7 +593,35 @@ def maybe_generate_proposal(
     trace = _task_trace(db, task)
     if not trace:
         return None
-    signature = _trace_signature(trace)
+
+    # Accumulate evidence onto an existing proposal of the same signature, or
+    # refuse to resurrect one the owner already rejected / already enabled.
+    for prop in (
+        db.query(ProposedSkill)
+        .filter(ProposedSkill.status.in_(["proposed", "rejected", "enabled"]))
+        .all()
+    ):
+        try:
+            meta = json.loads(prop.trace_ids) if prop.trace_ids else []
+        except (json.JSONDecodeError, TypeError):
+            meta = []
+        if task.id in meta:
+            return None  # this task already contributed its evidence
+        if not _proposal_matches_trace(db, prop, meta, trace):
+            continue
+        if prop.status == "rejected":
+            logger.info(
+                "Not re-proposing signature of rejected proposal %s (task %s)",
+                prop.id, task_id,
+            )
+            return None
+        if prop.status == "enabled":
+            return None  # a live skill already exists for this workflow
+        meta.append(task.id)
+        prop.trace_ids = json.dumps(meta)
+        db.commit()
+        _auto_enable_if_ready(db, prop, tool_executor)
+        return prop
 
     similar: List[Task] = []
     candidates = (
@@ -538,7 +636,7 @@ def maybe_generate_proposal(
         other = _task_trace(db, candidate)
         if other and _traces_materially_similar(trace, other):
             similar.append(candidate)
-        if len(similar) >= 1:
+        if len(similar) >= PROPOSAL_MIN_SIMILAR_TRACES - 1:
             break
 
     if not similar:
@@ -546,16 +644,6 @@ def maybe_generate_proposal(
 
     all_traces = [_task_trace(db, t) for t in ([task] + similar)]
     all_traces = [t for t in all_traces if t]
-
-    # Deduplicate: don't create a second proposal for the same trace signature.
-    existing = db.query(ProposedSkill).filter_by(status="proposed").all()
-    for prop in existing:
-        try:
-            existing_meta = json.loads(prop.trace_ids) if prop.trace_ids else []
-        except (json.JSONDecodeError, TypeError):
-            existing_meta = []
-        if task.id in existing_meta:
-            return None
 
     definition = _proposal_definition(
         name=f"{trace[0]['tool_name']} workflow",
@@ -575,7 +663,25 @@ def maybe_generate_proposal(
     logger.info(
         "Proposed skill from %d traces: %s (task %s)", len(all_traces), definition.name, task.id
     )
+    _auto_enable_if_ready(db, proposal, tool_executor)
     return proposal
+
+
+def _proposal_matches_trace(
+    db: Session,
+    proposal: ProposedSkill,
+    trace_ids: List[str],
+    trace: List[Dict[str, Any]],
+) -> bool:
+    """True when any of the proposal's source tasks shares the trace signature."""
+    for tid in trace_ids:
+        other_task = db.query(Task).filter_by(id=tid).first()
+        if not other_task:
+            continue
+        other = _task_trace(db, other_task)
+        if other and _traces_materially_similar(trace, other):
+            return True
+    return False
 
 
 def list_proposals(db: Session, status: Optional[str] = None) -> List[Dict[str, Any]]:

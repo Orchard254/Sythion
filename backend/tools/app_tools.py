@@ -34,6 +34,62 @@ _APP_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+ ()-]*$")
 # be answered by the user, never auto-answered as Save or Discard (#67).
 _UNSAVED_WORK_PROBE_MS = 1500
 
+# Apps that use a single-process model (Chrome, Edge) where a bare `Popen` of
+# the exe attaches to the running instance and focuses/reuses its existing
+# window instead of opening a genuinely separate one. For these we pass the
+# documented "new window" flag to guarantee a fresh window when the model
+# requests `new_instance=True`. Only registry-derived, known single-instance
+# browsers are special-cased; everything else launches plainly.
+_NEW_WINDOW_FLAG_BY_EXE_MARKER = {
+    "chrome.exe": "--new-window",
+    "msedge.exe": "--new-window",
+}
+
+
+def _new_window_argv(exe: str) -> List[str]:
+    """Return the argv tail (flag or empty) when a bare Popen would otherwise
+    reuse an existing single-instance window instead of opening a new one."""
+    if not exe:
+        return []
+    marker = os.path.basename(exe).lower()
+    flag = _NEW_WINDOW_FLAG_BY_EXE_MARKER.get(marker)
+    return [flag] if flag else []
+
+
+def _process_alive(pid: int) -> bool:
+    """Return True if the process is still running.
+
+    A graceful WM_CLOSE can leave the process alive behind an unsaved-work
+    prompt whose dialog caption does not contain the app name (e.g. Win11
+    Notepad titles it after the document), so title-based re-probes can miss
+    it. Process liveness is the source of truth; if the PID cannot be
+    inspected (e.g. ACCESS_DENIED on an elevated process) it is treated as
+    alive rather than risk reporting an unverified close.
+    """
+    if not pid:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        open_process = ctypes.windll.kernel32.OpenProcess
+        open_process.restype = wintypes.HANDLE
+        open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = open_process(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            # ERROR_INVALID_PARAMETER (87) => no such process.
+            return ctypes.windll.kernel32.GetLastError() != 87
+        try:
+            code = ctypes.c_ulong()
+            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    except Exception:
+        return True
+
 
 def _validate_app_id(app_id: str) -> None:
     if not app_id or not _APP_ID_PATTERN.match(app_id) or any(c in app_id for c in "/\\:"):
@@ -308,7 +364,7 @@ class AppLaunchTool(BaseTool):
     """Launch a registered Windows application."""
 
     name = "app_launch"
-    description = "Launch an application by its registered Windows display name"
+    description = "Launch an application by its registered Windows display name (reuses an open window by default; new_instance=True opens a fresh window)"
     input_schema = AppLaunchInput
 
     async def execute(self, input_data: AppLaunchInput) -> ToolOutput:
@@ -347,25 +403,45 @@ class AppLaunchTool(BaseTool):
                     duration_ms=0
                 )
 
-            # Focus-First Check: If an open window matches this application, bring it to front
-            # instead of spawning a duplicate process.
-            try:
-                focus_tool = AppFocusTool()
-                focus_res = await focus_tool.execute(AppFocusInput(app_id=app_id))
-                if focus_res.success:
-                    return ToolOutput(
-                        success=True,
-                        data={
-                            "app_id": app_id,
-                            "platform": "windows",
-                            "method": "focused_existing",
-                            "exe": exe,
-                        },
-                        model_summary=f"Focused existing open window for '{app_id}'",
-                        evidence={"source": "windows_focus_existing"}
-                    )
-            except Exception:
-                pass
+                        # Focus-First Check: by default (new_instance=False) an open window
+            # matching this application is brought to front instead of spawning
+            # a duplicate process. new_instance=True skips this entirely.
+            if not input_data.new_instance:
+                try:
+                    focus_tool = AppFocusTool()
+                    focus_res = await focus_tool.execute(AppFocusInput(app_id=app_id))
+                    if focus_res.success:
+                        return ToolOutput(
+                            success=True,
+                            data={
+                                "app_id": app_id,
+                                "platform": "windows",
+                                "method": "focused_existing",
+                                "exe": exe,
+                            },
+                            model_summary=f"Focused existing open window for '{app_id}'",
+                            evidence={"source": "windows_focus_existing"}
+                        )
+                except Exception:
+                    pass
+
+            if input_data.new_instance:
+                # Genuinely separate window/instance: for single-process apps
+                # (Chrome, Edge) pass the new-window flag so Popen does not just
+                # attach to the running instance and reuse its window.
+                argv = [exe] + _new_window_argv(exe)
+                subprocess.Popen(argv, shell=False)
+                return ToolOutput(
+                    success=True,
+                    data={
+                        "app_id": app_id,
+                        "platform": "windows",
+                        "method": "new_instance",
+                        "exe": exe,
+                    },
+                    model_summary=f"Launched a new instance of '{app_id}'",
+                    evidence={"source": "windows_registered_launch"}
+                )
 
             subprocess.Popen([exe], shell=False)
             return ToolOutput(
@@ -545,7 +621,8 @@ class AppCloseTool(BaseTool):
                 if win32gui.IsWindowVisible(hwnd):
                     title = win32gui.GetWindowText(hwnd)
                     if title_needle in title.lower():
-                        results.append(hwnd)
+                        _, pid = win32gui.GetWindowThreadProcessId(hwnd)
+                        results.append((hwnd, pid))
                 return True
 
             windows = []
@@ -557,12 +634,26 @@ class AppCloseTool(BaseTool):
                     error={"code": "WINDOW_NOT_FOUND", "message": f"No window found matching '{app_id}'"},
                     duration_ms=0
                 )
-            for hwnd in windows:
+            for hwnd, _ in windows:
                 win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
 
-            # Probe for an unsaved-work prompt. If a window is still present we
-            # do NOT force-close or answer Save/Discard: the user must decide.
+            # Probe for an unsaved-work prompt. If the process is still present
+            # we do NOT force-close or answer Save/Discard: the user must decide.
+            # Process liveness is checked first because an unsaved-work prompt is
+            # a dialog whose caption may not contain the app name; the title
+            # re-probe below is a second line of defense for windowed apps that
+            # do not map to a process we captured.
             await asyncio.sleep(_UNSAVED_WORK_PROBE_MS / 1000.0)
+
+            closed_pids = {pid for _, pid in windows if pid}
+            alive = [pid for pid in closed_pids if _process_alive(pid)]
+            if alive:
+                return ToolOutput(
+                    success=False,
+                    error={"code": "UNSAVED_WORK_PROMPT",
+                           "message": f"'{app_id}' is still running (PID {alive}) and may be showing an unsaved-work prompt; ask the user how to proceed."},
+                    duration_ms=0
+                )
 
             remaining = []
             win32gui.EnumWindows(enum_windows, remaining)

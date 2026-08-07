@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 from typing import Dict, Any, Optional, List
 from datetime import datetime
@@ -356,9 +357,23 @@ class TaskExecutionLoop:
                     TaskState.PAUSED.value,
                 ]:
                     logger.info(f"Task {task_id} reached state: {task.state}")
+                    # The task is terminal: stop renewing the lease now so the
+                    # next request can start without waiting on the best-effort
+                    # post-completion steps below (proposal generation, memory
+                    # consolidation can take tens of seconds).
+                    if not heartbeat.done():
+                        heartbeat.cancel()
+                        try:
+                            await heartbeat
+                        except (asyncio.CancelledError, Exception):
+                            pass
                     await self._record_budget_snapshot(task_id, budget)
                     if task.state == TaskState.COMPLETED.value:
                         await self._propose_skill_from_trace(task_id)
+                        await self._save_conversation_turn(task_id, task)
+                        await self._consolidate_memory_from_trace(task_id)
+                    elif task.state == TaskState.FAILED.value:
+                        await self._save_conversation_turn(task_id, task)
                     break
                     
         except Exception as e:
@@ -392,6 +407,61 @@ class TaskExecutionLoop:
                 )
         except Exception as exc:  # pragma: no cover - best-effort
             logger.warning("Proposal generation failed for task %s: %s", task_id, exc)
+
+    async def _consolidate_memory_from_trace(self, task_id: str) -> None:
+        """Best-effort memory consolidation after a saved conversation turn.
+
+        Distills the recent session conversation into durable memory ops
+        (background, fire-and-forget; never blocks the task loop).
+        """
+        try:
+            from backend.core.config import settings
+            from backend.core.session import get_current_session_id
+            from backend.models.database import ConversationTurn, MemoryEntry, MemoryEdge
+            from backend.services.memory_consolidation import (
+                apply_edge_decay,
+                consolidate_memory,
+            )
+
+            if not settings.memory_consolidation_enabled:
+                return
+
+            # Decay untouched edges on the same maintenance cadence as
+            # consolidation (never auto-deletes; only flags for review).
+            apply_edge_decay(self.db)
+
+            session_id = get_current_session_id()
+            turns = (
+                self.db.query(ConversationTurn)
+                .filter_by(session_id=session_id)
+                .order_by(ConversationTurn.created_at.desc())
+                .limit(20)
+                .all()
+            )
+            if len(turns) < 2:
+                return
+            memories = (
+                self.db.query(MemoryEntry)
+                .order_by(MemoryEntry.updated_at.desc())
+                .all()
+            )
+            edges = (
+                self.db.query(MemoryEdge)
+                .order_by(MemoryEdge.updated_at.desc())
+                .all()
+            )
+            applied = await consolidate_memory(
+                self.db, list(reversed(turns)), memories, memory_edges=edges
+            )
+            if applied:
+                logger.info(
+                    "Memory consolidation applied %d ops (task %s)",
+                    len(applied), task_id,
+                )
+        except Exception as exc:  # pragma: no cover - best-effort
+            logger.warning(
+                "Memory consolidation failed for task %s: %s", task_id, exc
+            )
 
     async def _record_budget_snapshot(self, task_id: str, budget: TaskBudget) -> None:
         """Record an evidence-safe summary of per-task budget usage."""
@@ -712,8 +782,7 @@ class TaskExecutionLoop:
         from backend.core.config import settings
         active_autonomy = os.environ.get("SYTHION_AUTONOMY_LEVEL", settings.autonomy_level)
         requires_confirmation = bool(policy.get("requires_confirmation"))
-        is_destructive = bool(policy.get("destructive"))
-        needs_prompt = requires_confirmation and not approved_by_user and (active_autonomy != "autonomous" or is_destructive)
+        needs_prompt = requires_confirmation and not approved_by_user and active_autonomy != "autonomous"
         if needs_prompt:
             events = self._get_event_history(task_id)
             was_denied = any(
@@ -775,6 +844,7 @@ class TaskExecutionLoop:
             event_type="tool.executed",
             event_data={
                 "tool_name": tool_name,
+                "params": tool_params,
                 "success": result.success,
                 "output": result.data or result.output if hasattr(result, 'output') else result.data,
                 "model_summary": model_summary,
@@ -793,6 +863,72 @@ class TaskExecutionLoop:
         else:
             logger.warning(f"Tool {tool_name} failed: {result.error}")
             return False
+
+    async def _save_conversation_turn(self, task_id: str, task: Task) -> None:
+        """Save a compressed 2-row turn (user request + assistant result) for episodic memory."""
+        try:
+            from backend.core.session import get_current_session_id
+            from backend.models.database import ConversationTurn, MemoryEntry
+
+            session_id = get_current_session_id()
+
+            # Compress user request (~100 chars)
+            req_summary = (task.original_request or "").strip()
+            if len(req_summary) > 120:
+                req_summary = req_summary[:117] + "..."
+
+            # Compress assistant result (~150 chars)
+            res_summary = (task.final_result or task.terminal_reason or "").strip()
+            if not res_summary:
+                res_summary = "Task completed" if task.state == TaskState.COMPLETED.value else "Task failed"
+            if len(res_summary) > 150:
+                res_summary = res_summary[:147] + "..."
+
+            turn_user = ConversationTurn(
+                session_id=session_id,
+                task_id=task_id,
+                role="user",
+                summary=req_summary,
+            )
+            turn_assistant = ConversationTurn(
+                session_id=session_id,
+                task_id=task_id,
+                role="assistant",
+                summary=f"[{task.state.upper()}] {res_summary}",
+            )
+
+            self.db.add(turn_user)
+            self.db.add(turn_assistant)
+
+            # Regex auto-extraction of user preferences/facts into long-term memory
+            req_text = task.original_request or ""
+            patterns = [
+                (r"(?:my name is|i'?m called)\s+([A-Za-z0-9_\-]{2,30})", "user_profile", "user_name"),
+                (r"(?:i prefer|my preferred text editor is|my favorite editor is)\s+([A-Za-z0-9_\-\s\.\+]{2,30})", "user_preference", "preferred_editor"),
+                (r"(?:remember that|note that)\s+([A-Za-z0-9_\-\s\.\+:]{5,100})", "user_instruction", None),
+            ]
+            for pattern, cat, fixed_key in patterns:
+                m = re.search(pattern, req_text, re.IGNORECASE)
+                if m:
+                    val = m.group(1).strip()
+                    key = fixed_key or f"pref_{re.sub(r'[^a-zA-Z0-9_]', '_', val[:20]).lower()}"
+                    existing = self.db.query(MemoryEntry).filter_by(key=key).first()
+                    if existing:
+                        existing.value = val
+                        existing.category = cat
+                        existing.updated_at = datetime.utcnow()
+                    else:
+                        self.db.add(MemoryEntry(
+                            key=key,
+                            value=val,
+                            category=cat,
+                            source_task_id=task_id,
+                        ))
+
+            self.db.commit()
+            logger.info(f"Saved conversation turn for task {task_id}")
+        except Exception as e:
+            logger.warning(f"Could not save conversation turn for task {task_id}: {e}")
 
 
 async def run_task(db_session: Session, task_id: str, tool_executor: ToolExecutor) -> None:
@@ -822,5 +958,8 @@ async def run_task(db_session: Session, task_id: str, tool_executor: ToolExecuto
         loop = TaskExecutionLoop(session, runner, tool_executor)
         await loop.execute_task(task_id)
     finally:
-        await runner.release_lease()
+        try:
+            await runner.release_lease()
+        except Exception:
+            pass
         session.close()

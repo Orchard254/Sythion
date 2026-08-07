@@ -13,13 +13,22 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.models.database import Base, Task, TaskEvent, PurgeReceipt, SettingsMetadata
+from backend.models.database import (
+    Base,
+    ConversationTurn,
+    MemoryEntry,
+    PurgeReceipt,
+    SettingsMetadata,
+    Task,
+    TaskEvent,
+)
 from backend.services.retention import (
     DEFAULT_RETENTION_DAYS,
     get_retention_days,
     list_purge_receipts,
     purge_expired,
     purge_task,
+    purge_turns,
 )
 
 
@@ -56,6 +65,19 @@ def _task(db, task_id, created_days_ago=0, state="completed", with_events=2):
         ))
     db.commit()
     return task
+
+
+def _turn(db, task_id, created_days_ago=0, role="user"):
+    turn = ConversationTurn(
+        session_id="sess-1",
+        task_id=task_id,
+        role=role,
+        summary=f"turn summary for {task_id}",
+        created_at=datetime.utcnow() - timedelta(days=created_days_ago),
+    )
+    db.add(turn)
+    db.commit()
+    return turn
 
 
 class TestRetentionDefaults:
@@ -149,3 +171,87 @@ class TestRetentionExpiry:
         # No orphaned events, no leftover task, exactly one receipt.
         assert db_session.query(TaskEvent).filter_by(task_id="t-full").count() == 0
         assert db_session.query(PurgeReceipt).count() == 1
+
+
+class TestConversationTurnRetention:
+    def test_purge_task_removes_its_conversation_turns(self, db_session):
+        _task(db_session, "t-old", created_days_ago=200)
+        _turn(db_session, "t-old", created_days_ago=200, role="user")
+        _turn(db_session, "t-old", created_days_ago=200, role="assistant")
+
+        purge_task(db_session, "t-old", reason="owner_requested")
+
+        assert db_session.query(ConversationTurn).filter_by(task_id="t-old").count() == 0
+
+    def test_purge_task_keeps_other_tasks_turns(self, db_session):
+        _task(db_session, "t-a")
+        _task(db_session, "t-b")
+        _turn(db_session, "t-a")
+        _turn(db_session, "t-b")
+
+        purge_task(db_session, "t-a")
+
+        assert db_session.query(ConversationTurn).filter_by(task_id="t-a").count() == 0
+        assert db_session.query(ConversationTurn).filter_by(task_id="t-b").count() == 1
+
+    def test_purge_turns_respects_window(self, db_session):
+        _turn(db_session, "t-old", created_days_ago=200)
+        _turn(db_session, "t-recent", created_days_ago=10)
+
+        purged = purge_turns(db_session, days=90)
+
+        assert purged == 1
+        assert db_session.query(ConversationTurn).count() == 1
+        assert db_session.query(ConversationTurn).filter_by(task_id="t-recent").first() is not None
+
+    def test_purge_turns_sweeps_orphans(self, db_session):
+        """Turns whose task row is already gone are still swept (the leak fix)."""
+        _turn(db_session, "orphaned-task", created_days_ago=300)
+
+        purged = purge_turns(db_session, days=90)
+
+        assert purged == 1
+        assert db_session.query(ConversationTurn).count() == 0
+
+    def test_purge_turns_uses_configured_retention(self, db_session):
+        db_session.add(SettingsMetadata(key="retention_days", value="10"))
+        db_session.commit()
+        _turn(db_session, "t-15d", created_days_ago=15)
+        _turn(db_session, "t-5d", created_days_ago=5)
+
+        assert purge_turns(db_session) == 1
+        assert db_session.query(ConversationTurn).filter_by(task_id="t-5d").first() is not None
+
+    def test_purge_turns_explicit_now_injected(self, db_session):
+        _turn(db_session, "t-old", created_days_ago=200)
+        assert purge_turns(db_session, days=90, now=datetime.utcnow()) == 1
+
+    def test_purge_turns_leaves_durable_memory_exempt(self, db_session):
+        """memory_entries are durable memory, not a transcript: never swept."""
+        _turn(db_session, "t-old", created_days_ago=200)
+        db_session.add(MemoryEntry(
+            key="user_name",
+            value="Alice",
+            created_at=datetime.utcnow() - timedelta(days=300),
+            updated_at=datetime.utcnow() - timedelta(days=300),
+        ))
+        db_session.commit()
+
+        purge_turns(db_session, days=90)
+
+        assert db_session.query(ConversationTurn).count() == 0
+        assert db_session.query(MemoryEntry).filter_by(key="user_name").count() == 1
+
+    def test_purge_expired_removes_turns_of_purged_tasks(self, db_session):
+        _task(db_session, "t-old", created_days_ago=200)
+        _turn(db_session, "t-old", created_days_ago=200)
+        _turn(db_session, "t-old", created_days_ago=200, role="assistant")
+        _task(db_session, "t-recent", created_days_ago=10)
+        _turn(db_session, "t-recent", created_days_ago=10)
+
+        receipts = purge_expired(db_session, days=90)
+
+        assert len(receipts) == 1
+        assert db_session.query(ConversationTurn).filter_by(task_id="t-old").count() == 0
+        # The recent task's turns are untouched.
+        assert db_session.query(ConversationTurn).filter_by(task_id="t-recent").count() == 1

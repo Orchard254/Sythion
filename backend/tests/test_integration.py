@@ -106,6 +106,57 @@ class TestModelDecisionEngine:
         assert "Recent Activity" in messages[1]["content"]
         assert "get_time" in messages[1]["content"]
         assert "SUCCESS" in messages[1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_build_context_uses_empty_string_for_tool_call_content(self, db_session, tool_executor):
+        """Assistant tool-call turns should use an empty string content payload for provider compatibility."""
+        engine = ModelDecisionEngine(db_session, tool_executor)
+
+        messages = engine._build_context(
+            task_id="test-123",
+            original_request="Check the time",
+            normalized_goal=None,
+            event_history=[{
+                "event_type": "tool.executed",
+                "event_data": {
+                    "tool_name": "system_time",
+                    "success": True,
+                    "output": {"time": "12:00:00"},
+                },
+            }],
+            current_state="running",
+        )
+
+        tool_call_turn = next(
+            msg for msg in messages if msg.get("role") == "assistant" and msg.get("tool_calls")
+        )
+        assert tool_call_turn["content"] == ""
+
+    @pytest.mark.asyncio
+    async def test_build_context_tool_result_message_omits_name_field(self, db_session, tool_executor):
+        """Tool result turns should use the minimal provider-compatible schema."""
+        engine = ModelDecisionEngine(db_session, tool_executor)
+
+        messages = engine._build_context(
+            task_id="test-123",
+            original_request="Check the time",
+            normalized_goal=None,
+            event_history=[{
+                "event_type": "tool.executed",
+                "event_data": {
+                    "tool_name": "system_time",
+                    "success": True,
+                    "output": {"time": "12:00:00"},
+                },
+            }],
+            current_state="running",
+        )
+
+        tool_result_turn = next(
+            msg for msg in messages if msg.get("role") == "tool"
+        )
+        assert "name" not in tool_result_turn
+        assert tool_result_turn["content"]
     
     def test_parse_decision_valid(self, db_session, tool_executor):
         """Test parsing a valid model response."""
@@ -129,8 +180,8 @@ class TestModelDecisionEngine:
         assert decision_type == "execute_tool"
         assert params["tool_name"] == "get_time"
     
-    def test_parse_decision_parallel_rejected(self, db_session, tool_executor):
-        """Test that parallel calls are rejected."""
+    def test_parse_decision_parallel_calls_takes_first(self, db_session, tool_executor):
+        """Test that parallel calls take only the first and discard the rest."""
         engine = ModelDecisionEngine(db_session, tool_executor)
         
         mock_response = {
@@ -154,11 +205,10 @@ class TestModelDecisionEngine:
             }]
         }
         
-        with pytest.raises(ModelDecisionError) as exc_info:
-            engine._parse_decision(mock_response)
+        decision_type, params = engine._parse_decision(mock_response)
+        assert decision_type == DecisionType.EXECUTE_TOOL
+        assert params["tool_name"] == "get_time"
         
-        assert exc_info.value.code == "PARALLEL_CALLS"
-    
     def test_parse_decision_empty_response(self, db_session, tool_executor):
         """Test handling of empty model response."""
         engine = ModelDecisionEngine(db_session, tool_executor)
@@ -180,6 +230,83 @@ class TestModelDecisionEngine:
             })
 
         assert exc_info.value.code == "MISSING_CONTROL_CALL"
+
+    def _build_context_with_tool(self, db_session, tool_executor, tool_name, model_summary):
+        """Build context with a single long-summary tool.executed event."""
+        engine = ModelDecisionEngine(db_session, tool_executor)
+        return engine._build_context(
+            task_id="test-ctx",
+            original_request="look things up",
+            normalized_goal=None,
+            event_history=[{
+                "event_type": "tool.executed",
+                "event_data": {
+                    "tool_name": tool_name,
+                    "success": True,
+                    "model_summary": model_summary,
+                    "params": {"query": "x"} if tool_name == "web_search" else {},
+                },
+            }],
+            current_state="running",
+        )
+
+    def test_web_search_long_summary_survives_truncation(self, db_session, tool_executor):
+        """web_search's own bounded summary must reach the model larger than 220 chars."""
+        long_summary = "Top 5 results for 'python asyncio':\n" + "\n".join(
+            f"{i + 1}. Result headline number {i + 1} with a reasonably long title to exercise the truncation budget ({'pad' * 30})"
+            for i in range(5)
+        )
+        assert len(long_summary) > 220
+
+        messages = self._build_context_with_tool(
+            db_session, tool_executor, "web_search", long_summary
+        )
+
+        user_content = messages[1]["content"]
+        # The full 2000-char-bound summary survives into the Recent Activity
+        # block under the web_search budget (1600), not just a 220-char slice:
+        # a chunk well past the old 220-char cut is present verbatim.
+        assert long_summary[:300] in user_content
+        assert long_summary[220:500] in user_content
+
+        tool_turn = next(m for m in messages if m.get("role") == "tool")
+        assert any(
+            m.get("role") == "assistant" and m.get("tool_calls") for m in messages
+        )
+        assert long_summary[:300] in tool_turn["content"]
+        assert long_summary[220:500] in tool_turn["content"]
+
+    def test_web_fetch_long_summary_survives_truncation(self, db_session, tool_executor):
+        """web_fetch must preserve a meaningful chunk of page text in context."""
+        long_page = ("fetched page text about deep learning " * 60).strip()
+        assert len(long_page) > 220
+
+        messages = self._build_context_with_tool(
+            db_session, tool_executor, "web_fetch", long_page
+        )
+
+        user_content = messages[1]["content"]
+        assert long_page[:300] in user_content
+        assert long_page[220:800] in user_content
+
+        tool_turn = next(m for m in messages if m.get("role") == "tool")
+        assert long_page[:300] in tool_turn["content"]
+        assert long_page[220:800] in tool_turn["content"]
+
+    def test_non_web_tool_truncation_is_unchanged(self, db_session, tool_executor):
+        """Non-web tools keep the historical 220-char cap in context."""
+        long_summary = "B" * 1000
+        messages = self._build_context_with_tool(
+            db_session, tool_executor, "system_battery", long_summary
+        )
+
+        user_content = messages[1]["content"]
+        # Old cap retained: the summary is cut to 220 chars (~217 + '...').
+        assert "B" * 300 not in user_content
+        assert ("B" * 217 + "...") in user_content
+
+        tool_turn = next(m for m in messages if m.get("role") == "tool")
+        assert ("B" * 217 + "...") in tool_turn["content"]
 
 
 class TestTaskExecutionLoop:

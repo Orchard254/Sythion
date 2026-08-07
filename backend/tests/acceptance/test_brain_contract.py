@@ -56,6 +56,8 @@ def test_model_visible_tools_are_read_only_subset(db_session, full_tool_executor
     # Read-only system tools are visible.
     assert "system_time" in visible
     assert "system_battery" in visible
+    assert "system_file_roots" in visible
+    assert "system_capabilities" in visible
 
     # Mutating file/app/package tools are never model-visible.
     assert "file_write" not in visible
@@ -124,6 +126,39 @@ def test_system_prompt_teaches_direct_tool_calls(db_session, full_tool_executor)
     assert "execute_tool" not in prompt
     assert "call one directly" in prompt
     assert "system_time" in prompt
+    assert "system_capabilities" in prompt
+    assert "CAPABILITIES & SELF-AWARENESS" in prompt
+
+
+def test_system_prompt_enforces_intellectual_honesty(db_session, full_tool_executor):
+    """The prompt must forbid ungrounded claims, guessing paths, and false
+    memory absence, so the assistant never looks dumb or overclaims."""
+    engine = ModelDecisionEngine(db_session, full_tool_executor)
+    prompt = engine._build_system_prompt()
+    assert "INTELLECTUAL HONESTY" in prompt
+    assert "Never claim to know or remember something you cannot ground" in prompt
+    assert "I don't have that stored" in prompt
+    assert "Never guess file paths" in prompt
+    assert "does not prove nothing is stored" in prompt
+    assert "Never fabricate tool results" in prompt
+    assert "Stored memories can be stale or wrong" in prompt
+    assert "tool output wins" in prompt
+    assert "system_file_roots" in prompt
+
+
+def test_system_prompt_teaches_access_grants(db_session, full_tool_executor):
+    """The prompt must tell the assistant grants are user-controlled and live,
+    so a TARGET_OUTSIDE_ROOTS rejection never dead-ends with 'I have no way to
+    gain access'."""
+    engine = ModelDecisionEngine(db_session, full_tool_executor)
+    prompt = engine._build_system_prompt()
+    assert "FILE ACCESS & GRANTS" in prompt
+    assert "Approved file roots" in prompt
+    assert "takes effect immediately" in prompt
+    assert "TARGET_OUTSIDE_ROOTS" in prompt
+    assert "ask the user to add it" in prompt
+    assert "Never attempt to bypass the root check" in prompt
+    assert "Never guess a root path or a username" in prompt
 
 
 def test_context_uses_current_state(db_session, full_tool_executor):
@@ -161,6 +196,72 @@ def test_context_prefers_bounded_model_summary(db_session, full_tool_executor):
     content = messages[1]["content"]
     assert "time is now" in content
     assert ("x" * 1000) not in content
+
+
+def test_tool_replay_sends_arguments_as_object(db_session, full_tool_executor):
+    """Replayed assistant tool calls must carry `arguments` as an object.
+
+    Ollama Cloud rejects replay arguments sent as a JSON string (HTTP 400
+    "Value looks like object, but can't find closing '}' symbol"), which
+    killed every task after its first successful tool execution.
+    """
+    engine = ModelDecisionEngine(db_session, full_tool_executor)
+    history = [{
+        "event_type": "tool.executed",
+        "event_data": {
+            "tool_name": "app_launch",
+            "params": {"app_id": "Notepad"},
+            "success": True,
+            "model_summary": "Launched Notepad.",
+        },
+        "created_at": "2026-01-01T00:00:00",
+    }]
+    messages = engine._build_context(
+        task_id="t-1",
+        original_request="open notepad",
+        normalized_goal="Open the Notepad app",
+        event_history=history,
+        current_state="running",
+    )
+
+    assistant_turns = [
+        m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")
+    ]
+    assert len(assistant_turns) == 1
+    tool_call = assistant_turns[0]["tool_calls"][0]
+    args = tool_call["function"]["arguments"]
+    assert isinstance(args, dict), "arguments must be an object, not a JSON string"
+    assert args == {"app_id": "Notepad"}
+
+    tool_turns = [m for m in messages if m.get("role") == "tool"]
+    assert len(tool_turns) == 1
+    assert tool_turns[0]["tool_call_id"] == tool_call["id"]
+
+
+def test_tool_replay_without_params_defaults_to_empty_object(db_session, full_tool_executor):
+    """Events recorded before params were persisted still replay as `{}`."""
+    engine = ModelDecisionEngine(db_session, full_tool_executor)
+    history = [{
+        "event_type": "tool.executed",
+        "event_data": {
+            "tool_name": "system_battery",
+            "success": True,
+            "model_summary": "Battery 80%",
+        },
+        "created_at": "2026-01-01T00:00:00",
+    }]
+    messages = engine._build_context(
+        task_id="t-1",
+        original_request="battery",
+        normalized_goal=None,
+        event_history=history,
+        current_state="running",
+    )
+    assistant_turns = [
+        m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")
+    ]
+    args = assistant_turns[0]["tool_calls"][0]["function"]["arguments"]
+    assert args == {}
 
 
 def test_decision_input_schemas_are_pydantic(db_session, full_tool_executor):

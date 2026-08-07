@@ -255,3 +255,50 @@ async def test_non_confirmation_tool_runs_without_approval(db_session, task_runn
     assert any(e.event_type == "tool.executed" for e in events)
     assert not any(e.event_type == "action.pending_approval" for e in events)
     await task_runner.release_lease()
+
+
+@pytest.mark.asyncio
+async def test_autonomous_mode_self_approves_destructive_action(db_session, task_runner, tmp_path, monkeypatch):
+    """Autonomous mode executes destructive tools directly, without staging an
+    approval prompt or re-asking for confirmation."""
+    monkeypatch.setenv("SYTHION_AUTONOMY_LEVEL", "autonomous")
+    monkeypatch.setattr("backend.tools.file_tools._approved_roots", lambda: [tmp_path])
+    ex = ToolExecutor()
+    for tool in create_file_tools():
+        ex.register_tool(tool)
+
+    target = tmp_path / "doomed.txt"
+    target.write_text("data")
+
+    await task_runner.acquire_lease()
+    task = await task_runner.create_task("Delete a file")
+    await task_runner.transition_state(task.id, TaskState.RUNNING, "task.execution_started", {})
+
+    loop = TaskExecutionLoop(db_session, task_runner, ex)
+    calls = {"n": 0}
+
+    async def _decision(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return DecisionType.EXECUTE_TOOL, {
+                "tool_name": "file_delete",
+                "params": {"path": str(target)},
+            }
+        return DecisionType.COMPLETE_TASK, {"result": "Deleted"}
+
+    loop.model_engine.make_decision = _decision
+
+    await loop.execute_task(task.id)
+
+    done = await task_runner.get_task(task.id)
+    assert done.state == TaskState.COMPLETED.value
+    assert done.pending_action is None
+    assert done.pending_question is None
+    assert not target.exists()
+    events = db_session.query(TaskEvent).filter_by(task_id=task.id).order_by(
+        TaskEvent.sequence_num.asc()
+    ).all()
+    assert any(e.event_type == "tool.executed" for e in events)
+    assert not any(e.event_type == "action.pending_approval" for e in events)
+    assert not any(e.event_type == "task.waiting_for_user" for e in events)
+    await task_runner.release_lease()

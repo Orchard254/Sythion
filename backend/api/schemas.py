@@ -7,6 +7,11 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
 
+try:
+    from backend.core.hotkeys import HOTKEY_KEYS_DESC
+except ImportError:  # top-level `api.schemas` import path
+    from core.hotkeys import HOTKEY_KEYS_DESC
+
 
 class TaskState(str, Enum):
     """Valid task states."""
@@ -116,6 +121,24 @@ class SystemActiveWindowInput(ToolInput):
     pass
 
 
+class SystemFileRootsInput(ToolInput):
+    """Input for the file-roots introspection tool."""
+    pass
+
+
+class SystemCapabilitiesInput(ToolInput):
+    """Input for the capability-introspection tool."""
+    pass
+
+
+class ToolProposeInput(ToolInput):
+    """Input for proposing a new tool."""
+    name: str = Field(..., min_length=1, max_length=64, description="Tool name (lowercase, underscores)")
+    description: str = Field(..., min_length=1, max_length=500, description="What the tool does")
+    input_schema: Dict[str, Any] = Field(..., description="Pydantic schema as JSON object")
+    implementation: str = Field(..., min_length=1, description="Python source code defining a BaseTool subclass")
+
+
 # File Tool Schemas
 
 class FileListInput(ToolInput):
@@ -174,6 +197,10 @@ class AppListInput(ToolInput):
 class AppLaunchInput(ToolInput):
     """Input for launching an application."""
     app_id: str
+    new_instance: bool = Field(
+        default=False,
+        description="Open a genuinely new window/instance instead of reusing an existing open window (default: reuse existing if one is open)",
+    )
 
 
 class AppFocusInput(ToolInput):
@@ -253,8 +280,8 @@ class GUITypeInput(ToolInput):
 
 class GUIHotkeyInput(ToolInput):
     """Input for hotkey execution."""
-    window_title: str
-    keys: List[str]
+    window_title: str = Field(description="Window title that must be foreground before the hotkey is pressed")
+    keys: List[str] = Field(description=HOTKEY_KEYS_DESC)
 
 
 class GUIPasteInput(ToolInput):
@@ -302,7 +329,8 @@ class SkillSubmitRequest(BaseModel):
     """Owner submission of a validated, versioned declarative skill.
 
     Submissions always enter as proposals and require explicit review and
-    enablement before they become live skills.
+    enablement before they become live skills (auto-generated proposals may
+    auto-enable after N similar verified traces; owner submissions never do).
     """
     skill_id: str = Field(..., min_length=1, max_length=128)
     definition: Dict[str, Any]
@@ -336,6 +364,7 @@ class RetentionRunResponse(BaseModel):
     """Result of a retention/purge run."""
     receipts: List[PurgeReceiptResponse]
     purged_count: int
+    purged_turns: int = 0
 
 
 # Onboarding Schemas
@@ -505,8 +534,62 @@ class MemoryRecallInput(ToolInput):
 class WebSearchInput(ToolInput):
     """Input for searching the internet."""
     query: str
+    max_results: int = Field(default=5, ge=1, le=10, description="How many results to return (1-10)")
+    lang: str = Field(default="en", description="Search language code, e.g. en, de, fr")
 
 
 class WebFetchInput(ToolInput):
     """Input for fetching web page content."""
     url: str
+
+
+class MemoryForgetInput(ToolInput):
+    """Input for deleting a persistent memory entry."""
+    key: str
+
+
+class MemoryLinkInput(ToolInput):
+    """Input for creating or updating a directed memory link.
+
+    Link endpoints are memory keys (or short free-text fact labels); the
+    relation is lowercase snake_case describing how source relates to target.
+    """
+
+    source_key: str
+    relation: str
+    target_key: str
+    weight: float = Field(default=1.0, gt=0)
+
+
+class MemoryRecallRelatedInput(ToolInput):
+    """Input for recalling a memory key plus its linked neighborhood.
+
+    `hops` is clamped to 2 by the tool; larger values are accepted so the
+    model can request a deeper walk without the schema rejecting it.
+    """
+
+    key: str
+    hops: int = Field(default=1, ge=1)
+
+
+class ActivityRecallInput(ToolInput):
+    """Input for recalling Sythion's own past activity within a time range.
+
+    Query Sythion's activity history (task tool-call events and the
+    conversation transcript) across tasks. The model is expected to resolve
+    natural-language phrasing ("this morning", "8am", "yesterday") into a
+    concrete `start_time` using its own knowledge of the current time; the
+    tool does no date parsing.
+
+    `exclude_task_ids` omits events from specified tasks (e.g. the current
+    task) so the result only shows prior activity.
+
+    `max_results` is loosely bounded (1-25) at the schema and hard-clamped by
+    the tool, matching the WebSearchInput / memory_recall_related convention.
+    """
+
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    tool_name: Optional[str] = None
+    exclude_task_ids: Optional[List[str]] = None
+    max_results: int = Field(default=10, ge=1, le=25)

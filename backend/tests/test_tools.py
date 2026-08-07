@@ -147,6 +147,11 @@ class TestSystemTools:
         from tools.system_tools import SystemActiveWindowTool
         return SystemActiveWindowTool()
     
+    @pytest.fixture
+    def system_file_roots_tool(self):
+        from tools.system_tools import SystemFileRootsTool
+        return SystemFileRootsTool()
+    
     @pytest.mark.asyncio
     async def test_get_time(self, system_time_tool):
         """Test getting current time"""
@@ -202,14 +207,64 @@ class TestSystemTools:
         # On Linux without GUI, should return unavailable or succeed with limited info
         assert result.success is True  # Tool should not fail, just report unavailability
 
+    @pytest.mark.asyncio
+    async def test_file_roots_reports_approved_roots(self, system_file_roots_tool, monkeypatch, tmp_path):
+        """The introspection tool reports exactly the enforced approved roots."""
+        from api.schemas import SystemFileRootsInput
+        one = tmp_path / "one"
+        two = tmp_path / "two"
+        monkeypatch.setattr(
+            "tools.file_tools._approved_roots",
+            lambda: [one.resolve(), two.resolve()],
+        )
+        result = await system_file_roots_tool.execute(SystemFileRootsInput())
+
+        assert result.success is True
+        assert result.data["approved_roots"] == [str(one.resolve()), str(two.resolve())]
+        assert result.data["home"]
+        assert await system_file_roots_tool.verify(SystemFileRootsInput(), result) is True
+
+    @pytest.mark.asyncio
+    async def test_capabilities_reports_inventory_and_gaps(self):
+        """The capability-introspection tool reflects the registered toolset,
+        the per-mode model-visible subsets, and the known gaps."""
+        from api.schemas import SystemCapabilitiesInput
+        from tools.system_tools import SystemCapabilitiesTool
+
+        result = await SystemCapabilitiesTool().execute(SystemCapabilitiesInput())
+
+        assert result.success is True
+        data = result.data
+        assert data["registered_count"] >= 34
+        names = {t["name"] for t in data["tools"]}
+        assert "system_file_roots" in names
+        assert "system_capabilities" in names
+        assert "file_write" in names
+        assert len(data["known_gaps"]) > 0
+
+        # Model-visible subsets are consistent with policy filtering.
+        assert "system_capabilities" in data["model_visible_guarded"]
+        assert "file_write" not in data["model_visible_guarded"]
+        assert "package_install" not in data["model_visible_guarded"]
+
+        # Every tool row carries its policy flags and visibility.
+        for t in data["tools"]:
+            assert t["name"] and t["domain"]
+            assert "flags" in t and "risk_level" in t
+
 
 class TestFileTools:
     """Test file system tools"""
     
     @pytest.fixture
-    def temp_dir(self):
-        """Create a temporary directory for tests"""
+    def temp_dir(self, monkeypatch):
+        """Create a temporary directory for tests and approve it as a file root."""
+        from pathlib import Path
         dirpath = tempfile.mkdtemp()
+        monkeypatch.setattr(
+            "tools.file_tools._approved_roots",
+            lambda: [Path(dirpath).resolve()],
+        )
         yield dirpath
         shutil.rmtree(dirpath)
     

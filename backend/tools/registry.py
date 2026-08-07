@@ -19,7 +19,14 @@ def create_all_tools() -> Iterable[BaseTool]:
     from backend.tools.app_tools import create_app_tools
     from backend.tools.package_tools import create_package_tools
     from backend.tools.gui_tools import create_gui_tools
-    from backend.tools.memory_tools import MemoryStoreTool, MemoryRecallTool
+    from backend.tools.memory_tools import (
+        MemoryStoreTool,
+        MemoryRecallTool,
+        MemoryForgetTool,
+        MemoryLinkTool,
+        MemoryRecallRelatedTool,
+        ActivityRecallTool,
+    )
     from backend.tools.web_tools import WebSearchTool, WebFetchTool
 
     yield from create_system_tools()
@@ -29,6 +36,10 @@ def create_all_tools() -> Iterable[BaseTool]:
     yield from create_gui_tools()
     yield MemoryStoreTool()
     yield MemoryRecallTool()
+    yield MemoryForgetTool()
+    yield MemoryLinkTool()
+    yield MemoryRecallRelatedTool()
+    yield ActivityRecallTool()
     yield WebSearchTool()
     yield WebFetchTool()
 

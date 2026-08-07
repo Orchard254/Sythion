@@ -1,0 +1,337 @@
+"""
+Unit and integration tests for Sythion's three-tier conversation memory.
+"""
+
+import pytest
+from backend.core.session import get_current_session_id, set_current_session_id, reset_session_id
+from backend.models.database import (
+    set_db_manager, ConversationTurn, MemoryEntry, MemoryEdge,
+    MemoryContextLog, Task, TaskEvent,
+)
+from backend.core.db_manager import DatabaseManager
+from backend.api.schemas import MemoryStoreInput, MemoryRecallInput, MemoryForgetInput, TaskState
+from backend.tools.memory_tools import MemoryStoreTool, MemoryRecallTool, MemoryForgetTool
+from backend.services.task_execution_loop import TaskExecutionLoop
+from backend.services.model_engine import ModelDecisionEngine
+from backend.tools.executor import ToolExecutor
+import json
+
+
+@pytest.fixture
+def memory_db_setup(tmp_path):
+    db_path = str(tmp_path / "test_conv_memory.db")
+    db_mgr = DatabaseManager(db_path)
+    set_db_manager(db_mgr)
+    with db_mgr.get_session() as session:
+        yield session, db_mgr
+
+
+@pytest.mark.asyncio
+async def test_memory_forget_tool(memory_db_setup):
+    session, db_mgr = memory_db_setup
+    store_tool = MemoryStoreTool()
+    forget_tool = MemoryForgetTool()
+    recall_tool = MemoryRecallTool()
+
+    # 1. Store memory
+    await store_tool.execute(MemoryStoreInput(key="test_key", value="test_val", category="test_cat"))
+
+    # 2. Verify recall
+    res1 = await recall_tool.execute(MemoryRecallInput(query="test_key"))
+    assert res1.success is True
+    assert res1.data["count"] == 1
+
+    # 3. Delete memory
+    res2 = await forget_tool.execute(MemoryForgetInput(key="test_key"))
+    assert res2.success is True
+    assert res2.data["action"] == "deleted"
+
+    # 4. Verify gone
+    res3 = await recall_tool.execute(MemoryRecallInput(query="test_key"))
+    assert res3.success is True
+    assert res3.data["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_conversation_turn_save_and_auto_extract(memory_db_setup):
+    session, db_mgr = memory_db_setup
+
+    sess_id = reset_session_id()
+
+    # Create dummy completed task
+    task = Task(
+        id="task_101",
+        original_request="my name is Alex and I prefer VS Code",
+        state=TaskState.COMPLETED.value,
+        final_result="Switched default text editor to VS Code",
+    )
+    session.add(task)
+    session.commit()
+
+    loop = TaskExecutionLoop(db_session=session, task_runner=None, tool_executor=None)
+    await loop._save_conversation_turn("task_101", task)
+
+    # Verify ConversationTurn rows (2 rows: user + assistant)
+    turns = session.query(ConversationTurn).filter_by(session_id=sess_id).all()
+    assert len(turns) == 2
+    assert turns[0].role == "user"
+    assert "my name is Alex" in turns[0].summary
+    assert turns[1].role == "assistant"
+    assert "VS Code" in turns[1].summary
+
+    # Verify regex auto-extracted long-term memories
+    name_mem = session.query(MemoryEntry).filter_by(key="user_name").first()
+    assert name_mem is not None
+    assert name_mem.value == "Alex"
+
+    editor_mem = session.query(MemoryEntry).filter_by(key="preferred_editor").first()
+    assert editor_mem is not None
+    assert editor_mem.value == "VS Code"
+
+
+@pytest.mark.asyncio
+async def test_previous_task_context_scales_web_summary_for_continuation(memory_db_setup):
+    """Web-tool summaries get a scaled-down-but-larger slice on continuation tasks."""
+    session, db_mgr = memory_db_setup
+    long_summary = "Top 5 results for 'python asyncio':\n" + "\n".join(
+        f"{i + 1}. Result headline number {i + 1} with a reasonably long title to exercise the truncation budget ({'pad' * 30})"
+        for i in range(5)
+    )
+    session.add(Task(
+        id="prev_web",
+        original_request="search the web for python asyncio",
+        normalized_goal="find python asyncio info",
+        state=TaskState.FAILED.value,
+        terminal_reason="ACTION_LIMIT_EXCEEDED",
+    ))
+    session.flush()
+    session.add(TaskEvent(
+        task_id="prev_web",
+        event_type="tool.executed",
+        event_data=json.dumps({
+            "tool_name": "web_search",
+            "model_summary": long_summary,
+            "success": True,
+        }),
+        sequence_num=1,
+    ))
+    session.commit()
+
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    ctx = engine._previous_task_context(task_id="current_web", request="continue")
+    # The continuation slice scales the web cap down (~0.73 of the main cap),
+    # so a chunk well past the old 160-char continuation limit survives.
+    assert "web_search" in ctx
+    assert long_summary[:300] in ctx
+    assert long_summary[160:500] in ctx
+
+
+@pytest.mark.asyncio
+async def test_previous_task_context_seeds_continuation(memory_db_setup):
+    session, db_mgr = memory_db_setup
+    prev = Task(
+        id="prev_1",
+        original_request="organize my downloads folder",
+        normalized_goal="clean up downloads",
+        state=TaskState.FAILED.value,
+        terminal_reason="ACTION_LIMIT_EXCEEDED",
+    )
+    session.add(prev)
+    session.flush()
+    session.add(TaskEvent(
+        task_id="prev_1",
+        event_type="tool.executed",
+        event_data=json.dumps({"tool_name": "file_list", "model_summary": "listed downloads", "success": True}),
+        sequence_num=1,
+    ))
+    session.commit()
+
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    ctx = engine._previous_task_context(task_id="current_1", request="continue")
+    assert "organize my downloads folder" in ctx
+    assert "file_list" in ctx
+    assert "ACTION_LIMIT_EXCEEDED" in ctx
+
+
+@pytest.mark.asyncio
+async def test_previous_task_context_ignores_non_continuation(memory_db_setup):
+    session, db_mgr = memory_db_setup
+    session.add(Task(id="prev_3", original_request="organize my downloads folder", state=TaskState.FAILED.value))
+    session.commit()
+
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    ctx = engine._previous_task_context(task_id="current_1", request="check my email inbox")
+    assert ctx == ""
+
+
+@pytest.mark.asyncio
+async def test_previous_task_context_excludes_current_task(memory_db_setup):
+    session, db_mgr = memory_db_setup
+    session.add(Task(id="only_task", original_request="organize my downloads folder", state=TaskState.FAILED.value))
+    session.commit()
+
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    ctx = engine._previous_task_context(task_id="only_task", request="continue")
+    assert ctx == ""
+
+
+@pytest.mark.asyncio
+async def test_previous_task_context_seeds_refinement_phrases(memory_db_setup):
+    """Correction/refinement phrasing ("what of ...", "what about ...",
+    "... instead ...") must trigger the same PREVIOUS TASK CONTEXT seeding as
+    explicit continuation words, so a follow-up like "what of according to
+    standard media" resolves against the prior Tuko search instead of being
+    answered with "I don't understand"."""
+    session, db_mgr = memory_db_setup
+    prev = Task(
+        id="prev_tuko",
+        original_request="search for latest news on tuko website",
+        normalized_goal="find latest tuko news",
+        state=TaskState.FAILED.value,
+        terminal_reason="ACTION_LIMIT_EXCEEDED",
+    )
+    session.add(prev)
+    session.flush()
+    session.add(TaskEvent(
+        task_id="prev_tuko",
+        event_type="tool.executed",
+        event_data=json.dumps({"tool_name": "web_search", "model_summary": "Tuko Kenya latest news", "success": True}),
+        sequence_num=1,
+    ))
+    session.commit()
+
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    for phrase in ("what of according to standard media", "what about standard media", "try tuko instead"):
+        ctx = engine._previous_task_context(task_id="current_ref", request=phrase)
+        assert "search for latest news on tuko website" in ctx
+        assert "Tuko Kenya latest news" in ctx
+
+
+@pytest.mark.asyncio
+async def test_build_context_injects_guidance_to_resolve_short_messages(memory_db_setup):
+    """The system prompt must direct the model to resolve short / elliptical /
+    referential messages against the injected RECENT CONVERSATION and PREVIOUS
+    TASK CONTEXT blocks before calling request_user_input."""
+    session, db_mgr = memory_db_setup
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    msgs = engine._build_context(
+        task_id="current_11",
+        original_request="what of according to standard media",
+        normalized_goal=None,
+        event_history=[],
+        current_state="running",
+    )
+    sys_msg = next(m for m in msgs if m["role"] == "system")
+    assert "RESOLVE SHORT / ELLIPTICAL / REFERENTIAL REQUESTS" in sys_msg["content"]
+    assert "RECENT CONVERSATION (this session)" in sys_msg["content"]
+
+
+@pytest.mark.asyncio
+async def test_build_context_injects_previous_task_for_continuation(memory_db_setup):
+    session, db_mgr = memory_db_setup
+    session.add(Task(id="prev_2", original_request="draft a reply to the urgent email", state=TaskState.FAILED.value))
+    session.commit()
+
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    msgs = engine._build_context(
+        task_id="current_9",
+        original_request="continue",
+        normalized_goal=None,
+        event_history=[],
+        current_state="running",
+    )
+    user_msg = next(m for m in msgs if m["role"] == "user")
+    assert "PREVIOUS TASK CONTEXT" in user_msg["content"]
+    assert "draft a reply to the urgent email" in user_msg["content"]
+
+    msgs2 = engine._build_context(
+        task_id="current_10",
+        original_request="open the browser",
+        normalized_goal=None,
+        event_history=[],
+        current_state="running",
+    )
+    user_msg2 = next(m for m in msgs2 if m["role"] == "user")
+    assert "PREVIOUS TASK CONTEXT" not in user_msg2["content"]
+
+
+@pytest.mark.asyncio
+async def test_build_context_injects_only_relevant_memory(memory_db_setup):
+    """Selective injection replaces the flat top-20 dump: only entries relevant
+    to the request are injected, so a large store no longer floods the context."""
+    session, db_mgr = memory_db_setup
+    for i in range(20):
+        session.add(MemoryEntry(key=f"unrelated_topic_{i}", value=f"topic {i}", category="knowledge"))
+    session.add(MemoryEntry(key="preferred_editor", value="VS Code", category="preference"))
+    session.commit()
+
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    msgs = engine._build_context(
+        task_id="task_inj_1",
+        original_request="please use my preferred editor for the changes",
+        normalized_goal="edit code using preferred editor",
+        event_history=[],
+        current_state="running",
+    )
+    user_msg = next(m for m in msgs if m["role"] == "user")
+    content = user_msg["content"]
+    assert "preferred_editor" in content
+    assert "VS Code" in content
+    # The old top-20 dump would have injected every unrelated entry.
+    assert "unrelated_topic_0" not in content
+    assert "unrelated_topic_19" not in content
+    assert content.count("[knowledge]") < 5
+    assert len(content) < 3000
+
+
+@pytest.mark.asyncio
+async def test_build_context_injects_linked_memory_neighborhood(memory_db_setup):
+    """Entries reachable only via a memory link (1 hop) are injected too."""
+    session, db_mgr = memory_db_setup
+    session.add(MemoryEntry(key="work_location", value="Home office", category="preference"))
+    session.add(MemoryEntry(key="meeting_tool", value="Zoom", category="preference"))
+    session.add(MemoryEntry(key="team_lead", value="Priya", category="profile"))
+    session.add(MemoryEntry(key="favorite_food", value="pizza", category="knowledge"))
+    session.add(MemoryEdge(source_key="work_location", relation="uses_for", target_key="meeting_tool"))
+    session.add(MemoryEdge(source_key="work_location", relation="works_with", target_key="team_lead"))
+    session.commit()
+
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    msgs = engine._build_context(
+        task_id="task_inj_2",
+        original_request="set up my work location meeting",
+        normalized_goal=None,
+        event_history=[],
+        current_state="running",
+    )
+    user_msg = next(m for m in msgs if m["role"] == "user")
+    content = user_msg["content"]
+    assert "work_location" in content
+    assert "meeting_tool" in content
+    # team_lead matches no request token and is reached only through the link.
+    assert "team_lead" in content
+    assert "[linked]" in content
+    assert "MEMORY LINKS" in content
+    assert "uses_for" in content
+    assert "favorite_food" not in content
+
+
+@pytest.mark.asyncio
+async def test_memory_context_log_trim_keeps_most_recent(memory_db_setup):
+    """The 500-row trim is FIFO: it keeps the newest rows, discards the oldest."""
+    session, db_mgr = memory_db_setup
+    engine = ModelDecisionEngine(session, ToolExecutor())
+
+    for i in range(505):
+        engine._record_memory_context_stats(
+            f"task-{i}",
+            {"available": 1, "relevant": 0, "connected": 0, "links": 0},
+        )
+
+    with db_mgr.get_session() as check:
+        rows = check.query(MemoryContextLog).order_by(MemoryContextLog.id.asc()).all()
+        assert len(rows) == 500
+        # The 5 oldest inserts (task-0..task-4) are dropped; the most recent 500
+        # (task-5..task-504) survive, oldest of the survivors first.
+        assert rows[0].task_id == "task-5"
+        assert rows[-1].task_id == "task-504"

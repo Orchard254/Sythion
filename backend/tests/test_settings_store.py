@@ -92,3 +92,39 @@ class TestPersistence:
         rows = db_session.query(SettingsMetadata).filter_by(key="retention_days").all()
         assert len(rows) == 1
         assert rows[0].value == "60"
+
+
+class TestResolvedFileRoots:
+    def test_env_roots_alone(self, db_session, monkeypatch):
+        from backend.core.config import settings
+
+        monkeypatch.setattr(settings, "file_roots", ["C:\\Env", "D:\\Env2"])
+        assert settings_store.resolved_file_roots(db_session) == ["C:\\Env", "D:\\Env2"]
+
+    def test_live_grant_adds_to_env_roots(self, db_session, monkeypatch):
+        """A runtime grant is a union with env defaults, not a replacement."""
+        from backend.core.config import settings
+
+        monkeypatch.setattr(settings, "file_roots", ["C:\\Env"])
+        settings_store.update_settings(db_session, {"file_roots": ["C:\\Granted"]})
+        assert settings_store.resolved_file_roots(db_session) == ["C:\\Env", "C:\\Granted"]
+
+    def test_grant_alone_when_env_unset(self, db_session, monkeypatch):
+        from backend.core.config import settings
+
+        monkeypatch.setattr(settings, "file_roots", [])
+        settings_store.update_settings(db_session, {"file_roots": ["C:\\Granted"]})
+        assert settings_store.resolved_file_roots(db_session) == ["C:\\Granted"]
+
+    def test_duplicates_deduplicated_case_insensitively(self, db_session, monkeypatch):
+        from backend.core.config import settings
+
+        monkeypatch.setattr(settings, "file_roots", ["c:\\work"])
+        settings_store.update_settings(db_session, {"file_roots": ["C:\\WORK"]})
+        assert settings_store.resolved_file_roots(db_session) == ["c:\\work"]
+
+    def test_nothing_configured_returns_empty(self, db_session, monkeypatch):
+        from backend.core.config import settings
+
+        monkeypatch.setattr(settings, "file_roots", [])
+        assert settings_store.resolved_file_roots(db_session) == []

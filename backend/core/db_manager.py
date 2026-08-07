@@ -86,6 +86,28 @@ class DatabaseManager:
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_task_events_task_sequence "
                 "ON task_events (task_id, sequence_num)"
             ))
+
+            # Activity-history queries filter task_events / conversation_turns
+            # by created_at time range (activity_recall tool); index the range
+            # key so cross-task time queries are not unindexed table scans.
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_task_events_created_at "
+                "ON task_events (created_at)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_conversation_turns_created_at "
+                "ON conversation_turns (created_at)"
+            ))
+
+            # Edge decay review: memory edges gain a lifecycle status column
+            # ("active"/"stale"/"removed"), mirroring proposed_skills.status.
+            edge_columns = {
+                row[1] for row in conn.execute(text("PRAGMA table_info(memory_edges)"))
+            } if _table_exists(conn, "memory_edges") else set()
+            if "status" not in edge_columns:
+                conn.execute(text(
+                    "ALTER TABLE memory_edges ADD COLUMN status VARCHAR DEFAULT 'active'"
+                ))
     
     @contextmanager
     def get_session(self) -> Session:
