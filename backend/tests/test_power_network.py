@@ -1,13 +1,13 @@
 """
-Tests for SystemPowerTool, SystemPowerControlTool, and NetworkStatusTool.
+Tests for SystemPowerTool, SystemPowerControlTool, BrightnessControlTool, and NetworkStatusTool.
 
-Contract: read-only system info tools using psutil.
+Contract: system info/control tools using psutil and WMI.
 """
 
 import pytest
 
-from backend.tools.system_tools import SystemPowerTool, SystemPowerControlTool, NetworkStatusTool
-from backend.api.schemas import SystemPowerInput, SystemPowerControlInput, NetworkStatusInput, ToolOutput
+from backend.tools.system_tools import SystemPowerTool, SystemPowerControlTool, BrightnessControlTool, NetworkStatusTool
+from backend.api.schemas import SystemPowerInput, SystemPowerControlInput, BrightnessControlInput, NetworkStatusInput, ToolOutput
 
 
 @pytest.fixture
@@ -189,3 +189,67 @@ class TestSystemPowerControl:
     def test_valid_actions_set(self, power_control_tool):
         """Should have exactly 4 valid actions."""
         assert power_control_tool._VALID_ACTIONS == {"lock", "sleep", "restart", "shutdown"}
+
+
+class TestBrightnessControl:
+    @pytest.fixture
+    def brightness_tool(self):
+        return BrightnessControlTool()
+
+    def test_get_brightness_returns_output(self, brightness_tool):
+        """Get action should return a ToolOutput."""
+        import asyncio
+        output = asyncio.run(brightness_tool.execute(
+            BrightnessControlInput(action="get")
+        ))
+        # May succeed or fail depending on monitor support
+        assert isinstance(output, ToolOutput)
+
+    def test_invalid_action_rejected(self, brightness_tool):
+        """Should reject invalid action names."""
+        import asyncio
+        output = asyncio.run(brightness_tool.execute(
+            BrightnessControlInput(action="invalid_action")
+        ))
+        assert output.success is False
+        assert output.error["code"] == "INVALID_ACTION"
+
+    def test_set_requires_brightness(self, brightness_tool):
+        """Set action should require brightness parameter."""
+        import asyncio
+        output = asyncio.run(brightness_tool.execute(
+            BrightnessControlInput(action="set")
+        ))
+        assert output.success is False
+        assert output.error["code"] == "MISSING_BRIGHTNESS"
+
+    def test_brightness_range_validated(self, brightness_tool):
+        """Brightness should be validated (0-100)."""
+        import asyncio
+        # Negative brightness should fail validation
+        with pytest.raises(Exception):
+            brightness_tool.execute(BrightnessControlInput(action="set", brightness=-1))
+
+    def test_brightness_max_validated(self, brightness_tool):
+        """Brightness > 100 should fail validation."""
+        import asyncio
+        with pytest.raises(Exception):
+            brightness_tool.execute(BrightnessControlInput(action="set", brightness=101))
+
+    def test_verify_returns_bool(self, brightness_tool):
+        """Verify should return a boolean."""
+        import asyncio
+        output = asyncio.run(brightness_tool.execute(
+            BrightnessControlInput(action="get")
+        ))
+        result = asyncio.run(brightness_tool.verify(
+            BrightnessControlInput(action="get"), output
+        ))
+        assert isinstance(result, bool)
+
+    def test_policy_low_risk(self, brightness_tool):
+        """Brightness control should be low risk."""
+        reqs = brightness_tool.get_policy_requirements()
+        assert reqs["risk_level"] == "low"
+        assert reqs["requires_confirmation"] is False
+        assert reqs["read_only"] is False

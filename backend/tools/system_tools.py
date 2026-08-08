@@ -26,6 +26,7 @@ try:
         SystemVolumeInput,
         SystemPowerInput,
         SystemPowerControlInput,
+        BrightnessControlInput,
         NetworkStatusInput,
         WindowListInput,
         ToolProposeInput,
@@ -44,6 +45,7 @@ except ImportError:
         SystemVolumeInput,
         SystemPowerInput,
         SystemPowerControlInput,
+        BrightnessControlInput,
         NetworkStatusInput,
         WindowListInput,
         ToolProposeInput,
@@ -888,6 +890,120 @@ class SystemPowerControlTool(BaseTool):
         return {"risk_level": "high", "requires_confirmation": True, "read_only": False}
 
 
+class BrightnessControlTool(BaseTool):
+    """Get or set display brightness.
+
+    Uses WMI (WmiMonitorBrightness/WmiMonitorBrightnessMethods) via PowerShell.
+    Read-only for 'get' action, mutating for 'set' action.
+    Returns current brightness level and available levels.
+    """
+
+    name = "brightness_control"
+    description = "Get or set display brightness (0-100)"
+    input_schema = BrightnessControlInput
+
+    async def execute(self, input_data: BrightnessControlInput) -> ToolOutput:
+        import subprocess
+
+        action = input_data.action.lower().strip()
+
+        if action == "get":
+            try:
+                cmd = (
+                    "(Get-WmiObject -Namespace root\\wmi -Class WmiMonitorBrightness).CurrentBrightness"
+                )
+                result = subprocess.run(
+                    ["powershell", "-Command", cmd],
+                    capture_output=True, text=True, timeout=15
+                )
+                if result.returncode != 0:
+                    error_msg = result.stderr.strip() if result.stderr else "Failed to get brightness"
+                    return ToolOutput(
+                        success=False,
+                        error={"code": "BRIGHTNESS_GET_FAILED", "message": error_msg},
+                        duration_ms=0,
+                    )
+                brightness_str = result.stdout.strip()
+                if not brightness_str:
+                    return ToolOutput(
+                        success=False,
+                        error={"code": "NO_BRIGHTNESS_DATA", "message": "No brightness data returned (monitor may not support WMI brightness)"},
+                        duration_ms=0,
+                    )
+                brightness = int(brightness_str)
+                return ToolOutput(
+                    success=True,
+                    data={"brightness": brightness, "action": "get"},
+                    model_summary=f"Display brightness is {brightness}%.",
+                    evidence={"source": "WmiMonitorBrightness", "raw_output": brightness_str},
+                )
+            except ValueError:
+                return ToolOutput(
+                    success=False,
+                    error={"code": "INVALID_BRIGHTNESS", "message": f"Could not parse brightness value: {brightness_str}"},
+                    duration_ms=0,
+                )
+            except Exception as e:
+                return ToolOutput(
+                    success=False,
+                    error={"code": "BRIGHTNESS_ERROR", "message": str(e)},
+                    duration_ms=0,
+                )
+
+        elif action == "set":
+            if input_data.brightness is None:
+                return ToolOutput(
+                    success=False,
+                    error={"code": "MISSING_BRIGHTNESS", "message": "brightness parameter is required when action='set'"},
+                    duration_ms=0,
+                )
+            brightness = input_data.brightness
+            try:
+                cmd = (
+                    f"(Get-WmiObject -Namespace root\\wmi -Class WmiMonitorBrightnessMethods)"
+                    f".WmiSetBrightness(1, {brightness})"
+                )
+                result = subprocess.run(
+                    ["powershell", "-Command", cmd],
+                    capture_output=True, text=True, timeout=15
+                )
+                if result.returncode != 0:
+                    error_msg = result.stderr.strip() if result.stderr else "Failed to set brightness"
+                    return ToolOutput(
+                        success=False,
+                        error={"code": "BRIGHTNESS_SET_FAILED", "message": error_msg},
+                        duration_ms=0,
+                    )
+                return ToolOutput(
+                    success=True,
+                    data={"brightness": brightness, "action": "set"},
+                    model_summary=f"Display brightness set to {brightness}%.",
+                    evidence={"source": "WmiMonitorBrightnessMethods", "brightness": brightness},
+                )
+            except Exception as e:
+                return ToolOutput(
+                    success=False,
+                    error={"code": "BRIGHTNESS_ERROR", "message": str(e)},
+                    duration_ms=0,
+                )
+
+        else:
+            return ToolOutput(
+                success=False,
+                error={
+                    "code": "INVALID_ACTION",
+                    "message": f"Invalid action '{action}'. Must be 'get' or 'set'."
+                },
+                duration_ms=0,
+            )
+
+    async def verify(self, input_data: BrightnessControlInput, output: ToolOutput) -> bool:
+        return output.success
+
+    def get_policy_requirements(self) -> Dict[str, Any]:
+        return {"risk_level": "low", "requires_confirmation": False, "read_only": False}
+
+
 class NetworkStatusTool(BaseTool):
     """Get network connection status: interfaces, IPs, and connectivity.
 
@@ -976,6 +1092,7 @@ def create_system_tools() -> list:
         SystemVolumeTool(),
         SystemPowerTool(),
         SystemPowerControlTool(),
+        BrightnessControlTool(),
         NetworkStatusTool(),
         SystemFileRootsTool(),
         SystemCapabilitiesTool(),

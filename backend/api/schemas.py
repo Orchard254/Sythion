@@ -244,6 +244,20 @@ class SystemPowerControlInput(ToolInput):
     )
 
 
+class BrightnessControlInput(ToolInput):
+    """Input for display brightness control."""
+    action: str = Field(
+        ...,
+        description="Brightness action: 'get' to read current brightness, 'set' to change brightness"
+    )
+    brightness: int = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="Brightness level 0-100 (required when action='set')"
+    )
+
+
 class NetworkStatusInput(ToolInput):
     """Input for the network status tool."""
     pass
