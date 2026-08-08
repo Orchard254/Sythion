@@ -46,6 +46,7 @@ class TaskResponse(BaseModel):
     state: TaskState
     version: int
     active_action_id: Optional[str] = None
+    objective_id: Optional[str] = None
     pending_question: Optional[str] = None
     final_result: Optional[str] = None
     created_at: datetime
@@ -58,6 +59,93 @@ class TaskResponse(BaseModel):
 class TaskListResponse(BaseModel):
     """Schema for listing tasks."""
     tasks: List[TaskResponse]
+    total: int
+
+
+class ObjectiveStatus(str, Enum):
+    """Valid durable objective states."""
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    ABANDONED = "abandoned"
+
+
+class PlanStepStatus(str, Enum):
+    """Valid durable plan-step states."""
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    BLOCKED = "blocked"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class PlanStepCreate(BaseModel):
+    """Schema for adding a plan step to an objective."""
+    description: str = Field(..., min_length=1, max_length=2000)
+    status: PlanStepStatus = PlanStepStatus.PENDING
+
+
+class PlanStepUpdate(BaseModel):
+    """Schema for updating an existing plan step."""
+    description: Optional[str] = Field(default=None, min_length=1, max_length=2000)
+    status: Optional[PlanStepStatus] = None
+    result_summary: Optional[str] = Field(default=None, max_length=5000)
+    blocker_reason: Optional[str] = Field(default=None, max_length=5000)
+
+
+class PlanStepResponse(BaseModel):
+    """Schema for a durable plan step."""
+    id: int
+    objective_id: str
+    step_order: int
+    description: str
+    status: PlanStepStatus
+    linked_task_id: Optional[str] = None
+    result_summary: Optional[str] = None
+    blocker_reason: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ObjectiveCreate(BaseModel):
+    """Schema for creating a durable objective."""
+    title: str = Field(..., min_length=1, max_length=200)
+    purpose: Optional[str] = Field(default=None, max_length=5000)
+    priority: int = Field(default=3, ge=1, le=5)
+    plan_steps: List[str] = Field(default_factory=list, max_length=20)
+
+
+class ObjectiveUpdate(BaseModel):
+    """Schema for updating a durable objective."""
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    purpose: Optional[str] = Field(default=None, max_length=5000)
+    status: Optional[ObjectiveStatus] = None
+    priority: Optional[int] = Field(default=None, ge=1, le=5)
+    current_summary: Optional[str] = Field(default=None, max_length=5000)
+
+
+class ObjectiveResponse(BaseModel):
+    """Schema for a durable objective plus its plan steps."""
+    id: str
+    title: str
+    purpose: Optional[str] = None
+    status: ObjectiveStatus
+    priority: int
+    current_summary: Optional[str] = None
+    last_task_id: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    steps: List[PlanStepResponse] = Field(default_factory=list)
+
+    model_config = {"from_attributes": True}
+
+
+class ObjectiveListResponse(BaseModel):
+    """Schema for listing durable objectives."""
+    objectives: List[ObjectiveResponse]
     total: int
 
 
@@ -133,7 +221,38 @@ class SystemCapabilitiesInput(ToolInput):
 
 class SystemVolumeInput(ToolInput):
     """Input for the volume control tool."""
+    volume_percentage: Optional[float] = Field(default=None, ge=0, le=100, description="Set volume level (0-100). None to read only.")
+    is_mute: Optional[bool] = Field(default=None, description="Set mute state (True/False). None to read only.")
+
+
+class SystemPowerInput(ToolInput):
+    """Input for the power/battery status tool."""
     pass
+
+
+class SystemPowerControlInput(ToolInput):
+    """Input for power control operations (lock, sleep, restart, shutdown)."""
+    action: str = Field(
+        ...,
+        description="Power action to perform: 'lock', 'sleep', 'restart', or 'shutdown'"
+    )
+    delay_seconds: int = Field(
+        default=0,
+        ge=0,
+        le=3600,
+        description="Delay in seconds before executing the action (0 = immediate, max 1 hour)"
+    )
+
+
+class NetworkStatusInput(ToolInput):
+    """Input for the network status tool."""
+    pass
+
+
+class WindowListInput(ToolInput):
+    """Input for listing all open windows."""
+    include_minimized: bool = False
+    visible_only: bool = True
 
 
 class ToolProposeInput(ToolInput):
@@ -190,6 +309,15 @@ class FileDeleteInput(ToolInput):
     """Input for deleting a file."""
     path: str
     use_recycle_bin: bool = True
+
+
+class FileSearchInput(ToolInput):
+    """Input for searching file contents."""
+    path: str
+    pattern: str
+    max_results: int = Field(default=50, ge=1, le=500)
+    include_hidden: bool = False
+    file_extensions: Optional[List[str]] = None
 
 
 # Application Tool Schemas
@@ -443,6 +571,7 @@ class HealthResponse(BaseModel):
     version: str
     database_connected: bool
     cloud_configured: bool
+    selected_model: str = ""
 
 
 # Voice Schemas
