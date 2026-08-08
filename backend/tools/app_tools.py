@@ -238,7 +238,7 @@ def _builtin_windows_apps() -> List[Dict[str, Any]]:
 
 
 def _windows_registered_apps() -> List[Dict[str, Any]]:
-    """Enumerate applications registered in the Windows uninstall hives and OS built-ins."""
+    """Enumerate applications registered in the Windows uninstall hives, OS built-ins, and UWP/Store apps."""
     import winreg
     registry_paths = [
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
@@ -247,6 +247,60 @@ def _windows_registered_apps() -> List[Dict[str, Any]]:
     ]
     apps = _builtin_windows_apps()
     seen_ids = {a["name"] for a in apps}
+    
+    # Add UWP/Store apps
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["powershell", "-Command", "Get-AppxPackage | Select-Object Name, PackageFullName, InstallLocation | ConvertTo-Json"],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            import json
+            uwp_apps = json.loads(result.stdout)
+            if isinstance(uwp_apps, dict):
+                uwp_apps = [uwp_apps]
+            for pkg in uwp_apps:
+                name = pkg.get("Name", "")
+                if name and name not in seen_ids:
+                    install_loc = pkg.get("InstallLocation", "")
+                    exe = None
+                    if install_loc:
+                        # Try to find the main executable
+                        try:
+                            import glob
+                            # Try full name first
+                            pattern = os.path.join(install_loc, f"{name}.exe")
+                            if os.path.isfile(pattern):
+                                exe = pattern
+                            else:
+                                # Try short name (e.g., "Boom3D" from "GlobalDelightTechnologies.Boom3D")
+                                short_name = name.split(".")[-1] if "." in name else name
+                                pattern = os.path.join(install_loc, "**", f"{short_name}.exe")
+                                matches = glob.glob(pattern, recursive=True)
+                                if matches:
+                                    exe = matches[0]
+                                else:
+                                    # Fallback: any .exe in root
+                                    pattern = os.path.join(install_loc, "*.exe")
+                                    exes = glob.glob(pattern)
+                                    if exes:
+                                        exe = exes[0]
+                        except Exception:
+                            pass
+                    apps.append({
+                        "id": name,
+                        "name": name,
+                        "publisher": "Microsoft Store",
+                        "version": "UWP App",
+                        "install_location": install_loc,
+                        "exe": exe,
+                        "is_uwp": True,
+                    })
+                    seen_ids.add(name)
+    except Exception:
+        pass  # UWP enumeration is best-effort
+    
     for hkey, path in registry_paths:
         try:
             key = winreg.OpenKey(hkey, path)
