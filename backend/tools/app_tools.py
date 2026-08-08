@@ -211,12 +211,16 @@ def _builtin_windows_apps() -> List[Dict[str, Any]]:
     """Return built-in Windows System32 utilities (Notepad, Calculator, Paint, etc.)."""
     sys_root = os.environ.get("SystemRoot", r"C:\Windows")
     sys32 = os.path.join(sys_root, "System32")
+    sys_root_parent = os.environ.get("SystemRoot", r"C:\Windows")
     candidates = [
         ("Notepad", "notepad.exe"),
         ("Calculator", "calc.exe"),
         ("Paint", "mspaint.exe"),
         ("Task Manager", "taskmgr.exe"),
         ("Snipping Tool", "SnippingTool.exe"),
+        ("PowerShell", "WindowsPowerShell\\v1.0\\powershell.exe"),
+        ("CMD", "cmd.exe"),
+        ("Windows Terminal", "wt.exe"),
     ]
     builtins = []
     for name, filename in candidates:
