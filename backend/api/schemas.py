@@ -202,6 +202,10 @@ class SystemDiskInput(ToolInput):
 class SystemProcessesInput(ToolInput):
     """Input for process list tool."""
     limit: int = Field(default=50, ge=1, le=200)
+    include_cpu: bool = Field(default=False, description="Include per-process CPU usage percentage")
+    include_memory: bool = Field(default=False, description="Include per-process memory usage (MB)")
+    sort_by: str = Field(default="name", description="Sort by: 'name', 'cpu', 'memory', 'pid'")
+    include_children: bool = Field(default=False, description="Include child process count")
 
 
 class SystemActiveWindowInput(ToolInput):

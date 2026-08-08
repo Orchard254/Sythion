@@ -212,35 +212,79 @@ class SystemDiskTool(BaseTool):
 
 
 class SystemProcessesTool(BaseTool):
-    """Get list of running processes (redacted)."""
+    """Get list of running processes with optional CPU/memory stats."""
     
     name = "system_processes"
-    description = "Get list of running processes (limited, redacted)"
+    description = "Get list of running processes with optional CPU/memory stats"
     input_schema = SystemProcessesInput
     
     async def execute(self, input_data: SystemProcessesInput) -> ToolOutput:
         try:
             processes = []
-            for proc in psutil.process_iter(['pid', 'name']):
+            for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info', 'num_threads', 'ppid']):
                 try:
-                    processes.append({
-                        "pid": proc.info['pid'],
-                        "name": proc.info['name'],
-                    })
+                    info = proc.info
+                    proc_data = {
+                        "pid": info['pid'],
+                        "name": info['name'],
+                    }
+                    
+                    if input_data.include_cpu:
+                        proc_data["cpu_percent"] = info.get('cpu_percent', 0.0) or 0.0
+                    
+                    if input_data.include_memory:
+                        mem_info = info.get('memory_info')
+                        if mem_info:
+                            proc_data["memory_mb"] = round(mem_info.rss / (1024 * 1024), 1)
+                        else:
+                            proc_data["memory_mb"] = 0.0
+                    
+                    if input_data.include_children:
+                        try:
+                            children = proc.children(recursive=False)
+                            proc_data["child_count"] = len(children)
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            proc_data["child_count"] = 0
+                    
+                    processes.append(proc_data)
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
             
-            # Sort by name and limit
-            processes.sort(key=lambda x: x['name'].lower())
+            # Sort processes
+            sort_key = input_data.sort_by
+            if sort_key == "cpu" and input_data.include_cpu:
+                processes.sort(key=lambda x: x.get("cpu_percent", 0), reverse=True)
+            elif sort_key == "memory" and input_data.include_memory:
+                processes.sort(key=lambda x: x.get("memory_mb", 0), reverse=True)
+            elif sort_key == "pid":
+                processes.sort(key=lambda x: x.get("pid", 0))
+            else:
+                processes.sort(key=lambda x: x.get("name", "").lower())
+            
+            # Apply limit
             processes = processes[:input_data.limit]
+            
+            # Build summary
             names = sorted(list({p["name"] for p in processes if p.get("name")}))
-            model_summary = f"Running processes ({len(processes)} shown): {', '.join(names[:25])}"
+            summary_parts = [f"{len(processes)} shown"]
+            
+            if input_data.include_cpu:
+                total_cpu = sum(p.get("cpu_percent", 0) for p in processes)
+                summary_parts.append(f"total CPU: {total_cpu:.1f}%")
+            
+            if input_data.include_memory:
+                total_mem = sum(p.get("memory_mb", 0) for p in processes)
+                summary_parts.append(f"total mem: {total_mem:.0f}MB")
+            
+            model_summary = f"Running processes ({', '.join(summary_parts)}): {', '.join(names[:25])}"
             
             return ToolOutput(
                 success=True,
                 data={
                     "count": len(processes),
                     "limit": input_data.limit,
+                    "include_cpu": input_data.include_cpu,
+                    "include_memory": input_data.include_memory,
                     "processes": processes,
                 },
                 model_summary=model_summary,

@@ -197,6 +197,70 @@ class TestSystemTools:
         if result.data["processes"]:
             assert "pid" in result.data["processes"][0]
             assert "name" in result.data["processes"][0]
+
+    @pytest.mark.asyncio
+    async def test_list_processes_with_cpu(self, system_processes_tool):
+        """Test listing processes with CPU stats"""
+        from api.schemas import SystemProcessesInput
+        result = await system_processes_tool.execute(
+            SystemProcessesInput(limit=5, include_cpu=True)
+        )
+        
+        assert result.success is True
+        assert result.data["include_cpu"] is True
+        if result.data["processes"]:
+            assert "cpu_percent" in result.data["processes"][0]
+
+    @pytest.mark.asyncio
+    async def test_list_processes_with_memory(self, system_processes_tool):
+        """Test listing processes with memory stats"""
+        from api.schemas import SystemProcessesInput
+        result = await system_processes_tool.execute(
+            SystemProcessesInput(limit=5, include_memory=True)
+        )
+        
+        assert result.success is True
+        assert result.data["include_memory"] is True
+        if result.data["processes"]:
+            assert "memory_mb" in result.data["processes"][0]
+
+    @pytest.mark.asyncio
+    async def test_list_processes_with_children(self, system_processes_tool):
+        """Test listing processes with child count"""
+        from api.schemas import SystemProcessesInput
+        result = await system_processes_tool.execute(
+            SystemProcessesInput(limit=5, include_children=True)
+        )
+        
+        assert result.success is True
+        if result.data["processes"]:
+            assert "child_count" in result.data["processes"][0]
+
+    @pytest.mark.asyncio
+    async def test_list_processes_sort_by_cpu(self, system_processes_tool):
+        """Test sorting processes by CPU"""
+        from api.schemas import SystemProcessesInput
+        result = await system_processes_tool.execute(
+            SystemProcessesInput(limit=10, include_cpu=True, sort_by="cpu")
+        )
+        
+        assert result.success is True
+        if len(result.data["processes"]) > 1:
+            cpus = [p.get("cpu_percent", 0) for p in result.data["processes"]]
+            assert cpus == sorted(cpus, reverse=True)
+
+    @pytest.mark.asyncio
+    async def test_list_processes_sort_by_memory(self, system_processes_tool):
+        """Test sorting processes by memory"""
+        from api.schemas import SystemProcessesInput
+        result = await system_processes_tool.execute(
+            SystemProcessesInput(limit=10, include_memory=True, sort_by="memory")
+        )
+        
+        assert result.success is True
+        if len(result.data["processes"]) > 1:
+            mems = [p.get("memory_mb", 0) for p in result.data["processes"]]
+            assert mems == sorted(mems, reverse=True)
     
     @pytest.mark.asyncio
     async def test_get_active_window_linux(self, system_active_window_tool):
@@ -271,6 +335,36 @@ class TestSystemTools:
             assert await tool.verify(SystemVolumeInput(), result) is True
         else:
             # COM failure on headless/CI — verify it fails closed
+            assert result.error["code"] in ("VOLUME_ERROR", "COMTYPES_MISSING")
+
+    @pytest.mark.asyncio
+    async def test_volume_tool_set_volume(self, monkeypatch):
+        """The volume tool can set volume level."""
+        from tools.system_tools import SystemVolumeTool
+        from api.schemas import SystemVolumeInput
+
+        tool = SystemVolumeTool()
+        result = await tool.execute(SystemVolumeInput(volume_percentage=50.0))
+
+        if result.success:
+            assert abs(result.data["volume_percentage"] - 50.0) < 2.0
+            assert await tool.verify(SystemVolumeInput(volume_percentage=50.0), result) is True
+        else:
+            assert result.error["code"] in ("VOLUME_ERROR", "COMTYPES_MISSING")
+
+    @pytest.mark.asyncio
+    async def test_volume_tool_set_mute(self, monkeypatch):
+        """The volume tool can toggle mute state."""
+        from tools.system_tools import SystemVolumeTool
+        from api.schemas import SystemVolumeInput
+
+        tool = SystemVolumeTool()
+        result = await tool.execute(SystemVolumeInput(is_mute=True))
+
+        if result.success:
+            assert result.data["is_muted"] is True
+            assert await tool.verify(SystemVolumeInput(is_mute=True), result) is True
+        else:
             assert result.error["code"] in ("VOLUME_ERROR", "COMTYPES_MISSING")
 
 
