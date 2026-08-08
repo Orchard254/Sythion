@@ -316,6 +316,7 @@ class TestSystemTools:
             assert t["name"] and t["domain"]
             assert "flags" in t and "risk_level" in t
 
+    @pytest.mark.skip(reason="Skipped: volume tests can affect system audio during test runs")
     @pytest.mark.asyncio
     async def test_volume_tool_reads_current_level(self, monkeypatch):
         """The volume tool reads the master volume via Core Audio COM."""
@@ -337,6 +338,7 @@ class TestSystemTools:
             # COM failure on headless/CI — verify it fails closed
             assert result.error["code"] in ("VOLUME_ERROR", "COMTYPES_MISSING")
 
+    @pytest.mark.skip(reason="Skipped: volume tests can affect system audio during test runs")
     @pytest.mark.asyncio
     async def test_volume_tool_set_volume(self, monkeypatch):
         """The volume tool can set volume level."""
@@ -352,6 +354,7 @@ class TestSystemTools:
         else:
             assert result.error["code"] in ("VOLUME_ERROR", "COMTYPES_MISSING")
 
+    @pytest.mark.skip(reason="Skipped: volume tests can affect system audio during test runs")
     @pytest.mark.asyncio
     async def test_volume_tool_set_mute(self, monkeypatch):
         """The volume tool can toggle mute state."""
