@@ -1,12 +1,14 @@
 # Repository Guidelines
 
-Sythion (Synth) is a Windows 10/11 personal desktop assistant: a Tauri + React dashboard (`frontend/`, `src-tauri/`) that launches one fixed Python/FastAPI sidecar (`backend/`), which owns the task loop, SQLite ledger, policy, Ollama Cloud adapter, and tool executor. Loopback-only, one running task at a time (lease), verified-outcome-only results.
+Sythion (Synth) in this repo is the trusted Windows 10/11 runtime core of a larger intelligence system: a Tauri + React dashboard (`frontend/`, `src-tauri/`) that launches one fixed Python/FastAPI sidecar (`backend/`), which owns the task loop, SQLite ledger, policy, Ollama Cloud adapter, and tool executor. Loopback-only, one running task at a time (lease), verified-outcome-only results.
 
 ## Working Principles
 
 Audit before you fix. When a task or test fails, trace it to the contract it violated and the layer where the fix belongs — do not patch the symptom. Verify changes against the real design and with an import/boot check, not just green tests. Never add code that trades one problem for another.
 
 Research before you fix. Do the reading/search first (repo evidence, docs, web) before proposing or applying a fix — never depend only on training data. Then check the fix against the design before and after.
+
+Coding Efficiency Protocol. Follow the rules in `docs/LLM_CODING_EFFICIENCY.md`: perform surgical edits, handle schema duality (`dict` vs Pydantic), enforce defensive ORM safety, and run self-verification loops (`python -m pytest tests -q`) before claiming completion.
 
 Proceed autonomously. Ask for approval only when it is genuinely necessary (unclear direction, irreversible/expensive change, a decision that reverses an explicit owner choice). Otherwise prefer to act carefully and report what you did. When you must ask, ask one focused question with a recommendation.
 
@@ -55,3 +57,9 @@ just writing the new one and leaving the old one active.
 
 Before assuming you know something about the project, call
 `memory_query` first.
+
+When you read a source file, save key findings to memory immediately —
+don't wait for the task to finish. Token efficiency depends on this.
+
+When you build or change something, update memory state (write or
+supersede) the moment it's true. Never batch memory updates.

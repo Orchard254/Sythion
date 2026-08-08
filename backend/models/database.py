@@ -2,7 +2,7 @@
 Database models and schema definitions for Sythion (Synth).
 """
 
-from sqlalchemy import Column, String, Integer, Float, Text, DateTime, ForeignKey, CheckConstraint
+from sqlalchemy import Column, String, Integer, Float, Text, DateTime, ForeignKey, CheckConstraint, JSON
 from sqlalchemy.orm import relationship, declarative_base, Session
 from datetime import datetime
 import os
@@ -53,6 +53,7 @@ class Task(Base):
     version = Column(Integer, default=1)
     active_action_id = Column(String)
     selected_skill_version = Column(String)
+    objective_id = Column(String, ForeignKey("objectives.id"), index=True, nullable=True)
     pending_question = Column(Text)
     pending_action = Column(Text)
     final_result = Column(Text)
@@ -62,6 +63,7 @@ class Task(Base):
     
     # Events relationship
     events = relationship("TaskEvent", back_populates="task", cascade="all, delete-orphan")
+    objective = relationship("Objective", back_populates="tasks")
     
     __table_args__ = (
         CheckConstraint(
@@ -101,6 +103,68 @@ class RunnerLease(Base):
     
     __table_args__ = (
         CheckConstraint("id = 1", name="check_single_lease"),
+    )
+
+
+class Objective(Base):
+    """Durable work objective above the task ledger."""
+
+    __tablename__ = "objectives"
+
+    id = Column(String, primary_key=True)
+    title = Column(String, nullable=False)
+    purpose = Column(Text)
+    status = Column(String, default="active", nullable=False, index=True)
+    priority = Column(Integer, default=3, nullable=False)
+    current_summary = Column(Text)
+    last_task_id = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    tasks = relationship("Task", back_populates="objective")
+    steps = relationship(
+        "PlanStep",
+        back_populates="objective",
+        cascade="all, delete-orphan",
+        order_by="PlanStep.step_order",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'paused', 'completed', 'abandoned')",
+            name="check_objective_status"
+        ),
+        CheckConstraint(
+            "priority >= 1 AND priority <= 5",
+            name="check_objective_priority"
+        ),
+    )
+
+
+class PlanStep(Base):
+    """Structured plan step linked to a durable objective."""
+
+    __tablename__ = "plan_steps"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    objective_id = Column(String, ForeignKey("objectives.id"), nullable=False, index=True)
+    step_order = Column(Integer, nullable=False)
+    description = Column(Text, nullable=False)
+    status = Column(String, default="pending", nullable=False, index=True)
+    linked_task_id = Column(String, ForeignKey("tasks.id"), nullable=True)
+    result_summary = Column(Text)
+    blocker_reason = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    objective = relationship("Objective", back_populates="steps")
+    linked_task = relationship("Task")
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'in_progress', 'blocked', 'completed', 'failed', 'skipped')",
+            name="check_plan_step_status"
+        ),
     )
 
 
@@ -291,3 +355,22 @@ class ConversationTurn(Base):
     role = Column(String, default="user")  # "user" or "assistant"
     summary = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ConversationState(Base):
+    """Tracks conversational context for a session.
+
+    Stores the current topic, recent topics, open threads, emotional context,
+    and conversation stage. Updated after each task completion.
+    """
+
+    __tablename__ = "conversation_state"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String, nullable=False, index=True, unique=True)
+    active_topic = Column(String, nullable=True)
+    previous_topics = Column(JSON, default=list)  # ["topic1", "topic2", ...]
+    open_threads = Column(JSON, default=list)  # ["unresolved topic1", ...]
+    emotional_context = Column(String, default="neutral")  # neutral|positive|negative|frustrated|excited|confused
+    conversation_stage = Column(String, default="opening")  # opening|developing|deepening|closing
+    last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

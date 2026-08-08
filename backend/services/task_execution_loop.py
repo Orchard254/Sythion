@@ -7,7 +7,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import uuid
 from typing import Dict, Any, Optional, List
 from datetime import datetime
@@ -392,76 +391,16 @@ class TaskExecutionLoop:
                 pass
 
     async def _propose_skill_from_trace(self, task_id: str) -> None:
-        """Best-effort proposal generation after a verified successful task.
+        """Delegate post-task skill proposal growth to the intelligence hook layer."""
+        from backend.services.post_task_intelligence import propose_skill_from_trace
 
-        A proposed skill is only created after two materially similar verified
-        successful traces; proposals are never executed automatically.
-        """
-        try:
-            from backend.services.skill_engine import maybe_generate_proposal
-            proposal = maybe_generate_proposal(self.db, task_id, self.tool_executor)
-            if proposal is not None:
-                logger.info(
-                    "Generated proposed skill %s from verified trace of task %s",
-                    proposal.id, task_id,
-                )
-        except Exception as exc:  # pragma: no cover - best-effort
-            logger.warning("Proposal generation failed for task %s: %s", task_id, exc)
+        await propose_skill_from_trace(self.db, task_id, self.tool_executor)
 
     async def _consolidate_memory_from_trace(self, task_id: str) -> None:
-        """Best-effort memory consolidation after a saved conversation turn.
+        """Delegate post-task memory consolidation to the intelligence hook layer."""
+        from backend.services.post_task_intelligence import consolidate_memory_from_trace
 
-        Distills the recent session conversation into durable memory ops
-        (background, fire-and-forget; never blocks the task loop).
-        """
-        try:
-            from backend.core.config import settings
-            from backend.core.session import get_current_session_id
-            from backend.models.database import ConversationTurn, MemoryEntry, MemoryEdge
-            from backend.services.memory_consolidation import (
-                apply_edge_decay,
-                consolidate_memory,
-            )
-
-            if not settings.memory_consolidation_enabled:
-                return
-
-            # Decay untouched edges on the same maintenance cadence as
-            # consolidation (never auto-deletes; only flags for review).
-            apply_edge_decay(self.db)
-
-            session_id = get_current_session_id()
-            turns = (
-                self.db.query(ConversationTurn)
-                .filter_by(session_id=session_id)
-                .order_by(ConversationTurn.created_at.desc())
-                .limit(20)
-                .all()
-            )
-            if len(turns) < 2:
-                return
-            memories = (
-                self.db.query(MemoryEntry)
-                .order_by(MemoryEntry.updated_at.desc())
-                .all()
-            )
-            edges = (
-                self.db.query(MemoryEdge)
-                .order_by(MemoryEdge.updated_at.desc())
-                .all()
-            )
-            applied = await consolidate_memory(
-                self.db, list(reversed(turns)), memories, memory_edges=edges
-            )
-            if applied:
-                logger.info(
-                    "Memory consolidation applied %d ops (task %s)",
-                    len(applied), task_id,
-                )
-        except Exception as exc:  # pragma: no cover - best-effort
-            logger.warning(
-                "Memory consolidation failed for task %s: %s", task_id, exc
-            )
+        await consolidate_memory_from_trace(self.db, task_id)
 
     async def _record_budget_snapshot(self, task_id: str, budget: TaskBudget) -> None:
         """Record an evidence-safe summary of per-task budget usage."""
@@ -879,70 +818,10 @@ class TaskExecutionLoop:
             return False
 
     async def _save_conversation_turn(self, task_id: str, task: Task) -> None:
-        """Save a compressed 2-row turn (user request + assistant result) for episodic memory."""
-        try:
-            from backend.core.session import get_current_session_id
-            from backend.models.database import ConversationTurn, MemoryEntry
+        """Delegate episodic conversation persistence to the intelligence hook layer."""
+        from backend.services.post_task_intelligence import save_conversation_turn
 
-            session_id = get_current_session_id()
-
-            # Compress user request (~100 chars)
-            req_summary = (task.original_request or "").strip()
-            if len(req_summary) > 120:
-                req_summary = req_summary[:117] + "..."
-
-            # Compress assistant result (~150 chars)
-            res_summary = (task.final_result or task.terminal_reason or "").strip()
-            if not res_summary:
-                res_summary = "Task completed" if task.state == TaskState.COMPLETED.value else "Task failed"
-            if len(res_summary) > 150:
-                res_summary = res_summary[:147] + "..."
-
-            turn_user = ConversationTurn(
-                session_id=session_id,
-                task_id=task_id,
-                role="user",
-                summary=req_summary,
-            )
-            turn_assistant = ConversationTurn(
-                session_id=session_id,
-                task_id=task_id,
-                role="assistant",
-                summary=f"[{task.state.upper()}] {res_summary}",
-            )
-
-            self.db.add(turn_user)
-            self.db.add(turn_assistant)
-
-            # Regex auto-extraction of user preferences/facts into long-term memory
-            req_text = task.original_request or ""
-            patterns = [
-                (r"(?:my name is|i'?m called)\s+([A-Za-z0-9_\-]{2,30})", "user_profile", "user_name"),
-                (r"(?:i prefer|my preferred text editor is|my favorite editor is)\s+([A-Za-z0-9_\-\s\.\+]{2,30})", "user_preference", "preferred_editor"),
-                (r"(?:remember that|note that)\s+([A-Za-z0-9_\-\s\.\+:]{5,100})", "user_instruction", None),
-            ]
-            for pattern, cat, fixed_key in patterns:
-                m = re.search(pattern, req_text, re.IGNORECASE)
-                if m:
-                    val = m.group(1).strip()
-                    key = fixed_key or f"pref_{re.sub(r'[^a-zA-Z0-9_]', '_', val[:20]).lower()}"
-                    existing = self.db.query(MemoryEntry).filter_by(key=key).first()
-                    if existing:
-                        existing.value = val
-                        existing.category = cat
-                        existing.updated_at = datetime.utcnow()
-                    else:
-                        self.db.add(MemoryEntry(
-                            key=key,
-                            value=val,
-                            category=cat,
-                            source_task_id=task_id,
-                        ))
-
-            self.db.commit()
-            logger.info(f"Saved conversation turn for task {task_id}")
-        except Exception as e:
-            logger.warning(f"Could not save conversation turn for task {task_id}: {e}")
+        await save_conversation_turn(self.db, task_id, task)
 
 
 async def run_task(db_session: Session, task_id: str, tool_executor: ToolExecutor) -> None:
