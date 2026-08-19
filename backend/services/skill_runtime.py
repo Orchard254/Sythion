@@ -27,6 +27,7 @@ try:
     from backend.models.database import Session, Skill, SkillVersion, Task
 except ImportError:
     from models.database import Session, Skill, SkillVersion, Task
+from sqlalchemy.orm import Session, sessionmaker
 
 logger = logging.getLogger(__name__)
 
@@ -462,6 +463,18 @@ async def execute_skill(
     if not pinned:
         task.selected_skill_version = marker
         db.commit()
+        # Verify the marker persisted
+        try:
+            engine = db.bind
+            SessionLocal = sessionmaker(bind=engine)
+            with SessionLocal() as verify_session:
+                task_verify = verify_session.query(Task).filter_by(id=task_id).first()
+                if task_verify is None or task_verify.selected_skill_version != marker:
+                    logger.warning("Verification failed: task.selected_skill_version not persisted for task %s", task_id)
+                    return SkillRunOutcome(success=False, error="Failed to pin skill version")
+        except Exception as exc:
+            logger.warning("Verification of skill version pin failed: %s", exc)
+            return SkillRunOutcome(success=False, error="Failed to pin skill version")
 
     async def _is_cancelled() -> bool:
         current = await runner.get_task(task_id)
