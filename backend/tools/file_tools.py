@@ -5,18 +5,35 @@ Implements file operations: read, write, list, create, delete, move, copy
 import os
 import shutil
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Callable, Awaitable
-from tools.executor import BaseTool
-from api.schemas import (
-    ToolOutput,
-    FileListInput,
-    FileReadInput,
-    FileCreateInput,
-    FileWriteInput,
-    FileMoveInput,
-    FileCopyInput,
-    FileDeleteInput,
-)
+from typing import Dict, Any, List, Optional, Callable, Awaitable, Generic, TypeVar
+try:
+    from backend.tools.executor import BaseTool, handle_tool_errors
+    from backend.api.schemas import (
+        ToolOutput,
+        FileListInput,
+        FileReadInput,
+        FileCreateInput,
+        FileWriteInput,
+        FileMoveInput,
+        FileCopyInput,
+        FileDeleteInput,
+        FileSearchInput,
+        FileHashInput,
+    )
+except ImportError:
+    from tools.executor import BaseTool, handle_tool_errors
+    from api.schemas import (
+        ToolOutput,
+        FileListInput,
+        FileReadInput,
+        FileCreateInput,
+        FileWriteInput,
+        FileMoveInput,
+        FileCopyInput,
+        FileDeleteInput,
+        FileSearchInput,
+        FileHashInput,
+    )
 
 # Upper bound on how much content the LLM may write in one call.
 MAX_WRITE_BYTES = 2 * 1024 * 1024
@@ -28,6 +45,40 @@ def _read_back_text(path: Path) -> str:
 
 def _file_bytes(path: Path) -> bytes:
     return path.read_bytes()
+
+
+# Reserved Windows device/file names that should never be used as filenames.
+_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+}
+
+
+def _is_reserved_name(path: Path) -> bool:
+    """True if the file's basename (without extension) is a reserved Windows name."""
+    stem = path.stem.upper()
+    return stem in _RESERVED_NAMES
+
+
+def _check_reserved(path: Path) -> Optional[str]:
+    """Return error code if reserved name is detected."""
+    if _is_reserved_name(path):
+        return f"RESERVED_NAME: {path.name}"
+    return None
+
+
+def _is_file_locked(path: Path) -> bool:
+    """Best-effort check: try opening the file exclusively to detect a sharing lock."""
+    if not path.exists() or not path.is_file():
+        return False
+    try:
+        # Try opening for read+write with exclusive sharing; sharing violation = locked
+        fd = os.open(str(path), os.O_RDWR | os.O_EXCL)
+        os.close(fd)
+        return False
+    except (OSError, PermissionError):
+        return True
 
 
 def _bytes_match(a: Path, b: Path) -> bool:
@@ -128,15 +179,31 @@ def _approved_roots() -> List[Path]:
             get_db_manager = None
 
     roots: List[str] = list(settings.file_roots or []) if settings else []
+    db_roots: List[str] = []
     if resolved_file_roots is not None and get_db_manager is not None:
         try:
             db_mgr = get_db_manager()
             with db_mgr.get_session() as session:
-                roots = resolved_file_roots(session) or roots
-        except Exception:
-            pass
+                db_roots = resolved_file_roots(session) or []
+        except (OSError, ImportError, AttributeError, KeyError, TypeError):
+            # Expected failures: DB unavailable, settings store missing, or config errors.
+            db_roots = []
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Unexpected error resolving DB file roots: %s", exc, exc_info=True
+            )
+            db_roots = []
+    # Only use DB roots if they are non-empty (i.e., actual grants exist)
+    if db_roots:
+        roots = db_roots
     if roots:
+        # Always include the repo root (backend directory) alongside configured roots.
+        repo_root = Path(__file__).resolve().parent.parent
+        if str(repo_root) not in roots:
+            roots.append(str(repo_root))
         return [Path(r).expanduser().resolve() for r in roots]
+    # Fallback: home + cwd (safe user-local defaults, no repo root)
     return [Path.home().resolve(), Path.cwd().resolve()]
 
 
@@ -292,7 +359,18 @@ if os.name == "nt":
             return buf.value
 
         _CTYPES_READY = True
-    except Exception:
+    except (OSError, AttributeError, ImportError) as exc:
+        # Expected failures: ctypes unavailable, missing Win32 APIs, or import errors.
+        import logging
+        logging.getLogger(__name__).warning(
+            "Windows canonical handle checks unavailable: %s", exc, exc_info=True
+        )
+        _CTYPES_READY = False
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Unexpected error initializing Windows canonical checks: %s", exc, exc_info=True
+        )
         _CTYPES_READY = False
 
 
@@ -381,75 +459,67 @@ class _TargetRejected(Exception):
         self.message = message
 
 
-class FileListTool(BaseTool):
+class FileListTool(BaseTool[FileListInput]):
     """List directory contents."""
     
     name = "file_list"
     description = "List files and directories in a given path"
     input_schema = FileListInput
     
+    @handle_tool_errors("LIST_ERROR")
     async def execute(self, input_data: FileListInput) -> ToolOutput:
         """Execute the file list tool."""
-        try:
-            path = _safe_resolve(input_data.path)
-            
-            if not path.exists():
-                return ToolOutput(
-                    success=False,
-                    error={"code": "PATH_NOT_FOUND", "message": f"Path not found: {path}"},
-                    duration_ms=0
-                )
-            
-            if not path.is_dir():
-                return ToolOutput(
-                    success=False,
-                    error={"code": "NOT_DIRECTORY", "message": f"Path is not a directory: {path}"},
-                    duration_ms=0
-                )
-            
-            items = []
-            for item in path.iterdir():
-                # Skip hidden files unless requested
-                if not input_data.include_hidden and item.name.startswith('.'):
-                    continue
-                
-                try:
-                    stat_info = item.stat()
-                    items.append({
-                        "name": item.name,
-                        "path": str(item),
-                        "is_file": item.is_file(),
-                        "is_dir": item.is_dir(),
-                        "size": stat_info.st_size if item.is_file() else None,
-                        "modified": stat_info.st_mtime
-                    })
-                except (PermissionError, OSError):
-                    items.append({
-                        "name": item.name,
-                        "path": str(item),
-                        "error": "Permission denied"
-                    })
-            
-            # Sort: directories first, then files
-            items.sort(key=lambda x: (not x.get('is_dir', False), x['name'].lower()))
-            
-            return ToolOutput(
-                success=True,
-                data={
-                    "path": str(path),
-                    "count": len(items),
-                    "items": items
-                },
-                evidence={"source": "filesystem_list"}
-            )
-        except _TargetRejected as e:
-            return ToolOutput(success=False, error={"code": e.code, "message": e.message}, duration_ms=0)
-        except Exception as e:
+        path = _safe_resolve(input_data.path)
+        
+        if not path.exists():
             return ToolOutput(
                 success=False,
-                error={"code": "LIST_ERROR", "message": str(e)},
+                error={"code": "PATH_NOT_FOUND", "message": f"Path not found: {path}"},
                 duration_ms=0
             )
+        
+        if not path.is_dir():
+            return ToolOutput(
+                success=False,
+                error={"code": "NOT_DIRECTORY", "message": f"Path is not a directory: {path}"},
+                duration_ms=0
+            )
+        
+        items = []
+        for item in path.iterdir():
+            # Skip hidden files unless requested
+            if not input_data.include_hidden and item.name.startswith('.'):
+                continue
+            
+            try:
+                stat_info = item.stat()
+                items.append({
+                    "name": item.name,
+                    "path": str(item),
+                    "is_file": item.is_file(),
+                    "is_dir": item.is_dir(),
+                    "size": stat_info.st_size if item.is_file() else None,
+                    "modified": stat_info.st_mtime
+                })
+            except (PermissionError, OSError):
+                items.append({
+                    "name": item.name,
+                    "path": str(item),
+                    "error": "Permission denied"
+                })
+        
+        # Sort: directories first, then files
+        items.sort(key=lambda x: (not x.get('is_dir', False), x['name'].lower()))
+        
+        return ToolOutput(
+            success=True,
+            data={
+                "path": str(path),
+                "count": len(items),
+                "items": items
+            },
+            evidence={"source": "filesystem_list"}
+        )
     
     async def verify(self, input_data: FileListInput, output: ToolOutput) -> bool:
         """Verify the tool execution result."""
@@ -463,64 +533,73 @@ class FileListTool(BaseTool):
         return _path_target_error(input_data.path)
 
 
-class FileReadTool(BaseTool):
+class FileReadTool(BaseTool[FileReadInput]):
     """Read file contents."""
     
     name = "file_read"
     description = "Read the contents of a file"
     input_schema = FileReadInput
     
+    @handle_tool_errors("READ_ERROR")
     async def execute(self, input_data: FileReadInput) -> ToolOutput:
         """Execute the file read tool."""
-        try:
-            path = _safe_resolve(input_data.path)
-            
-            if not path.exists():
-                return ToolOutput(
-                    success=False,
-                    error={"code": "FILE_NOT_FOUND", "message": f"File not found: {path}"},
-                    duration_ms=0
-                )
-            
-            if not path.is_file():
-                return ToolOutput(
-                    success=False,
-                    error={"code": "NOT_FILE", "message": f"Path is not a file: {path}"},
-                    duration_ms=0
-                )
-            
-            # Check file size before reading
-            file_size = path.stat().st_size
-            if file_size > input_data.max_bytes:
-                return ToolOutput(
-                    success=False,
-                    error={
-                        "code": "FILE_TOO_LARGE",
-                        "message": f"File size ({file_size} bytes) exceeds maximum allowed ({input_data.max_bytes} bytes)"
-                    },
-                    duration_ms=0
-                )
-            
-            content = path.read_text(encoding='utf-8', errors='replace')
-            
-            return ToolOutput(
-                success=True,
-                data={
-                    "path": str(path),
-                    "content": content,
-                    "size": len(content),
-                    "bytes_read": file_size
-                },
-                evidence={"source": "filesystem_read"}
-            )
-        except _TargetRejected as e:
-            return ToolOutput(success=False, error={"code": e.code, "message": e.message}, duration_ms=0)
-        except Exception as e:
+        path = _safe_resolve(input_data.path)
+        
+        if not path.exists():
             return ToolOutput(
                 success=False,
-                error={"code": "READ_ERROR", "message": str(e)},
+                error={"code": "FILE_NOT_FOUND", "message": f"File not found: {path}"},
                 duration_ms=0
             )
+        
+        if not path.is_file():
+            return ToolOutput(
+                success=False,
+                error={"code": "NOT_FILE", "message": f"Path is not a file: {path}"},
+                duration_ms=0
+            )
+
+        # Reserved Windows device/file names must be rejected explicitly.
+        reserved_check = _check_reserved(path)
+        if reserved_check:
+            return ToolOutput(
+                success=False,
+                error={"code": "RESERVED_NAME", "message": f"Reserved Windows name rejected: {path.name}"},
+                duration_ms=0,
+            )
+
+        # Locked-file check: best-effort detection via exclusive open attempt.
+        if _is_file_locked(path):
+            return ToolOutput(
+                success=False,
+                error={"code": "FILE_LOCKED", "message": f"File is locked or in use by another process: {path}"},
+                duration_ms=0,
+            )
+
+        # Check file size before reading
+        file_size = path.stat().st_size
+        if file_size > input_data.max_bytes:
+            return ToolOutput(
+                success=False,
+                error={
+                    "code": "FILE_TOO_LARGE",
+                    "message": f"File size ({file_size} bytes) exceeds maximum allowed ({input_data.max_bytes} bytes)"
+                },
+                duration_ms=0
+            )
+        
+        content = path.read_text(encoding='utf-8', errors='replace')
+        
+        return ToolOutput(
+            success=True,
+            data={
+                "path": str(path),
+                "content": content,
+                "size": len(content.encode('utf-8')),
+                "bytes_read": file_size
+            },
+            evidence={"source": "filesystem_read"}
+        )
     
     async def verify(self, input_data: FileReadInput, output: ToolOutput) -> bool:
         """Verify the tool execution result."""
@@ -534,78 +613,104 @@ class FileReadTool(BaseTool):
         return _path_target_error(input_data.path)
 
 
-class FileCreateTool(BaseTool):
+class FileCreateTool(BaseTool[FileCreateInput]):
     """Create a new file."""
     
     name = "file_create"
     description = "Create a new file with specified content"
     input_schema = FileCreateInput
     
+    @handle_tool_errors("CREATE_ERROR")
     async def execute(self, input_data: FileCreateInput) -> ToolOutput:
         """Execute the file create tool."""
-        try:
-            path = _safe_resolve(input_data.path)
+        path = _safe_resolve(input_data.path)
 
-            if len(input_data.content.encode('utf-8')) > MAX_WRITE_BYTES:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "WRITE_TOO_LARGE", "message": f"Content exceeds max write size of {MAX_WRITE_BYTES} bytes"},
-                    duration_ms=0
-                )
-            
-            # Atomic write: temp file + replace. If the target exists and
-            # overwrite is False, refuse (no clobber). A cancellation that
-            # arrives mid-write stops before the final replace.
-            try:
-                final_content = await _atomic_write_text(
-                    path,
-                    input_data.content,
-                    append=False,
-                    overwrite=input_data.overwrite,
-                    cancelled_check=self._is_cancelled,
-                )
-            except _ExistsError as e:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "FILE_EXISTS", "message": f"File already exists: {path}. Use overwrite=True to replace."},
-                    duration_ms=0
-                )
-            except _CancelledError:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "CANCELLED", "message": "Task was cancelled before the file replace"},
-                    duration_ms=0
-                )
-            
-            # Fresh post-mutation verification: read the committed bytes back.
-            try:
-                written = _read_back_text(path)
-                matches = written == final_content
-            except (OSError, UnicodeDecodeError):
-                matches = False
-
+        reserved_check = _check_reserved(path)
+        if reserved_check:
             return ToolOutput(
-                success=True,
+                success=False,
+                error={"code": "RESERVED_NAME", "message": f"Reserved Windows name rejected: {path.name}"},
+                duration_ms=0,
+            )
+
+        if len(input_data.content.encode('utf-8')) > MAX_WRITE_BYTES:
+            return ToolOutput(
+                success=False,
+                error={"code": "WRITE_TOO_LARGE", "message": f"Content exceeds max write size of {MAX_WRITE_BYTES} bytes"},
+                duration_ms=0
+            )
+        
+        # Atomic write: temp file + replace. If the target exists and
+        # overwrite is False, refuse (no clobber). A cancellation that
+        # arrives mid-write stops before the final replace.
+        try:
+            final_content = await _atomic_write_text(
+                path,
+                input_data.content,
+                append=False,
+                overwrite=input_data.overwrite,
+                cancelled_check=self._is_cancelled,
+            )
+        except _ExistsError:
+            return ToolOutput(
+                success=False,
+                error={"code": "FILE_EXISTS", "message": f"File already exists: {path}. Use overwrite=True to replace."},
+                duration_ms=0
+            )
+        except _CancelledError:
+            return ToolOutput(
+                success=False,
+                error={"code": "CANCELLED", "message": "Task was cancelled before the file replace"},
+                duration_ms=0
+            )
+        
+        # Fresh post-mutation verification: read the committed bytes back.
+        verification_error = None
+        try:
+            written = _read_back_text(path)
+            matches = written == final_content
+            if not matches:
+                verification_error = f"Content mismatch: expected {len(final_content)} chars, read-back content differs"
+        except (OSError, UnicodeDecodeError) as exc:
+            matches = False
+            verification_error = f"Verification read-back failed: {type(exc).__name__}: {exc}"
+
+        if not matches:
+            return ToolOutput(
+                success=False,
+                error={
+                    "code": "VERIFICATION_FAILED",
+                    "message": verification_error or "Post-write verification failed",
+                },
                 data={
                     "path": str(path),
                     "bytes_written": len(final_content.encode('utf-8')),
                     "overwritten": path.exists() and input_data.overwrite,
-                    "verified": matches,
+                    "verified": False,
                 },
-                evidence={"source": "filesystem_create", "verification": "passed" if matches else "failed"}
+                evidence={"source": "filesystem_create", "verification": "failed"},
+                duration_ms=0,
             )
-        except _TargetRejected as e:
-            return ToolOutput(success=False, error={"code": e.code, "message": e.message}, duration_ms=0)
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "CREATE_ERROR", "message": str(e)},
-                duration_ms=0
-            )
+
+        return ToolOutput(
+            success=True,
+            data={
+                "path": str(path),
+                "bytes_written": len(final_content.encode('utf-8')),
+                "overwritten": path.exists() and input_data.overwrite,
+                "verified": True,
+            },
+            evidence={"source": "filesystem_create", "verification": "passed"}
+        )
     
     async def verify(self, input_data: FileCreateInput, output: ToolOutput) -> bool:
-        """Verify the tool execution result."""
-        return output.success and "path" in (output.data or {})
+        """Verify the result, including the verified field."""
+        return (
+            output.success
+            and output.data is not None
+            and output.data.get("verified", True) is True
+            and "path" in output.data
+        )
     
     def get_policy_requirements(self) -> Dict[str, Any]:
         """Get policy requirements for this tool."""
@@ -615,77 +720,110 @@ class FileCreateTool(BaseTool):
         return _path_target_error(input_data.path)
 
 
-class FileWriteTool(BaseTool):
+class FileWriteTool(BaseTool[FileWriteInput]):
     """Write content to a file."""
     
     name = "file_write"
     description = "Write or append content to a file"
     input_schema = FileWriteInput
     
+    @handle_tool_errors("WRITE_ERROR")
     async def execute(self, input_data: FileWriteInput) -> ToolOutput:
         """Execute the file write tool."""
-        try:
-            path = _safe_resolve(input_data.path)
-            
-            if len(input_data.content.encode('utf-8')) > MAX_WRITE_BYTES:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "WRITE_TOO_LARGE", "message": f"Content exceeds max write size of {MAX_WRITE_BYTES} bytes"},
-                    duration_ms=0
-                )
-            
-            # Atomic write (temp file + replace); a cancellation arriving during
-            # the write stops before the final swap so the old file survives.
-            try:
-                final_content = await _atomic_write_text(
-                    path,
-                    input_data.content,
-                    append=input_data.append,
-                    overwrite=True,
-                    cancelled_check=self._is_cancelled,
-                )
-            except _CancelledError:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "CANCELLED", "message": "Task was cancelled before the file replace"},
-                    duration_ms=0
-                )
-            except _WriteTooLarge:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "WRITE_TOO_LARGE", "message": f"Content exceeds max write size of {MAX_WRITE_BYTES} bytes"},
-                    duration_ms=0
-                )
-            
-            # Fresh post-mutation verification: read the committed bytes back.
-            try:
-                written = _read_back_text(path)
-                matches = written == final_content
-            except (OSError, UnicodeDecodeError):
-                matches = False
+        path = _safe_resolve(input_data.path)
 
+        reserved_check = _check_reserved(path)
+        if reserved_check:
             return ToolOutput(
-                success=True,
+                success=False,
+                error={"code": "RESERVED_NAME", "message": f"Reserved Windows name rejected: {path.name}"},
+                duration_ms=0,
+            )
+
+        if len(input_data.content.encode('utf-8')) > MAX_WRITE_BYTES:
+            return ToolOutput(
+                success=False,
+                error={"code": "WRITE_TOO_LARGE", "message": f"Content exceeds max write size of {MAX_WRITE_BYTES} bytes"},
+                duration_ms=0
+            )
+        
+        if _is_file_locked(path):
+            return ToolOutput(
+                success=False,
+                error={"code": "FILE_LOCKED", "message": f"File is locked or in use by another process: {path}"},
+                duration_ms=0,
+            )
+
+        # Atomic write (temp file + replace); a cancellation arriving during
+        # the write stops before the final swap so the old file survives.
+        try:
+            final_content = await _atomic_write_text(
+                path,
+                input_data.content,
+                append=input_data.append,
+                overwrite=True,
+                cancelled_check=self._is_cancelled,
+            )
+        except _CancelledError:
+            return ToolOutput(
+                success=False,
+                error={"code": "CANCELLED", "message": "Task was cancelled before the file replace"},
+                duration_ms=0
+            )
+        except _WriteTooLarge:
+            return ToolOutput(
+                success=False,
+                error={"code": "WRITE_TOO_LARGE", "message": f"Content exceeds max write size of {MAX_WRITE_BYTES} bytes"},
+                duration_ms=0
+            )
+        
+        # Fresh post-mutation verification: read the committed bytes back.
+        verification_error = None
+        try:
+            written = _read_back_text(path)
+            matches = written == final_content
+            if not matches:
+                verification_error = f"Content mismatch: expected {len(final_content)} chars, read-back differs"
+        except (OSError, UnicodeDecodeError) as exc:
+            matches = False
+            verification_error = f"Verification read-back failed: {type(exc).__name__}: {exc}"
+
+        if not matches:
+            return ToolOutput(
+                success=False,
+                error={
+                    "code": "VERIFICATION_FAILED",
+                    "message": verification_error or "Post-write verification failed",
+                },
                 data={
                     "path": str(path),
                     "bytes_written": len(final_content.encode('utf-8')),
                     "appended": input_data.append,
-                    "verified": matches,
+                    "verified": False,
                 },
-                evidence={"source": "filesystem_write", "verification": "passed" if matches else "failed"}
+                evidence={"source": "filesystem_write", "verification": "failed"},
+                duration_ms=0,
             )
-        except _TargetRejected as e:
-            return ToolOutput(success=False, error={"code": e.code, "message": e.message}, duration_ms=0)
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "WRITE_ERROR", "message": str(e)},
-                duration_ms=0
-            )
+
+        return ToolOutput(
+            success=True,
+            data={
+                "path": str(path),
+                "bytes_written": len(final_content.encode('utf-8')),
+                "appended": input_data.append,
+                "verified": True,
+            },
+            evidence={"source": "filesystem_write", "verification": "passed"}
+        )
     
     async def verify(self, input_data: FileWriteInput, output: ToolOutput) -> bool:
-        """Verify the tool execution result."""
-        return output.success and "path" in (output.data or {})
+        """Verify the tool execution result, including verified field."""
+        return (
+            output.success
+            and output.data is not None
+            and output.data.get("verified", True) is True
+            and "path" in output.data
+        )
     
     def get_policy_requirements(self) -> Dict[str, Any]:
         """Get policy requirements for this tool."""
@@ -695,92 +833,146 @@ class FileWriteTool(BaseTool):
         return _path_target_error(input_data.path)
 
 
-class FileMoveTool(BaseTool):
+class FileMoveTool(BaseTool[FileMoveInput]):
     """Move a file to a new location."""
     
     name = "file_move"
     description = "Move a file from source to destination"
     input_schema = FileMoveInput
     
+    @handle_tool_errors("MOVE_ERROR")
     async def execute(self, input_data: FileMoveInput) -> ToolOutput:
         """Execute the file move tool."""
-        try:
-            source = _safe_resolve(input_data.source_path)
-            dest = _safe_resolve(input_data.destination_path)
-            
-            if not source.exists():
-                return ToolOutput(
-                    success=False,
-                    error={"code": "SOURCE_NOT_FOUND", "message": f"Source file not found: {source}"},
-                    duration_ms=0
-                )
-            
-            if not source.is_file():
-                return ToolOutput(
-                    success=False,
-                    error={"code": "SOURCE_NOT_FILE", "message": f"Source is not a file: {source}"},
-                    duration_ms=0
-                )
-            
-            # Check if destination exists
-            if dest.exists() and not input_data.overwrite:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "DESTINATION_EXISTS", "message": f"Destination already exists: {dest}. Use overwrite=True to replace."},
-                    duration_ms=0
-                )
-            
-            # Create parent directories if needed
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            
-            # shutil.move uses os.rename on Windows, which raises FileExistsError
-            # when the destination exists; honour overwrite explicitly.
-            if input_data.overwrite and dest.exists():
-                if dest.is_dir():
-                    shutil.rmtree(dest)
-                else:
-                    dest.unlink()
-            
-            # Capture source bytes before the move for post-mutation verification.
-            try:
-                source_bytes = _file_bytes(source)
-            except OSError:
-                source_bytes = None
+        source = _safe_resolve(input_data.source_path)
+        dest = _safe_resolve(input_data.destination_path)
 
-            # Move the file
-            shutil.move(str(source), str(dest))
-            
-            # Fresh post-mutation verification: the destination exists and
-            # carries the exact source bytes.
-            verified = dest.exists() and dest.is_file()
-            if verified and source_bytes is not None:
-                try:
-                    verified = _file_bytes(dest) == source_bytes
-                except OSError:
-                    verified = False
+        for check_path, label in [(source, "source"), (dest, "destination")]:
+            reserved = _check_reserved(check_path)
+            if reserved:
+                return ToolOutput(
+                    success=False,
+                    error={"code": "RESERVED_NAME", "message": f"Reserved Windows name rejected ({label}): {check_path.name}"},
+                    duration_ms=0,
+                )
+            if check_path.exists() and check_path.is_file() and _is_file_locked(check_path):
+                return ToolOutput(
+                    success=False,
+                    error={"code": "FILE_LOCKED", "message": f"File is locked or in use ({label}): {check_path}"},
+                    duration_ms=0,
+                )
 
+        if not source.exists():
             return ToolOutput(
-                success=True,
+                success=False,
+                error={"code": "SOURCE_NOT_FOUND", "message": f"Source file not found: {source}"},
+                duration_ms=0
+            )
+        
+        if not source.is_file():
+            return ToolOutput(
+                success=False,
+                error={"code": "SOURCE_NOT_FILE", "message": f"Source is not a file: {source}"},
+                duration_ms=0
+            )
+        
+        # Check if destination exists
+        if dest.exists() and not input_data.overwrite:
+            return ToolOutput(
+                success=False,
+                error={"code": "DESTINATION_EXISTS", "message": f"Destination already exists: {dest}. Use overwrite=True to replace."},
+                duration_ms=0
+            )
+        
+        # Create parent directories if needed
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        
+        # shutil.move uses os.rename on Windows, which raises FileExistsError
+        # when the destination exists; honour overwrite explicitly.
+        if input_data.overwrite and dest.exists():
+            if dest.is_dir():
+                shutil.rmtree(dest)
+            else:
+                dest.unlink()
+        
+        # Capture source bytes before the move for post-mutation verification.
+        try:
+            source_bytes = _file_bytes(source)
+        except OSError:
+            source_bytes = None
+
+        # Also verify source removal (critical: move must actually remove source)
+        source_removed_after = False
+
+        # Move the file
+        shutil.move(str(source), str(dest))
+
+        # Fresh post-mutation verification: the destination exists and
+        # carries the exact source bytes; source must also be removed.
+        verified = dest.exists() and dest.is_file()
+        verification_error = None
+        if verified and source_bytes is not None:
+            try:
+                byte_match = _file_bytes(dest) == source_bytes
+                if not byte_match:
+                    verified = False
+                    verification_error = "Destination bytes do not match source bytes"
+            except OSError as exc:
+                verified = False
+                verification_error = f"Verification byte comparison failed: {type(exc).__name__}: {exc}"
+        else:
+            if not dest.exists() or not dest.is_file():
+                verified = False
+                verification_error = "Destination file missing or is not a file after move"
+            elif source_bytes is None:
+                verified = False
+                verification_error = "Could not read source bytes before move (verification incomplete)"
+
+        # Confirm source removal
+        source_removed_after = not source.exists()
+        if source_removed_after is False and verified:
+            verified = False
+            verification_error = "Source file still exists after move (move did not complete)"
+
+        if not verified:
+            return ToolOutput(
+                success=False,
+                error={
+                    "code": "VERIFICATION_FAILED",
+                    "message": verification_error or "Post-move verification failed",
+                },
                 data={
                     "source": str(source),
                     "destination": str(dest),
                     "overwritten": dest.exists() and input_data.overwrite,
-                    "verified": verified,
+                    "verified": False,
+                    "source_removed": source_removed_after,
                 },
-                evidence={"source": "filesystem_move", "verification": "passed" if verified else "failed"}
+                evidence={"source": "filesystem_move", "verification": "failed"},
+                duration_ms=0,
             )
-        except _TargetRejected as e:
-            return ToolOutput(success=False, error={"code": e.code, "message": e.message}, duration_ms=0)
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "MOVE_ERROR", "message": str(e)},
-                duration_ms=0
-            )
+
+        return ToolOutput(
+            success=True,
+            data={
+                "source": str(source),
+                "destination": str(dest),
+                "overwritten": dest.exists() and input_data.overwrite,
+                "verified": True,
+                "source_removed": source_removed_after,
+            },
+            evidence={"source": "filesystem_move", "verification": "passed"}
+        )
     
     async def verify(self, input_data: FileMoveInput, output: ToolOutput) -> bool:
-        """Verify the tool execution result."""
-        return output.success and "destination" in (output.data or {})
+        """Verify the move result, including verified and source_removed."""
+        if not output.success:
+            return False
+        data = output.data or {}
+        return (
+            data.get("verified", True) is True
+            and data.get("source_removed", True) is True
+            and "destination" in data
+        )
     
     def get_policy_requirements(self) -> Dict[str, Any]:
         """Get policy requirements for this tool."""
@@ -790,78 +982,113 @@ class FileMoveTool(BaseTool):
         return _path_target_error(input_data.source_path) or _path_target_error(input_data.destination_path)
 
 
-class FileCopyTool(BaseTool):
+class FileCopyTool(BaseTool[FileCopyInput]):
     """Copy a file to a new location."""
     
     name = "file_copy"
     description = "Copy a file from source to destination"
     input_schema = FileCopyInput
     
+    @handle_tool_errors("COPY_ERROR")
     async def execute(self, input_data: FileCopyInput) -> ToolOutput:
         """Execute the file copy tool."""
-        try:
-            source = _safe_resolve(input_data.source_path)
-            dest = _safe_resolve(input_data.destination_path)
-            
-            if not source.exists():
-                return ToolOutput(
-                    success=False,
-                    error={"code": "SOURCE_NOT_FOUND", "message": f"Source file not found: {source}"},
-                    duration_ms=0
-                )
-            
-            if not source.is_file():
-                return ToolOutput(
-                    success=False,
-                    error={"code": "SOURCE_NOT_FILE", "message": f"Source is not a file: {source}"},
-                    duration_ms=0
-                )
-            
-            # Check if destination exists
-            if dest.exists() and not input_data.overwrite:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "DESTINATION_EXISTS", "message": f"Destination already exists: {dest}. Use overwrite=True to replace."},
-                    duration_ms=0
-                )
-            
-            # Create parent directories if needed
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Copy the file
-            shutil.copy2(str(source), str(dest))
-            
-            # Fresh post-mutation verification: the destination exists and
-            # carries the exact source bytes.
-            verified = dest.exists() and dest.is_file()
-            if verified:
-                try:
-                    verified = _bytes_match(source, dest)
-                except OSError:
-                    verified = False
+        source = _safe_resolve(input_data.source_path)
+        dest = _safe_resolve(input_data.destination_path)
 
+        for check_path, label in [(source, "source"), (dest, "destination")]:
+            reserved = _check_reserved(check_path)
+            if reserved:
+                return ToolOutput(
+                    success=False,
+                    error={"code": "RESERVED_NAME", "message": f"Reserved Windows name rejected ({label}): {check_path.name}"},
+                    duration_ms=0,
+                )
+            if check_path.exists() and check_path.is_file() and _is_file_locked(check_path):
+                return ToolOutput(
+                    success=False,
+                    error={"code": "FILE_LOCKED", "message": f"File is locked or in use ({label}): {check_path}"},
+                    duration_ms=0,
+                )
+
+        if not source.exists():
             return ToolOutput(
-                success=True,
+                success=False,
+                error={"code": "SOURCE_NOT_FOUND", "message": f"Source file not found: {source}"},
+                duration_ms=0
+            )
+        
+        if not source.is_file():
+            return ToolOutput(
+                success=False,
+                error={"code": "SOURCE_NOT_FILE", "message": f"Source is not a file: {source}"},
+                duration_ms=0
+            )
+        
+        # Check if destination exists
+        if dest.exists() and not input_data.overwrite:
+            return ToolOutput(
+                success=False,
+                error={"code": "DESTINATION_EXISTS", "message": f"Destination already exists: {dest}. Use overwrite=True to replace."},
+                duration_ms=0
+            )
+        
+        # Create parent directories if needed
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Copy the file
+        shutil.copy2(str(source), str(dest))
+
+        # Fresh post-mutation verification: the destination exists and
+        # carries the exact source bytes.
+        verified = dest.exists() and dest.is_file()
+        verification_error = None
+        if verified:
+            try:
+                byte_match = _bytes_match(source, dest)
+                if not byte_match:
+                    verified = False
+                    verification_error = "Copied file bytes do not match source bytes"
+            except OSError as exc:
+                verified = False
+                verification_error = f"Verification byte comparison failed: {type(exc).__name__}: {exc}"
+        else:
+            verified = False
+            verification_error = "Destination file missing or is not a file after copy"
+
+        if not verified:
+            return ToolOutput(
+                success=False,
+                error={
+                    "code": "VERIFICATION_FAILED",
+                    "message": verification_error or "Post-copy verification failed",
+                },
                 data={
                     "source": str(source),
                     "destination": str(dest),
                     "overwritten": dest.exists() and input_data.overwrite,
-                    "verified": verified,
+                    "verified": False,
                 },
-                evidence={"source": "filesystem_copy", "verification": "passed" if verified else "failed"}
+                evidence={"source": "filesystem_copy", "verification": "failed"},
+                duration_ms=0,
             )
-        except _TargetRejected as e:
-            return ToolOutput(success=False, error={"code": e.code, "message": e.message}, duration_ms=0)
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "COPY_ERROR", "message": str(e)},
-                duration_ms=0
-            )
+
+        return ToolOutput(
+            success=True,
+            data={
+                "source": str(source),
+                "destination": str(dest),
+                "overwritten": dest.exists() and input_data.overwrite,
+                "verified": True,
+            },
+            evidence={"source": "filesystem_copy", "verification": "passed"}
+        )
     
     async def verify(self, input_data: FileCopyInput, output: ToolOutput) -> bool:
-        """Verify the tool execution result."""
-        return output.success and "destination" in (output.data or {})
+        """Verify the copy result, including verified."""
+        if not output.success:
+            return False
+        data = output.data or {}
+        return data.get("verified", True) is True and "destination" in data
     
     def get_policy_requirements(self) -> Dict[str, Any]:
         """Get policy requirements for this tool."""
@@ -871,83 +1098,109 @@ class FileCopyTool(BaseTool):
         return _path_target_error(input_data.source_path) or _path_target_error(input_data.destination_path)
 
 
-class FileDeleteTool(BaseTool):
+class FileDeleteTool(BaseTool[FileDeleteInput]):
     """Delete a file."""
     
     name = "file_delete"
     description = "Delete a file (optionally using recycle bin)"
     input_schema = FileDeleteInput
     
+    @handle_tool_errors("DELETE_ERROR")
     async def execute(self, input_data: FileDeleteInput) -> ToolOutput:
         """Execute the file delete tool."""
-        try:
-            path = _safe_resolve(input_data.path)
-            
-            if not path.exists():
-                return ToolOutput(
-                    success=False,
-                    error={"code": "FILE_NOT_FOUND", "message": f"File not found: {path}"},
-                    duration_ms=0
-                )
-            
-            if not path.is_file():
-                return ToolOutput(
-                    success=False,
-                    error={"code": "NOT_FILE", "message": f"Path is not a file: {path}"},
-                    duration_ms=0
-                )
-            
-            # On Windows, use recycle bin if requested
-            if input_data.use_recycle_bin:
-                try:
-                    import send2trash
-                except ImportError:
-                    # Do NOT silently fall back to permanent deletion: the caller
-                    # asked for recycle-bin semantics and expects recoverable deletes.
-                    return ToolOutput(
-                        success=False,
-                        error={"code": "RECYCLE_BIN_UNAVAILABLE",
-                               "message": "use_recycle_bin requested but send2trash is not installed; refusing to permanently delete."},
-                        duration_ms=0
-                    )
-                send2trash.send2trash(str(path))
-                method = "recycle_bin"
-            else:
-                path.unlink()
-                method = "permanent_deletion"
-            
-            # Fresh post-mutation verification: the target no longer exists.
-            verified = not path.exists()
-            recoverable = method == "recycle_bin"
+        path = _safe_resolve(input_data.path)
 
+        reserved_check = _check_reserved(path)
+        if reserved_check:
             return ToolOutput(
-                success=True,
+                success=False,
+                error={"code": "RESERVED_NAME", "message": f"Reserved Windows name rejected: {path.name}"},
+                duration_ms=0,
+            )
+
+        if path.exists() and path.is_file() and _is_file_locked(path):
+            return ToolOutput(
+                success=False,
+                error={"code": "FILE_LOCKED", "message": f"File is locked or in use: {path}"},
+                duration_ms=0,
+            )
+
+        if not path.exists():
+            return ToolOutput(
+                success=False,
+                error={"code": "FILE_NOT_FOUND", "message": f"File not found: {path}"},
+                duration_ms=0
+            )
+        
+        if not path.is_file():
+            return ToolOutput(
+                success=False,
+                error={"code": "NOT_FILE", "message": f"Path is not a file: {path}"},
+                duration_ms=0
+            )
+        
+        # On Windows, use recycle bin if requested
+        if input_data.use_recycle_bin:
+            try:
+                import send2trash
+            except ImportError:
+                # Do NOT silently fall back to permanent deletion: the caller
+                # asked for recycle-bin semantics and expects recoverable deletes.
+                return ToolOutput(
+                    success=False,
+                    error={"code": "RECYCLE_BIN_UNAVAILABLE",
+                           "message": "use_recycle_bin requested but send2trash is not installed; refusing to permanently delete."},
+                    duration_ms=0
+                )
+            send2trash.send2trash(str(path))
+            method = "recycle_bin"
+        else:
+            path.unlink()
+            method = "permanent_deletion"
+        
+        # Fresh post-mutation verification: the target no longer exists.
+        verified = not path.exists()
+        recoverable = method == "recycle_bin"
+
+        if not verified:
+            return ToolOutput(
+                success=False,
+                error={
+                    "code": "VERIFICATION_FAILED",
+                    "message": f"File still exists after deletion attempt: {path}",
+                },
                 data={
                     "path": str(path),
                     "deletion_method": method,
-                    "verified": verified,
+                    "verified": False,
                     "recoverable": recoverable,
                 },
-                evidence={
-                    "source": "filesystem_delete",
-                    "verification": "passed" if verified else "failed",
-                    "recoverable": recoverable,
-                }
+                evidence={"source": "filesystem_delete", "verification": "failed", "recoverable": recoverable},
+                duration_ms=0,
             )
-        except _TargetRejected as e:
-            return ToolOutput(success=False, error={"code": e.code, "message": e.message}, duration_ms=0)
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "DELETE_ERROR", "message": str(e)},
-                duration_ms=0
-            )
+
+        return ToolOutput(
+            success=True,
+            data={
+                "path": str(path),
+                "deletion_method": method,
+                "verified": True,
+                "recoverable": recoverable,
+            },
+            evidence={
+                "source": "filesystem_delete",
+                "verification": "passed",
+                "recoverable": recoverable,
+            }
+        )
     
     async def verify(self, input_data: FileDeleteInput, output: ToolOutput) -> bool:
-        """Verify the file was actually deleted."""
+        """Verify the file was actually deleted and verification field is set."""
         if not output.success:
             return False
         data = output.data or {}
+        if data.get("verified", True) is not True:
+            return False
         path = data.get("path")
         if not path:
             return False
@@ -961,6 +1214,177 @@ class FileDeleteTool(BaseTool):
         return _path_target_error(input_data.path)
 
 
+class FileSearchTool(BaseTool[FileSearchInput]):
+    """Search file contents for a text pattern."""
+
+    name = "file_search"
+    description = "Search file contents for a text pattern, returning matching lines with file path, line number, and context. Respects approved roots, hidden files, and file extension filters."
+    input_schema = FileSearchInput
+
+    @handle_tool_errors("SEARCH_ERROR")
+    async def execute(self, input_data: FileSearchInput) -> ToolOutput:
+        """Execute the file search tool."""
+        if not input_data.pattern or not input_data.pattern.strip():
+            return ToolOutput(
+                success=False,
+                error={"code": "PATTERN_REQUIRED", "message": "Search pattern must not be empty"},
+                duration_ms=0
+            )
+
+        path = _safe_resolve(input_data.path)
+
+        if not path.exists():
+            return ToolOutput(
+                success=False,
+                error={"code": "PATH_NOT_FOUND", "message": f"Path not found: {path}"},
+                duration_ms=0
+            )
+
+        if not path.is_dir():
+            return ToolOutput(
+                success=False,
+                error={"code": "NOT_DIRECTORY", "message": f"Path is not a directory: {path}"},
+                duration_ms=0
+            )
+
+        matches = []
+        pattern = input_data.pattern.lower()
+        max_results = input_data.max_results
+        include_hidden = input_data.include_hidden
+        extensions = input_data.file_extensions
+
+        for file_path in path.rglob("*"):
+            if not file_path.is_file():
+                continue
+
+            # Skip hidden files unless requested
+            if not include_hidden and any(part.startswith('.') for part in file_path.relative_to(path).parts):
+                continue
+
+            # Filter by extension if specified
+            if extensions and file_path.suffix.lower() not in [ext.lower() for ext in extensions]:
+                continue
+
+            try:
+                content = file_path.read_text(encoding='utf-8', errors='ignore')
+                lines = content.splitlines()
+                for line_num, line in enumerate(lines, 1):
+                    if pattern in line.lower():
+                        matches.append({
+                            "file": str(file_path),
+                            "line": line_num,
+                            "content": line.strip()
+                        })
+                        if len(matches) >= max_results:
+                            break
+                if len(matches) >= max_results:
+                    break
+            except (UnicodeDecodeError, PermissionError, OSError):
+                continue
+
+        return ToolOutput(
+            success=True,
+            data={
+                "matches": matches,
+                "match_count": len(matches),
+                "truncated": len(matches) >= max_results
+            },
+            evidence={"source": "filesystem_search"}
+        )
+
+    async def verify(self, input_data: FileSearchInput, output: ToolOutput) -> bool:
+        """Verify the tool execution result."""
+        if not output.success:
+            return False
+        data = output.data or {}
+        return "matches" in data and isinstance(data.get("matches"), list)
+
+    def get_policy_requirements(self) -> Dict[str, Any]:
+        """Get policy requirements for this tool."""
+        return {"risk_level": "none", "requires_confirmation": False}
+
+    def validate_targets(self, input_data: FileSearchInput) -> Optional[Dict[str, str]]:
+        return _path_target_error(input_data.path)
+
+
+class FileHashTool(BaseTool[FileHashInput]):
+    """Compute a cryptographic hash of a file."""
+
+    name = "file_hash"
+    description = "Compute a cryptographic hash (md5, sha1, sha256, or sha512) of a file. Returns the hex digest, algorithm, and file size."
+    input_schema = FileHashInput
+
+    _ALGORITHMS = {"md5", "sha1", "sha256", "sha512"}
+
+    @handle_tool_errors("HASH_ERROR")
+    async def execute(self, input_data: FileHashInput) -> ToolOutput:
+        """Execute the file hash tool."""
+        import hashlib
+
+        algorithm = (input_data.algorithm or "sha256").lower()
+        if algorithm not in self._ALGORITHMS:
+            return ToolOutput(
+                success=False,
+                error={
+                    "code": "INVALID_ALGORITHM",
+                    "message": f"Unsupported hash algorithm: {algorithm}. Choose from {sorted(self._ALGORITHMS)}",
+                },
+                duration_ms=0,
+            )
+
+        path = _safe_resolve(input_data.path)
+
+        if not path.exists():
+            return ToolOutput(
+                success=False,
+                error={"code": "FILE_NOT_FOUND", "message": f"File not found: {path}"},
+                duration_ms=0,
+            )
+
+        if not path.is_file():
+            return ToolOutput(
+                success=False,
+                error={"code": "NOT_A_FILE", "message": f"Path is not a file: {path}"},
+                duration_ms=0,
+            )
+
+        hasher = hashlib.new(algorithm)
+        size = 0
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                hasher.update(chunk)
+                size += len(chunk)
+
+        digest = hasher.hexdigest()
+
+        return ToolOutput(
+            success=True,
+            data={
+                "path": str(path),
+                "algorithm": algorithm,
+                "hash": digest,
+                "file_size": size,
+            },
+            model_summary=f"{algorithm} hash of {path.name}: {digest[:12]}...",
+            evidence={"source": "file_hash"},
+            duration_ms=0,
+        )
+
+    async def verify(self, input_data: FileHashInput, output: ToolOutput) -> bool:
+        """Verify the tool execution result."""
+        if not output.success:
+            return False
+        data = output.data or {}
+        return "hash" in data and isinstance(data.get("hash"), str)
+
+    def get_policy_requirements(self) -> Dict[str, Any]:
+        """Get policy requirements for this tool."""
+        return {"risk_level": "none", "requires_confirmation": False}
+
+    def validate_targets(self, input_data: FileHashInput) -> Optional[Dict[str, str]]:
+        return _path_target_error(input_data.path)
+
+
 def create_file_tools() -> List[BaseTool]:
     """Create instances of all file tools."""
     return [
@@ -971,4 +1395,6 @@ def create_file_tools() -> List[BaseTool]:
         FileMoveTool(),
         FileCopyTool(),
         FileDeleteTool(),
+        FileSearchTool(),
+        FileHashTool(),
     ]
