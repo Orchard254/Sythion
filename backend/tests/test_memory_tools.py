@@ -10,12 +10,14 @@ from backend.api.schemas import (
     MemoryRecallInput,
     MemoryLinkInput,
     MemoryRecallRelatedInput,
+    MemoryForgetInput,
 )
 from backend.tools.memory_tools import (
     MemoryStoreTool,
     MemoryRecallTool,
     MemoryLinkTool,
     MemoryRecallRelatedTool,
+    MemoryForgetTool,
 )
 
 
@@ -370,3 +372,93 @@ async def test_memory_recall_related_surfaces_unlinked_facts(memory_db_setup):
     assert out.data["unlinked_facts"] == [
         {"target_key": "acme_corp", "relation": "works_at", "from": "user_name", "hop": 1}
     ]
+
+
+# --- adversarial key/endpoint validation -------------------------------------
+
+@pytest.mark.asyncio
+async def test_memory_store_rejects_empty_key(memory_db_setup):
+    store_tool = MemoryStoreTool()
+    out = await store_tool.execute(MemoryStoreInput(key="", value="x"))
+    assert out.success is False
+    assert out.error["code"] == "MEMORY_KEY_REQUIRED"
+    assert memory_db_setup.query(MemoryEntry).filter_by(key="").count() == 0
+
+
+@pytest.mark.asyncio
+async def test_memory_store_rejects_whitespace_key(memory_db_setup):
+    store_tool = MemoryStoreTool()
+    for bad in ["   ", "\t", " \n "]:
+        out = await store_tool.execute(MemoryStoreInput(key=bad, value="x"))
+        assert out.success is False
+        assert out.error["code"] == "MEMORY_KEY_REQUIRED"
+    assert memory_db_setup.query(MemoryEntry).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_memory_store_strips_key_whitespace(memory_db_setup):
+    out = await MemoryStoreTool().execute(MemoryStoreInput(key="  preferred_editor  ", value="VS Code"))
+    assert out.success is True
+    assert out.data["key"] == "preferred_editor"
+    assert memory_db_setup.query(MemoryEntry).filter_by(key="preferred_editor").count() == 1
+
+
+@pytest.mark.asyncio
+async def test_memory_link_rejects_empty_endpoint(memory_db_setup):
+    link_tool = MemoryLinkTool()
+    out = await link_tool.execute(MemoryLinkInput(source_key="", relation="relates_to", target_key="other"))
+    assert out.success is False
+    assert out.error["code"] == "MEMORY_LINK_EMPTY_ENDPOINT"
+
+    out = await link_tool.execute(MemoryLinkInput(source_key="other", relation="relates_to", target_key="  "))
+    assert out.success is False
+    assert out.error["code"] == "MEMORY_LINK_EMPTY_ENDPOINT"
+
+    assert memory_db_setup.query(MemoryEdge).count() == 0
+
+
+# --- verify() DB read-back (post-execution verification) --------------------
+
+@pytest.mark.asyncio
+async def test_memory_store_verify_reads_back(memory_db_setup):
+    store_tool = MemoryStoreTool()
+    store_input = MemoryStoreInput(key="preferred_editor", value="VS Code", category="user_preference")
+    out = await store_tool.execute(store_input)
+    assert out.success is True
+    assert await store_tool.verify(store_input, out) is True
+
+    # Tamper: change the value behind the tool's back, then verify must fail.
+    row = memory_db_setup.query(MemoryEntry).filter_by(key="preferred_editor").first()
+    row.value = "different"
+    memory_db_setup.commit()
+    assert await store_tool.verify(store_input, out) is False
+
+
+@pytest.mark.asyncio
+async def test_memory_forget_verify_reads_back(memory_db_setup):
+    store_tool = MemoryStoreTool()
+    await store_tool.execute(MemoryStoreInput(key="preferred_editor", value="VS Code"))
+    row = memory_db_setup.query(MemoryEntry).filter_by(key="preferred_editor").first()
+    assert row is not None
+
+    forget_tool = MemoryForgetTool()
+    forget_input = MemoryForgetInput(key="preferred_editor")
+    out = await forget_tool.execute(forget_input)
+    assert out.success is True
+    assert await forget_tool.verify(forget_input, out) is True
+
+
+@pytest.mark.asyncio
+async def test_memory_link_verify_reads_back(memory_db_setup):
+    link_tool = MemoryLinkTool()
+    link_input = MemoryLinkInput(source_key="user_name", relation="prefers", target_key="editor")
+    out = await link_tool.execute(link_input)
+    assert out.success is True
+    assert await link_tool.verify(link_input, out) is True
+
+    edge = memory_db_setup.query(MemoryEdge).filter_by(
+        source_key="user_name", relation="prefers", target_key="editor"
+    ).first()
+    edge.status = "stale"
+    memory_db_setup.commit()
+    assert await link_tool.verify(link_input, out) is False

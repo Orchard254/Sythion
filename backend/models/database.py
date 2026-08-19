@@ -284,6 +284,8 @@ class MemoryEntry(Base):
     key = Column(String, nullable=False, unique=True, index=True)
     value = Column(Text, nullable=False)
     source_task_id = Column(String, nullable=True)
+    access_count = Column(Integer, default=0)
+    last_accessed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
