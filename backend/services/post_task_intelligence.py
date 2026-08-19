@@ -104,6 +104,18 @@ async def save_conversation_turn(db, task_id: str, task: Task) -> None:
                     ))
 
         db.commit()
+        # Verify the conversation turns were persisted
+        try:
+            engine = db.bind
+            SessionLocal = sessionmaker(bind=engine)
+            with SessionLocal() as verify_session:
+                turns = verify_session.query(ConversationTurn).filter_by(task_id=task_id).all()
+                if len(turns) < 2:
+                    logger.warning("Verification failed: conversation turns not persisted for task %s", task_id)
+                    return
+        except Exception as exc:
+            logger.warning("Verification of conversation turn persistence failed: %s", exc)
+            return
         logger.info("Saved conversation turn for task %s", task_id)
 
         try:
