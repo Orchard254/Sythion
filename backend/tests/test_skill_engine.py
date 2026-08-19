@@ -810,3 +810,136 @@ class TestProposalSchemaValidation:
         enabled = get_enabled_skill_version(db_session, str(proposal.id))
         assert enabled is not None
 
+
+class TestSkillProposalsVerification:
+    """Tests for the read-back verification added to skill_proposals.py to prevent silent commit failures."""
+
+    def test_maybe_generate_proposal_trace_ids_verification_failure_returns_none(self, db_session, executor, monkeypatch):
+        """_auto_enable_if_ready trace_ids update returns None when verification fails (fix behavior).
+
+        This test FAILS on pre-fix code because:
+        1. Pre-fix code lacks the sessionmaker import (AttributeError when patching)
+        2. Pre-fix code has no verification - it always returns the proposal on trace_ids update
+        """
+        from unittest.mock import patch, MagicMock
+
+        # Create two similar completed tasks
+        def _completed_trace_task(db, task_id):
+            task = Task(id=task_id, original_request="test", state="completed", version=1)
+            db.add(task)
+            event = TaskEvent(
+                task_id=task_id,
+                event_type="tool.executed",
+                event_data=json.dumps({
+                    "tool_name": "file_read",
+                    "success": True,
+                    "params": {"path": f"C:\\test\\{task_id}.txt"},
+                    "output": {"content": "ok"},
+                }),
+                sequence_num=1,
+            )
+            db.add(event)
+            db.commit()
+
+        _completed_trace_task(db_session, "t1")
+        _completed_trace_task(db_session, "t2")
+
+        # Create a proposal
+        proposal = maybe_generate_proposal(db_session, "t1", executor)
+        assert proposal is not None
+
+        # Patch the module's sessionmaker to simulate read-back failure for trace_ids update
+        mock_session_instance = MagicMock()
+        mock_query = MagicMock()
+        mock_query.filter_by.return_value.first.return_value = None
+        mock_session_instance.query.return_value = mock_query
+        mock_session_instance.__enter__ = lambda self: mock_session_instance
+        mock_session_instance.__exit__ = lambda *args: None
+
+        mock_sessionmaker_class = MagicMock()
+        mock_sessionmaker_class.return_value = mock_session_instance
+
+        with patch('backend.services.skill_proposals.sessionmaker', mock_sessionmaker_class):
+            # Call maybe_generate_proposal again with t2 - should update trace_ids
+            result = maybe_generate_proposal(db_session, "t2", executor)
+
+            # Fix behavior: returns None when trace_ids verification fails
+            # Pre-fix behavior: returns proposal (no verification)
+            assert result is None, "Expected None when verification fails, got proposal"
+
+
+class TestSkillRuntimeVerification:
+    """Tests for the read-back verification added to skill_runtime.py to prevent silent commit failures."""
+
+    @pytest.mark.asyncio
+    async def test_execute_skill_pin_verification_failure_returns_error(self, db_session, executor, monkeypatch):
+        """execute_skill returns error when task.selected_skill_version pin verification fails (fix behavior).
+
+        This test FAILS on pre-fix code because:
+        1. Pre-fix code lacks the sessionmaker import (AttributeError when patching)
+        2. Pre-fix code has no verification - it commits the pin but doesn't verify it persisted
+        """
+        from unittest.mock import patch, MagicMock
+
+        # Create a skill with a version using system_battery (no input tool)
+        def _enabled_skill(db, exec_, skill_id="skill.pin", definition=None):
+            from backend.services.skill_runtime import (
+                SkillDefinition, SkillParameter, SkillStep,
+                create_skill, add_skill_version, parse_definition, validate_definition
+            )
+            if definition is None:
+                definition = SkillDefinition(
+                    version="1.0.0",
+                    name="Pin Test Skill",
+                    steps=[SkillStep(step_id="s1", tool="system_battery", inputs={})],
+                )
+            skill = create_skill(db, skill_id=skill_id, name=definition.name, description=definition.description)
+            errors = validate_definition(definition, allowed_tool_names(exec_))
+            add_skill_version(db, skill, definition, errors)
+            db.commit()
+            return skill
+
+        _enabled_skill(db_session, executor, skill_id="skill.pin")
+
+        # Create a task
+        from backend.models.database import Task
+        task = Task(id="task-pin-verify", original_request="test pin", state="running", normalized_goal="test")
+        db_session.add(task)
+        db_session.commit()
+
+        # Mock runner
+        class MockRunner:
+            async def get_task(self, task_id):
+                return None
+            async def record_event(self, task_id, event_type, event_data):
+                pass
+
+        runner = MockRunner()
+
+        # Patch the module's sessionmaker to simulate read-back failure for pin verification
+        mock_session_instance = MagicMock()
+        mock_query = MagicMock()
+        mock_query.filter_by.return_value.first.return_value = None  # Verification fails - pin not found
+        mock_session_instance.query.return_value = mock_query
+        mock_session_instance.__enter__ = lambda self: mock_session_instance
+        mock_session_instance.__exit__ = lambda *args: None
+
+        mock_sessionmaker_class = MagicMock()
+        mock_sessionmaker_class.return_value = mock_session_instance
+
+        with patch('backend.services.skill_runtime.sessionmaker', mock_sessionmaker_class):
+            # Execute skill - should fail verification and return error
+            outcome = await execute_skill(
+                db=db_session,
+                runner=runner,
+                task_id="task-pin-verify",
+                skill_id="skill.pin",
+                inputs={},
+                tool_executor=executor,
+            )
+
+            # Fix behavior: returns SkillRunOutcome(success=False, error="Failed to pin skill version")
+            # Pre-fix behavior: would commit pin without verification (or raise on commit failure)
+            assert not outcome.success
+            assert "Failed to pin skill version" in (outcome.error or ""), f"Expected pin verification error, got: {outcome.error}"
+

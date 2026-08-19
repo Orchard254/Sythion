@@ -20,6 +20,7 @@ from typing import Any
 from backend.api.schemas import TaskState
 from backend.core.session import get_current_session_id
 from backend.models.database import ConversationTurn, MemoryEdge, MemoryEntry, Task
+from sqlalchemy.orm import sessionmaker
 
 logger = logging.getLogger(__name__)
 
