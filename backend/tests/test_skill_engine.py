@@ -95,6 +95,12 @@ class FakeReadTool:
             model_summary=f"read {input_data.path}",
         )
 
+    def set_cancelled_check(self, check):
+        pass
+
+    def clear_cancelled_check(self):
+        pass
+
 
 class FakeMutatingTool:
     name = "file_write"
@@ -112,6 +118,12 @@ class FakeMutatingTool:
 
     async def execute(self, input_data):
         return ToolOutput(success=True, data={})
+
+    def set_cancelled_check(self, check):
+        pass
+
+    def clear_cancelled_check(self):
+        pass
 
 
 @pytest.fixture
@@ -166,7 +178,8 @@ def _completed_trace_task(db, task_id, tool_name="file_read", params=None, succe
         event_data=json.dumps({
             "tool_name": tool_name,
             "success": success,
-            "output": params or {"path": "C:\\x", "limit": 100},
+            "params": params if params is not None else {"path": "C:\\x", "limit": 100},
+            "output": {"content": "ok"},
             "model_summary": "ok",
         }),
         sequence_num=1,
@@ -174,6 +187,7 @@ def _completed_trace_task(db, task_id, tool_name="file_read", params=None, succe
     db.add(event)
     db.commit()
     return task
+
 
 
 class TestValidation:
@@ -614,3 +628,185 @@ class TestSummaries:
     def test_definition_round_trip(self):
         d = make_definition()
         assert parse_definition(skill_engine.definition_to_json(d)) == d
+
+
+class TestProposalSchemaValidation:
+    """Regression tests verifying proposal generation strictly separates input schemas from output fields."""
+
+    @pytest.fixture
+    def full_executor(self):
+        from backend.tools.executor import ToolExecutor
+        from backend.tools.registry import register_all_tools
+
+        ex = ToolExecutor()
+        register_all_tools(ex)
+        return ex
+
+    def test_proposal_no_input_tool_system_battery(self, db_session, full_executor):
+        """A tool with no inputs (like system_battery) produces empty step inputs even if trace had output fields."""
+        def _battery_task(task_id, percent):
+            task = Task(id=task_id, original_request="check battery", state="completed", version=1)
+            db_session.add(task)
+            event = TaskEvent(
+                task_id=task_id,
+                event_type="tool.executed",
+                event_data=json.dumps({
+                    "tool_name": "system_battery",
+                    "success": True,
+                    "params": {
+                        "available": True,
+                        "percent": percent,
+                        "plugged_in": True,
+                        "time_left": 3600,
+                    },
+                    "output": {
+                        "available": True,
+                        "percent": percent,
+                        "plugged_in": True,
+                        "time_left": 3600,
+                    },
+                }),
+                sequence_num=1,
+            )
+            db_session.add(event)
+            db_session.commit()
+
+        _battery_task("tb-1", 95)
+        _battery_task("tb-2", 90)
+
+        proposal = maybe_generate_proposal(db_session, "tb-1", full_executor)
+        assert proposal is not None
+        definition = parse_definition(proposal.definition)
+        assert len(definition.steps) == 1
+        assert definition.steps[0].tool == "system_battery"
+        assert definition.steps[0].inputs == {}
+        assert definition.parameters == []
+
+        errors = validate_definition(definition, allowed_tool_names(full_executor))
+        assert errors == []
+        assert json.loads(proposal.validation_errors) == []
+
+    def test_proposal_required_input_tool_file_read(self, db_session, full_executor):
+        """A tool with required inputs filters out extraneous output fields and abstracts varied inputs."""
+        def _read_task(task_id, path):
+            task = Task(id=task_id, original_request="read file", state="completed", version=1)
+            db_session.add(task)
+            event = TaskEvent(
+                task_id=task_id,
+                event_type="tool.executed",
+                event_data=json.dumps({
+                    "tool_name": "file_read",
+                    "success": True,
+                    "params": {
+                        "path": path,
+                        "max_bytes": 1000,
+                        "content": "hello file",
+                        "bytes_read": 10,
+                    },
+                    "output": {
+                        "content": "hello file",
+                        "bytes_read": 10,
+                    },
+                }),
+                sequence_num=1,
+            )
+            db_session.add(event)
+            db_session.commit()
+
+        _read_task("tr-1", "C:\\data\\file1.txt")
+        _read_task("tr-2", "C:\\data\\file2.txt")
+
+        proposal = maybe_generate_proposal(db_session, "tr-1", full_executor)
+        assert proposal is not None
+        definition = parse_definition(proposal.definition)
+        assert len(definition.steps) == 1
+        assert definition.steps[0].tool == "file_read"
+        assert "path" in definition.steps[0].inputs
+        assert definition.steps[0].inputs["max_bytes"] == 1000
+        # Output fields content and bytes_read were filtered out
+        assert "content" not in definition.steps[0].inputs
+        assert "bytes_read" not in definition.steps[0].inputs
+
+        errors = validate_definition(definition, allowed_tool_names(full_executor))
+        assert errors == []
+        assert json.loads(proposal.validation_errors) == []
+
+    def test_proposal_multi_step_trace(self, db_session, full_executor):
+        """Multi-step traces combine no-input and input tools cleanly and validate."""
+        def _multi_task(task_id, filename):
+            task = Task(id=task_id, original_request="battery to file", state="completed", version=1)
+            db_session.add(task)
+            event1 = TaskEvent(
+                task_id=task_id,
+                event_type="tool.executed",
+                event_data=json.dumps({
+                    "tool_name": "system_battery",
+                    "success": True,
+                    "params": {"available": True, "percent": 90},
+                    "output": {"available": True, "percent": 90},
+                }),
+                sequence_num=1,
+            )
+            event2 = TaskEvent(
+                task_id=task_id,
+                event_type="tool.executed",
+                event_data=json.dumps({
+                    "tool_name": "file_read",
+                    "success": True,
+                    "params": {"path": f"C:\\logs\\{filename}"},
+                    "output": {"content": "ok"},
+                }),
+                sequence_num=2,
+            )
+            db_session.add(event1)
+            db_session.add(event2)
+            db_session.commit()
+
+        _multi_task("tm-1", "battery_log.txt")
+        _multi_task("tm-2", "battery_log.txt")
+
+        proposal = maybe_generate_proposal(db_session, "tm-1", full_executor)
+        assert proposal is not None
+        definition = parse_definition(proposal.definition)
+        assert len(definition.steps) == 2
+        assert definition.steps[0].tool == "system_battery"
+        assert definition.steps[0].inputs == {}
+        assert definition.steps[1].tool == "file_read"
+        assert definition.steps[1].inputs == {"path": "C:\\logs\\battery_log.txt"}
+
+        errors = validate_definition(definition, allowed_tool_names(full_executor))
+        assert errors == []
+        assert json.loads(proposal.validation_errors) == []
+
+    def test_auto_enable_succeeds_for_no_input_tool(self, db_session, full_executor, monkeypatch):
+        """Auto-enable promotes a valid no-input proposal once threshold is reached without re-validation failure."""
+        from backend.core.config import settings
+        monkeypatch.setattr(settings, "skill_auto_enable_threshold", 2)
+
+        def _battery_task(task_id):
+            task = Task(id=task_id, original_request="check battery", state="completed", version=1)
+            db_session.add(task)
+            event = TaskEvent(
+                task_id=task_id,
+                event_type="tool.executed",
+                event_data=json.dumps({
+                    "tool_name": "system_battery",
+                    "success": True,
+                    "params": {"available": True, "percent": 100},
+                    "output": {"available": True, "percent": 100},
+                }),
+                sequence_num=1,
+            )
+            db_session.add(event)
+            db_session.commit()
+
+        _battery_task("tae-1")
+        _battery_task("tae-2")
+
+        proposal = maybe_generate_proposal(db_session, "tae-1", full_executor)
+        assert proposal is not None
+        assert proposal.status == "enabled"
+        assert json.loads(proposal.validation_errors) == []
+        enabled = get_enabled_skill_version(db_session, str(proposal.id))
+        assert enabled is not None
+

@@ -109,7 +109,7 @@ async def test_previous_task_context_scales_web_summary_for_continuation(memory_
         task_id="prev_web",
         event_type="tool.executed",
         event_data=json.dumps({
-            "tool_name": "web_search",
+            "tool_name": "file_read",
             "model_summary": long_summary,
             "success": True,
         }),
@@ -121,7 +121,7 @@ async def test_previous_task_context_scales_web_summary_for_continuation(memory_
     ctx = engine._previous_task_context(task_id="current_web", request="continue")
     # The continuation slice scales the web cap down (~0.73 of the main cap),
     # so a chunk well past the old 160-char continuation limit survives.
-    assert "web_search" in ctx
+    assert "file_read" in ctx
     assert long_summary[:300] in ctx
     assert long_summary[160:500] in ctx
 
@@ -165,6 +165,17 @@ async def test_previous_task_context_ignores_non_continuation(memory_db_setup):
 
 
 @pytest.mark.asyncio
+async def test_previous_task_context_does_not_treat_greeting_as_continuation(memory_db_setup):
+    session, db_mgr = memory_db_setup
+    session.add(Task(id="prev_greet", original_request="organize my downloads folder", state=TaskState.FAILED.value))
+    session.commit()
+
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    ctx = engine._previous_task_context(task_id="current_greet", request="hey")
+    assert ctx == ""
+
+
+@pytest.mark.asyncio
 async def test_previous_task_context_excludes_current_task(memory_db_setup):
     session, db_mgr = memory_db_setup
     session.add(Task(id="only_task", original_request="organize my downloads folder", state=TaskState.FAILED.value))
@@ -195,7 +206,7 @@ async def test_previous_task_context_seeds_refinement_phrases(memory_db_setup):
     session.add(TaskEvent(
         task_id="prev_tuko",
         event_type="tool.executed",
-        event_data=json.dumps({"tool_name": "web_search", "model_summary": "Tuko Kenya latest news", "success": True}),
+        event_data=json.dumps({"tool_name": "file_read", "model_summary": "Tuko Kenya latest news", "success": True}),
         sequence_num=1,
     ))
     session.commit()
@@ -335,3 +346,96 @@ async def test_memory_context_log_trim_keeps_most_recent(memory_db_setup):
         # (task-5..task-504) survive, oldest of the survivors first.
         assert rows[0].task_id == "task-5"
         assert rows[-1].task_id == "task-504"
+
+
+@pytest.mark.asyncio
+async def test_conversation_turn_preserves_long_list_options(memory_db_setup):
+    """Assistant turn summaries retain long numbered lists up to 2000 chars."""
+    session, db_mgr = memory_db_setup
+    sess_id = reset_session_id()
+
+    long_list_result = (
+        "Here are 4 realistic options for remote work in Kenya:\n"
+        "1. Micro-tasking & Data Labeling: Remotasks, Appen (fastest payout for beginners).\n"
+        "2. Freelancing: Upwork, Fiverr for writing, graphics, and tech skills.\n"
+        "3. Digital Services: Managing social media for local Kenyan businesses.\n"
+        "4. Academic/Writing Services: Content writing and academic editing."
+    )
+
+    task = Task(
+        id="task_kenya_options",
+        original_request="since im based in kenya what can i do, because im seeing most of this are for people who are abroad",
+        state=TaskState.COMPLETED.value,
+        final_result=long_list_result,
+    )
+    session.add(task)
+    session.commit()
+
+    loop = TaskExecutionLoop(db_session=session, task_runner=None, tool_executor=None)
+    await loop._save_conversation_turn("task_kenya_options", task)
+
+    turn_asst = (
+        session.query(ConversationTurn)
+        .filter_by(session_id=sess_id, role="assistant")
+        .first()
+    )
+    assert "1. Micro-tasking & Data Labeling" in turn_asst.summary
+    assert "2. Freelancing" in turn_asst.summary
+    assert "3. Digital Services" in turn_asst.summary
+    assert "4. Academic/Writing Services" in turn_asst.summary
+
+
+@pytest.mark.asyncio
+async def test_conversation_guidance_adapter_turn_ordering(memory_db_setup):
+    """Same-millisecond conversation turns always display User prompt before Synth response."""
+    from backend.services.conversation_guidance_adapter import ConversationGuidanceAdapter
+    from backend.services.post_task_intelligence import save_conversation_turn
+
+    session, db_mgr = memory_db_setup
+    sess_id = reset_session_id()
+
+    task1 = Task(
+        id="task_turn_order_1",
+        original_request="5mbs into mb",
+        state=TaskState.COMPLETED.value,
+        final_result="5 Mbps is 0.625 MB/s",
+    )
+    session.add(task1)
+    session.commit()
+
+    await save_conversation_turn(session, "task_turn_order_1", task1)
+
+    adapter = ConversationGuidanceAdapter(session, lambda: sess_id)
+    blocks = adapter.build_blocks(original_request="or kb", has_previous_context=False)
+
+    recent = blocks.recent_conversation
+    assert recent != ""
+    lines = recent.split("\n")
+    # Verify header
+    assert lines[0] == "RECENT CONVERSATION (this session):"
+    # Verify User is before Synth
+    user_idx = next(i for i, l in enumerate(lines) if l.startswith("- User:"))
+    synth_idx = next(i for i, l in enumerate(lines) if l.startswith("- Synth:"))
+    assert user_idx < synth_idx, f"Expected User turn before Synth turn, got:\n{recent}"
+
+
+def test_extract_topics_preserves_allowed_short_units():
+    """_extract_topics preserves allowed 2-letter technical units and acronyms while filtering random short tokens."""
+    from backend.services.conversation_state import _extract_topics
+
+    # Units and acronyms preserved
+    assert "mb" in _extract_topics("5mbs into mb")
+    assert "kb" in _extract_topics("or kb")
+    assert "gb" in _extract_topics("convert 10gb to mb")
+    assert "os" in _extract_topics("check the os version")
+    assert "ip" in _extract_topics("what is my ip")
+    assert "ui" in _extract_topics("update the ui layout")
+    assert "ai" in _extract_topics("learn about ai")
+
+    # Stop words and non-allowed 2-letter words filtered
+    assert _extract_topics("or") == []
+    assert _extract_topics("in") == []
+    assert _extract_topics("to") == []
+    assert _extract_topics("at") == []
+
+

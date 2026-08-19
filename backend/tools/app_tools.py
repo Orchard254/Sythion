@@ -6,21 +6,34 @@ v1 targets Windows only. App discovery reads the registered-uninstall registry
 hives, and launch resolves strictly against those registered identities -- the
 model can never supply an executable path or command-line arguments.
 """
-import subprocess
-import os
-import re
 import asyncio
+import logging
+import os
 import platform
-from typing import Dict, Any, List, Optional
+import re
+import subprocess
+from typing import Any, Dict, Generic, List, Optional, TypeVar
 
-from tools.executor import BaseTool
-from api.schemas import (
-    ToolOutput,
-    AppListInput,
-    AppLaunchInput,
-    AppFocusInput,
-    AppCloseInput,
-)
+logger = logging.getLogger(__name__)
+
+try:
+    from backend.tools.executor import BaseTool, handle_tool_errors
+    from backend.api.schemas import (
+        ToolOutput,
+        AppListInput,
+        AppLaunchInput,
+        AppFocusInput,
+        AppCloseInput,
+    )
+except ImportError:
+    from tools.executor import BaseTool, handle_tool_errors
+    from api.schemas import (
+        ToolOutput,
+        AppListInput,
+        AppLaunchInput,
+        AppFocusInput,
+        AppCloseInput,
+    )
 
 
 # App identifiers are used as argument-list entries (never through a shell).
@@ -365,49 +378,43 @@ def _display_name_for_identifier(app_id: str) -> str:
     return app_id
 
 
-class AppListTool(BaseTool):
+class AppListTool(BaseTool[AppListInput]):
     """List installed applications."""
 
     name = "app_list"
     description = "List installed applications on the system"
     input_schema = AppListInput
 
+    @handle_tool_errors("APP_LIST_ERROR")
     async def execute(self, input_data: AppListInput) -> ToolOutput:
         """Execute the app list tool."""
-        try:
-            if platform.system() != "Windows":
-                return ToolOutput(
-                    success=False,
-                    error={"code": "NON_WINDOWS_UNSUPPORTED", "message": "app tools are Windows-only in v1"},
-                    duration_ms=0
-                )
-
-            apps = _windows_registered_apps()
-            if input_data.search_term:
-                needle = input_data.search_term.lower()
-                apps = [a for a in apps if needle in (a["name"] or "").lower()]
-
-            apps.sort(key=lambda x: (x["name"] or "").lower())
-            names = [a["name"] for a in apps[:30] if a.get("name")]
-            model_summary = f"Found {len(apps)} installed applications: {', '.join(names)}"
-
-            return ToolOutput(
-                success=True,
-                data={
-                    "count": len(apps),
-                    "search_term": input_data.search_term,
-                    "platform": "windows",
-                    "applications": apps[:100],
-                },
-                model_summary=model_summary,
-                evidence={"source": "system_application_registry"}
-            )
-        except Exception as e:
+        if platform.system() != "Windows":
             return ToolOutput(
                 success=False,
-                error={"code": "APP_LIST_ERROR", "message": str(e)},
+                error={"code": "NON_WINDOWS_UNSUPPORTED", "message": "app tools are Windows-only in v1"},
                 duration_ms=0
             )
+
+        apps = _windows_registered_apps()
+        if input_data.search_term:
+            needle = input_data.search_term.lower()
+            apps = [a for a in apps if needle in (a["name"] or "").lower()]
+
+        apps.sort(key=lambda x: (x["name"] or "").lower())
+        names = [a["name"] for a in apps[:30] if a.get("name")]
+        model_summary = f"Found {len(apps)} installed applications: {', '.join(names)}"
+
+        return ToolOutput(
+            success=True,
+            data={
+                "count": len(apps),
+                "search_term": input_data.search_term,
+                "platform": "windows",
+                "applications": apps[:100],
+            },
+            model_summary=model_summary,
+            evidence={"source": "system_application_registry"}
+        )
 
     async def verify(self, input_data: AppListInput, output: ToolOutput) -> bool:
         """Verify the tool execution result."""
@@ -418,13 +425,14 @@ class AppListTool(BaseTool):
         return {"risk_level": "none", "requires_confirmation": False}
 
 
-class AppLaunchTool(BaseTool):
+class AppLaunchTool(BaseTool[AppLaunchInput]):
     """Launch a registered Windows application."""
 
     name = "app_launch"
     description = "Launch an application by its registered Windows display name (reuses an open window by default; new_instance=True opens a fresh window)"
     input_schema = AppLaunchInput
 
+    @handle_tool_errors("APP_LAUNCH_ERROR")
     async def execute(self, input_data: AppLaunchInput) -> ToolOutput:
         """Execute the app launch tool.
 
@@ -432,92 +440,85 @@ class AppLaunchTool(BaseTool):
         resolved executable path comes from the registry, never from the model,
         and is launched with no arguments and no shell.
         """
-        try:
-            if platform.system() != "Windows":
-                return ToolOutput(
-                    success=False,
-                    error={"code": "NON_WINDOWS_UNSUPPORTED", "message": "app tools are Windows-only in v1"},
-                    duration_ms=0
-                )
+        if platform.system() != "Windows":
+            return ToolOutput(
+                success=False,
+                error={"code": "NON_WINDOWS_UNSUPPORTED", "message": "app tools are Windows-only in v1"},
+                duration_ms=0
+            )
 
-            app_id = input_data.app_id
-            _validate_app_id(app_id)
+        app_id = input_data.app_id
+        _validate_app_id(app_id)
 
-            app = _resolve_registered_app(app_id)
-            if app is None:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "APP_NOT_REGISTERED",
-                           "message": f"No registered Windows application matches '{app_id}'"},
-                    duration_ms=0
-                )
+        app = _resolve_registered_app(app_id)
+        if app is None:
+            return ToolOutput(
+                success=False,
+                error={"code": "APP_NOT_REGISTERED",
+                       "message": f"No registered Windows application matches '{app_id}'"},
+                duration_ms=0
+            )
 
-            exe = app.get("exe")
-            if not exe or not os.path.isfile(exe):
-                return ToolOutput(
-                    success=False,
-                    error={"code": "APP_EXE_UNAVAILABLE",
-                           "message": f"Registered application '{app_id}' has no resolvable executable"},
-                    duration_ms=0
-                )
+        exe = app.get("exe")
+        if not exe or not os.path.isfile(exe):
+            return ToolOutput(
+                success=False,
+                error={"code": "APP_EXE_UNAVAILABLE",
+                       "message": f"Registered application '{app_id}' has no resolvable executable"},
+                duration_ms=0
+            )
 
-                        # Focus-First Check: by default (new_instance=False) an open window
-            # matching this application is brought to front instead of spawning
-            # a duplicate process. new_instance=True skips this entirely.
-            if not input_data.new_instance:
-                try:
-                    focus_tool = AppFocusTool()
-                    focus_res = await focus_tool.execute(AppFocusInput(app_id=app_id))
-                    if focus_res.success:
-                        return ToolOutput(
-                            success=True,
-                            data={
-                                "app_id": app_id,
-                                "platform": "windows",
-                                "method": "focused_existing",
-                                "exe": exe,
-                            },
-                            model_summary=f"Focused existing open window for '{app_id}'",
-                            evidence={"source": "windows_focus_existing"}
-                        )
-                except Exception:
-                    pass
+        # Focus-First Check: by default (new_instance=False) an open window
+        # matching this application is brought to front instead of spawning
+        # a duplicate process. new_instance=True skips this entirely.
+        if not input_data.new_instance:
+            try:
+                focus_tool = AppFocusTool()
+                focus_res = await focus_tool.execute(AppFocusInput(app_id=app_id))
+                if focus_res.success:
+                    return ToolOutput(
+                        success=True,
+                        data={
+                            "app_id": app_id,
+                            "platform": "windows",
+                            "method": "focused_existing",
+                            "exe": exe,
+                        },
+                        model_summary=f"Focused existing open window for '{app_id}'",
+                        evidence={"source": "windows_focus_existing"}
+                    )
+            except Exception:
+                pass
 
-            if input_data.new_instance:
-                # Genuinely separate window/instance: for single-process apps
-                # (Chrome, Edge) pass the new-window flag so Popen does not just
-                # attach to the running instance and reuse its window.
-                argv = [exe] + _new_window_argv(exe)
-                subprocess.Popen(argv, shell=False)
-                return ToolOutput(
-                    success=True,
-                    data={
-                        "app_id": app_id,
-                        "platform": "windows",
-                        "method": "new_instance",
-                        "exe": exe,
-                    },
-                    model_summary=f"Launched a new instance of '{app_id}'",
-                    evidence={"source": "windows_registered_launch"}
-                )
-
-            subprocess.Popen([exe], shell=False)
+        if input_data.new_instance:
+            # Genuinely separate window/instance: for single-process apps
+            # (Chrome, Edge) pass the new-window flag so Popen does not just
+            # attach to the running instance and reuse its window.
+            argv = [exe] + _new_window_argv(exe)
+            subprocess.Popen(argv, shell=False)
             return ToolOutput(
                 success=True,
                 data={
                     "app_id": app_id,
                     "platform": "windows",
-                    "method": "registered_launch",
+                    "method": "new_instance",
                     "exe": exe,
                 },
+                model_summary=f"Launched a new instance of '{app_id}'",
                 evidence={"source": "windows_registered_launch"}
             )
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "APP_LAUNCH_ERROR", "message": str(e)},
-                duration_ms=0
-            )
+
+        subprocess.Popen([exe], shell=False)
+        return ToolOutput(
+            success=True,
+            data={
+                "app_id": app_id,
+                "platform": "windows",
+                "method": "registered_launch",
+                "exe": exe,
+            },
+            evidence={"source": "windows_registered_launch"}
+        )
 
     async def verify(self, input_data: AppLaunchInput, output: ToolOutput) -> bool:
         """Verify the tool execution result."""
@@ -531,80 +532,75 @@ class AppLaunchTool(BaseTool):
         return _app_target_error(input_data.app_id)
 
 
-class AppFocusTool(BaseTool):
+class AppFocusTool(BaseTool[AppFocusInput]):
     """Focus/bring an application window to front."""
 
     name = "app_focus"
     description = "Bring an application window to the foreground"
     input_schema = AppFocusInput
 
+    @handle_tool_errors("APP_FOCUS_ERROR")
     async def execute(self, input_data: AppFocusInput) -> ToolOutput:
         """Execute the app focus tool."""
-        try:
-            if platform.system() != "Windows":
-                return ToolOutput(
-                    success=False,
-                    error={"code": "NON_WINDOWS_UNSUPPORTED", "message": "app tools are Windows-only in v1"},
-                    duration_ms=0
-                )
-
-            app_id = input_data.app_id
-            # app_list returns registry GUIDs as `id`; resolve to the display
-            # name so it can be validated and matched against window titles.
-            app_id = _display_name_for_identifier(app_id)
-            _validate_app_id(app_id)
-
-            # Raw win32gui.SetForegroundWindow fails under the Windows
-            # foreground-lock restriction, so focus goes through the same
-            # UI Automation mechanism gui_focus uses (which reliably brings
-            # the window forward), with the same desktop/safety gates.
-            from tools.gui_tools import (
-                _desktop_gate,
-                _run_on_worker,
-                _target_window_safety,
-                _uia_driver,
-            )
-            gate = _desktop_gate()
-            if gate:
-                return ToolOutput(success=False, error=gate, duration_ms=0)
-
-            try:
-                result = await _run_on_worker(lambda: _uia_driver.focus(app_id))
-            except Exception:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "UIA_UNAVAILABLE", "message": "UI Automation unavailable"},
-                    duration_ms=0
-                )
-            if not result.get("ok"):
-                return ToolOutput(
-                    success=False,
-                    error={"code": result.get("code", "FOCUS_ERROR"), "message": result.get("message", "")},
-                    duration_ms=0
-                )
-            window = result.get("window", {})
-            error = _target_window_safety(int(window.get("hwnd") or 0), window.get("title") or "")
-            if error:
-                return ToolOutput(success=False, error=error, duration_ms=0)
-
-            return ToolOutput(
-                success=True,
-                data={
-                    "app_id": app_id,
-                    "window_handle": window.get("hwnd"),
-                    "title": window.get("title"),
-                    "pid": window.get("pid"),
-                    "foreground": window.get("foreground"),
-                    "platform": "windows",
-                },
-                evidence={"source": "uia_mta_worker"}
-            )
-        except Exception as e:
+        if platform.system() != "Windows":
             return ToolOutput(
                 success=False,
-                error={"code": "APP_FOCUS_ERROR", "message": str(e)},
+                error={"code": "NON_WINDOWS_UNSUPPORTED", "message": "app tools are Windows-only in v1"},
                 duration_ms=0
             )
+
+        app_id = input_data.app_id
+        # app_list returns registry GUIDs as `id`; resolve to the display
+        # name so it can be validated and matched against window titles.
+        app_id = _display_name_for_identifier(app_id)
+        _validate_app_id(app_id)
+
+        # Raw win32gui.SetForegroundWindow fails under the Windows
+        # foreground-lock restriction, so focus goes through the same
+        # UI Automation mechanism gui_focus uses (which reliably brings
+        # the window forward), with the same desktop/safety gates.
+        from tools.gui_tools import (
+            _desktop_gate,
+            _run_on_worker,
+            _target_window_safety,
+            _uia_driver,
+        )
+        gate = _desktop_gate()
+        if gate:
+            return ToolOutput(success=False, error=gate, duration_ms=0)
+
+        try:
+            result = await _run_on_worker(lambda: _uia_driver.focus(app_id))
+        except Exception as exc:
+            logger.warning("AppFocusTool UIA focus call failed for '%s': %s: %s", app_id, type(exc).__name__, exc, exc_info=True)
+            return ToolOutput(
+                success=False,
+                error={"code": "UIA_UNAVAILABLE", "message": "UI Automation unavailable"},
+                duration_ms=0
+            )
+        if not result.get("ok"):
+            return ToolOutput(
+                success=False,
+                error={"code": result.get("code", "FOCUS_ERROR"), "message": result.get("message", "")},
+                duration_ms=0
+            )
+        window = result.get("window", {})
+        error = _target_window_safety(int(window.get("hwnd") or 0), window.get("title") or "")
+        if error:
+            return ToolOutput(success=False, error=error, duration_ms=0)
+
+        return ToolOutput(
+            success=True,
+            data={
+                "app_id": app_id,
+                "window_handle": window.get("hwnd"),
+                "title": window.get("title"),
+                "pid": window.get("pid"),
+                "foreground": window.get("foreground"),
+                "platform": "windows",
+            },
+            evidence={"source": "uia_mta_worker"}
+        )
 
     async def verify(self, input_data: AppFocusInput, output: ToolOutput) -> bool:
         """Verify the tool execution result."""
@@ -618,122 +614,116 @@ class AppFocusTool(BaseTool):
         return _app_target_error(input_data.app_id)
 
 
-class AppCloseTool(BaseTool):
+class AppCloseTool(BaseTool[AppCloseInput]):
     """Close an application."""
 
     name = "app_close"
     description = "Close an application window or process"
     input_schema = AppCloseInput
 
+    @handle_tool_errors("APP_CLOSE_ERROR")
     async def execute(self, input_data: AppCloseInput) -> ToolOutput:
         """Execute the app close tool."""
-        try:
-            if platform.system() != "Windows":
-                return ToolOutput(
-                    success=False,
-                    error={"code": "NON_WINDOWS_UNSUPPORTED", "message": "app tools are Windows-only in v1"},
-                    duration_ms=0
-                )
-
-            app_id = input_data.app_id
-            force = input_data.force
-            # app_list returns registry GUIDs as `id`; resolve to the display
-            # name so it can be validated and matched against window titles.
-            app_id = _display_name_for_identifier(app_id)
-            _validate_app_id(app_id)
-            if "*" in app_id:
-                raise ValueError("Wildcard app ids are not allowed")
-
-            if force:
-                result = subprocess.run(
-                    ["taskkill", "/IM", app_id, "/F"],
-                    capture_output=True,
-                    text=True
-                )
-                if result.returncode != 0:
-                    return ToolOutput(
-                        success=False,
-                        error={"code": "KILL_ERROR", "message": (result.stderr or result.stdout).strip()},
-                        duration_ms=0
-                    )
-                return ToolOutput(
-                    success=True,
-                    data={"app_id": app_id, "force": force, "platform": "windows", "method": "taskkill_force"},
-                    evidence={"source": "windows_process_management"}
-                )
-
-            # Graceful close via WM_CLOSE.
-            try:
-                import win32gui
-                import win32con
-            except ImportError:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "WINDOWS_API_ERROR", "message": "pywin32 not available"},
-                    duration_ms=0
-                )
-
-            title_needle = app_id.lower()
-
-            def enum_windows(hwnd, results):
-                if win32gui.IsWindowVisible(hwnd):
-                    title = win32gui.GetWindowText(hwnd)
-                    if title_needle in title.lower():
-                        _, pid = win32gui.GetWindowThreadProcessId(hwnd)
-                        results.append((hwnd, pid))
-                return True
-
-            windows = []
-            win32gui.EnumWindows(enum_windows, windows)
-
-            if not windows:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "WINDOW_NOT_FOUND", "message": f"No window found matching '{app_id}'"},
-                    duration_ms=0
-                )
-            for hwnd, _ in windows:
-                win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-
-            # Probe for an unsaved-work prompt. If the process is still present
-            # we do NOT force-close or answer Save/Discard: the user must decide.
-            # Process liveness is checked first because an unsaved-work prompt is
-            # a dialog whose caption may not contain the app name; the title
-            # re-probe below is a second line of defense for windowed apps that
-            # do not map to a process we captured.
-            await asyncio.sleep(_UNSAVED_WORK_PROBE_MS / 1000.0)
-
-            closed_pids = {pid for _, pid in windows if pid}
-            alive = [pid for pid in closed_pids if _process_alive(pid)]
-            if alive:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "UNSAVED_WORK_PROMPT",
-                           "message": f"'{app_id}' is still running (PID {alive}) and may be showing an unsaved-work prompt; ask the user how to proceed."},
-                    duration_ms=0
-                )
-
-            remaining = []
-            win32gui.EnumWindows(enum_windows, remaining)
-            if remaining:
-                return ToolOutput(
-                    success=False,
-                    error={"code": "UNSAVED_WORK_PROMPT",
-                           "message": f"'{app_id}' is still open and may be showing an unsaved-work prompt; ask the user how to proceed."},
-                    duration_ms=0
-                )
-
-            return ToolOutput(
-                success=True,
-                data={"app_id": app_id, "force": force, "platform": "windows", "method": "wm_close"},
-                evidence={"source": "windows_process_management"}
-            )
-        except Exception as e:
+        if platform.system() != "Windows":
             return ToolOutput(
                 success=False,
-                error={"code": "APP_CLOSE_ERROR", "message": str(e)},
+                error={"code": "NON_WINDOWS_UNSUPPORTED", "message": "app tools are Windows-only in v1"},
                 duration_ms=0
             )
+
+        app_id = input_data.app_id
+        force = input_data.force
+        # app_list returns registry GUIDs as `id`; resolve to the display
+        # name so it can be validated and matched against window titles.
+        app_id = _display_name_for_identifier(app_id)
+        _validate_app_id(app_id)
+        if "*" in app_id:
+            raise ValueError("Wildcard app ids are not allowed")
+
+        if force:
+            result = subprocess.run(
+                ["taskkill", "/IM", app_id, "/F"],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                return ToolOutput(
+                    success=False,
+                    error={"code": "KILL_ERROR", "message": (result.stderr or result.stdout).strip()},
+                    duration_ms=0
+                )
+            return ToolOutput(
+                success=True,
+                data={"app_id": app_id, "force": force, "platform": "windows", "method": "taskkill_force"},
+                evidence={"source": "windows_process_management"}
+            )
+
+        # Graceful close via WM_CLOSE.
+        try:
+            import win32gui
+            import win32con
+        except ImportError:
+            return ToolOutput(
+                success=False,
+                error={"code": "WINDOWS_API_ERROR", "message": "pywin32 not available"},
+                duration_ms=0
+            )
+
+        title_needle = app_id.lower()
+
+        def enum_windows(hwnd, results):
+            if win32gui.IsWindowVisible(hwnd):
+                title = win32gui.GetWindowText(hwnd)
+                if title_needle in title.lower():
+                    _, pid = win32gui.GetWindowThreadProcessId(hwnd)
+                    results.append((hwnd, pid))
+            return True
+
+        windows = []
+        win32gui.EnumWindows(enum_windows, windows)
+
+        if not windows:
+            return ToolOutput(
+                success=False,
+                error={"code": "WINDOW_NOT_FOUND", "message": f"No window found matching '{app_id}'"},
+                duration_ms=0
+            )
+        for hwnd, _ in windows:
+            win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+
+        # Probe for an unsaved-work prompt. If the process is still present
+        # we do NOT force-close or answer Save/Discard: the user must decide.
+        # Process liveness is checked first because an unsaved-work prompt is
+        # a dialog whose caption may not contain the app name; the title
+        # re-probe below is a second line of defense for windowed apps that
+        # do not map to a process we captured.
+        await asyncio.sleep(_UNSAVED_WORK_PROBE_MS / 1000.0)
+
+        closed_pids = {pid for _, pid in windows if pid}
+        alive = [pid for pid in closed_pids if _process_alive(pid)]
+        if alive:
+            return ToolOutput(
+                success=False,
+                error={"code": "UNSAVED_WORK_PROMPT",
+                       "message": f"'{app_id}' is still running (PID {alive}) and may be showing an unsaved-work prompt; ask the user how to proceed."},
+                duration_ms=0
+            )
+
+        remaining = []
+        win32gui.EnumWindows(enum_windows, remaining)
+        if remaining:
+            return ToolOutput(
+                success=False,
+                error={"code": "UNSAVED_WORK_PROMPT",
+                       "message": f"'{app_id}' is still open and may be showing an unsaved-work prompt; ask the user how to proceed."},
+                duration_ms=0
+            )
+
+        return ToolOutput(
+            success=True,
+            data={"app_id": app_id, "force": force, "platform": "windows", "method": "wm_close"},
+            evidence={"source": "windows_process_management"}
+        )
 
     async def verify(self, input_data: AppCloseInput, output: ToolOutput) -> bool:
         """Verify the tool execution result."""

@@ -167,13 +167,15 @@ def needs_approval(
     *,
     autonomy_level: str = "guarded",
     direct_user_instruction: bool = False,
+    approved_by_user: bool = False,
 ) -> bool:
     """Convenience predicate: should this action be staged for approval?
 
     Returns ``True`` when :func:`classify_action` returns
     :attr:`Importance.CONSEQUENTIAL` **and** we are not in autonomous
-    mode.  Returns ``False`` for both ROUTINE and FORBIDDEN (the caller
-    handles FORBIDDEN separately as a hard block).
+    mode **and** the user hasn't already approved the tool.  Returns
+    ``False`` for both ROUTINE and FORBIDDEN (the caller handles
+    FORBIDDEN separately as a hard block).
     """
     classification = classify_action(
         tool_name,
@@ -189,8 +191,9 @@ def needs_approval(
     if classification == Importance.ROUTINE:
         return False
 
-    # CONSEQUENTIAL — approval needed unless autonomous mode overrides.
-    if autonomy_level == "autonomous":
+    # CONSEQUENTIAL — approval needed unless autonomous mode overrides
+    # or the user has already explicitly approved this tool.
+    if approved_by_user or autonomy_level == "autonomous":
         return False
 
     return True

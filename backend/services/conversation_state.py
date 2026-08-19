@@ -1,8 +1,7 @@
 """
 Conversation state tracking for Sythion (Synth).
 
-Tracks active topic, previous topics, open threads, emotional context,
-and conversation stage across tasks within a session.
+Tracks active topic, previous topics, and open threads across tasks within a session.
 """
 
 import json
@@ -25,8 +24,6 @@ class ConversationStateData:
     active_topic: Optional[str]
     previous_topics: List[str]
     open_threads: List[str]
-    emotional_context: str
-    conversation_stage: str
 
 # --- Topic extraction -------------------------------------------------------
 
@@ -47,29 +44,27 @@ _STOP_WORDS = frozenset({
     "hi", "hey", "hello", "thanks", "thank", "please", "yes", "no",
 })
 
-# Emotional indicators
-_EMOTION_PATTERNS = {
-    "frustrated": r"\b(frustrat(ed|ing)?|annoyed|irritated|angry|mad|furious|pissed|ugh|hate)\b",
-    "excited": r"\b(excited|amazing|awesome|incredible|wow|great|fantastic|love it)\b",
-    "confused": r"\b(confused|confusing|puzzled|lost|don't understand|unclear|what)\b",
-    "positive": r"\b(happy|glad|good|nice|great|awesome|love|enjoy|fun|cool)\b",
-    "negative": r"\b(sad|bad|terrible|horrible|awful|sucks|hate|worst|annoying)\b",
-    "tired": r"\b(tired|exhausted|drained|worn out|sleepy|fatigued)\b",
-}
-
-# Speech act patterns
-_GREETING_PATTERN = r"^(hi|hey|hello|sup|yo|howdy|greetings|good\s+(morning|afternoon|evening))\b"
-_FAREWELL_PATTERN = r"\b(bye|goodbye|see ya|later|good night|take care|gotta go)\b"
-_STORY_PATTERN = r"\b(so|anyway|then|and then|you won't believe|guess what|listen to this)\b"
-_QUESTION_PATTERN = r"\?$"
-_CORRECTION_PATTERN = r"\b(no|actually|wait|that's not|i meant|correction|wrong|incorrect)\b"
+# Meaningful 2-letter technical units and acronyms allowed in topic extraction
+_ALLOWED_SHORT_TOPICS = frozenset({
+    "mb", "kb", "gb", "tb", "pb", "eb", "zb", "yb",
+    "db", "os", "ip", "ui", "ai", "id", "vm", "io",
+    "py", "js", "ts", "go", "sh", "c", "r",
+    "hr", "ms", "ns", "hz", "km", "cm", "mm", "kg", "lb", "oz", "ft", "in", "yd", "mi",
+})
 
 
 def _extract_topics(message: str) -> List[str]:
-    """Extract topic keywords from a user message."""
-    # Simple keyword extraction: remove stop words, take remaining content words
+    """Extract topic keywords from a user message.
+    
+    Simple literal keyword extraction: remove stop words, take remaining content words.
+    No sentiment, importance scoring, or categorization - just captures what words
+    appear in the message that aren't common function words.
+    """
     words = re.findall(r"[a-z]+", message.lower())
-    topics = [w for w in words if w not in _STOP_WORDS and len(w) > 2]
+    topics = [
+        w for w in words
+        if w not in _STOP_WORDS and (len(w) > 2 or w in _ALLOWED_SHORT_TOPICS)
+    ]
     # Deduplicate while preserving order
     seen = set()
     unique = []
@@ -78,47 +73,6 @@ def _extract_topics(message: str) -> List[str]:
             seen.add(t)
             unique.append(t)
     return unique[:3]  # Max 3 topics per message
-
-
-def _detect_emotion(message: str) -> str:
-    """Detect emotional tone from user message."""
-    message_lower = message.lower()
-    scores = {}
-    for emotion, pattern in _EMOTION_PATTERNS.items():
-        matches = re.findall(pattern, message_lower)
-        if matches:
-            scores[emotion] = len(matches)
-    if scores:
-        return max(scores, key=scores.get)
-    return "neutral"
-
-
-def _detect_speech_act(message: str) -> str:
-    """Detect the primary speech act of a user message."""
-    message_lower = message.lower().strip()
-    if re.match(_GREETING_PATTERN, message_lower):
-        return "greeting"
-    if re.search(_FAREWELL_PATTERN, message_lower):
-        return "farewell"
-    if re.search(_CORRECTION_PATTERN, message_lower):
-        return "correction"
-    if re.search(_STORY_PATTERN, message_lower):
-        return "story"
-    if re.search(_QUESTION_PATTERN, message_lower):
-        return "question"
-    return "statement"
-
-
-def _detect_conversation_stage(message: str, existing_topics: List[str]) -> str:
-    """Determine the conversation stage based on message and history."""
-    speech_act = _detect_speech_act(message)
-    if speech_act == "greeting" and not existing_topics:
-        return "opening"
-    if speech_act == "farewell":
-        return "closing"
-    if len(existing_topics) > 3:
-        return "deepening"
-    return "developing"
 
 
 # --- State management -------------------------------------------------------
@@ -134,8 +88,6 @@ def get_or_create_state(session_id: str) -> ConversationStateData:
                 active_topic=None,
                 previous_topics=[],
                 open_threads=[],
-                emotional_context="neutral",
-                conversation_stage="opening",
             )
             session.add(state)
             session.commit()
@@ -144,8 +96,6 @@ def get_or_create_state(session_id: str) -> ConversationStateData:
             active_topic=state.active_topic,
             previous_topics=list(state.previous_topics or []),
             open_threads=list(state.open_threads or []),
-            emotional_context=state.emotional_context,
-            conversation_stage=state.conversation_stage,
         )
 
 
@@ -163,8 +113,6 @@ def update_state(session_id: str, user_message: str, assistant_response: str) ->
                 active_topic=None,
                 previous_topics=[],
                 open_threads=[],
-                emotional_context="neutral",
-                conversation_stage="opening",
             )
             session.add(state)
 
@@ -181,14 +129,6 @@ def update_state(session_id: str, user_message: str, assistant_response: str) ->
 
             state.active_topic = new_topics[0]
 
-        # Update emotional context
-        state.emotional_context = _detect_emotion(user_message)
-
-        # Update conversation stage
-        state.conversation_stage = _detect_conversation_stage(
-            user_message, state.previous_topics or []
-        )
-
         state.last_updated = datetime.utcnow()
         session.commit()
         return ConversationStateData(
@@ -196,8 +136,6 @@ def update_state(session_id: str, user_message: str, assistant_response: str) ->
             active_topic=state.active_topic,
             previous_topics=list(state.previous_topics or []),
             open_threads=list(state.open_threads or []),
-            emotional_context=state.emotional_context,
-            conversation_stage=state.conversation_stage,
         )
 
 
@@ -216,11 +154,5 @@ def format_state_for_context(state: ConversationStateData) -> str:
 
     if state.open_threads:
         lines.append(f"Open threads: {', '.join(state.open_threads)}")
-
-    if state.emotional_context and state.emotional_context != "neutral":
-        lines.append(f"User's emotional state: {state.emotional_context}")
-
-    if state.conversation_stage:
-        lines.append(f"Conversation stage: {state.conversation_stage}")
 
     return "\n".join(lines)

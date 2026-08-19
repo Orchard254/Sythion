@@ -2,12 +2,19 @@
 
 ## Executive Summary
 
-> **Historical record only:** This status report predates the safety audit and
-> must not be used to claim Phase 3 or release readiness. The authoritative
-> baseline is [`docs/architecture.md`](docs/architecture.md), with required
-> gates in [`docs/acceptance-test-map.md`](docs/acceptance-test-map.md).
+> **Historical archive only:** This file preserves an older milestone snapshot
+> from before the current architecture re-baseline. Do **not** use it to infer
+> present-day status, release readiness, runtime boundaries, or current test
+> counts.
+>
+> Current authority now lives in:
+> - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+> - [`docs/INTELLIGENCE_ARCHITECTURE.md`](docs/INTELLIGENCE_ARCHITECTURE.md)
+> - [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md)
+> - [`docs/acceptance-test-map.md`](docs/acceptance-test-map.md)
 
-**Sythion (Synth)** is a Windows 10/11 desktop assistant with LLM-powered task execution, tool use, GUI automation, and a voice pipeline abstraction. The project has achieved **Phase 3 Complete** status with a working backend, browser dashboard, and 74 passing tests. Note: voice STT/TTS run in stub mode unless the optional Whisper/SAPI5 components are installed, and a Tauri desktop shell is planned but not yet built.
+This document is intentionally retained as a historical artifact rather than a
+current status report.
 
 ---
 

@@ -3,6 +3,7 @@ Ollama Cloud adapter for Sythion (Synth).
 Handles authentication, model selection, and tool calls.
 """
 
+import logging
 import time
 import httpx
 from dataclasses import dataclass
@@ -10,12 +11,15 @@ from typing import List, Dict, Any, Optional
 from ..core.config import settings, resolve_selected_model
 from ..core.secrets import resolve_ollama_api_key
 
+logger = logging.getLogger(__name__)
 
-# Explicit context window sent on every Ollama Cloud request. The selected
-# model (gemma4:31b) supports 262144 tokens; Sythion's own max_input_tokens
-# cap is 50000, so 64K gives headroom above the input cap without requesting
-# the full 256K (which may cost more / run slower on Ollama Cloud).
-NUM_CTX = 65536
+
+# Explicit context window sent on every Ollama Cloud request. gemma4:31b
+# supports 262144 tokens (256K). We use 131072 (128K) as a practical default —
+# well above any realistic task context, while leaving headroom for KV-cache
+# overhead on Ollama Cloud infrastructure.
+NUM_CTX = 131072
+
 
 
 class ProviderCapabilityError(RuntimeError):
@@ -188,41 +192,63 @@ class OllamaCloudAdapter:
         Raises:
             RuntimeError: If the request fails
         """
-        try:
-            await self.ensure_capabilities()
-            client = await self._get_client()
-            
-            payload = {
-                "model": self.selected_model,
-                "messages": messages,
-                "tools": tools,
-                "max_tokens": max_tokens,
-                "tool_choice": "auto",
-                "num_ctx": NUM_CTX,
-                "stream": False,
-            }
+        max_network_retries = 2
+        for attempt in range(max_network_retries):
+            try:
+                await self.ensure_capabilities()
+                client = await self._get_client()
+                
+                payload = {
+                    "model": self.selected_model,
+                    "messages": messages,
+                    "tools": tools,
+                    "max_tokens": max_tokens,
+                    "tool_choice": "auto",
+                    "num_ctx": NUM_CTX,
+                    "stream": False,
+                }
 
-            response = await client.post("/api/chat", json=payload)
-            response.raise_for_status()
-            return response.json()
+                response = await client.post("/api/chat", json=payload)
+                response.raise_for_status()
+                return response.json()
 
-        except ProviderCapabilityError:
-            raise
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429:
-                raise RuntimeError("Rate limit exceeded")
-            elif e.response.status_code == 401:
-                raise RuntimeError("Invalid API key")
-            else:
-                raise RuntimeError(f"HTTP error: {e.response.status_code}")
-        except httpx.ReadTimeout:
-            raise RuntimeError(
-                "Request timed out after 300s - the model is taking too long to respond"
-            )
-        except httpx.ConnectError as e:
-            raise RuntimeError(f"Connection error: {e}")
-        except Exception as e:
-            raise RuntimeError(f"Request failed: {type(e).__name__}: {str(e)}")
+            except ProviderCapabilityError:
+                raise
+            except httpx.HTTPStatusError as e:
+                # Capture response body for debugging - Ollama Cloud may return detailed error info
+                error_body = ""
+                try:
+                    error_body = e.response.text
+                except Exception:
+                    pass
+                
+                msg = f"HTTP error {e.response.status_code}"
+                if error_body:
+                    msg += f": {error_body}"
+                
+                if e.response.status_code == 429:
+                    raise RuntimeError(msg) from e
+                elif e.response.status_code == 401:
+                    raise RuntimeError(msg) from e
+                else:
+                    raise RuntimeError(msg) from e
+            except httpx.ReadTimeout:
+                raise RuntimeError(
+                    "Request timed out after 300s - the model is taking too long to respond"
+                )
+            except (httpx.ReadError, httpx.RemoteProtocolError, httpx.ConnectError, httpx.ConnectTimeout) as e:
+                if attempt < max_network_retries - 1:
+                    logger.warning("Transient network error (%s: %s) on Cloud LLM call; retrying in 1.5s with fresh client...", type(e).__name__, e)
+                    if self._client and not self._client.is_closed:
+                        await self._client.aclose()
+                    self._client = None
+                    import asyncio
+                    await asyncio.sleep(1.5)
+                    continue
+                raise RuntimeError(f"Connection error after retry: {type(e).__name__}: {e}") from e
+            except Exception as e:
+                raise RuntimeError(f"Request failed: {type(e).__name__}: {str(e)}") from e
+
 
     async def chat(
         self,
@@ -252,20 +278,31 @@ class OllamaCloudAdapter:
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as e:
+            # Capture response body for debugging
+            error_body = ""
+            try:
+                error_body = e.response.text
+            except Exception:
+                pass
+            
+            msg = f"HTTP error {e.response.status_code}"
+            if error_body:
+                msg += f": {error_body}"
+            
             if e.response.status_code == 429:
-                raise RuntimeError("Rate limit exceeded")
+                raise RuntimeError(msg) from e
             elif e.response.status_code == 401:
-                raise RuntimeError("Invalid API key")
+                raise RuntimeError(msg) from e
             else:
-                raise RuntimeError(f"HTTP error: {e.response.status_code}")
+                raise RuntimeError(msg) from e
         except httpx.ReadTimeout:
             raise RuntimeError(
                 f"Request timed out after {timeout}s - the model is taking too long to respond"
             )
         except httpx.ConnectError as e:
-            raise RuntimeError(f"Connection error: {e}")
+            raise RuntimeError(f"Connection error: {e}") from e
         except Exception as e:
-            raise RuntimeError(f"Request failed: {type(e).__name__}: {str(e)}")
+            raise RuntimeError(f"Request failed: {type(e).__name__}: {str(e)}") from e
 
     async def close(self):
         """Close the HTTP client."""
@@ -296,12 +333,17 @@ def format_tools_for_ollama(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     """
     formatted = []
     for tool in tools:
-        # Convert Pydantic schema to JSON Schema
+        # Convert Pydantic schema to JSON Schema, or use raw dict schema directly
         properties = {}
         required = []
         
-        if hasattr(tool.get('input_schema'), 'model_fields'):
-            for field_name, field_info in tool['input_schema'].model_fields.items():
+        schema = tool.get('input_schema')
+        if isinstance(schema, dict) and 'properties' in schema:
+            # Raw JSON Schema dict (from DB-loaded tools)
+            properties = schema.get('properties', {})
+            required = schema.get('required', [])
+        elif hasattr(schema, 'model_fields'):
+            for field_name, field_info in schema.model_fields.items():
                 prop = {
                     "type": "string",  # Default type
                     "description": field_info.description or "",

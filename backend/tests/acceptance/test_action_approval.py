@@ -161,7 +161,7 @@ async def test_approved_action_executes_despite_model_flapping(db_session, task_
     mind on resume and proposes something else first.
 
     Regression for a live failure: after the user approved `app_launch`, the
-    model re-decided (web_search / a different app id) and the approved action
+    model re-decided (another read-only tool / a different app id) and the approved action
     never executed.
     """
     monkeypatch.setattr("backend.tools.file_tools._approved_roots", lambda: [tmp_path])

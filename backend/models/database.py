@@ -2,8 +2,8 @@
 Database models and schema definitions for Sythion (Synth).
 """
 
-from sqlalchemy import Column, String, Integer, Float, Text, DateTime, ForeignKey, CheckConstraint, JSON
-from sqlalchemy.orm import relationship, declarative_base, Session
+from sqlalchemy import Column, String, Integer, Float, Text, DateTime, ForeignKey, CheckConstraint, JSON, Boolean
+from sqlalchemy.orm import relationship, declarative_base, Session, backref
 from datetime import datetime
 import os
 
@@ -50,7 +50,7 @@ class Task(Base):
     idempotency_key = Column(String, unique=True, nullable=True)
     normalized_goal = Column(Text)
     state = Column(String, nullable=False)
-    version = Column(Integer, default=1)
+    version = Column(Integer, default=1, doc="Audit counter: incremented on every state change. Not used for optimistic concurrency control — the runner lease provides that guarantee.")
     active_action_id = Column(String)
     selected_skill_version = Column(String)
     objective_id = Column(String, ForeignKey("objectives.id"), index=True, nullable=True)
@@ -118,6 +118,12 @@ class Objective(Base):
     priority = Column(Integer, default=3, nullable=False)
     current_summary = Column(Text)
     last_task_id = Column(String)
+    # Explicit completion criteria (verifiable conditions)
+    completion_criteria = Column(Text)
+    # Whether explicit completion_criteria has been verified
+    criteria_verified = Column(Boolean, default=False, nullable=False)
+    # Hierarchical objectives: parent objective for sub-work
+    parent_objective_id = Column(String, ForeignKey("objectives.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -127,6 +133,11 @@ class Objective(Base):
         back_populates="objective",
         cascade="all, delete-orphan",
         order_by="PlanStep.step_order",
+    )
+    sub_objectives = relationship(
+        "Objective",
+        backref=backref("parent_objective", remote_side=[id]),
+        cascade="all, delete-orphan",
     )
 
     __table_args__ = (
@@ -362,8 +373,8 @@ class ConversationTurn(Base):
 class ConversationState(Base):
     """Tracks conversational context for a session.
 
-    Stores the current topic, recent topics, open threads, emotional context,
-    and conversation stage. Updated after each task completion.
+    Stores the current topic, recent topics, and open threads.
+    Updated after each task completion.
     """
 
     __tablename__ = "conversation_state"
@@ -373,6 +384,4 @@ class ConversationState(Base):
     active_topic = Column(String, nullable=True)
     previous_topics = Column(JSON, default=list)  # ["topic1", "topic2", ...]
     open_threads = Column(JSON, default=list)  # ["unresolved topic1", ...]
-    emotional_context = Column(String, default="neutral")  # neutral|positive|negative|frustrated|excited|confused
-    conversation_stage = Column(String, default="opening")  # opening|developing|deepening|closing
     last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

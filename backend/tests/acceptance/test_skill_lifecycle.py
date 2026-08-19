@@ -28,6 +28,7 @@ from backend.services.skill_engine import (
 )
 from backend.services.task_runner import TaskRunner
 from backend.tools.executor import ToolExecutor, ToolOutput
+from backend.tests.test_skill_engine import FakeReadTool
 from pydantic import BaseModel as PBaseModel
 
 from .conftest import ACCEPTANCE_CONTROL_TOKEN
@@ -60,6 +61,12 @@ class FakeReadTool:
             data={"content": f"contents of {input_data.path}"},
             model_summary=f"read {input_data.path}",
         )
+
+    def set_cancelled_check(self, check):
+        pass
+
+    def clear_cancelled_check(self):
+        pass
 
 
 def _definition(**overrides):

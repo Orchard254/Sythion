@@ -28,6 +28,10 @@ FAIL = 1
 
 
 def load_control_token():
+    token = os.environ.get("SYTHION_CONTROL_TOKEN", "")
+    if token:
+        return token
+    # Legacy env var fallback for older local workflows.
     token = os.environ.get("Sythion (Synth)_CONTROL_TOKEN", "")
     if token:
         return token

@@ -72,7 +72,7 @@ def test_context_truncates_event_output_and_history(db_session, full_tool_execut
     # truncate to a bounded recent window.
     huge_output = "x" * 100000
     history = []
-    for i in range(30):
+    for i in range(60):
         history.append({
             "event_type": "tool.executed",
             "event_data": {"tool_name": f"tool_{i}", "success": True, "output": huge_output},
@@ -88,11 +88,13 @@ def test_context_truncates_event_output_and_history(db_session, full_tool_execut
     )
 
     user_content = messages[1]["content"]
-    # Only the last 10 events are included (bounded window).
-    assert "tool_29" in user_content
+    # Only bounded recent events are included
+    assert "tool_59" in user_content
     assert "tool_0" not in user_content
-    # Outputs are truncated to ~200 chars each, not the full 100k.
-    assert ("x" * 300) not in user_content
+    # Outputs are bounded to ~1500 chars each, not the full 100k.
+    assert ("x" * 2000) not in user_content
+
+
 
 
 def test_policy_context_blocks_mutating_tools_without_direct_instruction(db_session, full_tool_executor):

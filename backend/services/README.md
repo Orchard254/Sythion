@@ -1,170 +1,79 @@
-# Sythion (Synth) Backend Services
+# Backend Services Overview
 
-This directory contains the core backend services for the Sythion (Synth) AI assistant.
+## Purpose
 
-## Services Implemented
+This directory contains service-layer code for Sythion's trusted runtime core
+and its early intelligence-layer scaffolding.
 
-### 1. Task Runner Service (`task_runner.py`)
-Manages task execution with a state machine pattern:
-- **Lease Management**: Exclusive runner lease with 30-second heartbeat
-- **Task Lifecycle**: Create, transition, cancel tasks with audit logging
-- **State Machine**: Enforces valid state transitions (CREATED → PLANNING → EXECUTING → COMPLETED/FAILED/CANCELLED)
-- **Idempotency**: Support for idempotency keys to prevent duplicate tasks
-- **Event Sourcing**: All state changes logged as events for audit trail
+Do not treat every service here as the same kind of component. Some are pure
+runtime services, some are bridge modules, and some belong to higher-order
+intelligence behavior.
 
-**Usage:**
-```python
-from services.task_runner import get_runner
-from sqlalchemy.orm import Session
+For the authoritative classification, see
+[`../../docs/CODEBASE_BOUNDARIES.md`](../../docs/CODEBASE_BOUNDARIES.md).
 
-db: Session = ...  # Get database session
-runner = get_runner(db)
+## Runtime-core services
 
-# Acquire lease
-if await runner.acquire_lease():
-    # Create task
-    task = await runner.create_task("Open Chrome and search for Python")
-    
-    # Transition through states
-    await runner.transition_state(
-        task_id=task.id,
-        new_state=TaskState.PLANNING,
-        event_type="task.started_planning",
-        event_data={"step": "analyzing_request"}
-    )
-    
-    # Release lease when done
-    await runner.release_lease()
-```
+These services are closest to execution truth:
 
-### 2. Skill Engine (`skill_engine.py`)
-Declarative, validated, versioned skills for owner-reviewed workflows
-(Phase F). Replaces the prototype `skills_system.py` (executable-handler
-registry):
-- **Declarative definitions**: ordered steps calling the policy-filtered
-  read-only tool subset; no executable code.
-- **Restrictive references**: only `inputs.<field>` and
-  `steps.<step_id>.output.<field>` resolve; templates, coordinates, and
-  secret-shaped keys are rejected.
-- **Version pinning**: a validated version is pinned to each running task and
-  re-verified before every step; a disabled skill pauses the task.
-- **Proposals**: skills enter as proposals (auto-generated only after >=2
-  materially similar verified successful traces, or owner-submitted) and
-  require explicit review and enablement.
+- `task_runner.py` — task state transitions, lease handling, durable events
+- `retention.py` — retention windows, complete-record purge, receipts
+- `validation_report.py` — read-only validation/reporting surface
+- `voice_pipeline.py` — local voice lifecycle inside the runtime boundary
 
-**Typical usage (via API):**
-```python
-# Submit a declarative definition for review:
-POST /api/v1/skills            {"skill_id": "wf.1", "definition": {...}}
-# Enable it:
-POST /api/v1/skills/proposals/1/approve
-# Disable / enable:
-POST /api/v1/skills/wf.1/state {"state": "disabled"}
-```
+## Runtime/intelligence bridge services
 
-### 3. Ollama Adapter (`sythion_backend/services/ollama_adapter.py`)
-LLM inference service for local/remote Ollama instances:
-- **Chat Completions**: Multi-turn conversation support
-- **Streaming**: Async streaming responses
-- **Model Management**: List available models
-- **Configuration**: Base URL, model selection, timeout, SSL options
-- **Generation Endpoint**: Single-turn prompt completion
+These mix execution concerns with higher-order reasoning and should be handled
+carefully:
 
-**Usage:**
-```python
-from sythion_backend.services import OllamaAdapter, OllamaConfig, ChatMessage
+- `model_engine.py` — model orchestration and decision parsing; now delegates
+  prompt construction to `model_prompt_contract.py` and context assembly to
+  `model_context_builder.py`
+- `model_prompt_contract.py` — system prompt / model-facing runtime contract
+- `model_context_builder.py` — previous-task continuity, memory/context
+  injection, and overall assembly of model request context
+- `conversation_guidance_adapter.py` — recent conversation replay,
+  conversation-state formatting, speech-act analysis, and response-strategy
+  guidance for model requests
+- `task_execution_loop.py` — runtime execution loop; now delegates post-task
+  intelligence hooks to `post_task_intelligence.py`
+- `skill_engine.py` — stable compatibility facade for the skill system
+- `skill_runtime.py` — declarative workflow validation, version storage,
+  allowed-tool filtering, pinned execution, and pause semantics
+- `skill_proposals.py` — verified-trace proposal generation, evidence growth,
+  explicit review, and optional auto-promotion
 
-config = OllamaConfig(
-    base_url="http://localhost:11434",
-    default_model="llama3"
-)
-adapter = OllamaAdapter(config)
+The remaining high-value bridge-cleanup targets are the modules that still mix
+runtime orchestration with higher-order guidance.
 
-# Check health
-if await adapter.health_check():
-    # List models
-    models = await adapter.list_models()
-    
-    # Chat completion
-    messages = [
-        ChatMessage(role="user", content="What is Python?")
-    ]
-    response = await adapter.chat(messages)
-    print(response.content)
-    
-    # Streaming chat
-    async for chunk in adapter.chat_stream(messages):
-        print(chunk, end="", flush=True)
-```
+## Intelligence-layer scaffolding
 
-### 4. Voice Service (`sythion_backend/services/voice_service.py`)
-Voice processing pipeline (VAD, STT, TTS):
-- **VAD (Voice Activity Detection)**: Energy-based speech detection
-- **STT (Speech-to-Text)**: Whisper integration for transcription
-- **TTS (Text-to-Speech)**: Cross-platform system TTS (Windows SAPI, macOS say, Linux espeak)
-- **Streaming Support**: Real-time audio processing
+These services support the broader intelligence direction without owning the
+runtime truth contract:
 
-**Usage:**
-```python
-from sythion_backend.services import VoiceProcessor, VoiceConfig
+- `conversation_state.py`
+- `speech_act_classifier.py`
+- `response_strategy.py`
+- `memory_consolidation.py`
+- `post_task_intelligence.py`
+- `tool_authoring.py`
 
-config = VoiceConfig(
-    sample_rate=16000,
-    vad_sensitivity=0.5,
-    stt_provider="whisper",
-    tts_provider="system"
-)
-processor = VoiceProcessor(config)
+They may guide or enrich behavior, but they must not bypass runtime policy,
+verification, or audit.
 
-# Speak text
-await processor.speak_text("Hello, I am Sythion (Synth)")
+## Development guidance
 
-# Transcribe audio
-audio_data = b"..."  # Raw audio bytes
-text = await processor.transcribe_audio(audio_data)
+When editing services:
 
-# Start listening (requires audio capture integration)
-async def on_speech(text):
-    print(f"User said: {text}")
+1. Preserve the trusted runtime boundary.
+2. Keep execution truth separate from conversational or strategic heuristics.
+3. Prefer extracting mixed concerns into smaller modules over deepening a
+   monolithic bridge file.
+4. Keep tests and docs aligned with the current architecture.
 
-await processor.start_listening(on_speech)
-```
+## Related documents
 
-## Architecture
-
-```
-services/
-├── __init__.py              # Service exports
-├── task_runner.py           # Task state machine
-├── skill_engine.py          # Declarative versioned skills (Phase F)
-├── retention.py             # Retention + complete-record purge (Phase F)
-└── sythion_backend/
-    └── services/
-        ├── __init__.py
-        ├── ollama_adapter.py    # LLM inference
-        └── voice_service.py     # Voice processing (prototype, superseded by backend/services/voice_pipeline.py)
-```
-
-## Dependencies
-
-- `sqlalchemy`: Database ORM for task persistence
-- `pydantic`: Data validation and settings management
-- `httpx`: Async HTTP client for Ollama API
-- `psutil`: System information (battery, processes)
-- `whisper` (optional): Speech-to-text engine
-
-## Testing
-
-Run service tests:
-```bash
-cd /workspace/sythion/backend
-python -m pytest services/ -v
-```
-
-## Next Steps
-
-1. **Integration Tests**: Add comprehensive tests for each service
-2. **Skill Expansion**: Implement remaining skill categories (browser, media, communication)
-3. **Voice Pipeline**: Integrate actual audio capture (PyAudio/sounddevice)
-4. **Task Executor**: Connect task runner to tool executor for action execution
-5. **LLM Orchestrator**: Build agent loop that uses skills based on LLM decisions
+- `../../docs/ARCHITECTURE.md`
+- `../../docs/INTELLIGENCE_ARCHITECTURE.md`
+- `../../docs/CODEBASE_BOUNDARIES.md`
+- `../../docs/PROJECT_STATUS.md`

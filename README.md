@@ -1,287 +1,107 @@
-# Sythion (Synth) - Windows 10/11 Personal Desktop Assistant
+# Sythion (Synth) - Trusted Runtime Core for a Larger Intelligence System
 
-> **Architecture gate:** This repository contains an exploratory prototype,
-> not a production-ready Phase 3 release. The current source of truth is the
-> Phase -1 decision record in [`docs/architecture.md`](docs/architecture.md)
-> and its required verification plan in
-> [`docs/acceptance-test-map.md`](docs/acceptance-test-map.md). No milestone
-> beyond Phase A is accepted until those gates are implemented and pass.
+> This repository is the **trusted local runtime core** of a larger
+> intelligence system. It is not the whole intelligence stack by itself.
 
-[![Tests](https://img.shields.io/badge/tests-74%20passed-green)]()
-[![Phase](https://img.shields.io/badge/phase-3%20complete-blue)]()
+[![Backend tests](https://img.shields.io/badge/backend%20tests-683%20passed%20%2F%202%20skipped-green)]()
+[![Boundary](https://img.shields.io/badge/boundary-runtime%20core-blue)]()
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F%2F11-lightgrey)]()
 
-## 🚀 Quick Start
+## What this repo is
 
-### Prerequisites
-- Python 3.10+ 
-- Windows 10/11 (for full feature support)
-- Node.js 18+ (for the dashboard)
-- Ollama Cloud API key ([get one free](https://ollama.com))
+Sythion provides the execution-facing local runtime on Windows 10/11:
 
-### 1. Configure Environment
+- Tauri desktop shell + React dashboard
+- one fixed Python/FastAPI sidecar
+- authenticated local control boundary
+- durable task/event ledger
+- policy-gated tool execution
+- evidence and verification after actions
+- cancellation, replay, retention, and recovery primitives
+- local voice and dashboard flows inside the runtime boundary
 
-```bash
-cd sythion/backend
-cat > .env << EOF
-Sythion (Synth)_OLLAMA_CLOUD_BASE_URL=https://ollama.com
-Sythion (Synth)_OLLAMA_API_KEY=your_api_key_here
-Sythion (Synth)_SELECTED_MODEL=minimax-m3:cloud
-Sythion (Synth)_FILE_ROOTS=C:/Users/YourName/Documents,C:/Users/YourName/Downloads
-Sythion (Synth)_DATABASE_PATH=C:/Users/YourName/AppData/Local/Sythion (Synth)/sythion.db
-EOF
-```
+## What this repo is not
 
-### 2. Install Dependencies
+This repository is **not** the whole future intelligence system. The broader
+vision may include richer conversation, planning, memory, and multi-device
+agency, but those layers must sit above this runtime rather than bypassing it.
 
-```bash
-pip install -r backend/requirements.txt
-cd frontend && npm install
-```
+## Source of truth
 
-### 3. Run Everything (one command)
+Start here:
 
-```bat
-start_sythion.cmd
-```
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — runtime contract
+- [`docs/INTELLIGENCE_ARCHITECTURE.md`](docs/INTELLIGENCE_ARCHITECTURE.md) — system layering
+- [`docs/CODEBASE_BOUNDARIES.md`](docs/CODEBASE_BOUNDARIES.md) — module classification and refactor map
+- [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) — current verified status
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — near-term priorities and repo scope boundaries
+- [`docs/DECISIONS.md`](docs/DECISIONS.md) — compact index of active architectural decisions
+- [`docs/QUALITY_GATES.md`](docs/QUALITY_GATES.md) — definition of a professional change in this repo
+- [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — startup, smoke-test, and validation runbook
+- [`docs/acceptance-test-map.md`](docs/acceptance-test-map.md) — release gates
 
-This starts the backend and dashboard, waits for the backend to be healthy,
-and opens the dashboard in your browser. Logs are written to
-`%USERPROFILE%\.sythion\sythion.log`.
+## Development
 
-### 3b. Run manually (backend)
+### Backend tests
 
-```bash
-cd sythion
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
-```
-
-> **Note (Windows)**: No `PYTHONPATH` setup is required. The backend
-> automatically adds its own directory to `sys.path` and loads the `.env`
-> file from `backend/`. If you don't have a `.env` file, set the API key
-> inline first (PowerShell: `$env:Sythion (Synth)_OLLAMA_API_KEY="your_key"`).
-
-### 3c. Run manually (frontend dashboard)
+From repo root:
 
 ```bash
-cd sythion/frontend
-npm run dev
+python -m pytest backend/tests -q
 ```
 
-Then open http://localhost:3000.
-
-### 4. Test It
+From `backend/`:
 
 ```bash
-# Health check
-curl http://127.0.0.1:8000/api/v1/health
-
-# Create a task via the API
-curl -X POST http://127.0.0.1:8000/api/v1/tasks \
-  -H "Content-Type: application/json" \
-  -d '{"original_request": "What time is it?"}'
-
-# Or use the CLI (requires backend running)
-python cli.py "what time is it"
+python -m pytest tests -q
 ```
 
-### 5. Smoke Test (requires backend running)
+See [`docs/TESTING.md`](docs/TESTING.md) for the current baseline and related
+commands.
+
+### Frontend
+
+From `frontend/`:
 
 ```bash
-python scripts/smoke_test.py --all
+npm run build
+npm run lint
 ```
 
-Runs health, DB, model-config, a live model task, and the `system_time` tool
-check against the running backend. Exit code 0 = all checks passed.
+### Tauri shell build
 
----
+From repo root:
 
-## 📚 Documentation
-
-| Document | Description |
-|----------|-------------|
-| [CONFIGURATION.md](CONFIGURATION.md) | Detailed environment setup guide |
-| [TESTING_GUIDE.md](TESTING_GUIDE.md) | Real-world testing scenarios & checklist |
-| [PHASE3_REPORT.md](PHASE3_REPORT.md) | Phase 3 implementation details |
-| [FINAL_STATUS.md](FINAL_STATUS.md) | Project status overview |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture deep-dive |
-| [docs/ACCEPTANCE_TESTS.md](docs/ACCEPTANCE_TESTS.md) | Complete acceptance test map |
-
----
-
-## ✅ Current Status: Phase 3 Complete
-
-### Implemented Features
-
-#### Core Task System
-- ✅ Immutable event ledger for task state
-- ✅ LLM-driven decision loop (observe → act → verify)
-- ✅ Typed tool system with policy evaluation
-- ✅ User interaction (questions & replies)
-
-#### Crash Recovery (NEW in Phase 3)
-- ✅ Stale lease detection (30-second heartbeat timeout)
-- ✅ Automatic task interruption on crash
-- ✅ Resume endpoint for manual recovery
-- ✅ Re-observation before continuing mutations
-
-#### Voice Pipeline (NEW in Phase 3)
-- ✅ VAD (energy-based SimpleVAD; PyAudio/WebRTC when enabled)
-- ⚠️ STT (Whisper if installed, otherwise stub — needs model install to be real)
-- ⚠️ TTS (Windows SAPI5 when available, otherwise stub)
-- ✅ Session-based audio streaming API
-
-#### GUI Automation
-- ✅ Screen observation with OCR
-- ✅ Window focus management
-- ✅ Element invocation
-- ✅ Keyboard input (type, hotkeys, click)
-
-### Test Coverage
-
-**74 tests passing** across:
-- Unit tests (tools, services, adapters)
-- Integration tests (task execution loop)
-- Voice pipeline tests
-- GUI tools tests
-
-Run tests:
 ```bash
-cd sythion/backend
-python -m pytest tests/ -v
+npx --prefix frontend tauri build --no-bundle
 ```
 
----
+## Configuration
 
-## 🏗️ Architecture
+See [`CONFIGURATION.md`](CONFIGURATION.md).
 
-```
-sythion/
-├── backend/              # FastAPI sidecar
-│   ├── api/             # REST endpoints
-│   ├── adapters/        # Ollama Cloud, external services
-│   ├── core/            # Config, auth, database
-│   ├── domain/          # State machine logic
-│   ├── services/        # Business logic (tasks, voice, skills)
-│   ├── tools/           # Tool implementations
-│   └── models/          # SQLAlchemy ORM models
-├── frontend/            # React + TypeScript UI (optional)
-├── tasks/               # Skill definitions
-└── docs/                # Documentation
-```
+Important current rules:
 
-### Key Design Decisions
+- production secrets should be handled through the runtime's write-only secret
+  flow / Windows secret storage, not by treating `.env` as the production path;
+- onboarding should select an exact authenticated model ID rather than relying
+  on a hard-coded model string;
+- approved file roots and voice/privacy settings are part of the runtime
+  boundary and should be treated as first-class configuration.
 
-1. **Single-task execution** - Lease-based serialization prevents conflicts
-2. **Immutable audit trail** - Every action logged as append-only event
-3. **Observation-first** - LLM must observe before mutating state
-4. **Security boundaries** - File roots, no browser automation, standard user privileges
-5. **Windows-first** - Optimized for Windows 10/11, graceful degradation elsewhere
+## Historical reports
 
----
+The following files are retained for historical context only and should not be
+used as the current status baseline:
 
-## 🔧 Available Tools
+- `FINAL_STATUS.md`
+- `PHASE3_REPORT.md`
+- `docs/PROGRESS_REPORT.md`
 
-### System Tools
-- `get_time`, `get_battery_status`, `get_disk_usage`
-- `list_processes`, `get_active_window`
+## Current verified baseline
 
-### File Tools
-- `list_directory`, `read_file`, `create_file`
-- `write_file`, `move_file`, `copy_file`, `delete_file`
+- Full backend suite: **692 passed, 32 skipped** (32 skipped = 27 power/network real-system tests + 3 volume system-audio tests + 2 symlink privilege tests)
+- Acceptance suite: **196 passed, 2 skipped**
 
-### Application Tools
-- `list_apps`, `launch_app`, `focus_app`, `close_app`
-
-### Package Management
-- `search_packages`, `list_packages`
-- `install_package`, `uninstall_package`
-
-### GUI Interaction
-- `observe_gui`, `focus_window`, `invoke_element`
-- `click`, `type_text`, `send_hotkey`, `set_value`
-
-### Voice (Optional)
-- `start_voice_session`, `process_audio`, `speak_response`
-
----
-
-## 🎯 Example Use Cases
-
-### 1. Simple Query
-```json
-POST /api/tasks
-{
-  "original_request": "What's my battery level?"
-}
-```
-
-### 2. File Operation
-```json
-POST /api/tasks
-{
-  "original_request": "Create a file called notes.txt with today's date"
-}
-```
-
-### 3. Application Control
-```json
-POST /api/tasks
-{
-  "original_request": "Open Notepad and type 'Hello World'"
-}
-```
-
-### 4. Multi-step Task
-```json
-POST /api/tasks
-{
-  "original_request": "Find all PDF files in Documents and list them"
-}
-```
-
----
-
-## ⚠️ Limitations
-
-1. **Platform**: Windows 10/11 recommended (Linux/Mac have limited GUI support)
-2. **No Browser Automation**: Intentional security constraint
-3. **Standard Privileges Only**: No admin/elevated operations
-4. **Single Concurrent Task**: Serialized execution via lease mechanism
-5. **LLM Dependency**: Requires Ollama Cloud API key (free tier available)
-
----
-
-## 🛣️ Roadmap
-
-### Phase 4 (Next)
-- [x] Frontend dashboard integration (browser dashboard live)
-- [ ] Tauri desktop shell
-- [ ] Enforce per-launch auth token on API routes
-- [ ] Real STT (Whisper) out of the box
-- [ ] Skill library expansion
-- [ ] Performance optimization
-- [ ] Enhanced error handling
-
-### Future Considerations
-- Local LLM support (Ollama local instances)
-- Extended tool ecosystem
-- Multi-user support
-- Cloud sync capabilities
-
----
-
-## 🤝 Contributing
-
-This is a proprietary project. For questions or issues, contact the development team.
-
----
-
-## 📄 License
-
-Proprietary - All rights reserved
-
----
-
-**Last Updated**: August 2026  
-**Version**: 0.1.0 (Phase 3 Complete)
+The two skips are the known symlink-privilege skips in
+`backend/tests/acceptance/test_canonical_file_checks.py`.

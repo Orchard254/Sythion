@@ -41,8 +41,9 @@ async def test_executable_path_rejected_as_app_id(app_executor):
 @pytest.mark.asyncio
 async def test_command_line_arguments_impossible(app_executor, monkeypatch):
     """app_launch input has no command-line argument field."""
-    from backend.api import schemas as schemas
-    fields = schemas.AppLaunchInput.__fields__
+    from backend.api import schemas
+
+    fields = schemas.AppLaunchInput.model_fields
     assert set(fields.keys()) == {"app_id", "new_instance"}
 
 

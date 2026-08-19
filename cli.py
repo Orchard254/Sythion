@@ -134,12 +134,64 @@ def api(path, method="GET", data=None, retry_on_401=True):
         raise SystemExit(f"HTTP {e.code}: {body}")
 
 
+def truncate_text(text, limit=120):
+    value = (text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3].rstrip() + "..."
+
+
+def format_objective_snapshot(objective):
+    if not objective:
+        return []
+    steps = objective.get("steps") or []
+    lines = [
+        f"  [objective] {objective.get('title', '(untitled)')} [{objective.get('status', 'unknown')}]",
+    ]
+    if objective.get("purpose"):
+        lines.append(f"    purpose: {truncate_text(objective.get('purpose'), 140)}")
+    if objective.get("current_summary"):
+        lines.append(f"    now: {truncate_text(objective.get('current_summary'), 140)}")
+    if steps:
+        lines.append("    plan:")
+        for step in steps[:5]:
+            summary = truncate_text(step.get("description") or "", 100)
+            status = step.get("status", "unknown")
+            line = f"      {step.get('step_order', '?')}. [{status}] {summary}"
+            if step.get("blocker_reason") and status == "blocked":
+                line += f" | blocked: {truncate_text(step.get('blocker_reason'), 80)}"
+            elif step.get("result_summary") and status in {"completed", "failed", "skipped"}:
+                line += f" | result: {truncate_text(step.get('result_summary'), 80)}"
+            lines.append(line)
+    return lines
+
+
+def print_objective_snapshot(objective):
+    for line in format_objective_snapshot(objective):
+        print(line)
+
+
+def fetch_task_objective(task_id):
+    return api(f"/tasks/{task_id}/objective")
+
+
 def watch_task(task_id, log_path=None):
     last_event_seq = 0
     last_question = None
+    last_objective_signature = None
     while True:
         task = api(f"/tasks/{task_id}")
         state = task["state"]
+        objective_id = task.get("objective_id")
+        if objective_id:
+            try:
+                objective = fetch_task_objective(task_id)
+                signature = (objective.get("id"), objective.get("updated_at"))
+                if signature != last_objective_signature:
+                    print_objective_snapshot(objective)
+                    last_objective_signature = signature
+            except Exception:
+                pass
 
         events = api(f"/tasks/{task_id}/events")["events"]
         for ev in events:
@@ -202,7 +254,7 @@ def interactive_mode():
     try:
         health = api("/health")
         status = health.get("status", "unknown")
-        model = health.get("model", "none")
+        model = health.get("selected_model") or health.get("model") or "(not configured)"
         print(f"Backend: {status} | Selected Model: {model}")
     except Exception as e:
         print(f"Backend Connection Warning: {e}")
@@ -233,6 +285,8 @@ def interactive_mode():
             print("  tools             List all available backend tools")
             print("  stop              Send global stop signal to cancel running tasks")
             print("  tasks             List recent tasks")
+            print("  objectives        List current durable objectives")
+            print("  objective <id>    Show one objective by task id or objective id")
             print("  exit / quit       Exit interactive mode")
             print("\nAny other text is submitted as a task request to Sythion.\n")
             continue
@@ -271,10 +325,51 @@ def interactive_mode():
                 tlist = api("/tasks").get("tasks", [])
                 print(f"\nRecent Tasks ({len(tlist)}):")
                 for t in tlist[:10]:
-                    print(f"  - [{t.get('state')}] {t.get('id')}: {t.get('original_request', '')[:50]}")
+                    objective_ref = t.get("objective_id") or "no-objective"
+                    print(
+                        f"  - [{t.get('state')}] {t.get('id')}: {t.get('original_request', '')[:50]} "
+                        f"(objective: {objective_ref})"
+                    )
                 print()
             except Exception as e:
                 print(f"  Error listing tasks: {e}")
+            continue
+
+        if cmd_name == "objectives":
+            try:
+                objectives = api("/objectives").get("objectives", [])
+                print(f"\nObjectives ({len(objectives)}):")
+                for obj in objectives[:10]:
+                    step_count = len(obj.get("steps") or [])
+                    print(
+                        f"  - [{obj.get('status')}] {obj.get('id')}: {obj.get('title', '')[:60]} "
+                        f"(priority={obj.get('priority')}, steps={step_count})"
+                    )
+                print()
+            except Exception as e:
+                print(f"  Error listing objectives: {e}")
+            continue
+
+        if cmd_name.startswith("objective "):
+            ident = user_input.split(maxsplit=1)[1].strip()
+            if not ident:
+                print("  Usage: objective <task-id-or-objective-id>\n")
+                continue
+            try:
+                target = api(f"/tasks/{ident}")
+                if target.get("objective_id"):
+                    objective = fetch_task_objective(ident)
+                else:
+                    raise SystemExit
+            except Exception:
+                try:
+                    objective = api(f"/objectives/{ident}")
+                except Exception as e:
+                    print(f"  Error fetching objective: {e}\n")
+                    continue
+            print()
+            print_objective_snapshot(objective)
+            print()
             continue
 
         # Submit user request as task
@@ -326,7 +421,8 @@ def main():
             f"  cd C:\\Ai\\sythion && python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000\n"
             f"({e})"
         )
-    print(f"Backend: {health.get('status')} ({health.get('model', '')})".rstrip())
+    selected_model = health.get("selected_model") or health.get("model") or "not configured"
+    print(f"Backend: {health.get('status')} ({selected_model})")
     print(f"You: {request}")
     print()
 

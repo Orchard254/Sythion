@@ -110,7 +110,8 @@ def test_db_failure_degrades_to_env_roots_only(tmp_path, monkeypatch):
 
     roots = [str(r).lower() for r in _approved_roots()]
     assert str(env_root.resolve()).lower() in roots
-    assert len(roots) == 1
+    # env root + repo root (always included)
+    assert len(roots) == 2
 
 
 def test_grant_removed_after_settings_reset(db_manager, empty_env_roots, tmp_path):

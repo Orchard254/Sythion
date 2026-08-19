@@ -1,8 +1,17 @@
 # Phase 3 Implementation Report
 
+> **Historical archive only:** this document preserves an earlier phase report
+> and should not be treated as the current source of truth for architecture,
+> release state, or test counts. See `docs/PROJECT_STATUS.md` and
+> `docs/ARCHITECTURE.md` instead.
+
 ## Executive Summary
 
-Successfully completed **Phase 3 Sprint 1 & 2** of the Sythion (Synth) project, implementing:
+This report captures an older implementation snapshot from an earlier phase of
+Sythion development, including claims and counts that have since been replaced
+by the current architecture baseline.
+
+Historically, this phase report recorded the following implementation work:
 1. **Crash Recovery Foundation** - Stale lease detection and interrupted task resumption
 2. **Voice Pipeline Enhancement** - Production-ready VAD, STT, and TTS implementations for Windows
 

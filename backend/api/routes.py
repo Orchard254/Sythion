@@ -6,19 +6,22 @@ import logging
 import asyncio
 import json
 import os
+import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from sqlalchemy.orm import Session
 
-from backend.models.database import get_db, Skill, Task
+from backend.models.database import get_db, Objective, PlanStep, Skill, Task
 from backend.services.task_runner import get_runner, TaskRunner
 from backend.services.task_execution_loop import run_task
 from backend.adapters.ollama_adapter import get_adapter, format_tools_for_ollama
 from backend.tools.executor import ToolExecutor
 from backend.api.schemas import (
     TaskCreate, TaskResponse, TaskListResponse, TaskReply,
-    TaskState, HealthResponse, SettingsResponse,
+    TaskState, ObjectiveCreate, ObjectiveListResponse, ObjectiveResponse,
+    ObjectiveStatus, ObjectiveUpdate, PlanStepCreate, PlanStepResponse,
+    PlanStepStatus, PlanStepUpdate, HealthResponse, SettingsResponse,
     ToolExecutionRequest, ToolExecutionResponse,
     VoiceStartResponse, VoiceAudioInput, VoiceAudioResponse, VoiceAssetsResponse,
     VoiceSegmentResponse,
@@ -43,11 +46,47 @@ def get_tool_executor() -> ToolExecutor:
     return get_tool_executor._executor
 
 
+def _plan_step_to_response(step: PlanStep) -> PlanStepResponse:
+    return PlanStepResponse(
+        id=step.id,
+        objective_id=step.objective_id,
+        step_order=step.step_order,
+        description=step.description,
+        status=PlanStepStatus(step.status),
+        linked_task_id=step.linked_task_id,
+        result_summary=step.result_summary,
+        blocker_reason=step.blocker_reason,
+        created_at=step.created_at,
+        updated_at=step.updated_at,
+    )
+
+
+def _objective_to_response(objective: Objective) -> ObjectiveResponse:
+    steps = sorted(list(objective.steps or []), key=lambda step: (step.step_order, step.id))
+    sub_objs = sorted(list(objective.sub_objectives or []), key=lambda o: (o.created_at or datetime.min, o.id))
+    return ObjectiveResponse(
+        id=objective.id,
+        title=objective.title,
+        purpose=objective.purpose,
+        status=ObjectiveStatus(objective.status),
+        priority=objective.priority,
+        current_summary=objective.current_summary,
+        last_task_id=objective.last_task_id,
+        completion_criteria=objective.completion_criteria,
+        criteria_verified=objective.criteria_verified,
+        parent_objective_id=objective.parent_objective_id,
+        created_at=objective.created_at,
+        updated_at=objective.updated_at,
+        steps=[_plan_step_to_response(step) for step in steps],
+        sub_objectives=[_objective_to_response(sub) for sub in sub_objs],
+    )
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health_check(db: Session = Depends(get_db)):
     """Check system health status."""
-    from core.config import settings
-    
+    from core.config import resolve_selected_model
+
     # Check Ollama Cloud connectivity
     adapter = get_adapter()
     cloud_ok = await adapter.check_health() if adapter else False
@@ -56,7 +95,8 @@ async def health_check(db: Session = Depends(get_db)):
         status="healthy",
         version="0.1.0",
         database_connected=True,
-        cloud_configured=cloud_ok
+        cloud_configured=cloud_ok,
+        selected_model=resolve_selected_model() or "",
     )
 
 
@@ -98,6 +138,13 @@ async def create_task(
             idempotency_key=task_data.idempotency_key
         )
 
+        try:
+            from backend.services.work_state import ensure_task_objective
+        except ImportError:
+            from services.work_state import ensure_task_objective
+
+        objective = ensure_task_objective(db, task)
+
         # Idempotent replay: an existing task was already accepted and executed.
         # Never re-transition or re-run it (completed/failed/cancelled states are
         # terminal and must not be started again).
@@ -110,6 +157,7 @@ async def create_task(
                 created_at=task.created_at,
                 updated_at=task.updated_at,
                 version=task.version,
+                objective_id=task.objective_id,
                 final_result=task.final_result,
                 terminal_reason=task.terminal_reason
             )
@@ -153,7 +201,8 @@ async def create_task(
             state=TaskState.RUNNING,
             created_at=task.created_at,
             updated_at=task.updated_at,
-            version=task.version
+            version=task.version,
+            objective_id=objective.id
         )
         
     finally:
@@ -186,6 +235,7 @@ async def list_tasks(
                 created_at=t.created_at,
                 updated_at=t.updated_at,
                 version=t.version,
+                objective_id=t.objective_id,
                 final_result=t.final_result,
                 terminal_reason=t.terminal_reason
             )
@@ -211,9 +261,25 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
         created_at=task.created_at,
         updated_at=task.updated_at,
         version=task.version,
+        objective_id=task.objective_id,
         final_result=task.final_result,
         terminal_reason=task.terminal_reason
     )
+
+
+@router.get("/tasks/{task_id}/objective", response_model=ObjectiveResponse)
+async def get_task_objective(task_id: str, db: Session = Depends(get_db)):
+    """Get the durable objective currently linked to a task."""
+    task = db.query(Task).filter_by(id=task_id).first()
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    if not task.objective_id:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} has no linked objective")
+
+    objective = db.query(Objective).filter_by(id=task.objective_id).first()
+    if objective is None:
+        raise HTTPException(status_code=404, detail=f"Objective {task.objective_id} not found")
+    return _objective_to_response(objective)
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=TaskResponse)
@@ -248,7 +314,8 @@ async def cancel_task(task_id: str, db: Session = Depends(get_db)):
             state=TaskState(updated_task.state),
             created_at=updated_task.created_at,
             updated_at=updated_task.updated_at,
-            version=updated_task.version
+            version=updated_task.version,
+            objective_id=updated_task.objective_id
         )
         
     finally:
@@ -294,7 +361,8 @@ async def stop_active_task(db: Session = Depends(get_db)):
         state=TaskState(updated_task.state),
         created_at=updated_task.created_at,
         updated_at=updated_task.updated_at,
-        version=updated_task.version
+        version=updated_task.version,
+        objective_id=updated_task.objective_id
     )
 
 
@@ -363,6 +431,7 @@ async def resume_task(task_id: str, db: Session = Depends(get_db)):
             created_at=updated_task.created_at,
             updated_at=updated_task.updated_at,
             version=updated_task.version,
+            objective_id=updated_task.objective_id,
             final_result=updated_task.final_result,
             terminal_reason=updated_task.terminal_reason
         )
@@ -423,6 +492,7 @@ async def reply_to_task(task_id: str, reply_data: TaskReply, db: Session = Depen
             created_at=updated_task.created_at,
             updated_at=updated_task.updated_at,
             version=updated_task.version,
+            objective_id=updated_task.objective_id,
             final_result=updated_task.final_result,
             terminal_reason=updated_task.terminal_reason
         )
@@ -474,6 +544,186 @@ def _decode_event_data(raw: Any) -> Dict[str, Any]:
             return json.loads(str(raw).replace("\\", "\\\\"))
         except (json.JSONDecodeError, TypeError):
             return {"raw": str(raw)}
+
+
+@router.get("/objectives", response_model=ObjectiveListResponse)
+async def list_objectives(
+    status: Optional[ObjectiveStatus] = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+):
+    """List durable objectives and their current plan steps."""
+    query = db.query(Objective)
+    if status is not None:
+        query = query.filter(Objective.status == status.value)
+    objectives = query.order_by(Objective.updated_at.desc(), Objective.created_at.desc()).limit(limit).all()
+    return ObjectiveListResponse(
+        objectives=[_objective_to_response(objective) for objective in objectives],
+        total=len(objectives),
+    )
+
+
+@router.post("/objectives", response_model=ObjectiveResponse)
+async def create_objective(payload: ObjectiveCreate, db: Session = Depends(get_db)):
+    """Create a durable objective with optional initial plan steps.
+
+    If plan_steps is empty but purpose/title contains a complex request,
+    decompose_request() is used to auto-split into ordered steps.
+    Explicit plan_steps are used as-is.
+    """
+    try:
+        from backend.services.work_state import decompose_request
+    except ImportError:
+        from services.work_state import decompose_request
+
+    objective = Objective(
+        id=str(uuid.uuid4()),
+        title=payload.title.strip(),
+        purpose=payload.purpose.strip() if payload.purpose else None,
+        status=ObjectiveStatus.ACTIVE.value,
+        priority=payload.priority,
+        current_summary="Objective created manually.",
+        completion_criteria=payload.completion_criteria.strip() if payload.completion_criteria else None,
+        parent_objective_id=payload.parent_objective_id.strip() if payload.parent_objective_id else None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(objective)
+    db.flush()
+
+    # Determine plan steps and their initial statuses
+    if payload.plan_steps:
+        # Explicit plan_steps: all pending (user controls the plan)
+        steps = payload.plan_steps
+        statuses = [PlanStepStatus.PENDING.value] * len(steps)
+    elif payload.purpose:
+        decomposed = decompose_request(payload.purpose)
+        if decomposed:
+            # Auto-decomposed: first step in_progress, rest pending
+            steps = decomposed
+            statuses = [PlanStepStatus.IN_PROGRESS.value] + [PlanStepStatus.PENDING.value] * (len(decomposed) - 1)
+        else:
+            steps = [payload.purpose.strip()]
+            statuses = [PlanStepStatus.IN_PROGRESS.value]
+    else:
+        # No purpose, no plan_steps: no auto-created steps
+        steps = []
+        statuses = []
+
+    for idx, (description, status) in enumerate(zip(steps, statuses), start=1):
+        db.add(PlanStep(
+            objective_id=objective.id,
+            step_order=idx,
+            description=description,
+            status=status,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        ))
+    db.commit()
+    db.refresh(objective)
+    return _objective_to_response(objective)
+
+
+@router.get("/objectives/{objective_id}", response_model=ObjectiveResponse)
+async def get_objective(objective_id: str, db: Session = Depends(get_db)):
+    """Get one durable objective and its plan."""
+    objective = db.query(Objective).filter_by(id=objective_id).first()
+    if objective is None:
+        raise HTTPException(status_code=404, detail=f"Objective {objective_id} not found")
+    return _objective_to_response(objective)
+
+
+@router.patch("/objectives/{objective_id}", response_model=ObjectiveResponse)
+async def update_objective(objective_id: str, payload: ObjectiveUpdate, db: Session = Depends(get_db)):
+    """Update mutable durable-objective fields."""
+    objective = db.query(Objective).filter_by(id=objective_id).first()
+    if objective is None:
+        raise HTTPException(status_code=404, detail=f"Objective {objective_id} not found")
+
+    data = payload.model_dump(exclude_unset=True)
+    for key, value in data.items():
+        if hasattr(value, "value"):
+            value = value.value
+        setattr(objective, key, value)
+    objective.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(objective)
+    return _objective_to_response(objective)
+
+
+@router.post("/objectives/{objective_id}/verify-criteria", response_model=ObjectiveResponse)
+async def verify_objective_criteria(objective_id: str, db: Session = Depends(get_db)):
+    """Mark objective completion criteria as verified.
+
+    This allows the objective to complete when all steps are done.
+    """
+    objective = db.query(Objective).filter_by(id=objective_id).first()
+    if objective is None:
+        raise HTTPException(status_code=404, detail=f"Objective {objective_id} not found")
+    if not objective.completion_criteria:
+        raise HTTPException(status_code=400, detail="Objective has no completion criteria to verify")
+    objective.criteria_verified = True
+    objective.updated_at = datetime.utcnow()
+    # If all steps are already complete, auto-complete the objective
+    remaining = (
+        db.query(PlanStep)
+        .filter(PlanStep.objective_id == objective.id, PlanStep.status.in_(tuple({"pending", "in_progress", "blocked"} | {"failed"})))
+        .count()
+    )
+    if remaining == 0:
+        objective.status = "completed"
+    db.commit()
+    db.refresh(objective)
+    return _objective_to_response(objective)
+
+
+@router.post("/objectives/{objective_id}/steps", response_model=PlanStepResponse)
+async def create_plan_step(objective_id: str, payload: PlanStepCreate, db: Session = Depends(get_db)):
+    """Append a plan step to a durable objective."""
+    objective = db.query(Objective).filter_by(id=objective_id).first()
+    if objective is None:
+        raise HTTPException(status_code=404, detail=f"Objective {objective_id} not found")
+
+    latest = (
+        db.query(PlanStep)
+        .filter(PlanStep.objective_id == objective_id)
+        .order_by(PlanStep.step_order.desc(), PlanStep.id.desc())
+        .first()
+    )
+    step = PlanStep(
+        objective_id=objective_id,
+        step_order=(latest.step_order + 1) if latest else 1,
+        description=payload.description,
+        status=payload.status.value,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(step)
+    objective.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(step)
+    return _plan_step_to_response(step)
+
+
+@router.patch("/objectives/steps/{step_id}", response_model=PlanStepResponse)
+async def update_plan_step(step_id: int, payload: PlanStepUpdate, db: Session = Depends(get_db)):
+    """Update a durable plan step."""
+    step = db.query(PlanStep).filter_by(id=step_id).first()
+    if step is None:
+        raise HTTPException(status_code=404, detail=f"Plan step {step_id} not found")
+
+    data = payload.model_dump(exclude_unset=True)
+    for key, value in data.items():
+        if hasattr(value, "value"):
+            value = value.value
+        setattr(step, key, value)
+    step.updated_at = datetime.utcnow()
+    objective = db.query(Objective).filter_by(id=step.objective_id).first()
+    if objective is not None:
+        objective.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(step)
+    return _plan_step_to_response(step)
 
 
 @router.get("/tools", response_model=Dict[str, List[Dict[str, Any]]])

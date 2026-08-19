@@ -66,7 +66,7 @@ async def test_install_uses_fixed_winget_args_no_agreement_flags(pkg_executor, m
     tool = pkg_executor.get_tool("package_install")
     out = await tool.execute(tool.input_schema(package_id="Notepad++"))
     assert out.success
-    assert calls == [["winget", "install", "--id", "Notepad++", "--silent"]]
+    assert calls == [["winget", "install", "--id", "Notepad++", "--silent", "--disable-interactivity"]]
 
 
 @pytest.mark.asyncio
@@ -81,7 +81,7 @@ async def test_uninstall_uses_fixed_winget_args(pkg_executor, monkeypatch):
     tool = pkg_executor.get_tool("package_uninstall")
     out = await tool.execute(tool.input_schema(package_id="Notepad++"))
     assert out.success
-    assert calls == [["winget", "uninstall", "--id", "Notepad++", "--silent"]]
+    assert calls == [["winget", "uninstall", "--id", "Notepad++", "--silent", "--disable-interactivity"]]
 
 
 @pytest.mark.asyncio
@@ -120,21 +120,54 @@ async def test_install_failure_surfaces_agreement_needed(pkg_executor, monkeypat
     out = await tool.execute(tool.input_schema(package_id="SomePkg"))
     assert not out.success
     assert out.error["code"] == "INSTALL_FAILED"
-    assert "does not auto-accept" in out.error["message"]
+    assert "agreements or elevation may be required" in out.error["message"]
 
 
 @pytest.mark.asyncio
-async def test_search_parses_winget_json(pkg_executor, monkeypatch):
-    import json
-    payload = json.dumps({"Packages": [{"Id": "Foo.Bar", "Name": "Foo", "Version": "1.0", "Source": "winget"}]})
+async def test_search_parses_winget_table_with_multiword_names(pkg_executor, monkeypatch):
+    """Test column-offset table parsing including multi-word package names like NoteTab Light."""
+    table_output = (
+        "Name          Id                         Version  Match\n"
+        "--------------------------------------------------------------\n"
+        "AkelPad       AkelPad.AkelPad            4.9.9    Tag: notepad\n"
+        "NoteTab Light FookesHolding.NoteTabLight 7.2      Tag: notepad\n"
+    )
     monkeypatch.setattr(
         "backend.tools.package_tools.subprocess.run",
-        lambda *a, **k: _FakeResult(returncode=0, stdout=payload),
+        lambda *a, **k: _FakeResult(returncode=0, stdout=table_output),
     )
     out = await pkg_executor.execute_tool(
         "package_search",
-        {"query": "foo"},
+        {"query": "notepad"},
         policy_context=PolicyContext(direct_user_instruction=True),
     )
     assert out.success
-    assert out.data["packages"][0]["id"] == "Foo.Bar"
+    assert len(out.data["packages"]) == 2
+    assert out.data["packages"][0]["id"] == "AkelPad.AkelPad"
+    assert out.data["packages"][0]["name"] == "AkelPad"
+    assert out.data["packages"][1]["id"] == "FookesHolding.NoteTabLight"
+    assert out.data["packages"][1]["name"] == "NoteTab Light"
+    assert out.data["packages"][1]["version"] == "7.2"
+
+
+@pytest.mark.asyncio
+async def test_install_distinguishes_timeout_and_missing_binary(pkg_executor, monkeypatch):
+    import subprocess
+
+    def _raise_timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="winget", timeout=300)
+
+    monkeypatch.setattr("backend.tools.package_tools.subprocess.run", _raise_timeout)
+    tool = pkg_executor.get_tool("package_install")
+    out = await tool.execute(tool.input_schema(package_id="SlowPkg"))
+    assert not out.success
+    assert out.error["code"] == "INSTALL_TIMEOUT"
+
+    def _raise_not_found(*a, **k):
+        raise FileNotFoundError("winget not found")
+
+    monkeypatch.setattr("backend.tools.package_tools.subprocess.run", _raise_not_found)
+    out2 = await tool.execute(tool.input_schema(package_id="AnyPkg"))
+    assert not out2.success
+    assert out2.error["code"] == "WINGET_NOT_FOUND"
+

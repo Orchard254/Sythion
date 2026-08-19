@@ -19,15 +19,23 @@ def create_all_tools() -> Iterable[BaseTool]:
     from backend.tools.app_tools import create_app_tools
     from backend.tools.package_tools import create_package_tools
     from backend.tools.gui_tools import create_gui_tools
-    from backend.tools.memory_tools import (
+    from backend.tools.persistent_memory_tools import (
         MemoryStoreTool,
         MemoryRecallTool,
         MemoryForgetTool,
         MemoryLinkTool,
         MemoryRecallRelatedTool,
-        ActivityRecallTool,
+        MemoryStatsTool,
+        MemoryExportTool,
     )
-    from backend.tools.web_tools import WebSearchTool, WebFetchTool
+    from backend.tools.activity_recall_tool import ActivityRecallTool
+    from backend.tools.objective_planning_tool import (
+        ObjectiveCreateTool,
+        ObjectiveAddStepTool,
+        ObjectiveCompleteStepTool,
+        ObjectiveGetPlanTool,
+        ObjectiveUpdateSummaryTool,
+    )
 
     yield from create_system_tools()
     yield from create_file_tools()
@@ -39,9 +47,14 @@ def create_all_tools() -> Iterable[BaseTool]:
     yield MemoryForgetTool()
     yield MemoryLinkTool()
     yield MemoryRecallRelatedTool()
+    yield MemoryStatsTool()
+    yield MemoryExportTool()
     yield ActivityRecallTool()
-    yield WebSearchTool()
-    yield WebFetchTool()
+    yield ObjectiveCreateTool()
+    yield ObjectiveAddStepTool()
+    yield ObjectiveCompleteStepTool()
+    yield ObjectiveGetPlanTool()
+    yield ObjectiveUpdateSummaryTool()
 
 
 def register_all_tools(executor: ToolExecutor) -> None:

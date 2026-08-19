@@ -44,3 +44,6 @@ pytest-cov==4.1.0
 
 # Windows-specific (optional, will be installed on Windows)
 pywin32==306; sys_platform == 'win32'
+
+# GUI screenshot support
+Pillow>=10.0.0; sys_platform == 'win32'

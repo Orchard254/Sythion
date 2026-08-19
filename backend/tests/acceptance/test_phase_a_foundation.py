@@ -53,6 +53,12 @@ def test_launch_token_missing_returns_none(isolated_data_dir):
     assert read_launch_token() is None
 
 
+def test_token_file_path_prefers_syhthion_env_override(isolated_data_dir, monkeypatch):
+    override = os.path.join(isolated_data_dir, "custom-token.json")
+    monkeypatch.setenv("SYTHION_HANDSHAKE_TOKEN_FILE", override)
+    assert token_file_path() == override
+
+
 def test_handshake_roundtrip(isolated_data_dir):
     write_handshake(port=54321, token="sidecar-token")
     payload = read_handshake()

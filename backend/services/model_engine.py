@@ -3,6 +3,7 @@ Model Decision Engine for Sythion (Synth).
 Handles LLM orchestration, context building, and decision parsing.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -79,37 +80,28 @@ class ModelDecisionEngine:
     - Track token usage
     """
     
-    MAX_REPAIR_ATTEMPTS = 2
-    MAX_TOKENS_PER_REQUEST = 4000
-    MAX_TOKENS_PER_TASK = 50000
 
-    # Tool-summary truncation budget when tool results are replayed into the
-    # model context. Low-content tools (battery status, process list, etc.)
-    # keep the historical 220-char cap; web tools get a larger budget because
-    # their own tool-level caps (web_search 2000 / web_fetch 3000 chars)
-    # already bound the output sensibly, and a 220-char cut would destroy the
-    # multiple-result / page-text payload the tool was built to deliver.
-    #
-    # Budget check (worst case): up to 10 tool events are replayed per task,
-    # each summary appears at two sites ("Recent Activity" + native tool turn).
-    # web_fetch worst case = 10 * 2200 * 2 = 44,000 chars ~= 11k tokens; web_search
-    # = 10 * 1600 * 2 = 32,000 chars ~= 8k tokens. Both sit well inside the
-    # 50,000-token input cap (~200k chars @ 4 chars/token), leaving ample
-    # headroom for the system prompt, memory injection, and conversation.
-    _DEFAULT_SUMMARY_CAP = 220
-    _WEB_TOOL_SUMMARY_CAPS = {
-        "web_search": 1600,
-        "web_fetch": 2200,
+    MAX_REPAIR_ATTEMPTS = 2
+
+    # gemma4:31b supports 256K tokens — output and task caps raised accordingly
+    MAX_TOKENS_PER_REQUEST = 8192    # was 4000
+    MAX_TOKENS_PER_TASK = 200000     # was 50000 (soft warning threshold only)
+
+
+    # Default char caps for tool summaries injected into model context.
+    # gemma4:31b has 256K token window — these defaults are now generous.
+    _DEFAULT_SUMMARY_CAP = 1500      # was 220
+    _TOOL_SUMMARY_CAPS = {
+        "browser_tabs": 8000,        # was 2000
+        "browser_read_page": 12000,  # was 3000
+        "browser_screenshot": 1000,  # was 400
     }
-    # The continuation-task slice scales down from the normal cap by the same
-    # ratio the previous 160-char slice used against the 220-char default
-    # (160/220 ~= 0.73), so web content still gets proportionally more room.
-    _CONTINUATION_SUMMARY_CAP = 160
+    _CONTINUATION_SUMMARY_CAP = 1000  # was 160 — continuation tasks see rich context
     _CONTINUATION_SCALE = _CONTINUATION_SUMMARY_CAP / _DEFAULT_SUMMARY_CAP
 
     def _tool_summary_cap(self, tool_name: str, *, continuation: bool = False) -> int:
         """Per-tool char cap for a tool-result summary in the model context."""
-        cap = self._WEB_TOOL_SUMMARY_CAPS.get(tool_name, self._DEFAULT_SUMMARY_CAP)
+        cap = self._TOOL_SUMMARY_CAPS.get(tool_name, self._DEFAULT_SUMMARY_CAP)
         if continuation:
             cap = round(cap * self._CONTINUATION_SCALE)
         return cap
@@ -141,6 +133,19 @@ class ModelDecisionEngine:
         self.adapter = get_adapter()
         self.token_count = 0
         self.decision_history: List[Dict[str, Any]] = []
+        self._pending_tool_calls: List[Dict[str, Any]] = []
+        
+        from backend.core.config import settings
+        self._DEFAULT_SUMMARY_CAP = settings.tool_summary_cap_default
+        self._TOOL_SUMMARY_CAPS = {
+            # Browser tools — now fully configurable via settings
+            "browser_tabs": getattr(settings, "tool_summary_cap_browser_tabs", 8000),
+            "browser_read_page": getattr(settings, "tool_summary_cap_browser_read_page", 12000),
+            "browser_screenshot": getattr(settings, "tool_summary_cap_browser_screenshot", 1000),
+        }
+        self._CONTINUATION_SUMMARY_CAP = round(self._DEFAULT_SUMMARY_CAP * 0.73)
+        self._CONTINUATION_SCALE = self._CONTINUATION_SUMMARY_CAP / self._DEFAULT_SUMMARY_CAP
+        
         self.context_builder = ModelContextBuilder(
             db_session=db_session,
             tool_summary_cap=lambda tool_name: self._tool_summary_cap(tool_name),
@@ -251,7 +256,8 @@ class ModelDecisionEngine:
         normalized_goal: Optional[str],
         event_history: List[Dict[str, Any]],
         current_state: str,
-        pending_question: Optional[str] = None
+        pending_question: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Build conversation context for the model."""
         return self.context_builder.build_context(
@@ -262,6 +268,7 @@ class ModelDecisionEngine:
             event_history=event_history,
             current_state=current_state,
             pending_question=pending_question,
+            session_id=session_id,
         )
 
     _REASONING_FIELDS = frozenset({
@@ -325,19 +332,35 @@ class ModelDecisionEngine:
                     message="Model returned empty response"
                 )
             
-            # We expect exactly ONE tool call; some models emit multiple.
-            # Take only the first and discard the rest (instead of rejecting
-            # outright) so the task can continue.
-            if len(tool_calls) > 1:
-                logger.warning(
-                    "Model returned %d parallel tool calls; using only the first",
-                    len(tool_calls),
+            # Parse all tool calls into a list for sequential execution
+            parsed_tool_calls = []
+            for tc in tool_calls:
+                fn = tc.get('function', {})
+                dt = fn.get('name', '')
+                raw = fn.get('arguments', {})
+                if isinstance(raw, str):
+                    try:
+                        parsed_args = json.loads(raw)
+                    except json.JSONDecodeError as e:
+                        raise ModelDecisionError(
+                            code="INVALID_JSON",
+                            message=f"Failed to parse arguments: {str(e)}"
+                        )
+                else:
+                    parsed_args = raw or {}
+                parsed_tool_calls.append({'decision_type': dt, 'args': parsed_args})
+
+            if len(parsed_tool_calls) > 1:
+                logger.info(
+                    "Model returned %d tool calls; executing sequentially",
+                    len(parsed_tool_calls),
                 )
-            
-            tool_call = tool_calls[0]
-            function = tool_call.get('function', {})
-            decision_type = function.get('name', '')
-            
+
+            # First tool call is the primary decision
+            primary = parsed_tool_calls[0]
+            decision_type = primary['decision_type']
+            args = primary['args']
+
             # Validate decision type
             valid_types = [
                 DecisionType.COMPLETE_TASK,
@@ -346,20 +369,7 @@ class ModelDecisionEngine:
                 DecisionType.RUN_SKILL,
                 DecisionType.EXECUTE_TOOL
             ]
-            
-            # Parse arguments (Ollama may return an object or a JSON string)
-            raw_args = function.get('arguments', {})
-            if isinstance(raw_args, str):
-                try:
-                    args = json.loads(raw_args)
-                except json.JSONDecodeError as e:
-                    raise ModelDecisionError(
-                        code="INVALID_JSON",
-                        message=f"Failed to parse arguments: {str(e)}"
-                    )
-            else:
-                args = raw_args or {}
-            
+
             if decision_type not in valid_types:
                 # The model may call a registered tool directly instead of
                 # wrapping it in execute_tool - map that to EXECUTE_TOOL. Only
@@ -379,6 +389,8 @@ class ModelDecisionEngine:
                     message=f"Unknown decision type: {decision_type}"
                 )
             
+            # Store extra tool calls for sequential execution by the loop
+            self._pending_tool_calls = parsed_tool_calls[1:] if len(parsed_tool_calls) > 1 else []
             return decision_type, args
             
         except ModelDecisionError:
@@ -398,7 +410,8 @@ class ModelDecisionEngine:
         current_state: str,
         pending_question: Optional[str] = None,
         repair_context: Optional[str] = None,
-        budget: Optional[TaskBudget] = None
+        budget: Optional[TaskBudget] = None,
+        session_id: Optional[str] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Make a decision for the current task state.
@@ -425,7 +438,8 @@ class ModelDecisionEngine:
             normalized_goal=normalized_goal,
             event_history=event_history,
             current_state=current_state,
-            pending_question=pending_question
+            pending_question=pending_question,
+            session_id=session_id,
         )
         
         # Add repair context if this is a repair attempt
@@ -442,11 +456,17 @@ class ModelDecisionEngine:
         formatted_tools = format_tools_for_ollama(tool_metadata)
         
         try:
-            # Call Ollama Cloud
-            response = await self.adapter.execute_tool_call(
-                messages=messages,
-                tools=formatted_tools,
-                max_tokens=self.MAX_TOKENS_PER_REQUEST
+            # Call Ollama Cloud under a hard deadline so a slow/unresponsive
+            # cloud call cannot leave the task loop hanging silently.
+            from backend.core.config import settings
+            decision_timeout = getattr(settings, "decision_timeout_seconds", 120.0)
+            response = await asyncio.wait_for(
+                self.adapter.execute_tool_call(
+                    messages=messages,
+                    tools=formatted_tools,
+                    max_tokens=self.MAX_TOKENS_PER_REQUEST
+                ),
+                timeout=decision_timeout,
             )
             
             # Track tokens (estimate)
@@ -492,7 +512,13 @@ class ModelDecisionEngine:
     def get_token_usage(self) -> int:
         """Get total tokens used for this task."""
         return self.token_count
-    
+
     def get_decision_history(self) -> List[Dict[str, Any]]:
-        """Get decision history for this task."""
-        return self.decision_history.copy()
+        """Get the decision history for this task."""
+        return self.decision_history
+
+    def pop_pending_tool_calls(self) -> List[Dict[str, Any]]:
+        """Get and clear pending tool calls for sequential execution."""
+        pending = self._pending_tool_calls
+        self._pending_tool_calls = []
+        return pending.copy()

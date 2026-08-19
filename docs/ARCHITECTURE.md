@@ -9,15 +9,26 @@ Tauri shell that drives the handshake is now scaffolded
 global-stop shortcut) and buildable on `windows-latest` via the CI `tauri-build`
 job; the interactive clean-machine release run remains the manual gate.
 
+**Strategic framing:** this repository defines the **trusted runtime core** of a
+larger intelligence system. The runtime boundary in this ADR remains strict:
+local, auditable, evidence-driven execution on one Windows machine. Higher-order
+planning, memory, and conversational intelligence may evolve above this layer,
+but they must not bypass its policy, verification, or task-ledger guarantees.
+See [`docs/INTELLIGENCE_ARCHITECTURE.md`](INTELLIGENCE_ARCHITECTURE.md).
+
 ## Decision
 
-Sythion (Synth) v1 is a Windows 10/11, standard-user personal desktop assistant. It is
-a visible, single-task application: the owner submits a typed or in-window
-voice request, watches durable events, can stop the work, and receives only
-verified outcomes or an explicit failure/uncertainty.
+Sythion (Synth) v1, as implemented in this repository, is the Windows 10/11
+**trusted local runtime core** and user-facing desktop operator for a broader
+intelligence system. At this layer it is a visible, single-task application:
+the owner submits a typed or in-window voice request, watches durable events,
+can stop the work, and receives only verified outcomes or an explicit
+failure/uncertainty.
 
-The product is not an autonomous agent, browser agent, shell, service, remote
-control system, scheduler, background listener, or self-modifying system.
+This runtime layer is not an unbounded autonomous agent, browser agent, shell,
+service, remote control system, scheduler, background listener, or
+self-modifying system. Broader intelligence may be layered above it, but this
+runtime contract remains deliberately narrow.
 
 ## Approved target shape
 
@@ -83,7 +94,7 @@ The packaged shell (`src-tauri/`) is the only production entrypoint:
 - **Sidecar launch + handshake** (`src/sidecar.rs`): writes a fresh random
   token to `%LOCALAPPDATA%\Sythion (Synth)\token.json`, picks a free loopback port,
   spawns exactly one `python -m uvicorn backend.main:app` with
-  `Sythion (Synth)_HANDSHAKE_TOKEN_FILE` + `Sythion (Synth)_PORT` (never the token on the command
+  `SYTHION_HANDSHAKE_TOKEN_FILE` + `SYTHION_PORT` (never the token on the command
   line), and polls `sidecar.json` for the bound port. The spawned `Child` is
   kept and killed on app exit, so no orphan sidecar survives.
 - **Bridge command** (`get_bridge_config`): the single IPC surface the
@@ -289,8 +300,11 @@ map "Voice assets" row is marked passing.
 ## Declarative skills and retention (implemented)
 
 The prototype `skills_system.py` (executable Python handlers) was replaced by
-`backend/services/skill_engine.py`: skills are pure declarative, versioned
-workflows over the policy-filtered read-only tool subset.
+a declarative skill stack: `backend/services/skill_runtime.py` owns validated,
+versioned workflow execution over the policy-filtered read-only tool subset,
+`backend/services/skill_proposals.py` owns proposal growth/promotion, and
+`backend/services/skill_engine.py` remains the compatibility facade used by
+existing callers.
 
 - **Restrictive references**: step inputs are literal scalars or exactly one of
   `inputs.<field>` (a declared skill parameter) or
@@ -348,6 +362,6 @@ touched. Write-only endpoints: `GET /api/v1/secrets`, `PUT
 ## References
 
 - Product requirements and non-negotiable safety rules:
-  `C:\Ai\Sythion (Synth)_FINAL_HANDOFF_BRIEF.md`
+  `C:\Ai\SYTHION_FINAL_HANDOFF_BRIEF.md`
 - Executable verification plan:
   `C:\Ai\sythion\docs\acceptance-test-map.md`

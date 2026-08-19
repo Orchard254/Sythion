@@ -1,190 +1,114 @@
 # Sythion (Synth) Real-World Testing Guide
 
-## ✅ System Readiness Status
+## Purpose
 
-**All 74 tests passing** - Core functionality verified:
-- Task management & crash recovery
-- Voice pipeline (VAD, STT, TTS)
-- Tool execution system
-- GUI automation tools
-- Integration workflows
+This guide is for **manual / operator-style validation** of the trusted runtime
+core. For automated test commands and the current verified baseline, see
+[`docs/TESTING.md`](docs/TESTING.md).
 
-## ⚠️ Required Configuration Before Testing
+## Before you test
 
-### 1. LLM Connection (CRITICAL)
+Read first:
 
-Sythion (Synth) requires **Ollama Cloud API credentials** to make decisions:
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md)
+- [`docs/acceptance-test-map.md`](docs/acceptance-test-map.md)
+
+## Current verified automated baseline
+
+Already verified in this workspace:
+
+- Full backend suite: **692 passed, 32 skipped** (32 skipped = 27 power/network real-system tests + 3 volume system-audio tests + 2 symlink privilege tests)
+- Acceptance suite: **196 passed, 2 skipped**
+
+The two skipped acceptance tests are the symbolic-link privilege skips in
+`backend/tests/acceptance/test_canonical_file_checks.py`.
+
+## Runtime configuration before manual testing
+
+### Cloud authentication
+
+For development convenience you may use `.env` or shell environment variables.
+Use the real `SYTHION_` prefix, for example:
+
+```text
+SYTHION_OLLAMA_CLOUD_BASE_URL=https://ollama.com
+SYTHION_OLLAMA_API_KEY=your_api_key_here
+SYTHION_FILE_ROOTS=C:/Users/YourName/Documents,C:/Users/YourName/Downloads
+```
+
+For the intended runtime path, prefer the write-only secret flow and the
+onboarding model-selection flow rather than relying on a hard-coded selected
+model string.
+
+### Start the sidecar in development
+
+From the repository root (with auto-reload on file edits):
 
 ```bash
-# Create .env file in sythion/backend/
-cd sythion/backend
-cat > .env << EOF
-Sythion (Synth)_OLLAMA_CLOUD_BASE_URL=https://ollama.com
-Sythion (Synth)_OLLAMA_API_KEY=your_api_key_here
-Sythion (Synth)_SELECTED_MODEL=qwen2.5:7b
-EOF
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload --reload-dir backend
 ```
 
-**Get your API key:**
-1. Visit https://ollama.com
-2. Sign up / Log in
-3. Go to API settings
-4. Generate API key
-5. Copy to `.env` file
+### Optional smoke test
 
-**Verify connection:**
-```bash
-cd sythion/backend
-python -c "from backend.adapters.ollama_adapter import get_adapter; import asyncio; adapter = get_adapter(); print('Connected:', asyncio.run(adapter.check_health()))"
-```
-
-### 2. File Security Roots (REQUIRED)
-
-Define approved directories for file operations:
+With the sidecar running:
 
 ```bash
-# Add to .env file
-Sythion (Synth)_FILE_ROOTS=/home/user/Documents,/home/user/Downloads
+python scripts/smoke_test.py --all
 ```
 
-On Windows:
-```
-Sythion (Synth)_FILE_ROOTS=C:\Users\YourName\Documents,C:\Users\YourName\Downloads
-```
+## Manual validation scenarios
 
-### 3. Database Path
+### 1. Health and startup
 
-```bash
-# Add to .env file
-Sythion (Synth)_DATABASE_PATH=/home/user/.local/share/sythion/sythion.db
-```
+- start the backend/sidecar cleanly;
+- verify `/api/v1/health` responds;
+- confirm startup logs do not report missing critical configuration other than
+  intentionally unset dev items.
 
-On Windows:
-```
-Sythion (Synth)_DATABASE_PATH=C:\Users\YourName\AppData\Local\Sythion (Synth)\sythion.db
-```
+### 2. Task lifecycle
 
-## 🚀 Starting the Backend
+- create a simple read-only task (for example: time or battery);
+- verify the task moves through created/running/completed;
+- verify the result is evidence-based rather than free-form narration;
+- verify task events are present.
 
-```bash
-cd sythion/backend
-pip install -r requirements.txt
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
-```
+### 3. Cancellation
 
-## 🧪 Testing Scenarios
+- start a task that runs long enough to stop;
+- invoke stop through the UI or API;
+- verify no subsequent OS action begins after cancellation is accepted.
 
-### Test 1: Health Check
-```bash
-curl http://127.0.0.1:8000/api/health
-```
+### 4. File-root boundary
 
-Expected response:
-```json
-{
-  "status": "healthy",
-  "version": "0.1.0",
-  "database_connected": true,
-  "cloud_configured": true
-}
-```
+- test an in-root read or write;
+- test an out-of-root target and confirm deterministic rejection;
+- do not treat manual root widening as a code fix.
 
-### Test 2: Create a Simple Task
-```bash
-curl -X POST http://127.0.0.1:8000/api/tasks \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_CONTROL_TOKEN" \
-  -d '{
-    "original_request": "What time is it?",
-    "normalized_goal": "Tell the user the current time"
-  }'
-```
+### 5. GUI/manual fixture tests
 
-### Test 3: Voice Session (Optional)
-```bash
-# Start voice session
-curl -X POST http://127.0.0.1:8000/api/voice/start
+- use the dedicated fixture app or other approved Windows-native targets;
+- verify bounded observation/focus/invoke/value behavior;
+- verify elevated or unsafe targets are denied.
 
-# Returns session_id for audio streaming
-```
+### 6. Voice/privacy checks
 
-## 📋 Acceptance Test Checklist
+- enable voice mode intentionally;
+- verify capture starts only while expected;
+- verify voice assets are installed explicitly, not downloaded at startup;
+- verify local stop behavior if voice features are under test.
 
-#### Phase 1: Core Task Flow
-- [ ] Task creation starts execution loop
-- [ ] LLM makes observe → act → verify decisions
-- [ ] Task completes with success/failure
-- [ ] Events are logged immutably
+## Release-style checks still requiring manual execution
 
-#### Phase 2: User Interaction
-- [ ] LLM requests clarification when needed
-- [ ] User can reply to pending questions
-- [ ] Task resumes after user input
-- [ ] Conversation history is preserved
+These remain important even with strong automated coverage:
 
-#### Phase 3: Crash Recovery (NEW)
-- [ ] Stale lease detection marks task as `interrupted`
-- [ ] Resume endpoint restores interrupted tasks
-- [ ] Re-observation occurs before continuing mutations
-- [ ] Audit trail shows interruption and recovery
+- packaged Tauri app launch/shutdown behavior;
+- clean-machine install/launch/stop/restart/upgrade/uninstall;
+- stale-sidecar and stale-lease recovery under real operator conditions.
 
-#### Voice Pipeline (NEW)
-- [ ] VAD detects speech vs silence
-- [ ] STT transcribes audio to text
-- [ ] TTS converts responses to speech
-- [ ] Voice session manages state correctly
+## Notes
 
-## 🔍 Debugging Tips
-
-### LLM Connection Issues
-```bash
-# Test Ollama connectivity
-curl -H "Authorization: Bearer YOUR_KEY" https://ollama.com/api/tags
-
-# Check logs for errors
-tail -f uvicorn.log | grep -i ollama
-```
-
-### Task Stuck in Running State
-```bash
-# Check lease status
-curl http://127.0.0.1:8000/api/tasks/{task_id}
-
-# Force release (if crashed)
-# Restart backend - stale lease will be detected automatically
-```
-
-### Voice Not Working
-```bash
-# Verify dependencies
-python -c "import webrtcvad, whispercpp, pyttsx3; print('Voice deps OK')"
-
-# Check audio devices (Windows)
-# Ensure microphone permissions are granted
-```
-
-## 📊 Expected Performance
-
-- **Task startup**: < 2 seconds
-- **LLM decision**: 1-5 seconds (depending on model)
-- **Tool execution**: < 1 second (most tools)
-- **Voice processing**: Real-time (< 500ms latency)
-
-## ⛔ Known Limitations
-
-1. **Platform**: Windows 10/11 only (some features degrade gracefully on Linux/Mac)
-2. **Browser Automation**: Intentionally not supported (security constraint)
-3. **Elevated Privileges**: Not required, but limits some system operations
-4. **Concurrent Tasks**: Single task execution (lease-based serialization)
-
-## 📝 Next Steps After Testing
-
-1. Document any bugs or unexpected behavior
-2. Record performance metrics
-3. Test edge cases (network failures, large files, etc.)
-4. Validate security constraints (file roots, no browser automation)
-5. Prepare Phase 4 roadmap based on findings
-
----
-
-**Support**: Check `/workspace/sythion/docs/` for architecture details and API documentation.
+- This file is intentionally a practical operator checklist, not the canonical
+  architecture or status source.
+- If this guide ever conflicts with `docs/ARCHITECTURE.md` or
+  `docs/PROJECT_STATUS.md`, those documents win.

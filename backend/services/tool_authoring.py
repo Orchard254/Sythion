@@ -92,7 +92,6 @@ def validate_tool_name(name: str) -> List[str]:
         "gui_focus", "gui_invoke", "gui_set_value",
         "memory_store", "memory_recall", "memory_forget", "memory_link",
         "memory_recall_related", "activity_recall",
-        "web_search", "web_fetch",
     })
     if name in _BUILTIN_NAMES:
         errors.append(f"Tool name {name!r} collides with a built-in tool")
@@ -259,6 +258,8 @@ def sandbox_test(proposal: ToolProposal, timeout_seconds: int = 10) -> SandboxRe
     start_time = time.monotonic()
 
     # Build restricted namespace
+    from backend.tools.executor import BaseTool
+    from backend.api.schemas import ToolOutput
     restricted_globals = {
         "__builtins__": {
             # Allow basic types and functions
@@ -281,6 +282,10 @@ def sandbox_test(proposal: ToolProposal, timeout_seconds: int = 10) -> SandboxRe
             "__build_class__": __build_class__,
             "__name__": "__main__",
         },
+        # Pre-populate base classes so tool implementations can inherit
+        # without relying on import working inside the restricted env
+        "BaseTool": BaseTool,
+        "ToolOutput": ToolOutput,
     }
 
     try:
@@ -411,6 +416,23 @@ def approve_tool_proposal(
     proposal.decided_at = datetime.utcnow()
     db.commit()
     db.refresh(proposal)
+
+    # Dynamically load and register the approved tool with the executor
+    try:
+        namespace = {"__builtins__": __builtins__}
+        exec(proposal.implementation, namespace)
+        for obj in namespace.values():
+            if (
+                isinstance(obj, type)
+                and hasattr(obj, "execute")
+                and not getattr(obj, "__abstractmethods__", None)
+                and hasattr(obj, "name")
+            ):
+                tool_executor.register_tool(obj())
+                logger.info("Registered approved tool '%s' with executor", proposal.name)
+                break
+    except Exception as e:
+        logger.warning("Failed to register approved tool '%s': %s", proposal.name, e)
 
     logger.info("Approved tool proposal %s (%s) in guarded mode", proposal.id, proposal.name)
     return proposal

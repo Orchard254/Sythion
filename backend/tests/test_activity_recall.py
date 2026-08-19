@@ -31,13 +31,13 @@ def _now():
     return datetime.utcnow()
 
 
-def _add_event(session, task_id, created_at, tool_name="web_search", summary=None, event_type="tool.executed", params=None):
+def _add_event(session, task_id, created_at, tool_name="file_read", summary=None, event_type="tool.executed", params=None):
     ev = TaskEvent(
         task_id=task_id,
         event_type=event_type,
         event_data=json.dumps({
             "tool_name": tool_name,
-            "params": params or {"q": "SECRET_PARAM_VALUE"},
+            "params": params or {"path": "test.txt"},
             "model_summary": summary or f"ran {tool_name}",
             "output": {"raw": "RAW_OUTPUT_PAYLOAD"},
             "success": True,
@@ -97,18 +97,18 @@ async def test_activity_recall_default_end_is_now(activity_db):
 @pytest.mark.asyncio
 async def test_activity_recall_tool_name_filter(activity_db):
     session = activity_db
-    _add_event(session, "t1", _now() - timedelta(hours=1), tool_name="web_search", summary="searched")
+    _add_event(session, "t1", _now() - timedelta(hours=1), tool_name="file_read", summary="searched")
     _add_event(session, "t2", _now() - timedelta(hours=1), tool_name="file_list", summary="listed")
     session.commit()
 
     tool = ActivityRecallTool()
     out = await tool.execute(ActivityRecallInput(
         start_time=_now() - timedelta(hours=2),
-        tool_name="web_search",
+        tool_name="file_read",
     ))
     assert out.success is True
     assert out.data["count"] == 1
-    assert out.data["events"][0]["tool_name"] == "web_search"
+    assert out.data["events"][0]["tool_name"] == "file_read"
     assert "listed" not in [e["summary"] for e in out.data["events"]]
 
 
@@ -186,7 +186,7 @@ async def test_activity_recall_never_leaks_raw_params_or_output(activity_db):
         session,
         "t1",
         _now() - timedelta(hours=1),
-        tool_name="web_search",
+        tool_name="file_read",
         summary="bounded summary text",
         params={"q": "TOP_SECRET_QUERY"},
     )

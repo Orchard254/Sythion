@@ -15,7 +15,13 @@ import httpx
 
 
 def _get_token_and_url():
-    """Read the control token from sidecar.json and build the base URL."""
+    """Read the control token from sidecar.json and build the base URL.
+
+    NOTE: This path is intentionally duplicated from ``storage.handshake_path()``
+    because cli.py is a standalone script that runs outside the backend context
+    (no PYTHONPATH, no backend imports). If ``storage.py`` changes the path,
+    this must be updated to match.
+    """
     sidecar_path = os.path.join(
         os.environ.get("LOCALAPPDATA", ""),
         "Sythion (Synth)",

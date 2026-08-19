@@ -21,11 +21,11 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from backend.models.database import MemoryEdge
-from backend.tools.memory_tools import _RELATION_RE
+from backend.tools.persistent_memory_tools import _RELATION_RE
 
 logger = logging.getLogger(__name__)
 
-CONSOLIDATION_SYSTEM_PROMPT = """You are the memory consolidation module of a personal desktop assistant.
+CONSOLIDATION_SYSTEM_PROMPT = """You are the memory consolidation module of the trusted local runtime persona of a larger intelligence system.
 
 Your job: read a recent user conversation and the assistant's current persistent
 memory, then produce a memory consolidation plan. This is "pre-storage
@@ -147,6 +147,54 @@ def apply_edge_decay(db, now: Optional[datetime] = None) -> Dict[str, int]:
             decayed, marked_stale,
         )
     return {"decayed": decayed, "marked_stale": marked_stale}
+
+
+# --- Memory pruning (remove old/unused entries) ----------------------------
+MEMORY_PRUNE_DAYS = 30  # entries not accessed in this many days are pruned
+MEMORY_MIN_KEEP = 10    # always keep at least this many entries
+
+
+def prune_stale_memories(db, now: Optional[datetime] = None) -> Dict[str, int]:
+    """Remove memory entries not accessed in MEMORY_PRUNE_DAYS.
+
+    Safety: always keeps at least MEMORY_MIN_KEEP entries. Profile entries
+    (category='profile') are never pruned. Deletion cascades to edges.
+    Returns {"pruned": n, "kept": n}.
+    """
+    from backend.models.database import MemoryEntry, MemoryEdge
+
+    now = now or datetime.utcnow()
+    cutoff = now - timedelta(days=MEMORY_PRUNE_DAYS)
+
+    all_entries = db.query(MemoryEntry).order_by(MemoryEntry.updated_at.desc()).all()
+    if len(all_entries) <= MEMORY_MIN_KEEP:
+        return {"pruned": 0, "kept": len(all_entries)}
+
+    prunable = []
+    for entry in all_entries:
+        if entry.category == "profile":
+            continue  # never prune profile entries
+        last_seen = entry.last_accessed_at or entry.updated_at
+        if last_seen and last_seen < cutoff:
+            prunable.append(entry)
+
+    # Reserve space for minimum keep
+    max_prune = max(0, len(all_entries) - MEMORY_MIN_KEEP)
+    prunable = prunable[:max_prune]
+
+    pruned = 0
+    for entry in prunable:
+        # Remove edges first
+        db.query(MemoryEdge).filter(
+            (MemoryEdge.source_key == entry.key) | (MemoryEdge.target_key == entry.key)
+        ).delete(synchronize_session=False)
+        db.delete(entry)
+        pruned += 1
+
+    if pruned:
+        db.commit()
+        logger.info("Memory pruning: %d entries pruned, %d kept", pruned, len(all_entries) - pruned)
+    return {"pruned": pruned, "kept": len(all_entries) - pruned}
 
 
 def list_edges(db, status: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -443,7 +491,7 @@ async def consolidate_memory(
         to_apply_edges.append(op)
 
     from backend.api.schemas import MemoryStoreInput, MemoryLinkInput
-    from backend.tools.memory_tools import MemoryStoreTool, MemoryLinkTool
+    from backend.tools.persistent_memory_tools import MemoryStoreTool, MemoryLinkTool
 
     store = MemoryStoreTool()
     link = MemoryLinkTool()

@@ -4,17 +4,18 @@ Tests for GUI tools (Phase D: Windows-only, dedicated MTA worker, bounded).
 GUI tools run every UIA call on one dedicated COM MTA worker thread, gate on a
 live desktop session, deny security surfaces / elevated targets, prefer UIA
 patterns, and use single-shot physical-pixel input followed by re-observation.
-Tests substitute a fake driver at ``tools.gui_tools._uia_driver`` while the real
+Tests substitute a fake driver at ``backend.tools.gui_tools._uia_driver`` while the real
 MTA worker thread still handles dispatch.
 """
 import asyncio
 import ctypes
+import sys
 import threading
 
 import pytest
 from unittest.mock import Mock
 
-from tools.gui_tools import (
+from backend.tools.gui_tools import (
     GUIObserveTool,
     GUIFocusTool,
     GUIClickTool,
@@ -30,7 +31,7 @@ from tools.gui_tools import (
     _is_elevated,
     _session_accepts_input,
 )
-from api.schemas import (
+from backend.api.schemas import (
     GUIObserveInput,
     GUIFocusInput,
     GUIClickInput,
@@ -39,6 +40,10 @@ from api.schemas import (
     GUIInvokeInput,
     GUISetValueInput,
 )
+
+
+# The string-based monkeypatch targets below (e.g. "backend.tools.gui_tools._uia_driver")
+# resolve via sys.modules to the actual module where _uia_driver is defined.
 
 
 class FakeDriver:
@@ -88,10 +93,10 @@ class FakeDriver:
 def gui_env(monkeypatch):
     """Deterministic GUI environment: fake driver, open desktop gate, safe target, foreground window."""
     fake = FakeDriver()
-    monkeypatch.setattr("tools.gui_tools._uia_driver", fake)
-    monkeypatch.setattr("tools.gui_tools._desktop_gate", lambda: None)
-    monkeypatch.setattr("tools.gui_tools._target_window_safety", lambda hwnd, title: None)
-    monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.GetForegroundWindow", lambda: 0x1234)
+    monkeypatch.setattr("backend.tools.gui_tools._uia_driver", fake)
+    monkeypatch.setattr("backend.tools.gui_tools._desktop_gate", lambda: None)
+    monkeypatch.setattr("backend.tools.gui_tools._target_window_safety", lambda hwnd, title: None)
+    monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.GetForegroundWindow", lambda: 0x1234)
     return fake
 
 
@@ -141,42 +146,42 @@ class TestUIAWorker:
 
 class TestDesktopGate:
     def test_desktop_gate_locked(self, monkeypatch):
-        monkeypatch.setattr("tools.gui_tools._session_accepts_input", lambda: False)
+        monkeypatch.setattr("backend.tools.gui_tools._session_accepts_input", lambda: False)
         error = _desktop_gate()
         assert error is not None
         assert error["code"] == "SESSION_LOCKED"
 
     def test_desktop_gate_open(self, monkeypatch):
-        monkeypatch.setattr("tools.gui_tools._session_accepts_input", lambda: True)
+        monkeypatch.setattr("backend.tools.gui_tools._session_accepts_input", lambda: True)
         assert _desktop_gate() is None
 
     def test_session_accepts_input_rejects_no_input_desktop(self, monkeypatch):
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.OpenInputDesktop", lambda *a, **k: 0)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.OpenInputDesktop", lambda *a, **k: 0)
         assert _session_accepts_input() is False
 
     def test_session_accepts_input_rejects_secure_desktop(self, monkeypatch):
         def fake_open(*a, **k):
             return 1
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.OpenInputDesktop", fake_open)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.OpenInputDesktop", fake_open)
 
         def fake_getinfo(h, info, buf, size, needed):
             ctypes_string = ctypes.create_unicode_buffer("Winlogon")
             ctypes.memmove(buf, ctypes_string, (len(ctypes_string.value) + 1) * 2)
             return 1
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.GetUserObjectInformationW", fake_getinfo)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.GetUserObjectInformationW", fake_getinfo)
         assert _session_accepts_input() is False
 
     def test_session_accepts_input_accepts_default_desktop(self, monkeypatch):
         def fake_open(*a, **k):
             return 1
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.OpenInputDesktop", fake_open)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.OpenInputDesktop", fake_open)
 
         def fake_getinfo(h, info, buf, size, needed):
             ctypes_string = ctypes.create_unicode_buffer("Default")
             ctypes.memmove(buf, ctypes_string, (len(ctypes_string.value) + 1) * 2)
             return 1
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.GetUserObjectInformationW", fake_getinfo)
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.CloseDesktop", lambda h: 1)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.GetUserObjectInformationW", fake_getinfo)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.CloseDesktop", lambda h: 1)
         assert _session_accepts_input() is True
 
 
@@ -185,65 +190,65 @@ class TestTargetWindowSafety:
         assert _target_window_safety(0, "x")["code"] == "WINDOW_NOT_FOUND"
 
     def test_hidden_window_denied(self, monkeypatch):
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.IsWindowVisible", lambda h: 0)
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.IsIconic", lambda h: 0)
-        monkeypatch.setattr("tools.gui_tools._window_class", lambda h: "Notepad")
-        monkeypatch.setattr("tools.gui_tools._window_title", lambda h: "Untitled - Notepad")
-        monkeypatch.setattr("tools.gui_tools._window_pid", lambda h: 100)
-        monkeypatch.setattr("tools.gui_tools._is_elevated", lambda pid: False)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.IsWindowVisible", lambda h: 0)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.IsIconic", lambda h: 0)
+        monkeypatch.setattr("backend.tools.gui_tools._window_class", lambda h: "Notepad")
+        monkeypatch.setattr("backend.tools.gui_tools._window_title", lambda h: "Untitled - Notepad")
+        monkeypatch.setattr("backend.tools.gui_tools._window_pid", lambda h: 100)
+        monkeypatch.setattr("backend.tools.gui_tools._is_elevated", lambda pid: False)
         assert _target_window_safety(0xABC, "x")["code"] == "TARGET_NOT_VISIBLE"
 
     def test_minimized_window_denied(self, monkeypatch):
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.IsWindowVisible", lambda h: 1)
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.IsIconic", lambda h: 1)
-        monkeypatch.setattr("tools.gui_tools._window_class", lambda h: "Notepad")
-        monkeypatch.setattr("tools.gui_tools._window_title", lambda h: "Untitled - Notepad")
-        monkeypatch.setattr("tools.gui_tools._window_pid", lambda h: 100)
-        monkeypatch.setattr("tools.gui_tools._is_elevated", lambda pid: False)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.IsWindowVisible", lambda h: 1)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.IsIconic", lambda h: 1)
+        monkeypatch.setattr("backend.tools.gui_tools._window_class", lambda h: "Notepad")
+        monkeypatch.setattr("backend.tools.gui_tools._window_title", lambda h: "Untitled - Notepad")
+        monkeypatch.setattr("backend.tools.gui_tools._window_pid", lambda h: 100)
+        monkeypatch.setattr("backend.tools.gui_tools._is_elevated", lambda pid: False)
         assert _target_window_safety(0xABC, "x")["code"] == "TARGET_MINIMIZED"
 
     def test_secure_desktop_class_denied(self, monkeypatch):
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.IsWindowVisible", lambda h: 1)
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.IsIconic", lambda h: 0)
-        monkeypatch.setattr("tools.gui_tools._window_class", lambda h: "Consent UI Class")
-        monkeypatch.setattr("tools.gui_tools._window_title", lambda h: "Do you want to allow changes?")
-        monkeypatch.setattr("tools.gui_tools._window_pid", lambda h: 100)
-        monkeypatch.setattr("tools.gui_tools._is_elevated", lambda pid: False)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.IsWindowVisible", lambda h: 1)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.IsIconic", lambda h: 0)
+        monkeypatch.setattr("backend.tools.gui_tools._window_class", lambda h: "Consent UI Class")
+        monkeypatch.setattr("backend.tools.gui_tools._window_title", lambda h: "Do you want to allow changes?")
+        monkeypatch.setattr("backend.tools.gui_tools._window_pid", lambda h: 100)
+        monkeypatch.setattr("backend.tools.gui_tools._is_elevated", lambda pid: False)
         assert _target_window_safety(0xABC, "x")["code"] == "SECURITY_SURFACE_DENIED"
 
     def test_security_title_denied(self, monkeypatch):
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.IsWindowVisible", lambda h: 1)
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.IsIconic", lambda h: 0)
-        monkeypatch.setattr("tools.gui_tools._window_class", lambda h: "ApplicationFrameWindow")
-        monkeypatch.setattr("tools.gui_tools._window_title", lambda h: "User Account Control")
-        monkeypatch.setattr("tools.gui_tools._window_pid", lambda h: 100)
-        monkeypatch.setattr("tools.gui_tools._is_elevated", lambda pid: False)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.IsWindowVisible", lambda h: 1)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.IsIconic", lambda h: 0)
+        monkeypatch.setattr("backend.tools.gui_tools._window_class", lambda h: "ApplicationFrameWindow")
+        monkeypatch.setattr("backend.tools.gui_tools._window_title", lambda h: "User Account Control")
+        monkeypatch.setattr("backend.tools.gui_tools._window_pid", lambda h: 100)
+        monkeypatch.setattr("backend.tools.gui_tools._is_elevated", lambda pid: False)
         assert _target_window_safety(0xABC, "x")["code"] == "SECURITY_SURFACE_DENIED"
 
     def test_elevated_process_denied(self, monkeypatch):
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.IsWindowVisible", lambda h: 1)
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.IsIconic", lambda h: 0)
-        monkeypatch.setattr("tools.gui_tools._window_class", lambda h: "Notepad")
-        monkeypatch.setattr("tools.gui_tools._window_title", lambda h: "admin.txt - Notepad")
-        monkeypatch.setattr("tools.gui_tools._window_pid", lambda h: 100)
-        monkeypatch.setattr("tools.gui_tools._is_elevated", lambda pid: True)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.IsWindowVisible", lambda h: 1)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.IsIconic", lambda h: 0)
+        monkeypatch.setattr("backend.tools.gui_tools._window_class", lambda h: "Notepad")
+        monkeypatch.setattr("backend.tools.gui_tools._window_title", lambda h: "admin.txt - Notepad")
+        monkeypatch.setattr("backend.tools.gui_tools._window_pid", lambda h: 100)
+        monkeypatch.setattr("backend.tools.gui_tools._is_elevated", lambda pid: True)
         assert _target_window_safety(0xABC, "x")["code"] == "ELEVATED_TARGET_DENIED"
 
     def test_safe_window_allowed(self, monkeypatch):
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.IsWindowVisible", lambda h: 1)
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.IsIconic", lambda h: 0)
-        monkeypatch.setattr("tools.gui_tools._window_class", lambda h: "Notepad")
-        monkeypatch.setattr("tools.gui_tools._window_title", lambda h: "notes.txt - Notepad")
-        monkeypatch.setattr("tools.gui_tools._window_pid", lambda h: 100)
-        monkeypatch.setattr("tools.gui_tools._is_elevated", lambda pid: False)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.IsWindowVisible", lambda h: 1)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.IsIconic", lambda h: 0)
+        monkeypatch.setattr("backend.tools.gui_tools._window_class", lambda h: "Notepad")
+        monkeypatch.setattr("backend.tools.gui_tools._window_title", lambda h: "notes.txt - Notepad")
+        monkeypatch.setattr("backend.tools.gui_tools._window_pid", lambda h: 100)
+        monkeypatch.setattr("backend.tools.gui_tools._is_elevated", lambda pid: False)
         assert _target_window_safety(0xABC, "x") is None
 
     def test_is_elevated_uses_integrity_rid(self, monkeypatch):
-        monkeypatch.setattr("tools.gui_tools._integrity_rid", lambda pid: 4096)
+        monkeypatch.setattr("backend.tools.gui_tools._integrity_rid", lambda pid: 4096)
         assert _is_elevated(100) is False
-        monkeypatch.setattr("tools.gui_tools._integrity_rid", lambda pid: 12288)
+        monkeypatch.setattr("backend.tools.gui_tools._integrity_rid", lambda pid: 12288)
         assert _is_elevated(100) is True
-        monkeypatch.setattr("tools.gui_tools._integrity_rid", lambda pid: None)
+        monkeypatch.setattr("backend.tools.gui_tools._integrity_rid", lambda pid: None)
         assert _is_elevated(100) is False
 
 
@@ -276,15 +281,15 @@ class TestHotkeyValidation:
         assert _key_vk("mute") == 0xAD
 
     def test_schema_description_lists_whole_whitelist(self):
-        from api.schemas import GUIHotkeyInput
-        from core.hotkeys import HOTKEY_KEYS
+        from backend.api.schemas import GUIHotkeyInput
+        from backend.core.hotkeys import HOTKEY_KEYS
+        from backend.tools.gui_tools import _VALID_HOTKEY_KEYS
         keys_field = GUIHotkeyInput.model_fields["keys"]
         desc = keys_field.description or ""
         assert "JSON array" in desc
         for key in sorted(HOTKEY_KEYS):
             assert key in desc
         # The whitelist the runtime enforces is exactly the set the model sees.
-        from tools.gui_tools import _VALID_HOTKEY_KEYS
         assert _VALID_HOTKEY_KEYS == HOTKEY_KEYS
 
 
@@ -312,7 +317,7 @@ class TestGUIObserveTool:
 
     @pytest.mark.asyncio
     async def test_observe_locked_session_gate(self, gui_env, monkeypatch):
-        monkeypatch.setattr("tools.gui_tools._desktop_gate",
+        monkeypatch.setattr("backend.tools.gui_tools._desktop_gate",
                             lambda: {"code": "SESSION_LOCKED", "message": "locked"})
         tool = GUIObserveTool()
         result = await tool.execute(GUIObserveInput(window_title="Notepad"))
@@ -381,7 +386,7 @@ class TestGUIClickTool:
 
     @pytest.mark.asyncio
     async def test_click_foreground_required(self, gui_env, monkeypatch):
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.GetForegroundWindow", lambda: 0x9999)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.GetForegroundWindow", lambda: 0x9999)
         tool = GUIClickTool()
         result = await tool.execute(GUIClickInput(window_title="Notepad", x=10, y=20))
         assert result.success is False
@@ -408,7 +413,7 @@ class TestGUITypeTool:
 
     @pytest.mark.asyncio
     async def test_type_foreground_required(self, gui_env, monkeypatch):
-        monkeypatch.setattr("tools.gui_tools.ctypes.windll.user32.GetForegroundWindow", lambda: 0x9999)
+        monkeypatch.setattr("backend.tools.gui_tools.ctypes.windll.user32.GetForegroundWindow", lambda: 0x9999)
         tool = GUITypeTool()
         result = await tool.execute(GUITypeInput(window_title="Notepad", text="x"))
         assert result.success is False
@@ -419,7 +424,7 @@ class TestGUITypeTool:
         """TOCTOU regression: caller-thread check passes, then a user click-away
         changes the foreground window before the worker-side SendInput. The send
         must be rejected, not silently misdirected."""
-        from tools.gui_tools import _UIADriver
+        from backend.tools.gui_tools import _UIADriver
 
         # Real driver with a stubbed observe (no comtypes); the worker re-check
         # runs inside type_text right before the (also stubbed) send.
@@ -431,19 +436,19 @@ class TestGUITypeTool:
             "pid": 999,
             "observed_at": 0.0,
         }
-        monkeypatch.setattr("tools.gui_tools._uia_driver", driver)
-        monkeypatch.setattr("tools.gui_tools._desktop_gate", lambda: None)
-        monkeypatch.setattr("tools.gui_tools._target_window_safety", lambda hwnd, title: None)
+        monkeypatch.setattr("backend.tools.gui_tools._uia_driver", driver)
+        monkeypatch.setattr("backend.tools.gui_tools._desktop_gate", lambda: None)
+        monkeypatch.setattr("backend.tools.gui_tools._target_window_safety", lambda hwnd, title: None)
 
         sent = []
-        monkeypatch.setattr("tools.gui_tools._send_unicode_text", lambda text: sent.append(text))
+        monkeypatch.setattr("backend.tools.gui_tools._send_unicode_text", lambda text: sent.append(text))
 
         # 1st call (caller-thread check) matches target hwnd 0x1234; 2nd call
         # (worker-side re-check, immediately before the send) is a different
         # window the user just clicked.
         foreground_returns = iter([0x1234, 0x9999])
         monkeypatch.setattr(
-            "tools.gui_tools.ctypes.windll.user32.GetForegroundWindow",
+            "backend.tools.gui_tools.ctypes.windll.user32.GetForegroundWindow",
             lambda: next(foreground_returns),
         )
 
@@ -476,7 +481,7 @@ class TestGUIHotkeyTool:
         """TOCTOU regression: caller-thread check passes, then the foreground
         window changes before the worker-side SendInput. The hotkey must be
         rejected, not dispatched to the newly-focused window."""
-        from tools.gui_tools import _UIADriver
+        from backend.tools.gui_tools import _UIADriver
 
         driver = _UIADriver()
         driver.observe = lambda title, depth, count: {
@@ -486,16 +491,16 @@ class TestGUIHotkeyTool:
             "pid": 999,
             "observed_at": 0.0,
         }
-        monkeypatch.setattr("tools.gui_tools._uia_driver", driver)
-        monkeypatch.setattr("tools.gui_tools._desktop_gate", lambda: None)
-        monkeypatch.setattr("tools.gui_tools._target_window_safety", lambda hwnd, title: None)
+        monkeypatch.setattr("backend.tools.gui_tools._uia_driver", driver)
+        monkeypatch.setattr("backend.tools.gui_tools._desktop_gate", lambda: None)
+        monkeypatch.setattr("backend.tools.gui_tools._target_window_safety", lambda hwnd, title: None)
 
         sent = []
-        monkeypatch.setattr("tools.gui_tools._send_hotkey", lambda keys: sent.append(list(keys)))
+        monkeypatch.setattr("backend.tools.gui_tools._send_hotkey", lambda keys: sent.append(list(keys)))
 
         foreground_returns = iter([0x1234, 0x9999])
         monkeypatch.setattr(
-            "tools.gui_tools.ctypes.windll.user32.GetForegroundWindow",
+            "backend.tools.gui_tools.ctypes.windll.user32.GetForegroundWindow",
             lambda: next(foreground_returns),
         )
 
@@ -596,3 +601,31 @@ class TestGUIRegistration:
         for tool in [GUIFocusTool(), GUIClickTool(), GUITypeTool(),
                      GUIHotkeyTool(), GUIInvokeTool(), GUISetValueTool()]:
             assert tool.get_policy_requirements()["requires_confirmation"] is True
+
+
+class TestUIAWorkerRecovery:
+    def test_worker_restart(self):
+        worker = _UIAWorker()
+        worker.start()
+        assert worker.run(lambda: 100) == 100
+        worker.restart()
+        assert worker.run(lambda: 200) == 200
+        worker.stop()
+
+    @pytest.mark.asyncio
+    async def test_run_on_worker_retries_and_recovers(self, monkeypatch):
+        from backend.tools.gui_tools import _run_on_worker, _gui_worker
+        attempts = 0
+
+        def flaky_fn():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("transient COM failure")
+            return "recovered"
+
+        result = await _run_on_worker(flaky_fn)
+        assert result == "recovered"
+        assert attempts == 2
+        _gui_worker.stop()
+

@@ -1,8 +1,17 @@
 # Sythion (Synth) Development Progress Report
 
+> **Historical archive only:** this report preserves an older development
+> snapshot and should not be used as the current project baseline. See
+> `PROJECT_STATUS.md`, `ARCHITECTURE.md`, and `INTELLIGENCE_ARCHITECTURE.md`
+> for the live direction.
+
 ## Executive Summary
 
-The Sythion (Synth) Windows desktop assistant has achieved **Phase 2 Complete** status with full voice processing pipeline implementation. The system now features:
+This report captures an older development snapshot from a previous phase of the
+project. Its milestone labels, feature descriptions, and test counts are
+historical rather than current authority.
+
+At the time, the project was summarized as follows:
 - ✅ Phase 0: Core LLM Orchestration Loop (66 passing tests)
 - ✅ Phase 1: GUI Automation Tools (7 cross-platform tools)
 - ✅ Phase 2: Voice Processing Pipeline (VAD, STT, TTS, audio capture)

@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.models.database import Task, TaskEvent, RunnerLease
+from backend.core.config import settings
 from backend.api.schemas import TaskState
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,7 @@ class TaskRunner:
                 existing.owner_nonce = nonce
                 existing.process_id = id(self)
                 existing.heartbeat = datetime.utcnow()
-                existing.expires_at = datetime.utcnow() + timedelta(seconds=30)
+                existing.expires_at = datetime.utcnow() + timedelta(seconds=settings.lease_timeout_seconds)
                 existing.last_task_id = task_id
                 self.db.commit()
                 self._lease_nonce = nonce
@@ -79,7 +80,7 @@ class TaskRunner:
                 owner_nonce=nonce,
                 process_id=id(self),
                 heartbeat=datetime.utcnow(),
-                expires_at=datetime.utcnow() + timedelta(seconds=30),
+                expires_at=datetime.utcnow() + timedelta(seconds=settings.lease_timeout_seconds),
                 last_task_id=task_id,
             )
             self.db.add(lease)
@@ -106,7 +107,7 @@ class TaskRunner:
             return False
 
         lease.heartbeat = datetime.utcnow()
-        lease.expires_at = datetime.utcnow() + timedelta(seconds=30)
+        lease.expires_at = datetime.utcnow() + timedelta(seconds=settings.lease_timeout_seconds)
         if task_id:
             lease.last_task_id = task_id
             self._current_task_id = task_id
@@ -157,6 +158,23 @@ class TaskRunner:
                     "note": "Task was running when runner lease expired. Resume will re-observe before continuing."
                 })
             self.db.commit()
+            try:
+                from backend.services.work_state import sync_objective_state_for_task
+            except ImportError:
+                from services.work_state import sync_objective_state_for_task
+
+            try:
+                sync_objective_state_for_task(
+                    self.db,
+                    task,
+                    event_type="task.interrupted",
+                    event_data={
+                        "reason": "runner_crash_or_restart",
+                        "note": "Task was running when runner lease expired. Resume will re-observe before continuing.",
+                    },
+                )
+            except Exception as exc:
+                logger.warning("Could not sync objective state for interrupted task %s: %s", task_id, exc)
             logger.info(f"Marked task {task_id} as interrupted due to stale lease")
 
     def _append_event(self, task_id: str, event_type: str, event_data: Dict[str, Any]) -> TaskEvent:
@@ -282,7 +300,7 @@ class TaskRunner:
 
         # Update state
         task.state = new_state.value
-        task.version += 1
+        task.version += 1  # Audit counter only — concurrency is guaranteed by the lease, not by version checking.
         task.updated_at = datetime.utcnow()
 
         # Apply additional updates
@@ -292,6 +310,26 @@ class TaskRunner:
         self._append_event(task_id, event_type, event_data)
         self.db.commit()
         self.db.refresh(task)
+
+        try:
+            from backend.services.work_state import sync_objective_state_for_task
+        except ImportError:
+            from services.work_state import sync_objective_state_for_task
+
+        try:
+            sync_objective_state_for_task(
+                self.db,
+                task,
+                event_type=event_type,
+                event_data=event_data,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not sync objective state for task %s transition %s: %s",
+                task_id,
+                event_type,
+                exc,
+            )
 
         return task
 
@@ -388,6 +426,24 @@ class TaskRunner:
         })
         self.db.commit()
         self.db.refresh(task)
+
+        try:
+            from backend.services.work_state import sync_objective_state_for_task
+        except ImportError:
+            from services.work_state import sync_objective_state_for_task
+
+        try:
+            sync_objective_state_for_task(
+                self.db,
+                task,
+                event_type="task.cancelled",
+                event_data={
+                    "reason": "user_requested",
+                    "via": "global_stop",
+                },
+            )
+        except Exception as exc:
+            logger.warning("Could not sync objective state for force-cancelled task %s: %s", task_id, exc)
         return task
 
 

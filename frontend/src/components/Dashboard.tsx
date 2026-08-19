@@ -362,6 +362,11 @@ export function Dashboard() {
             {activeTask.final_result && (
               <p style={styles.taskResult}>{activeTask.final_result}</p>
             )}
+            {activeTask.state === 'failed' && activeTask.terminal_reason && (
+              <p style={{ ...styles.taskResult, color: '#f44336' }}>
+                <strong>Failed:</strong> {activeTask.terminal_reason}
+              </p>
+            )}
             {(activeTask.state === 'running' || activeTask.state === 'waiting_for_user') && (
               <button onClick={() => handleCancelTask(activeTask.id)} style={styles.stopButton}>
                 ■ Stop
@@ -406,6 +411,11 @@ export function Dashboard() {
                     <p style={styles.taskRequest}>{task.original_request}</p>
                     {task.final_result && (
                       <p style={styles.taskResult}>{task.final_result}</p>
+                    )}
+                    {task.state === 'failed' && task.terminal_reason && (
+                      <p style={{ ...styles.taskResult, color: '#f44336' }}>
+                        <strong>Failed:</strong> {task.terminal_reason}
+                      </p>
                     )}
                     <div style={styles.taskActions}>
                       {(task.state === 'running' || task.state === 'waiting_for_user') && (

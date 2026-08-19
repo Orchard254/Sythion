@@ -54,7 +54,7 @@ executed clean-machine release run and the signing/update pipeline.
 - Backend wheels are built and signed in CI (deterministic builds,
   `signtool` on the exe/dll/wheel artifacts).
 - The manifest/handshake files never embed the certificate or any secret.
-- Dev builds run with `Sythion (Synth)_DEV` and are visibly unsigned (no impersonation
+- Dev builds run with `SYTHION_DEV` and are visibly unsigned (no impersonation
   of the signed channel).
 
 ## 6. Distribution

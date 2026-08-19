@@ -77,13 +77,13 @@ class TestConsequentialClassification:
     def test_loopback_url_escalates_to_consequential(self):
         params = {"url": "http://127.0.0.1:8000/api/v1/admin"}
         assert classify_action(
-            "web_fetch", _READONLY_POLICY, params
+            "file_read", _READONLY_POLICY, params
         ) == Importance.CONSEQUENTIAL
 
     def test_localhost_url_escalates_to_consequential(self):
         params = {"url": "http://localhost:8000/secret"}
         assert classify_action(
-            "web_fetch", _READONLY_POLICY, params
+            "file_read", _READONLY_POLICY, params
         ) == Importance.CONSEQUENTIAL
 
 
@@ -136,8 +136,8 @@ class TestAutonomyMode:
             "file_write",
             _MEDIUM_RISK_POLICY,
             autonomy_level="guarded",
-        ) is True  # still needs approval if not yet approved
-        # The approved_by_user check is in the caller, not needs_approval
+            approved_by_user=True,
+        ) is False
 
 
 # ---------------------------------------------------------------------------

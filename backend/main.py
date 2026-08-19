@@ -17,8 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from .core.config import settings, generate_control_token
 from .core.logging_config import configure_logging
 from .core.db_manager import init_database, DatabaseManager
-from .models.database import set_db_manager
-from .core.auth import LocalControlBoundaryMiddleware, control_origins, create_auth_dependency
+from .models.database import set_db_manager, get_db_manager
+from .core.auth import LocalControlBoundaryMiddleware, control_origins
 from .api.schemas import HealthResponse, ErrorResponse
 from .api.routes import router as api_router
 from .tools.executor import ToolExecutor
@@ -78,11 +78,58 @@ async def lifespan(app: FastAPI):
     # used by the API/routes (and thus the model) always matches this one.
     from .tools.registry import register_all_tools
     register_all_tools(tool_executor)
+
+    # Load any previously approved tools from the database
+    # Use restricted builtins matching the sandbox policy to prevent
+    # elevated access at startup (no eval/exec/open/compile/etc.).
+    try:
+        from .models.database import ProposedTool
+        from .core.db_manager import DatabaseManager
+        from .tools.executor import BaseTool as _BaseTool
+        from .api.schemas import ToolOutput as _ToolOutput
+        db_mgr = get_db_manager()
+        with db_mgr.get_session() as session:
+            approved = session.query(ProposedTool).filter_by(status="enabled").all()
+            restricted_builtins = {
+                "__import__": __import__,
+                "__build_class__": __build_class__,
+                "__name__": "__main__",
+            }
+            for proposal in approved:
+                try:
+                    # SECURITY TRUST BOUNDARY: exec() on DB-stored code.
+                    # The DB is local-only (ACL'd by storage.py), but if
+                    # tampered with, arbitrary code runs in this process.
+                    # restricted_builtins limits __import__ access, but
+                    # the code can still call any registered tool or
+                    # access objects in this namespace.
+                    namespace = {"__builtins__": restricted_builtins, "BaseTool": _BaseTool, "ToolOutput": _ToolOutput}
+                    exec(proposal.implementation, namespace)
+                    for obj in namespace.values():
+                        if (
+                            isinstance(obj, type)
+                            and hasattr(obj, "execute")
+                            and not getattr(obj, "__abstractmethods__", None)
+                            and hasattr(obj, "name")
+                        ):
+                            tool_executor.register_tool(obj())
+                            logger.info("Loaded approved tool '%s' from database", proposal.name)
+                            break
+                except Exception as e:
+                    logger.warning("Failed to load approved tool '%s': %s", proposal.name, e)
+    except Exception as e:
+        logger.warning("Could not load approved tools from database: %s", e)
         
     logger.info(f"Registered {len(tool_executor.list_tools())} tools")
-    
+
+    # Expose the fully-loaded executor to the API/routes dependency so the
+    # model engine and skill engine share the same tool set (including
+    # DB-approved tools) instead of creating a separate bare executor.
+    from .api.routes import get_tool_executor
+    get_tool_executor._executor = tool_executor
+
     # Phase A handshake: expose the bound port + token to the launcher. The
-    # launcher pre-selects a free port (Sythion (Synth)_PORT or --port) and reads this
+    # launcher pre-selects a free port (`SYTHION_PORT` or --port) and reads this
     # file to learn where the sidecar is listening.
     from .core.handshake import write_handshake
     try:
@@ -90,9 +137,9 @@ async def lifespan(app: FastAPI):
         logger.info(f"Handshake written for port {settings.port}")
     except Exception as e:  # pragma: no cover - filesystem dependent
         logger.warning(f"Could not write handshake file: {e}")
-    
+
     yield
-    
+
     # Shutdown
     logger.info("Sythion (Synth) shutting down...")
     if profile_lock is not None:
@@ -102,7 +149,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Sythion (Synth) Backend",
-    description="Windows 10/11 Personal Desktop Assistant API",
+    description="Trusted Windows 10/11 runtime core API for a larger intelligence system",
     version="0.1.0",
     lifespan=lifespan
 )
@@ -116,6 +163,10 @@ app.add_middleware(
 # Include API routes
 app.include_router(api_router, prefix="/api/v1")
 
+from backend.api.browser_bridge_routes import router as browser_router
+app.include_router(browser_router)
+
+
 # CORS middleware - only allow local origin
 app.add_middleware(
     CORSMiddleware,
@@ -124,11 +175,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-def get_auth():
-    """Get authentication dependency."""
-    return create_auth_dependency(control_token)
 
 
 @app.get("/health", response_model=HealthResponse)

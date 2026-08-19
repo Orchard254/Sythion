@@ -244,45 +244,19 @@ class TestModelDecisionEngine:
                     "tool_name": tool_name,
                     "success": True,
                     "model_summary": model_summary,
-                    "params": {"query": "x"} if tool_name == "web_search" else {},
+                    "params": {},
                 },
             }],
             current_state="running",
         )
 
-    def test_web_search_long_summary_survives_truncation(self, db_session, tool_executor):
-        """web_search's own bounded summary must reach the model larger than 220 chars."""
-        long_summary = "Top 5 results for 'python asyncio':\n" + "\n".join(
-            f"{i + 1}. Result headline number {i + 1} with a reasonably long title to exercise the truncation budget ({'pad' * 30})"
-            for i in range(5)
-        )
-        assert len(long_summary) > 220
-
-        messages = self._build_context_with_tool(
-            db_session, tool_executor, "web_search", long_summary
-        )
-
-        user_content = messages[1]["content"]
-        # The full 2000-char-bound summary survives into the Recent Activity
-        # block under the web_search budget (1600), not just a 220-char slice:
-        # a chunk well past the old 220-char cut is present verbatim.
-        assert long_summary[:300] in user_content
-        assert long_summary[220:500] in user_content
-
-        tool_turn = next(m for m in messages if m.get("role") == "tool")
-        assert any(
-            m.get("role") == "assistant" and m.get("tool_calls") for m in messages
-        )
-        assert long_summary[:300] in tool_turn["content"]
-        assert long_summary[220:500] in tool_turn["content"]
-
-    def test_web_fetch_long_summary_survives_truncation(self, db_session, tool_executor):
-        """web_fetch must preserve a meaningful chunk of page text in context."""
+    def test_file_read_long_summary_survives_truncation(self, db_session, tool_executor):
+        """file_read must preserve a meaningful chunk of page text in context."""
         long_page = ("fetched page text about deep learning " * 60).strip()
         assert len(long_page) > 220
 
         messages = self._build_context_with_tool(
-            db_session, tool_executor, "web_fetch", long_page
+            db_session, tool_executor, "file_read", long_page
         )
 
         user_content = messages[1]["content"]
@@ -294,19 +268,20 @@ class TestModelDecisionEngine:
         assert long_page[220:800] in tool_turn["content"]
 
     def test_non_web_tool_truncation_is_unchanged(self, db_session, tool_executor):
-        """Non-web tools keep the historical 220-char cap in context."""
-        long_summary = "B" * 1000
+        """Non-web tools keep the default 1500-char cap in context."""
+        long_summary = "B" * 3000
         messages = self._build_context_with_tool(
             db_session, tool_executor, "system_battery", long_summary
         )
 
         user_content = messages[1]["content"]
-        # Old cap retained: the summary is cut to 220 chars (~217 + '...').
-        assert "B" * 300 not in user_content
-        assert ("B" * 217 + "...") in user_content
+        # Default cap retained: the summary is bounded to 1500 chars (1497 + '...').
+        assert "B" * 2000 not in user_content
+        assert ("B" * 1497 + "...") in user_content
 
         tool_turn = next(m for m in messages if m.get("role") == "tool")
-        assert ("B" * 217 + "...") in tool_turn["content"]
+        assert ("B" * 1497 + "...") in tool_turn["content"]
+
 
 
 class TestTaskExecutionLoop:

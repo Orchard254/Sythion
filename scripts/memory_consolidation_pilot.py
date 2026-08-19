@@ -22,7 +22,7 @@ from backend.models.database import set_db_manager, MemoryEntry
 
 DB_PATH = r"C:\Users\Administrator\AppData\Local\Sythion (Synth)\sythion.db"
 
-SYSTEM_PROMPT = """You are the memory consolidation module of a personal desktop assistant.
+SYSTEM_PROMPT = """You are the memory consolidation module of the trusted local runtime persona of a larger intelligence system.
 
 Your job: read a recent user conversation and the assistant's current persistent
 memory, then produce a memory consolidation plan. This is "pre-storage

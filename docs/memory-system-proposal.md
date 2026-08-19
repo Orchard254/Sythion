@@ -1,5 +1,9 @@
 # Proposal: Cross-Session Memory System for Sythion
 
+**Status**: IMPLEMENTED — KNOWLEDGE.md has been removed and consolidated into
+project memory (SQLite-backed MCP server at `C:\Ai\project-memory\server.py`).
+All facts migrated, all references cleaned up (2026-08-10).
+
 ## Problem
 
 I (the LLM) lose all context between sessions. Every new conversation starts

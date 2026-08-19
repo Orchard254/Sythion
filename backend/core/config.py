@@ -32,13 +32,30 @@ class Settings(BaseSettings):
     # File roots (approved directories for file operations)
     file_roots: List[str] = []
     
-    # Task limits
+    # Task limits — gemma4:31b supports 256K tokens; raised accordingly
     max_actions_per_task: int = 100
     max_cloud_requests_per_task: int = 50
-    max_input_tokens: int = 50000
-    max_output_tokens: int = 4000
+    max_input_tokens: int = 200000   # soft warning threshold (not enforced hard)
+    max_output_tokens: int = 8192    # raised from 4000; model handles long outputs fine
     max_elapsed_time_seconds: int = 3600
     max_repair_attempts: int = 2
+
+    # Tool summary char caps — gemma4:31b has 256K context; raised from tiny defaults
+    tool_summary_cap_default: int = 1500       # was 220 — now shows full tool output
+    tool_summary_cap_browser_tabs: int = 8000  # was 2000 — all tabs always visible
+    tool_summary_cap_browser_read_page: int = 12000  # was 3000 — full page content
+    tool_summary_cap_browser_screenshot: int = 1000  # was 400 — full metadata
+
+    # Max seconds to wait for a single model decision before failing the task
+    # instead of hanging silently on a slow/unresponsive cloud call.
+    decision_timeout_seconds: float = 120.0
+
+    
+    # Continuation detection window (hours)
+    continuation_window_hours: int = 12
+    
+    # Runner lease timeout (seconds)
+    lease_timeout_seconds: int = 30
     
     # Voice
     voice_enabled: bool = True

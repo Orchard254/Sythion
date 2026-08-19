@@ -19,6 +19,7 @@ from backend.tools.executor import PolicyContext, ToolExecutor, ToolOutput
 from backend.models.database import Task, TaskEvent
 from backend.api.schemas import TaskState
 from backend.core.budgets import TaskBudget, BudgetExceededError
+from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,7 @@ class TaskExecutionLoop:
         # in a row (resets whenever a different call is proposed).
         self._last_call_fp: Optional[str] = None
         self._run_len: int = 0
+        self._consecutive_readonly: int = 0  # tracks consecutive read-only tool calls
         
     async def execute_task(self, task_id: str) -> None:
         """
@@ -96,6 +98,7 @@ class TaskExecutionLoop:
         
         repair_attempts = 0
         action_count = 0
+        refused_completions = 0  # consecutive complete_task calls refused by precondition guard
         budget = TaskBudget()
         
         # Start a lease heartbeat so long LLM calls don't let the lease
@@ -223,12 +226,20 @@ class TaskExecutionLoop:
                         )
                         break
                     
-                    # Try again, telling the model what went wrong
-                    repair_context = (
-                        f"Your previous decision was rejected: {e.message} "
-                        f"(code {e.code}). Respond with a valid tool call."
-                    )
+                    # Try again, telling the model what went wrong with actionable instructions
+                    if e.code == "MISSING_CONTROL_CALL":
+                        repair_context = (
+                            "CRITICAL ERROR: You outputted raw text instead of a tool call. "
+                            "You MUST call the 'complete_task' tool with your answer inside 'result' "
+                            "(e.g. complete_task(result=\"...\")). Do NOT output raw text."
+                        )
+                    else:
+                        repair_context = (
+                            f"Your previous decision was rejected: {e.message} "
+                            f"(code {e.code}). Respond with a valid tool call."
+                        )
                     continue
+
                 
                 # Re-check cancellation before executing: a cancel request may
                 # have arrived during the (slow) model call. A cancelled task
@@ -244,6 +255,7 @@ class TaskExecutionLoop:
                 # on a dead-end; if it keeps proposing the same call the task
                 # fails honestly and quickly.
                 fingerprint = None
+                
                 if decision_type == DecisionType.EXECUTE_TOOL:
                     fingerprint = self._call_fingerprint(params)
                     attempts = self._call_attempts.get(fingerprint, 0)
@@ -276,7 +288,9 @@ class TaskExecutionLoop:
                                 "reason": (
                                     f"This exact action was already attempted {attempts} "
                                     "time(s) without success and is now blocked. Propose a "
-                                    "different action, or complete/fail the task."
+                                    "different action (e.g. use gui_screenshot for visual inspection, "
+                                    "coordinate clicks gui_click, or alternative tools/window titles), "
+                                    "or complete/fail the task."
                                 ),
                             },
                         )
@@ -286,43 +300,44 @@ class TaskExecutionLoop:
                             f"{self._call_label(params)}"
                         )
                         continue
-                    # Spin guard: identical calls that keep succeeding but change
-                    # nothing are refused, then fail the task, so the model can't
-                    # burn the whole budget re-confirming the same state.
-                    if self._run_len >= self.REPEAT_SPIN_FAIL_LIMIT:
-                        await self._fail_task(
-                            task_id,
-                            code="SPINNING_ACTION",
-                            message=(
-                                f"Action {self._call_label(params)} was proposed "
-                                f"{self._run_len} consecutive times successfully without "
-                                "changing the result; aborting instead of spinning"
+# Spin guard: identical calls that keep succeeding but change
+                # nothing are refused, then fail the task, so the model can't
+                # burn the whole budget re-confirming the same state.
+                if self._run_len >= self.REPEAT_SPIN_FAIL_LIMIT:
+                    await self._fail_task(
+                        task_id,
+                        code="SPINNING_ACTION",
+                        message=(
+                            f"Action {self._call_label(params)} was proposed "
+                            f"{self._run_len} consecutive times successfully without "
+                            "changing the result; aborting instead of spinning"
+                        ),
+                    )
+                    break
+                if self._run_len >= self.REPEAT_SPIN_BLOCK_LIMIT:
+                    await self.runner.transition_state(
+                        task_id=task_id,
+                        new_state=TaskState.RUNNING,
+                        event_type="action.spin_blocked",
+                        event_data={
+                            "tool_name": params.get("tool_name"),
+                            "params": params.get("params", {}),
+                            "run_length": self._run_len,
+                            "reason": (
+                                f"This exact action has already succeeded "
+                                f"{self._run_len - 1} consecutive time(s) with no "
+                                "change. It is blocked. Proceed to the next step, "
+                                "try a different action, or complete/fail the task."
                             ),
-                        )
-                        break
-                    if self._run_len >= self.REPEAT_SPIN_BLOCK_LIMIT:
-                        await self.runner.transition_state(
-                            task_id=task_id,
-                            new_state=TaskState.RUNNING,
-                            event_type="action.spin_blocked",
-                            event_data={
-                                "tool_name": params.get("tool_name"),
-                                "params": params.get("params", {}),
-                                "run_length": self._run_len,
-                                "reason": (
-                                    f"This exact action has already succeeded "
-                                    f"{self._run_len - 1} consecutive time(s) with no "
-                                    "change. It is blocked. Proceed to the next step, "
-                                    "try a different action, or complete/fail the task."
-                                ),
-                            },
-                        )
-                        logger.warning(
-                            f"Blocked repeated spinning action for task {task_id}: "
-                            f"{self._call_label(params)}"
-                        )
-                        continue
-                else:
+                        },
+                    )
+                    logger.warning(
+                        f"Blocked repeated spinning action for task {task_id}: "
+                        f"{self._call_label(params)}"
+                    )
+                    continue
+
+                if decision_type != DecisionType.EXECUTE_TOOL:
                     self._last_call_fp = None
                     self._run_len = 0
 
@@ -335,6 +350,24 @@ class TaskExecutionLoop:
                     params=params
                 )
 
+                # Execute any pending tool calls from the same model response
+                if success:
+                    pending = self.model_engine.pop_pending_tool_calls()
+                    for pending_call in pending:
+                        p_type = pending_call["decision_type"]
+                        p_args = pending_call["args"]
+                        action_count += 1
+                        budget.record_action()
+                        p_success = await self._execute_decision(
+                            task_id=task_id,
+                            decision_type=p_type,
+                            params=p_args
+                        )
+                        if not p_success:
+                            logger.warning(f"Pending tool call {p_type} failed; stopping sequential execution")
+                            success = False
+                            break
+
                 if fingerprint:
                     if success:
                         self._call_attempts.pop(fingerprint, None)
@@ -343,8 +376,26 @@ class TaskExecutionLoop:
                             self._call_attempts.get(fingerprint, 0) + 1
 
                 if not success:
+                    if decision_type == DecisionType.COMPLETE_TASK:
+                        refused_completions += 1
+                        if refused_completions >= 3:
+                            await self._fail_task(
+                                task_id,
+                                code="COMPLETION_BLOCKED",
+                                message=(
+                                    "complete_task was refused 3 consecutive times because the "
+                                    "last mutating action failed with no resolution. "
+                                    "Use fail_task to report an honest failure instead."
+                                ),
+                            )
+                            break
+                    else:
+                        refused_completions = 0
                     # Action failed - let model decide next step
                     logger.warning(f"Action failed for task {task_id}, continuing loop")
+                else:
+                    refused_completions = 0
+
                 
                 # Check if task reached terminal state
                 task = await self.runner.get_task(task_id)
@@ -532,7 +583,14 @@ class TaskExecutionLoop:
 
         summary = params.get('result') or params.get('summary', 'Task completed successfully')
         warnings = params.get('warnings', [])
-        
+
+        # Validate the model's answer against actual tool output data.
+        # If the model under-reported (truncated a list, missed items), substitute
+        # the full tool result so the user always sees the complete answer.
+        task = self.db.query(Task).filter_by(id=task_id).first()
+        original_request = task.original_request if task else ""
+        summary = self._validate_and_enrich_result(task_id, original_request, summary)
+
         await self.runner.transition_state(
             task_id=task_id,
             new_state=TaskState.COMPLETED,
@@ -544,11 +602,101 @@ class TaskExecutionLoop:
             },
             final_result=summary
         )
-        
+
         logger.info(f"Task {task_id} completed: {summary}")
         return True
 
+    # ------------------------------------------------------------------ #
+    # Result validator                                                     #
+    # ------------------------------------------------------------------ #
+
+    _TRUNCATION_MARKERS = (
+        "[...",
+        "(truncated",
+        "remaining items",
+        "remaining tabs",
+        "more items",
+        "more tabs",
+        "partial list",
+        "truncated by system",
+        "truncated list",
+    )
+
+    def _validate_and_enrich_result(
+        self,
+        task_id: str,
+        original_request: str,
+        model_result: str,
+    ) -> str:
+        """Validate the model's completion result against actual tool output data.
+
+        Three checks run in order:
+
+        1. **Truncation marker check** — if the model's text contains a known
+           shortening phrase (e.g. ``[...``, ``(truncated``), replace it with
+           the full ``model_summary`` from the most recent successful tool event.
+
+        2. **Count mismatch check** — if the last successful tool event recorded
+           a structured ``count`` (e.g. 10 browser tabs) but the model's result
+           mentions fewer items by counting newline-separated list entries,
+           substitute the full tool ``model_summary``.
+
+        3. **Pass-through** — if neither check fires, return the model's result
+           unchanged.
+        """
+        events = self._get_event_history(task_id)
+
+        # Walk events newest-first to find the most recent successful tool result
+        successful_tool_events = [
+            e for e in reversed(events)
+            if e.get("event_type") == "tool.executed"
+            and e.get("event_data", {}).get("success")
+        ]
+
+        if not successful_tool_events:
+            return model_result
+
+        last_event_data = successful_tool_events[0].get("event_data", {})
+        full_model_summary = last_event_data.get("model_summary", "")
+        tool_output = last_event_data.get("output") or {}
+
+        # --- Check 1: Truncation markers ---
+        lower_result = model_result.lower()
+        if any(marker.lower() in lower_result for marker in self._TRUNCATION_MARKERS):
+            if full_model_summary:
+                logger.info(
+                    "Completion result for task %s contains truncation marker — "
+                    "substituting full tool model_summary.",
+                    task_id,
+                )
+                return full_model_summary
+            return model_result
+
+        # --- Check 2: Count mismatch for enumerable listing tools (e.g. browser_tabs, window_list) ---
+        last_tool_name = last_event_data.get("tool_name", "")
+        if last_tool_name in ("browser_tabs", "window_list") and isinstance(tool_output, dict):
+            reported_count = tool_output.get("count")
+            if isinstance(reported_count, int) and reported_count > 1:
+                # Count numbered items or bullet lines in the model's result
+                import re
+                list_lines = re.findall(r"^\s*(?:\d+\.|[-*•])", model_result, re.MULTILINE)
+                model_item_count = len(list_lines)
+                # Only overwrite if the model result is very short or severely undercounted on a pure list tool
+                if model_item_count < (reported_count // 2) and len(model_result) < 300 and full_model_summary:
+                    logger.info(
+                        "Completion result for task %s mentions only %d item(s) on %s (tool returned %d) — substituting full tool model_summary.",
+                        task_id,
+                        model_item_count,
+                        last_tool_name,
+                        reported_count,
+                    )
+                    return full_model_summary
+
+        return model_result
+
+
     def _completion_precondition_error(self, task_id: str) -> Optional[str]:
+
         """Return why evidence does not permit a successful completion.
 
         Only *mutating* tool failures block completion.  Read-only observation
@@ -771,6 +919,18 @@ class TaskExecutionLoop:
                 parameter_keys=list(tool_params.keys()),
             )
 
+        # Pre-action governance gate: check for prior failures on same target
+        gate_warning = await self._pre_action_gate(task_id, tool_name, tool_params)
+        if gate_warning:
+            # Log the warning as an event for audit trail
+            await self.runner.transition_state(
+                task_id=task_id,
+                new_state=TaskState.RUNNING,
+                event_type="pre_action.warning",
+                event_data=gate_warning,
+            )
+            # The warning will be included in the tool output so the model sees it
+
         async def _is_cancelled() -> bool:
             current = await self.runner.get_task(task_id)
             return current is not None and current.state == TaskState.CANCELLED.value
@@ -788,10 +948,11 @@ class TaskExecutionLoop:
         # Record event
         model_summary = result.model_summary
         if not model_summary and result.data is not None:
-            model_summary = json.dumps(result.data, default=str)[:200]
+            model_summary = json.dumps(result.data, default=str)[:1500]
         if not model_summary and result.error is not None:
-            model_summary = json.dumps(result.error, default=str)[:200]
+            model_summary = json.dumps(result.error, default=str)[:1500]
         await self.runner.transition_state(
+
             task_id=task_id,
             new_state=TaskState.RUNNING,  # Stay in running
             event_type="tool.executed",
@@ -816,6 +977,101 @@ class TaskExecutionLoop:
         else:
             logger.warning(f"Tool {tool_name} failed: {result.error}")
             return False
+
+    async def _pre_action_gate(
+        self,
+        task_id: str,
+        tool_name: str,
+        tool_params: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Check for prior failures on the same target before executing.
+
+        Queries TaskEvent for:
+        - action.started with same tool_name and matching target path (file tools)
+        - tool.executed with success=false or verification=failed on same target
+
+        Returns a structured warning dict if prior failures found, else None.
+        The caller logs the warning as an event and surfaces it to the model.
+        """
+        # Only apply to mutating file tools that have a path parameter
+        target_path = None
+        for key in ("path", "source_path", "destination_path", "target_path", "directory", "file_path"):
+            if key in tool_params and isinstance(tool_params[key], str):
+                target_path = tool_params[key]
+                break
+
+        if not target_path:
+            return None
+
+        # Normalize path for comparison
+        try:
+            from pathlib import Path
+            target_path = str(Path(target_path).expanduser().resolve())
+        except Exception:
+            pass
+
+        # Query for prior failures on this target within this task
+        events = (
+            self.db.query(TaskEvent)
+            .filter(TaskEvent.task_id == task_id)
+            .order_by(TaskEvent.sequence_num.desc())
+            .limit(50)
+            .all()
+        )
+
+        prior_failures = []
+        for event in events:
+            if event.event_type == "action.started":
+                try:
+                    ed = json.loads(event.event_data)
+                    if ed.get("tool_name") == tool_name:
+                        # Check if this action was on the same target
+                        param_keys = ed.get("parameter_keys", [])
+                        for pk in param_keys:
+                            if "path" in pk.lower() or pk in tool_params:
+                                prior_failures.append({
+                                    "action_id": ed.get("action_id"),
+                                    "tool_name": tool_name,
+                                    "sequence": event.sequence_num,
+                                    "created_at": event.created_at.isoformat() if event.created_at else None,
+                                })
+                                break
+                except Exception:
+                    pass
+            elif event.event_type == "tool.executed":
+                try:
+                    ed = json.loads(event.event_data)
+                    if ed.get("tool_name") == tool_name:
+                        # Check if this was on the same target
+                        params = ed.get("params", {})
+                        for pk in ("path", "source_path", "destination_path", "target_path", "directory", "file_path"):
+                            if pk in params and params[pk] == target_path:
+                                success = ed.get("success", True)
+                                verification = ed.get("verification", "passed")
+                                if not success or verification == "failed":
+                                    prior_failures.append({
+                                        "action_id": ed.get("action_id"),
+                                        "tool_name": tool_name,
+                                        "sequence": event.sequence_num,
+                                        "created_at": event.created_at.isoformat() if event.created_at else None,
+                                        "error": ed.get("error"),
+                                        "verification": verification,
+                                    })
+                                break
+                except Exception:
+                    pass
+
+        if not prior_failures:
+            return None
+
+        # Return structured warning
+        return {
+            "code": "PRIOR_FAILURE_DETECTED",
+            "message": f"This target has {len(prior_failures)} prior failure(s) in this task. Consider reviewing before retrying.",
+            "prior_failures": prior_failures,
+            "target_path": target_path,
+            "tool_name": tool_name,
+        }
 
     async def _save_conversation_turn(self, task_id: str, task: Task) -> None:
         """Delegate episodic conversation persistence to the intelligence hook layer."""

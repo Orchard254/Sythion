@@ -4,9 +4,41 @@ This document outlines the engineering principles and execution workflows that a
 
 ---
 
+## 0. Memory-First Protocol (New — Run Before Everything Else)
+
+**Before reading any source file or writing any code**, load the persistent project memory:
+
+```python
+import sys; sys.path.insert(0, r'C:\Ai\project-memory')
+from memory_store import prepare_task, recall, file_briefing
+
+# Session start: get full architectural briefing
+print(prepare_task("intent description", file_paths=["path/to/file_you_plan_to_edit.py"]))
+```
+
+This single call returns:
+- Architectural context, prior decisions, and known constraints from past sessions
+- File impact analysis — all dependencies, linked files, and refactor risks
+- Latest verified test baseline
+
+**After completing any coding task**, checkpoint atomically:
+
+```python
+from memory_store import checkpoint_task
+checkpoint_task(
+    summary="What was implemented and why",
+    components=[{"content": "Description", "file_path": "path/to/file.py", "importance": 4}],
+    decisions=[{"content": "Decision made", "rationale": "Why"}],
+    test_baseline="701 passed, 32 skipped",
+)
+```
+
+---
+
 ## 1. Context-First Investigation (Look Before You Leap)
 
-- **Read before writing**: Always inspect neighboring files, contracts, and existing test patterns before creating or modifying code.
+- **Query memory before reading files**: `recall("topic")` retrieves facts about any module or decision without opening files.
+- **Read before writing**: When memory doesn't cover it, inspect neighboring files, contracts, and existing test patterns before creating or modifying code.
 - **Mirror project style**: Match formatting, naming conventions, typing paradigms (Pydantic v2 `model_fields`, dataclasses, typing hints), and error handling choices.
 - **Verify dependencies**: Check `requirements.txt` or `package.json` to confirm available libraries before importing them. Never assume a package exists.
 
@@ -54,18 +86,28 @@ This document outlines the engineering principles and execution workflows that a
 
 ## 7. Persistent Memory & Intentional Knowledge Transfer
 
-- **Record key decisions**: Write significant architectural choices, bug fixes, and constraints into project memory immediately (`memory_write`).
-- **Document rationale**: Explain *why* a fix was made so future LLM instances understand the context and do not undo subtle bug fixes.
-- **Supersede outdated facts**: When design decisions change, supersede outdated memory entries (`memory_supersede`) to prevent conflicting guidance.
+Memory operations are not optional bookkeeping — they are **core workflow steps**:
+
+| Trigger | Action |
+|---|---|
+| Session start | `prepare_task(intent, file_paths)` — loads full architectural briefing |
+| Before opening a file | `file_briefing(path)` — impact analysis + constraints |
+| After reading a source file | `remember(category, content, file_path=..., importance=...)` — write findings immediately |
+| Before assuming anything factual | `recall("topic")` — query memory before guessing |
+| When a fact is wrong/stale | `store.supersede(old_id, new_content)` — never create a duplicate |
+| After completing a coding task | `checkpoint_task(summary, components, decisions, test_baseline)` |
+
+**Document rationale**: Explain *why* a fix was made so future LLM instances understand the context and do not undo subtle bug fixes.
 
 ---
 
 ## Summary Checklist for Every Coding Task
 
 ```text
-1. INVESTIGATE  → Read relevant files, contracts, and existing test patterns.
-2. PLAN         → Identify minimal edits needed; trace root cause if bug fixing.
-3. IMPLEMENT    → Make surgical edits matching existing codebase conventions.
-4. VERIFY       → Run import checks and execute test suite (pytest/vitest).
-5. RECORD       → Save implementation insights & decisions to project memory.
+0. MEMORY     → prepare_task(intent, file_paths)  — flight briefing before anything
+1. INVESTIGATE → recall(topic) + file_briefing(path) — verify without reading files cold
+2. PLAN        → Identify minimal edits needed; trace root cause if bug fixing
+3. IMPLEMENT   → Make surgical edits matching existing codebase conventions
+4. VERIFY      → Run import checks and execute test suite (pytest/vitest)
+5. CHECKPOINT  → checkpoint_task(summary, components, decisions, test_baseline)
 ```

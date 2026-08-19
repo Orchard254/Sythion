@@ -8,7 +8,10 @@ import os
 import tempfile
 import shutil
 
-from tools.executor import PolicyContext, ToolExecutor, BaseTool, ToolOutput
+try:
+    from backend.tools.executor import PolicyContext, ToolExecutor, BaseTool, ToolOutput
+except ImportError:
+    from backend.tools.executor import PolicyContext, ToolExecutor, BaseTool, ToolOutput
 from pydantic import BaseModel
 
 
@@ -124,38 +127,38 @@ class TestSystemTools:
     
     @pytest.fixture
     def system_time_tool(self):
-        from tools.system_tools import SystemTimeTool
+        from backend.tools.system_tools import SystemTimeTool
         return SystemTimeTool()
     
     @pytest.fixture
     def system_battery_tool(self):
-        from tools.system_tools import SystemBatteryTool
+        from backend.tools.system_tools import SystemBatteryTool
         return SystemBatteryTool()
     
     @pytest.fixture
     def system_disk_tool(self):
-        from tools.system_tools import SystemDiskTool
+        from backend.tools.system_tools import SystemDiskTool
         return SystemDiskTool()
     
     @pytest.fixture
     def system_processes_tool(self):
-        from tools.system_tools import SystemProcessesTool
+        from backend.tools.system_tools import SystemProcessesTool
         return SystemProcessesTool()
     
     @pytest.fixture
     def system_active_window_tool(self):
-        from tools.system_tools import SystemActiveWindowTool
+        from backend.tools.system_tools import SystemActiveWindowTool
         return SystemActiveWindowTool()
     
     @pytest.fixture
     def system_file_roots_tool(self):
-        from tools.system_tools import SystemFileRootsTool
+        from backend.tools.system_tools import SystemFileRootsTool
         return SystemFileRootsTool()
     
     @pytest.mark.asyncio
     async def test_get_time(self, system_time_tool):
         """Test getting current time"""
-        from api.schemas import SystemTimeInput
+        from backend.api.schemas import SystemTimeInput
         result = await system_time_tool.execute(SystemTimeInput())
         
         assert result.success is True
@@ -165,7 +168,7 @@ class TestSystemTools:
     @pytest.mark.asyncio
     async def test_get_battery_status_no_battery(self, system_battery_tool):
         """Test battery status when no battery is present"""
-        from api.schemas import SystemBatteryInput
+        from backend.api.schemas import SystemBatteryInput
         with patch('psutil.sensors_battery', return_value=None):
             result = await system_battery_tool.execute(SystemBatteryInput())
             
@@ -175,7 +178,7 @@ class TestSystemTools:
     @pytest.mark.asyncio
     async def test_get_disk_usage(self, system_disk_tool):
         """Test disk usage retrieval"""
-        from api.schemas import SystemDiskInput
+        from backend.api.schemas import SystemDiskInput
         result = await system_disk_tool.execute(SystemDiskInput(path="/"))
         
         assert result.success is True
@@ -186,7 +189,7 @@ class TestSystemTools:
     @pytest.mark.asyncio
     async def test_list_processes(self, system_processes_tool):
         """Test listing processes"""
-        from api.schemas import SystemProcessesInput
+        from backend.api.schemas import SystemProcessesInput
         result = await system_processes_tool.execute(SystemProcessesInput(limit=5))
         
         assert result.success is True
@@ -201,7 +204,7 @@ class TestSystemTools:
     @pytest.mark.asyncio
     async def test_list_processes_with_cpu(self, system_processes_tool):
         """Test listing processes with CPU stats"""
-        from api.schemas import SystemProcessesInput
+        from backend.api.schemas import SystemProcessesInput
         result = await system_processes_tool.execute(
             SystemProcessesInput(limit=5, include_cpu=True)
         )
@@ -214,7 +217,7 @@ class TestSystemTools:
     @pytest.mark.asyncio
     async def test_list_processes_with_memory(self, system_processes_tool):
         """Test listing processes with memory stats"""
-        from api.schemas import SystemProcessesInput
+        from backend.api.schemas import SystemProcessesInput
         result = await system_processes_tool.execute(
             SystemProcessesInput(limit=5, include_memory=True)
         )
@@ -227,7 +230,7 @@ class TestSystemTools:
     @pytest.mark.asyncio
     async def test_list_processes_with_children(self, system_processes_tool):
         """Test listing processes with child count"""
-        from api.schemas import SystemProcessesInput
+        from backend.api.schemas import SystemProcessesInput
         result = await system_processes_tool.execute(
             SystemProcessesInput(limit=5, include_children=True)
         )
@@ -239,7 +242,7 @@ class TestSystemTools:
     @pytest.mark.asyncio
     async def test_list_processes_sort_by_cpu(self, system_processes_tool):
         """Test sorting processes by CPU"""
-        from api.schemas import SystemProcessesInput
+        from backend.api.schemas import SystemProcessesInput
         result = await system_processes_tool.execute(
             SystemProcessesInput(limit=10, include_cpu=True, sort_by="cpu")
         )
@@ -252,7 +255,7 @@ class TestSystemTools:
     @pytest.mark.asyncio
     async def test_list_processes_sort_by_memory(self, system_processes_tool):
         """Test sorting processes by memory"""
-        from api.schemas import SystemProcessesInput
+        from backend.api.schemas import SystemProcessesInput
         result = await system_processes_tool.execute(
             SystemProcessesInput(limit=10, include_memory=True, sort_by="memory")
         )
@@ -265,7 +268,7 @@ class TestSystemTools:
     @pytest.mark.asyncio
     async def test_get_active_window_linux(self, system_active_window_tool):
         """Test getting active window on Linux"""
-        from api.schemas import SystemActiveWindowInput
+        from backend.api.schemas import SystemActiveWindowInput
         result = await system_active_window_tool.execute(SystemActiveWindowInput())
         
         # On Linux without GUI, should return unavailable or succeed with limited info
@@ -274,11 +277,11 @@ class TestSystemTools:
     @pytest.mark.asyncio
     async def test_file_roots_reports_approved_roots(self, system_file_roots_tool, monkeypatch, tmp_path):
         """The introspection tool reports exactly the enforced approved roots."""
-        from api.schemas import SystemFileRootsInput
+        from backend.api.schemas import SystemFileRootsInput
         one = tmp_path / "one"
         two = tmp_path / "two"
         monkeypatch.setattr(
-            "tools.file_tools._approved_roots",
+            "backend.tools.file_tools._approved_roots",
             lambda: [one.resolve(), two.resolve()],
         )
         result = await system_file_roots_tool.execute(SystemFileRootsInput())
@@ -292,8 +295,8 @@ class TestSystemTools:
     async def test_capabilities_reports_inventory_and_gaps(self):
         """The capability-introspection tool reflects the registered toolset,
         the per-mode model-visible subsets, and the known gaps."""
-        from api.schemas import SystemCapabilitiesInput
-        from tools.system_tools import SystemCapabilitiesTool
+        from backend.api.schemas import SystemCapabilitiesInput
+        from backend.tools.system_tools import SystemCapabilitiesTool
 
         result = await SystemCapabilitiesTool().execute(SystemCapabilitiesInput())
 
@@ -320,8 +323,8 @@ class TestSystemTools:
     @pytest.mark.asyncio
     async def test_volume_tool_reads_current_level(self, monkeypatch):
         """The volume tool reads the master volume via Core Audio COM."""
-        from tools.system_tools import SystemVolumeTool
-        from api.schemas import SystemVolumeInput
+        from backend.tools.system_tools import SystemVolumeTool
+        from backend.api.schemas import SystemVolumeInput
 
         tool = SystemVolumeTool()
         result = await tool.execute(SystemVolumeInput())
@@ -342,8 +345,8 @@ class TestSystemTools:
     @pytest.mark.asyncio
     async def test_volume_tool_set_volume(self, monkeypatch):
         """The volume tool can set volume level."""
-        from tools.system_tools import SystemVolumeTool
-        from api.schemas import SystemVolumeInput
+        from backend.tools.system_tools import SystemVolumeTool
+        from backend.api.schemas import SystemVolumeInput
 
         tool = SystemVolumeTool()
         result = await tool.execute(SystemVolumeInput(volume_percentage=50.0))
@@ -358,8 +361,8 @@ class TestSystemTools:
     @pytest.mark.asyncio
     async def test_volume_tool_set_mute(self, monkeypatch):
         """The volume tool can toggle mute state."""
-        from tools.system_tools import SystemVolumeTool
-        from api.schemas import SystemVolumeInput
+        from backend.tools.system_tools import SystemVolumeTool
+        from backend.api.schemas import SystemVolumeInput
 
         tool = SystemVolumeTool()
         result = await tool.execute(SystemVolumeInput(is_mute=True))
@@ -380,7 +383,7 @@ class TestFileTools:
         from pathlib import Path
         dirpath = tempfile.mkdtemp()
         monkeypatch.setattr(
-            "tools.file_tools._approved_roots",
+            "backend.tools.file_tools._approved_roots",
             lambda: [Path(dirpath).resolve()],
         )
         yield dirpath
@@ -389,8 +392,8 @@ class TestFileTools:
     @pytest.mark.asyncio
     async def test_list_directory(self, temp_dir):
         """Test listing directory contents"""
-        from tools.file_tools import FileListTool
-        from api.schemas import FileListInput
+        from backend.tools.file_tools import FileListTool
+        from backend.api.schemas import FileListInput
         
         tool = FileListTool()
         # Create test files
@@ -410,8 +413,8 @@ class TestFileTools:
     @pytest.mark.asyncio
     async def test_read_file(self, temp_dir):
         """Test reading a file"""
-        from tools.file_tools import FileReadTool
-        from api.schemas import FileReadInput
+        from backend.tools.file_tools import FileReadTool
+        from backend.api.schemas import FileReadInput
         
         tool = FileReadTool()
         test_content = "Hello, World!"
@@ -429,8 +432,8 @@ class TestFileTools:
     @pytest.mark.asyncio
     async def test_read_nonexistent_file(self, temp_dir):
         """Test reading a non-existent file"""
-        from tools.file_tools import FileReadTool
-        from api.schemas import FileReadInput
+        from backend.tools.file_tools import FileReadTool
+        from backend.api.schemas import FileReadInput
         
         tool = FileReadTool()
         missing = os.path.join(temp_dir, "does_not_exist.txt")
@@ -442,8 +445,8 @@ class TestFileTools:
     @pytest.mark.asyncio
     async def test_path_outside_roots_rejected(self):
         """Test that paths outside approved roots are rejected"""
-        from tools.file_tools import FileReadTool
-        from api.schemas import FileReadInput
+        from backend.tools.file_tools import FileReadTool
+        from backend.api.schemas import FileReadInput
         
         tool = FileReadTool()
         # Paths outside the approved roots must be refused (e.g. system dirs)
@@ -455,8 +458,8 @@ class TestFileTools:
     @pytest.mark.asyncio
     async def test_create_file(self, temp_dir):
         """Test creating a new file"""
-        from tools.file_tools import FileCreateTool
-        from api.schemas import FileCreateInput
+        from backend.tools.file_tools import FileCreateTool
+        from backend.api.schemas import FileCreateInput
         
         tool = FileCreateTool()
         file_path = os.path.join(temp_dir, "newfile.txt")
@@ -468,8 +471,8 @@ class TestFileTools:
     @pytest.mark.asyncio
     async def test_create_existing_file(self, temp_dir):
         """Test creating a file that already exists"""
-        from tools.file_tools import FileCreateTool
-        from api.schemas import FileCreateInput
+        from backend.tools.file_tools import FileCreateTool
+        from backend.api.schemas import FileCreateInput
         
         tool = FileCreateTool()
         # Create the file first
@@ -485,8 +488,8 @@ class TestFileTools:
     @pytest.mark.asyncio
     async def test_write_file(self, temp_dir):
         """Test writing to a file"""
-        from tools.file_tools import FileWriteTool
-        from api.schemas import FileWriteInput
+        from backend.tools.file_tools import FileWriteTool
+        from backend.api.schemas import FileWriteInput
         
         tool = FileWriteTool()
         file_path = os.path.join(temp_dir, "write_test.txt")
@@ -509,8 +512,8 @@ class TestFileTools:
     @pytest.mark.asyncio
     async def test_delete_file(self, temp_dir):
         """Test deleting a file"""
-        from tools.file_tools import FileDeleteTool
-        from api.schemas import FileDeleteInput
+        from backend.tools.file_tools import FileDeleteTool
+        from backend.api.schemas import FileDeleteInput
         
         tool = FileDeleteTool()
         file_path = os.path.join(temp_dir, "to_delete.txt")
@@ -530,7 +533,7 @@ class TestToolMetadata:
     
     def test_tool_metadata_structure(self):
         """Verify all tools have required metadata"""
-        from tools.executor import ToolExecutor
+        from backend.tools.executor import ToolExecutor
         
         executor = ToolExecutor()
         

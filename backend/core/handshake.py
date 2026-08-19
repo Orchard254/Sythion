@@ -6,7 +6,7 @@ launch through a private, user-ACL-protected file in the Sythion (Synth) data di
 
 1. Launcher creates the data dir and writes ``token.json`` (fresh random token,
    user-only ACLs) *before* spawning the sidecar.
-2. Launcher starts the sidecar with ``Sythion (Synth)_HANDSHAKE_TOKEN_FILE`` pointing at
+2. Launcher starts the sidecar with ``SYTHION_HANDSHAKE_TOKEN_FILE`` pointing at
    that file.
 3. Sidecar reads the token, binds 127.0.0.1 on an ephemeral port, then writes
    ``sidecar.json`` with ``{ "port": N, "token": "..." }``.

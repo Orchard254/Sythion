@@ -272,6 +272,47 @@ def test_decision_input_schemas_are_pydantic(db_session, full_tool_executor):
         assert hasattr(schema, "model_fields")
 
 
+@pytest.mark.asyncio
+async def test_make_decision_records_timestamp_without_crashing(db_session, full_tool_executor):
+    """A successful Cloud decision must record decision history without a local
+    NameError in the timestamp path.
+
+    This guards the regression where `make_decision()` succeeded through the
+    provider call, then failed locally while appending a history item because
+    `datetime` was no longer imported in model_engine.py.
+    """
+    engine = ModelDecisionEngine(db_session, full_tool_executor)
+
+    async def _fake_execute_tool_call(**kwargs):
+        return {
+            "message": {
+                "tool_calls": [{
+                    "function": {
+                        "name": "system_time",
+                        "arguments": {},
+                    }
+                }]
+            },
+            "usage": {"total_tokens": 7, "prompt_tokens": 3, "completion_tokens": 4},
+        }
+
+    engine.adapter.execute_tool_call = _fake_execute_tool_call
+
+    decision_type, params = await engine.make_decision(
+        task_id="t-decision-1",
+        original_request="what time is it",
+        normalized_goal=None,
+        event_history=[],
+        current_state="running",
+    )
+
+    assert decision_type == "execute_tool"
+    assert params == {"tool_name": "system_time", "params": {}}
+    assert len(engine.decision_history) == 1
+    assert engine.decision_history[0]["type"] == "execute_tool"
+    assert "timestamp" in engine.decision_history[0]
+
+
 def test_reasoning_fields_discarded_from_model_response(db_session, full_tool_executor):
     """Model reasoning/thinking traces are stripped before decision parsing."""
     engine = ModelDecisionEngine(db_session, full_tool_executor)
