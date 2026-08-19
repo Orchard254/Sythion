@@ -2,7 +2,7 @@
 Pydantic schemas for API request/response validation.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -116,6 +116,8 @@ class ObjectiveCreate(BaseModel):
     purpose: Optional[str] = Field(default=None, max_length=5000)
     priority: int = Field(default=3, ge=1, le=5)
     plan_steps: List[str] = Field(default_factory=list, max_length=20)
+    completion_criteria: Optional[str] = Field(default=None, max_length=5000)
+    parent_objective_id: Optional[str] = Field(default=None)
 
 
 class ObjectiveUpdate(BaseModel):
@@ -125,6 +127,8 @@ class ObjectiveUpdate(BaseModel):
     status: Optional[ObjectiveStatus] = None
     priority: Optional[int] = Field(default=None, ge=1, le=5)
     current_summary: Optional[str] = Field(default=None, max_length=5000)
+    completion_criteria: Optional[str] = Field(default=None, max_length=5000)
+    parent_objective_id: Optional[str] = Field(default=None)
 
 
 class ObjectiveResponse(BaseModel):
@@ -136,9 +140,13 @@ class ObjectiveResponse(BaseModel):
     priority: int
     current_summary: Optional[str] = None
     last_task_id: Optional[str] = None
+    completion_criteria: Optional[str] = None
+    criteria_verified: bool = False
+    parent_objective_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     steps: List[PlanStepResponse] = Field(default_factory=list)
+    sub_objectives: List["ObjectiveResponse"] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -273,7 +281,77 @@ class WindowListInput(ToolInput):
     visible_only: bool = True
 
 
+class BrowserTabsInput(ToolInput):
+    """Input for discovering open browser tabs."""
+    browser: Optional[str] = Field(
+        default="all",
+        description="Filter by browser name: 'chrome', 'edge', 'brave', 'firefox', or 'all'"
+    )
+
+
+class BrowserSwitchTabInput(ToolInput):
+    """Input for switching to a specific browser tab by its ID."""
+    tab_id: int = Field(..., description="The numeric tab ID from browser_tabs output to switch to")
+
+
+class BrowserOpenTabInput(ToolInput):
+    """Input for opening a new browser tab at a given URL."""
+    url: str = Field(default="about:blank", description="The URL to open in the new tab")
+    active: bool = Field(default=True, description="Whether to immediately focus the new tab")
+
+
+class BrowserCloseTabInput(ToolInput):
+    """Input for closing a specific browser tab by its ID."""
+    tab_id: int = Field(..., description="The numeric tab ID from browser_tabs output to close")
+
+
+class BrowserReadPageInput(ToolInput):
+    """Input for reading the content, headings, and interactive elements of an open browser tab."""
+    tab_id: Optional[int] = Field(
+        default=None,
+        description="Optional numeric tab ID from browser_tabs to read. If omitted, reads the currently active tab in Chrome."
+    )
+
+
+class BrowserInteractInput(ToolInput):
+    """Input for interacting with elements on an open webpage."""
+    action: str = Field(
+        ...,
+        description="The action to perform: 'click' (click an element), 'type' (type text into an input), 'press_key' (press a key like 'Enter'), or 'scroll' (scroll 'up' or 'down')"
+    )
+    selector: Optional[str] = Field(
+        default=None,
+        description="CSS selector (e.g. 'input[name=q]', '#search-button', 'button.submit') or element text/label to target"
+    )
+    text: Optional[str] = Field(
+        default=None,
+        description="Text to type when action is 'type'"
+    )
+    key: Optional[str] = Field(
+        default=None,
+        description="Key to press (e.g. 'Enter', 'Escape', 'Tab') when action is 'press_key' or after typing"
+    )
+    tab_id: Optional[int] = Field(
+        default=None,
+        description="Optional numeric tab ID to interact on; defaults to the currently active tab"
+    )
+
+
+class BrowserScreenshotInput(ToolInput):
+    """Input for capturing a visual screenshot of an open browser tab."""
+    tab_id: Optional[int] = Field(
+        default=None,
+        description="Optional numeric tab ID from browser_tabs to capture. If omitted, captures the currently active tab."
+    )
+    save_path: Optional[str] = Field(
+        default=None,
+        description="Optional file path to save the PNG image. If omitted, automatically saves to Sythion screenshots directory."
+    )
+
+
 class ToolProposeInput(ToolInput):
+
+
     """Input for proposing a new tool."""
     name: str = Field(..., min_length=1, max_length=64, description="Tool name (lowercase, underscores)")
     description: str = Field(..., min_length=1, max_length=500, description="What the tool does")
@@ -441,11 +519,47 @@ class GUIPasteInput(ToolInput):
     text: Optional[str] = None
 
 
-# Control Tool Schemas
+class GUIScreenshotInput(ToolInput):
+    """Input for GUI screenshot capture."""
+    window_title: Optional[str] = Field(
+        default=None,
+        description="Window title to capture. If omitted, captures the currently active window."
+    )
+    save_path: Optional[str] = Field(
+        default=None,
+        description="File path to save the PNG image. If omitted, saves to Sythion screenshots directory."
+    )
 
-class CancelTaskInput(ToolInput):
-    """Input for cancelling current task."""
-    task_id: str
+
+class ClipboardReadInput(ToolInput):
+    """Input for reading clipboard contents."""
+    pass
+
+
+class FileHashInput(ToolInput):
+    """Input for computing file hash."""
+    path: str = Field(description="Path to the file to hash")
+    algorithm: str = Field(
+        default="sha256",
+        description="Hash algorithm: 'md5', 'sha1', 'sha256', or 'sha512'"
+    )
+
+
+class GUIBatchFormInput(ToolInput):
+    """Input for batch form filling."""
+    window_title: str = Field(description="Window title that must be foreground")
+    fields: List[Dict[str, str]] = Field(
+        description="List of field operations. Each dict must have 'element' (description) and 'value' (text to enter). Optional: 'action' ('type' or 'set_value', default 'type')"
+    )
+    delay_between_fields: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=5.0,
+        description="Delay in seconds between filling each field (0.1-5.0)"
+    )
+
+
+# Control Tool Schemas
 
 
 # Model Decision Schemas
@@ -681,20 +795,6 @@ class MemoryRecallInput(ToolInput):
     category: Optional[str] = None
 
 
-# Web Tool Schemas
-
-class WebSearchInput(ToolInput):
-    """Input for searching the internet."""
-    query: str
-    max_results: int = Field(default=5, ge=1, le=10, description="How many results to return (1-10)")
-    lang: str = Field(default="en", description="Search language code, e.g. en, de, fr")
-
-
-class WebFetchInput(ToolInput):
-    """Input for fetching web page content."""
-    url: str
-
-
 class MemoryForgetInput(ToolInput):
     """Input for deleting a persistent memory entry."""
     key: str
@@ -724,6 +824,27 @@ class MemoryRecallRelatedInput(ToolInput):
     hops: int = Field(default=1, ge=1)
 
 
+class MemoryStatsInput(ToolInput):
+    """Input for getting memory statistics."""
+    pass
+
+
+class MemoryExportInput(ToolInput):
+    """Input for exporting memory entries."""
+    category: Optional[str] = Field(
+        default=None,
+        description="Filter by category. If omitted, exports all categories."
+    )
+    format: str = Field(
+        default="json",
+        description="Export format: 'json' or 'markdown'"
+    )
+    include_edges: bool = Field(
+        default=True,
+        description="Whether to include memory edges (links) in the export"
+    )
+
+
 class ActivityRecallInput(ToolInput):
     """Input for recalling Sythion's own past activity within a time range.
 
@@ -737,7 +858,7 @@ class ActivityRecallInput(ToolInput):
     task) so the result only shows prior activity.
 
     `max_results` is loosely bounded (1-25) at the schema and hard-clamped by
-    the tool, matching the WebSearchInput / memory_recall_related convention.
+    the tool, matching the memory_recall_related convention.
     """
 
     start_time: datetime
@@ -745,3 +866,24 @@ class ActivityRecallInput(ToolInput):
     tool_name: Optional[str] = None
     exclude_task_ids: Optional[List[str]] = None
     max_results: int = Field(default=10, ge=1, le=25)
+
+    @field_validator("exclude_task_ids", mode="before")
+    @classmethod
+    def coerce_exclude_task_ids(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return []
+            if v.startswith("[") and v.endswith("]"):
+                import json
+                try:
+                    parsed = json.loads(v)
+                    if isinstance(parsed, list):
+                        return [str(x) for x in parsed]
+                except Exception:
+                    pass
+            if "," in v:
+                return [x.strip() for x in v.split(",") if x.strip()]
+            return [v]
+        return v
+
