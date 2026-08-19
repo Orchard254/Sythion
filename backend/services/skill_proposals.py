@@ -25,6 +25,7 @@ try:
     from backend.models.database import ProposedSkill, Session, Skill, Task, TaskEvent
 except ImportError:
     from models.database import ProposedSkill, Session, Skill, Task, TaskEvent
+from sqlalchemy.orm import Session, sessionmaker
 
 try:
     from backend.services.skill_runtime import (
@@ -193,6 +194,17 @@ def _auto_enable_if_ready(
     if validation_errors:
         proposal.validation_errors = json.dumps(validation_errors)
         db.commit()
+        # Verify the validation_errors persisted
+        try:
+            engine = db.bind
+            SessionLocal = sessionmaker(bind=engine)
+            with SessionLocal() as verify_session:
+                proposal_verify = verify_session.query(ProposedSkill).filter_by(id=proposal.id).first()
+                if proposal_verify is None or not proposal_verify.validation_errors:
+                    logger.warning("Verification failed: validation_errors not persisted for proposal %s", proposal.id)
+                    return None
+        except Exception as exc:
+            logger.warning("Verification of validation_errors persistence failed: %s", exc)
         logger.warning(
             "Proposal %s not auto-enabled: re-validation failed: %s",
             proposal.id, "; ".join(validation_errors),
@@ -263,9 +275,21 @@ def maybe_generate_proposal(
         meta.append(task.id)
         prop.trace_ids = json.dumps(meta)
         db.commit()
+        # Verify the trace_ids update persisted
+        try:
+            engine = db.bind
+            SessionLocal = sessionmaker(bind=engine)
+            with SessionLocal() as verify_session:
+                prop_verify = verify_session.query(ProposedSkill).filter_by(id=prop.id).first()
+                if prop_verify is None or prop_verify.trace_ids != prop.trace_ids:
+                    logger.warning("Verification failed: trace_ids not persisted for proposal %s", prop.id)
+                    return None
+        except Exception as exc:
+            logger.warning("Verification of trace_ids persistence failed: %s", exc)
+            return None
         _auto_enable_if_ready(db, prop, tool_executor)
         return prop
-
+    
     similar: List[Task] = []
     candidates = (
         db.query(Task)
@@ -303,6 +327,18 @@ def maybe_generate_proposal(
     )
     db.add(proposal)
     db.commit()
+    # Verify the proposal was persisted
+    try:
+        engine = db.bind
+        SessionLocal = sessionmaker(bind=engine)
+        with SessionLocal() as verify_session:
+            proposal_verify = verify_session.query(ProposedSkill).filter_by(id=proposal.id).first()
+            if proposal_verify is None:
+                logger.warning("Verification failed: proposal not persisted for task %s", task.id)
+                return None
+    except Exception as exc:
+        logger.warning("Verification of proposal persistence failed: %s", exc)
+        return None
     db.refresh(proposal)
     logger.info(
         "Proposed skill from %d traces: %s (task %s)", len(all_traces), definition.name, task.id
