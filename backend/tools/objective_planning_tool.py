@@ -31,6 +31,7 @@ except ImportError:
     from api.schemas import ToolOutput
     from models.database import Objective, PlanStep, get_db_manager
     from tools.executor import BaseTool
+from sqlalchemy.orm import sessionmaker
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -251,6 +252,38 @@ class ObjectiveCreateTool(BaseTool[ObjectiveCreateInput]):
                 for s in steps_created:
                     session.refresh(s)
 
+                # Verify the objective and plan steps persisted
+                try:
+                    engine = session.bind
+                    SessionLocal = sessionmaker(bind=engine)
+                    with SessionLocal() as verify_session:
+                        obj_verify = verify_session.query(Objective).filter_by(id=objective.id).first()
+                        if obj_verify is None:
+                            import logging
+                            logging.getLogger(__name__).warning("Verification failed: Objective not found for create")
+                            return ToolOutput(
+                                success=False,
+                                error={"code": "VERIFICATION_FAILED", "message": "Objective not persisted"},
+                                duration_ms=0,
+                            )
+                        steps_verify = verify_session.query(PlanStep).filter_by(objective_id=objective.id).all()
+                        if not steps_verify:
+                            import logging
+                            logging.getLogger(__name__).warning("Verification failed: No plan steps for objective %s", objective.id)
+                            return ToolOutput(
+                                success=False,
+                                error={"code": "VERIFICATION_FAILED", "message": "Plan steps not persisted"},
+                                duration_ms=0,
+                            )
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).warning("Verification of objective creation failed: %s", exc)
+                    return ToolOutput(
+                        success=False,
+                        error={"code": "VERIFICATION_FAILED", "message": str(exc)},
+                        duration_ms=0,
+                    )
+
                 plan = _format_plan(objective, steps_created)
                 summary = (
                     f"Created objective '{objective.title}' "
@@ -325,6 +358,29 @@ class ObjectiveAddStepTool(BaseTool[ObjectiveAddStepInput]):
                 objective.updated_at = now
                 session.commit()
                 session.refresh(step)
+
+                # Verify the step persisted
+                try:
+                    engine = session.bind
+                    SessionLocal = sessionmaker(bind=engine)
+                    with SessionLocal() as verify_session:
+                        step_verify = verify_session.query(PlanStep).filter_by(id=step.id).first()
+                        if step_verify is None:
+                            import logging
+                            logging.getLogger(__name__).warning("Verification failed: PlanStep not found for add_step")
+                            return ToolOutput(
+                                success=False,
+                                error={"code": "VERIFICATION_FAILED", "message": "Step not persisted"},
+                                duration_ms=0,
+                            )
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).warning("Verification of step addition failed: %s", exc)
+                    return ToolOutput(
+                        success=False,
+                        error={"code": "VERIFICATION_FAILED", "message": str(exc)},
+                        duration_ms=0,
+                    )
 
                 summary = f"Added step {step.step_order} to '{objective.title}': {step.description}"
                 return ToolOutput(
@@ -449,6 +505,38 @@ class ObjectiveCompleteStepTool(BaseTool[ObjectiveCompleteStepInput]):
                     )
                 objective.updated_at = now
                 session.commit()
+
+                # Verify the step completion and objective status persisted
+                try:
+                    engine = session.bind
+                    SessionLocal = sessionmaker(bind=engine)
+                    with SessionLocal() as verify_session:
+                        step_verify = verify_session.query(PlanStep).filter_by(id=step.id).first()
+                        if step_verify is None or step_verify.status != "completed":
+                            import logging
+                            logging.getLogger(__name__).warning("Verification failed: PlanStep completion not persisted for step %s", step.id)
+                            return ToolOutput(
+                                success=False,
+                                error={"code": "VERIFICATION_FAILED", "message": "Step completion not persisted"},
+                                duration_ms=0,
+                            )
+                        obj_verify = verify_session.query(Objective).filter_by(id=objective.id).first()
+                        if obj_verify is None:
+                            import logging
+                            logging.getLogger(__name__).warning("Verification failed: Objective not found for complete_step")
+                            return ToolOutput(
+                                success=False,
+                                error={"code": "VERIFICATION_FAILED", "message": "Objective not persisted"},
+                                duration_ms=0,
+                            )
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).warning("Verification of step completion failed: %s", exc)
+                    return ToolOutput(
+                        success=False,
+                        error={"code": "VERIFICATION_FAILED", "message": str(exc)},
+                        duration_ms=0,
+                    )
 
                 summary = (
                     f"Step {step.step_order} of '{objective.title}' marked completed. "
@@ -587,6 +675,29 @@ class ObjectiveUpdateSummaryTool(BaseTool[ObjectiveUpdateSummaryInput]):
                 objective.current_summary = _trim(input_data.summary, 500)
                 objective.updated_at = datetime.utcnow()
                 session.commit()
+
+                # Verify the summary update persisted
+                try:
+                    engine = session.bind
+                    SessionLocal = sessionmaker(bind=engine)
+                    with SessionLocal() as verify_session:
+                        obj_verify = verify_session.query(Objective).filter_by(id=objective.id).first()
+                        if obj_verify is None or obj_verify.current_summary != objective.current_summary:
+                            import logging
+                            logging.getLogger(__name__).warning("Verification failed: Objective summary update not persisted")
+                            return ToolOutput(
+                                success=False,
+                                error={"code": "VERIFICATION_FAILED", "message": "Summary update not persisted"},
+                                duration_ms=0,
+                            )
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).warning("Verification of summary update failed: %s", exc)
+                    return ToolOutput(
+                        success=False,
+                        error={"code": "VERIFICATION_FAILED", "message": str(exc)},
+                        duration_ms=0,
+                    )
 
                 return ToolOutput(
                     success=True,
