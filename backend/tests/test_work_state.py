@@ -600,3 +600,402 @@ class TestContinuationPatterns:
         from backend.services.work_state import is_continuation_request
         assert is_continuation_request(request_text) is False
 
+
+class TestWorkStateVerification:
+    """Regression tests for read-back verification added to work_state.py to prevent silent commit failures."""
+
+    @pytest.mark.asyncio
+    async def test_ensure_task_objective_verification_failure_returns_none(self, db_session):
+        """ensure_task_objective returns None when objective verification fails (fix behavior).
+
+        This test FAILS on pre-fix code because:
+        1. Pre-fix code lacks the sessionmaker import (AttributeError when patching)
+        2. Pre-fix code has no verification - it always returns the objective
+        """
+        from unittest.mock import patch, MagicMock
+        from backend.services.work_state import ensure_task_objective
+        from backend.api.schemas import TaskState
+        from backend.models.database import Task
+
+        # Create a task
+        task = Task(
+            id="task-verify-1",
+            original_request="Test verification",
+            state=TaskState.RUNNING.value,
+            normalized_goal="Test verification"
+        )
+        db_session.add(task)
+        db_session.commit()
+
+        # Patch the module's sessionmaker to simulate read-back failure
+        mock_verify_session = MagicMock()
+        mock_query = MagicMock()
+        mock_query.filter_by.return_value.first.return_value = None
+        mock_query.filter_by.return_value.all.return_value = []
+        mock_verify_session.query.return_value = mock_query
+        mock_verify_session.__enter__ = lambda self: mock_verify_session
+        mock_verify_session.__exit__ = lambda *args: None
+
+        mock_session_class = MagicMock()
+        mock_session_class.return_value = mock_verify_session
+
+        def mock_sessionmaker_func(*args, **kwargs):
+            return mock_session_class
+
+        with patch('backend.services.work_state.sessionmaker', mock_sessionmaker_func):
+            # Call ensure_task_objective - should return None due to verification failure
+            result = ensure_task_objective(db_session, task)
+
+            # Fix behavior: returns None when verification fails
+            # Pre-fix behavior: returns objective (no verification)
+            assert result is None, "Expected None when verification fails, got objective"
+
+    @pytest.mark.asyncio
+    async def test_sync_objective_state_for_task_verification_failure_returns_none(self, db_session):
+        """sync_objective_state_for_task returns None when verification fails (fix behavior).
+
+        This test FAILS on pre-fix code because:
+        1. Pre-fix code lacks the sessionmaker import (AttributeError when patching)
+        2. Pre-fix code has no verification - it always returns the objective
+        """
+        from unittest.mock import patch, MagicMock
+        from backend.services.work_state import sync_objective_state_for_task
+        from backend.api.schemas import TaskState
+        from backend.models.database import Task, Objective, PlanStep
+        from datetime import datetime
+
+        # Create a task with an objective
+        task = Task(
+            id="task-sync-verify",
+            original_request="Test sync verification",
+            state=TaskState.COMPLETED.value,
+            normalized_goal="Test sync verification",
+            final_result="Done"
+        )
+        db_session.add(task)
+        db_session.commit()
+
+        obj = Objective(
+            id="obj-sync-verify",
+            title="Test Objective",
+            purpose="Test",
+            status="active",
+            priority=3,
+            current_summary="Test",
+            last_task_id=task.id,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db_session.add(obj)
+        db_session.commit()
+
+        task.objective_id = obj.id
+        db_session.commit()
+
+        step = PlanStep(
+            objective_id=obj.id,
+            step_order=1,
+            description="Test step",
+            status="pending",
+            linked_task_id=task.id,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db_session.add(step)
+        db_session.commit()
+
+        # Patch the module's sessionmaker to simulate read-back failure
+        mock_verify_session = MagicMock()
+        mock_query = MagicMock()
+        mock_query.filter_by.return_value.first.return_value = None
+        mock_verify_session.query.return_value = mock_query
+        mock_verify_session.__enter__ = lambda self: mock_verify_session
+        mock_verify_session.__exit__ = lambda *args: None
+
+        mock_session_class = MagicMock()
+        mock_session_class.return_value = mock_verify_session
+
+        def mock_sessionmaker_func(*args, **kwargs):
+            return mock_session_class
+
+        with patch('backend.services.work_state.sessionmaker', mock_sessionmaker_func):
+            # Call sync_objective_state_for_task - should return None due to verification failure
+            result = sync_objective_state_for_task(db_session, task, event_type="tool.executed")
+
+            # Fix behavior: returns None when verification fails
+            # Pre-fix behavior: returns objective (no verification)
+            assert result is None, "Expected None when verification fails, got objective"
+
+    @pytest.mark.asyncio
+    async def test_ensure_task_objective_creates_objective_with_verification(self, db_session):
+        """ensure_task_objective creates objective and plan steps with read-back verification (happy path)."""
+        from backend.services.work_state import ensure_task_objective
+        from backend.api.schemas import TaskState
+        from backend.models.database import Task, PlanStep
+
+        task = Task(
+            id="task-happy-1",
+            original_request="Research and write a blog post",
+            state=TaskState.RUNNING.value,
+            normalized_goal="Research and write a blog post"
+        )
+        db_session.add(task)
+        db_session.commit()
+
+        objective = ensure_task_objective(db_session, task)
+
+        # Should succeed and return objective
+        assert objective is not None
+        assert objective.id is not None
+        assert "Research" in objective.title or "blog" in objective.title
+
+        # Verify plan steps were created
+        steps = db_session.query(PlanStep).filter_by(objective_id=objective.id).all()
+        assert len(steps) >= 1
+        assert steps[0].status == "in_progress"
+
+    @pytest.mark.asyncio
+    async def test_sync_objective_state_for_task_syncs_with_verification(self, db_session):
+        """sync_objective_state_for_task syncs objective state with read-back verification (happy path)."""
+        from backend.services.work_state import sync_objective_state_for_task
+        from backend.api.schemas import TaskState
+        from backend.models.database import Task, Objective, PlanStep
+        from datetime import datetime
+
+        task = Task(
+            id="task-sync-happy",
+            original_request="Continue writing the blog post",
+            state=TaskState.COMPLETED.value,
+            normalized_goal="Write a blog post",
+            final_result="Blog post drafted"
+        )
+        db_session.add(task)
+        db_session.commit()
+
+        obj = Objective(
+            id="obj-sync-happy",
+            title="Write a blog post",
+            purpose="Create content",
+            status="active",
+            priority=3,
+            current_summary="In progress",
+            last_task_id=task.id,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db_session.add(obj)
+        db_session.commit()
+
+        task.objective_id = obj.id
+        db_session.commit()
+
+        step = PlanStep(
+            objective_id=obj.id,
+            step_order=1,
+            description="Research and write blog post",
+            status="in_progress",
+            linked_task_id=task.id,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db_session.add(step)
+        db_session.commit()
+
+        result = sync_objective_state_for_task(db_session, task, event_type="tool.executed", event_data={"summary": "Blog post drafted"})
+
+        assert result is not None
+        assert result.id == obj.id
+        assert result.status == "completed"
+        assert "Blog post drafted" in result.current_summary
+
+
+class TestObjectivePlanningToolVerification:
+    """Regression tests for read-back verification added to objective_planning_tool.py to prevent silent commit failures."""
+
+    @pytest.fixture(autouse=True)
+    def setup_db(self, tmp_path):
+        """Wire a fresh in-memory database into the global db_manager slot."""
+        from backend.core.db_manager import DatabaseManager
+        from backend.models.database import set_db_manager
+
+        db_path = str(tmp_path / "test_obj_planning.db")
+        db_mgr = DatabaseManager(db_path)
+        set_db_manager(db_mgr)
+        yield
+        set_db_manager(None)
+
+    @pytest.mark.asyncio
+    async def test_objective_create_tool_verification_failure_returns_error(self):
+        """ObjectiveCreateTool returns VERIFICATION_FAILED error when verification fails (fix behavior).
+
+        This test FAILS on pre-fix code because:
+        1. Pre-fix code lacks the sessionmaker import (AttributeError when patching)
+        2. Pre-fix code has no verification - it always returns success
+        """
+        from unittest.mock import patch, MagicMock
+        from backend.tools.objective_planning_tool import ObjectiveCreateTool, ObjectiveCreateInput
+
+        tool = ObjectiveCreateTool()
+        inp = ObjectiveCreateInput(
+            title="Test Objective",
+            purpose="Test",
+            steps=["Step 1", "Step 2"],
+            priority=2,
+        )
+
+        # Mock the sessionmaker to simulate read-back failure
+        mock_verify_session = MagicMock()
+        mock_query = MagicMock()
+        mock_query.filter_by.return_value.first.return_value = None
+        mock_query.filter_by.return_value.all.return_value = []
+        mock_verify_session.query.return_value = mock_query
+        mock_verify_session.__enter__ = lambda self: mock_verify_session
+        mock_verify_session.__exit__ = lambda *args: None
+
+        mock_session_class = MagicMock()
+        mock_session_class.return_value = mock_verify_session
+
+        def mock_sessionmaker_func(*args, **kwargs):
+            return mock_session_class
+
+        with patch('backend.tools.objective_planning_tool.sessionmaker', mock_sessionmaker_func):
+            output = await tool.execute(inp)
+
+            # Fix behavior: returns VERIFICATION_FAILED error
+            # Pre-fix behavior: returns success (no verification)
+            assert output.success is False
+            assert output.error is not None
+            assert output.error.get("code") == "VERIFICATION_FAILED"
+
+    @pytest.mark.asyncio
+    async def test_objective_add_step_tool_verification_failure_returns_error(self):
+        """ObjectiveAddStepTool returns VERIFICATION_FAILED error when verification fails (fix behavior).
+
+        This test FAILS on pre-fix code because:
+        1. Pre-fix code lacks the sessionmaker import (AttributeError when patching)
+        2. Pre-fix code has no verification - it always returns success
+        """
+        from unittest.mock import patch, MagicMock
+        from backend.tools.objective_planning_tool import ObjectiveCreateTool, ObjectiveCreateInput, ObjectiveAddStepTool, ObjectiveAddStepInput
+
+        # First create an objective normally
+        create_tool = ObjectiveCreateTool()
+        create_inp = ObjectiveCreateInput(title="Test", steps=["Step 1"])
+        create_output = await create_tool.execute(create_inp)
+        obj_id = create_output.data["objective_id"] if create_output.success else None
+        assert obj_id is not None
+
+        add_tool = ObjectiveAddStepTool()
+        add_inp = ObjectiveAddStepInput(description="New step", objective_id=obj_id)
+
+        # Mock the sessionmaker to simulate read-back failure
+        mock_verify_session = MagicMock()
+        mock_query = MagicMock()
+        mock_query.filter_by.return_value.first.return_value = None
+        mock_verify_session.query.return_value = mock_query
+        mock_verify_session.__enter__ = lambda self: mock_verify_session
+        mock_verify_session.__exit__ = lambda *args: None
+
+        mock_session_class = MagicMock()
+        mock_session_class.return_value = mock_verify_session
+
+        def mock_sessionmaker_func(*args, **kwargs):
+            return mock_session_class
+
+        with patch('backend.tools.objective_planning_tool.sessionmaker', mock_sessionmaker_func):
+            output = await add_tool.execute(add_inp)
+
+            # Fix behavior: returns VERIFICATION_FAILED error
+            # Pre-fix behavior: returns success (no verification)
+            assert output.success is False
+            assert output.error is not None
+            assert output.error.get("code") == "VERIFICATION_FAILED"
+
+    @pytest.mark.asyncio
+    async def test_objective_complete_step_tool_verification_failure_returns_error(self):
+        """ObjectiveCompleteStepTool returns VERIFICATION_FAILED error when verification fails (fix behavior).
+
+        This test FAILS on pre-fix code because:
+        1. Pre-fix code lacks the sessionmaker import (AttributeError when patching)
+        2. Pre-fix code has no verification - it always returns success
+        """
+        from unittest.mock import patch, MagicMock
+        from backend.tools.objective_planning_tool import ObjectiveCreateTool, ObjectiveCreateInput, ObjectiveCompleteStepTool, ObjectiveCompleteStepInput
+
+        # First create an objective with a step
+        create_tool = ObjectiveCreateTool()
+        create_inp = ObjectiveCreateInput(title="Test", steps=["Step 1"])
+        create_output = await create_tool.execute(create_inp)
+        obj_id = create_output.data["objective_id"] if create_output.success else None
+        assert obj_id is not None
+
+        complete_tool = ObjectiveCompleteStepTool()
+        comp_inp = ObjectiveCompleteStepInput(result_summary="Done", objective_id=obj_id, step_order=1)
+
+        # Mock the sessionmaker to simulate read-back failure
+        mock_verify_session = MagicMock()
+        mock_query = MagicMock()
+        mock_query.filter_by.return_value.first.return_value = None
+        mock_verify_session.query.return_value = mock_query
+        mock_verify_session.__enter__ = lambda self: mock_verify_session
+        mock_verify_session.__exit__ = lambda *args: None
+
+        mock_session_class = MagicMock()
+        mock_session_class.return_value = mock_verify_session
+
+        def mock_sessionmaker_func(*args, **kwargs):
+            return mock_session_class
+
+        with patch('backend.tools.objective_planning_tool.sessionmaker', mock_sessionmaker_func):
+            output = await complete_tool.execute(comp_inp)
+
+            # Fix behavior: returns VERIFICATION_FAILED error
+            # Pre-fix behavior: returns success (no verification)
+            assert output.success is False
+            assert output.error is not None
+            assert output.error.get("code") == "VERIFICATION_FAILED"
+
+    @pytest.mark.asyncio
+    async def test_objective_update_summary_tool_verification_failure_returns_error(self):
+        """ObjectiveUpdateSummaryTool returns VERIFICATION_FAILED error when verification fails (fix behavior).
+
+        This test FAILS on pre-fix code because:
+        1. Pre-fix code lacks the sessionmaker import (AttributeError when patching)
+        2. Pre-fix code has no verification - it always returns success
+        """
+        from unittest.mock import patch, MagicMock
+        from backend.tools.objective_planning_tool import ObjectiveCreateTool, ObjectiveCreateInput, ObjectiveUpdateSummaryTool, ObjectiveUpdateSummaryInput
+
+        # First create an objective normally
+        create_tool = ObjectiveCreateTool()
+        create_inp = ObjectiveCreateInput(title="Test", steps=["Step 1"])
+        create_output = await create_tool.execute(create_inp)
+        obj_id = create_output.data["objective_id"] if create_output.success else None
+        assert obj_id is not None
+
+        update_tool = ObjectiveUpdateSummaryTool()
+        upd_inp = ObjectiveUpdateSummaryInput(summary="Updated", objective_id=obj_id)
+
+        # Mock the sessionmaker to simulate read-back failure
+        mock_verify_session = MagicMock()
+        mock_query = MagicMock()
+        mock_query.filter_by.return_value.first.return_value = None
+        mock_verify_session.query.return_value = mock_query
+        mock_verify_session.__enter__ = lambda self: mock_verify_session
+        mock_verify_session.__exit__ = lambda *args: None
+
+        mock_session_class = MagicMock()
+        mock_session_class.return_value = mock_verify_session
+
+        def mock_sessionmaker_func(*args, **kwargs):
+            return mock_session_class
+
+        with patch('backend.tools.objective_planning_tool.sessionmaker', mock_sessionmaker_func):
+            output = await update_tool.execute(upd_inp)
+
+            # Fix behavior: returns VERIFICATION_FAILED error
+            # Pre-fix behavior: returns success (no verification)
+            assert output.success is False
+            assert output.error is not None
+            assert output.error.get("code") == "VERIFICATION_FAILED"
+

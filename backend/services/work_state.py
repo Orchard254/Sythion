@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 try:
     from backend.models.database import Objective, PlanStep, Task
@@ -307,6 +307,28 @@ def ensure_task_objective(db: Session, task: Task) -> Objective:
     db.commit()
     db.refresh(task)
     db.refresh(objective)
+    
+    # Verify the objective and its plan steps persisted
+    try:
+        engine = db.bind
+        SessionLocal = sessionmaker(bind=engine)
+        with SessionLocal() as verify_session:
+            obj_verify = verify_session.query(Objective).filter_by(id=objective.id).first()
+            if obj_verify is None:
+                import logging
+                logging.getLogger(__name__).warning("Verification failed: Objective not found for task %s", task.id)
+                return None
+            # Verify plan steps exist
+            steps_verify = verify_session.query(PlanStep).filter_by(objective_id=objective.id).all()
+            if not steps_verify:
+                import logging
+                logging.getLogger(__name__).warning("Verification failed: No plan steps for objective %s", objective.id)
+                return None
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Verification of objective creation failed: %s", exc)
+        return None
+    
     return objective
 
 
@@ -428,6 +450,29 @@ def sync_objective_state_for_task(
 
     db.commit()
     db.refresh(objective)
+    
+    # Verify the objective state sync persisted
+    try:
+        engine = db.bind
+        SessionLocal = sessionmaker(bind=engine)
+        with SessionLocal() as verify_session:
+            obj_verify = verify_session.query(Objective).filter_by(id=objective.id).first()
+            if obj_verify is None:
+                import logging
+                logging.getLogger(__name__).warning("Verification failed: Objective not found for task %s", task.id)
+                return None
+            # Verify step status if step was updated
+            if step is not None:
+                step_verify = verify_session.query(PlanStep).filter_by(id=step.id).first()
+                if step_verify is None:
+                    import logging
+                    logging.getLogger(__name__).warning("Verification failed: PlanStep not found for task %s", task.id)
+                    return None
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Verification of objective sync failed: %s", exc)
+        return None
+    
     return objective
 
 
