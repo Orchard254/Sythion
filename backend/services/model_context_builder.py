@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 MEMORY_CONTEXT_LOG_RETAIN = 500
 
@@ -246,6 +246,23 @@ class ModelContextBuilder:
                 except Exception as exc:
                     import logging
                     logging.getLogger(__name__).warning("Could not commit memory entry access count updates: %s", exc)
+                    return None, {"error": str(exc)}
+                
+                # Verify the updates persisted
+                try:
+                    engine = self.db.bind
+                    SessionLocal = sessionmaker(bind=engine)
+                    with SessionLocal() as verify_session:
+                        for entry_id in selected_ids:
+                            entry = verify_session.query(MemoryEntry).filter_by(id=entry_id).first()
+                            if entry is None or entry.access_count <= 0 or entry.last_accessed_at is None:
+                                import logging
+                                logging.getLogger(__name__).warning("Verification failed: access_count/last_accessed_at not updated for entry %s", entry_id)
+                                return None, {"error": f"Verification failed for entry {entry_id}"}
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).warning("Verification of access count updates failed: %s", exc)
+                    return None, {"error": str(exc)}
 
             selected_keys = {entry.key for entry in selected}
             from sqlalchemy import or_
@@ -314,6 +331,21 @@ class ModelContextBuilder:
             )
             self.db.add(log)
             self.db.commit()
+            
+            # Verify the log was persisted
+            try:
+                engine = self.db.bind
+                SessionLocal = sessionmaker(bind=engine)
+                with SessionLocal() as verify_session:
+                    log = verify_session.query(MemoryContextLog).filter_by(task_id=task_id).first()
+                    if log is None:
+                        import logging
+                        logging.getLogger(__name__).warning("Verification failed: MemoryContextLog not found for task_id %s", task_id)
+                        return
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("Verification of MemoryContextLog failed: %s", exc)
+            
             # Trim old logs
             from sqlalchemy import func
             count = self.db.query(func.count(MemoryContextLog.id)).scalar()
@@ -329,6 +361,20 @@ class ModelContextBuilder:
                         MemoryContextLog.id.in_(old_ids)
                     ).delete(synchronize_session=False)
                     self.db.commit()
+                    
+                    # Verify deletion
+                    try:
+                        engine = self.db.bind
+                        SessionLocal = sessionmaker(bind=engine)
+                        with SessionLocal() as verify_session:
+                            for old_id in old_ids:
+                                log = verify_session.query(MemoryContextLog).filter_by(id=old_id).first()
+                                if log is not None:
+                                    import logging
+                                    logging.getLogger(__name__).warning("Verification failed: MemoryContextLog %s not deleted", old_id)
+                    except Exception as exc:
+                        import logging
+                        logging.getLogger(__name__).warning("Verification of log deletion failed: %s", exc)
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Could not record memory context stats: %s", exc)
