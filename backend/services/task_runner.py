@@ -1,26 +1,35 @@
 """
 Task runner service with state machine implementation.
 Manages single task execution with durable state.
+
+PHASE 1 KERNEL OWNERSHIP:
+- TaskRunner is the authoritative writer of task lifecycle state
+  (docs/PROTECTED_RUNTIME_CONTRACT.md, "State ownership").
+- Lease mechanics are delegated to runtime.leases.LeaseManager.
+- Event appends/reads are delegated to runtime.events.DbEventLedger.
+  The ledger participates in transition transactions so state change + event
+  stay atomic; reads are side-effect free.
 """
 
-import asyncio
 import json
 import logging
-import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, Any, Optional, List
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.models.database import Task, TaskEvent, RunnerLease
-from backend.core.config import settings
+from backend.models.database import Task
 from backend.api.schemas import TaskState
+from backend.runtime.events import DbEventLedger
+from backend.runtime.leases import LeaseManager, ensure_lease_contract  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
 
 ALLOWED_TRANSITIONS = {
-    TaskState.CREATED.value: {TaskState.RUNNING.value, TaskState.CANCELLED.value, TaskState.INTERRUPTED.value},
+    # Phase 8.5: a task can be BORN needing user input — the cognitive gate
+    # may park an ambiguous request directly into WAITING_FOR_USER.
+    TaskState.CREATED.value: {TaskState.RUNNING.value, TaskState.WAITING_FOR_USER.value, TaskState.CANCELLED.value, TaskState.INTERRUPTED.value},
     TaskState.RUNNING.value: {TaskState.WAITING_FOR_USER.value, TaskState.COMPLETED.value, TaskState.FAILED.value, TaskState.CANCELLED.value, TaskState.INTERRUPTED.value, TaskState.PAUSED.value},
     TaskState.WAITING_FOR_USER.value: {TaskState.RUNNING.value, TaskState.CANCELLED.value, TaskState.INTERRUPTED.value},
     TaskState.INTERRUPTED.value: {TaskState.RUNNING.value},
@@ -32,175 +41,53 @@ ALLOWED_TRANSITIONS = {
 
 
 class TaskRunner:
-    """Single task runner with lease management."""
+    """Single task runner: authoritative owner of task lifecycle state."""
 
     def __init__(self, db_session: Session):
         self.db = db_session
+        self._leases = LeaseManager(db_session)
+        self.ledger = DbEventLedger(db_session)
+        # Ownership mirror for callers/tests; source of truth is _leases.nonce.
         self._lease_nonce: Optional[str] = None
         self._current_task_id: Optional[str] = None
 
-    async def acquire_lease(self, task_id: Optional[str] = None) -> bool:
-        """Acquire exclusive runner lease.
+    # --- lease (delegated to LeaseManager) -----------------------------------
 
-        Args:
-            task_id: Optional task ID being resumed
-            
-        Returns:
-            True if lease acquired, False if another runner holds it
-        """
-        nonce = str(uuid.uuid4())
-        
-        # Check for existing lease
-        existing = self.db.query(RunnerLease).filter_by(id=1).first()
-        
-        if existing:
-            # Check if lease is stale (expired heartbeat - 30 second timeout)
-            if datetime.utcnow() > existing.expires_at:
-                # Stale lease detected - mark any running task as interrupted
-                if existing.last_task_id:
-                    self._mark_task_interrupted(existing.last_task_id)
-                
-                # Take over the lease
-                existing.owner_nonce = nonce
-                existing.process_id = id(self)
-                existing.heartbeat = datetime.utcnow()
-                existing.expires_at = datetime.utcnow() + timedelta(seconds=settings.lease_timeout_seconds)
-                existing.last_task_id = task_id
-                self.db.commit()
-                self._lease_nonce = nonce
-                self._current_task_id = task_id
-                return True
-            else:
-                # Active lease held by another runner
-                return False
-        else:
-            # No lease exists, create new one
-            lease = RunnerLease(
-                id=1,
-                owner_nonce=nonce,
-                process_id=id(self),
-                heartbeat=datetime.utcnow(),
-                expires_at=datetime.utcnow() + timedelta(seconds=settings.lease_timeout_seconds),
-                last_task_id=task_id,
-            )
-            self.db.add(lease)
-            self.db.commit()
-            self._lease_nonce = nonce
-            self._current_task_id = task_id
-            return True
+    async def acquire_lease(self, task_id: Optional[str] = None) -> bool:
+        acquired = await self._leases.acquire(task_id=task_id)
+        self._lease_nonce = self._leases.nonce
+        self._current_task_id = self._leases.current_task_id
+        return acquired
 
     async def renew_lease(self, task_id: Optional[str] = None) -> bool:
-        """Renew the runner lease heartbeat.
-
-        Args:
-            task_id: Optional task ID to update
-            
-        Returns:
-            True if renewal successful, False if lease lost
-        """
-        if not self._lease_nonce:
-            return False
-
-        lease = self.db.query(RunnerLease).filter_by(id=1).first()
-        if not lease or lease.owner_nonce != self._lease_nonce:
-            self._lease_nonce = None
-            return False
-
-        lease.heartbeat = datetime.utcnow()
-        lease.expires_at = datetime.utcnow() + timedelta(seconds=settings.lease_timeout_seconds)
-        if task_id:
-            lease.last_task_id = task_id
-            self._current_task_id = task_id
-        self.db.commit()
-        return True
+        renewed = await self._leases.renew(task_id=task_id)
+        self._lease_nonce = self._leases.nonce
+        self._current_task_id = self._leases.current_task_id
+        return renewed
 
     async def release_lease(self):
-        """Release the runner lease."""
-        if self._lease_nonce:
-            lease = self.db.query(RunnerLease).filter_by(id=1).first()
-            if lease and lease.owner_nonce == self._lease_nonce:
-                # Clear last_task_id on clean release
-                lease.last_task_id = None
-                self.db.delete(lease)
-                self.db.commit()
-            self._lease_nonce = None
-            self._current_task_id = None
+        await self._leases.release()
+        self._lease_nonce = None
+        self._current_task_id = None
 
     def _mark_task_interrupted(self, task_id: str):
-        """Mark a running task as interrupted due to crash/restart.
-        
-        This is called when we detect a stale lease and need to mark
-        the previously running task as interrupted.
-        
-        Args:
-            task_id: ID of the task that was running
-        """
-        task = self.db.query(Task).filter_by(id=task_id).first()
-        if task and task.state in {TaskState.CREATED.value, TaskState.RUNNING.value, TaskState.WAITING_FOR_USER.value}:
-            if task.active_action_id:
-                self._append_event(
-                    task_id,
-                    "action.uncertain",
-                    {
-                        "action_id": task.active_action_id,
-                        "reason": "runner_crash_or_restart",
-                    },
-                )
-            # Mark task as interrupted
-            task.state = TaskState.INTERRUPTED.value
-            task.active_action_id = None
-            task.version += 1
-            task.updated_at = datetime.utcnow()
-            
-            self._append_event(task_id, "task.interrupted", {
-                    "reason": "runner_crash_or_restart",
-                    "detected_at": datetime.utcnow().isoformat(),
-                    "note": "Task was running when runner lease expired. Resume will re-observe before continuing."
-                })
-            self.db.commit()
-            try:
-                from backend.services.work_state import sync_objective_state_for_task
-            except ImportError:
-                from services.work_state import sync_objective_state_for_task
+        """Deprecated internal hook; interruption lives in LeaseManager now."""
+        return self._leases._mark_task_interrupted(task_id)
 
-            try:
-                sync_objective_state_for_task(
-                    self.db,
-                    task,
-                    event_type="task.interrupted",
-                    event_data={
-                        "reason": "runner_crash_or_restart",
-                        "note": "Task was running when runner lease expired. Resume will re-observe before continuing.",
-                    },
-                )
-            except Exception as exc:
-                logger.warning("Could not sync objective state for interrupted task %s: %s", task_id, exc)
-            logger.info(f"Marked task {task_id} as interrupted due to stale lease")
+    # --- event ledger (delegated to DbEventLedger) ----------------------------
 
-    def _append_event(self, task_id: str, event_type: str, event_data: Dict[str, Any]) -> TaskEvent:
+    def _append_event(self, task_id: str, event_type: str, event_data: Dict[str, Any]) -> Any:
         """Append the next immutable event while the caller owns the transaction."""
-        import json
-
-        last_event = self.db.query(TaskEvent).filter_by(task_id=task_id).order_by(
-            TaskEvent.sequence_num.desc()
-        ).first()
-        event = TaskEvent(
-            task_id=task_id,
-            event_type=event_type,
-            event_data=json.dumps(event_data),
-            sequence_num=(last_event.sequence_num + 1) if last_event else 1,
-            created_at=datetime.utcnow(),
-        )
-        self.db.add(event)
-        return event
+        return self.ledger.append_event(task_id, event_type, event_data)
 
     def _verify_lease(self) -> bool:
         """Verify we still hold the lease."""
-        if not self._lease_nonce:
+        if not self._leases.nonce:
             return False
-        
+        from backend.models.database import RunnerLease
+
         lease = self.db.query(RunnerLease).filter_by(id=1).first()
-        return lease and lease.owner_nonce == self._lease_nonce
+        return lease and lease.owner_nonce == self._leases.nonce
 
     async def record_event(self, task_id: str, event_type: str, event_data: Dict[str, Any]) -> None:
         """Append a durable event without changing task state (e.g. budget usage)."""
@@ -211,6 +98,8 @@ class TaskRunner:
             raise RuntimeError(f"Task {task_id} not found")
         self._append_event(task_id, event_type, event_data)
         self.db.commit()
+
+    # --- task state ownership --------------------------------------------------
 
     async def create_task(self, original_request: str, idempotency_key: Optional[str] = None) -> Task:
         """Create a new task.
@@ -235,6 +124,8 @@ class TaskRunner:
                 if existing.original_request != original_request:
                     raise ValueError("Idempotency key is already bound to a different request")
                 return existing
+
+        import uuid
 
         task_id = str(uuid.uuid4())
         task = Task(
@@ -262,6 +153,39 @@ class TaskRunner:
             raise
         self.db.refresh(task)
 
+        return task
+
+    async def clear_pending_action(self, task_id: str) -> None:
+        """Authoritative removal of a resolved pending-action request.
+
+        Replaces direct ``task.pending_action = None`` writes by the
+        execution loop (Phase 1 ownership boundary).
+        """
+        if not self._verify_lease():
+            raise RuntimeError("Runner lease not held")
+        task = self.db.query(Task).filter_by(id=task_id).first()
+        if not task:
+            raise RuntimeError(f"Task {task_id} not found")
+        task.pending_action = None
+        task.updated_at = datetime.utcnow()
+        self.db.commit()
+
+    def set_task_objective(self, task_id: str, objective_id: str) -> Task:
+        """Associate a task with its goal/objective (orchestration link).
+
+        Phase 2: the Task Orchestrator links plan-step execution tasks to
+        their goal through this authoritative method instead of writing the
+        column directly.
+        """
+        if not self._verify_lease():
+            raise RuntimeError("Runner lease not held")
+        task = self.db.query(Task).filter_by(id=task_id).first()
+        if not task:
+            raise RuntimeError(f"Task {task_id} not found")
+        task.objective_id = objective_id
+        task.updated_at = datetime.utcnow()
+        self.db.commit()
+        self.db.refresh(task)
         return task
 
     async def transition_state(
@@ -341,10 +265,9 @@ class TaskRunner:
         parameter_keys: List[str],
     ) -> None:
         """Durably record a mutating attempt before the operating-system call."""
-        lease = self.db.query(RunnerLease).filter_by(id=1).first()
-        if not lease or lease.owner_nonce != self._lease_nonce:
+        if not self._verify_lease():
             raise RuntimeError("Runner lease not held")
-        lease.last_task_id = task_id
+        self._leases.touch_task(task_id)
         self._current_task_id = task_id
         await self.transition_state(
             task_id=task_id,

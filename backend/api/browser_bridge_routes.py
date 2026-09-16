@@ -18,7 +18,16 @@ router = APIRouter(prefix="/api/v1/browser", tags=["browser_bridge"])
 
 @router.websocket("/ws")
 async def browser_websocket_endpoint(websocket: WebSocket):
-    """Bidirectional WebSocket connection for the Sythion browser extension."""
+    """Bidirectional WebSocket connection for the Sythion browser extension.
+
+    PROTECTED RUNTIME CONTRACT: this endpoint sits behind the same
+    LocalControlBoundaryMiddleware as every other API route. The extension
+    authenticates with the per-launch control token passed as a query-string
+    parameter (browsers cannot set custom headers on WebSocket handshakes)
+    plus a chrome-extension:// origin, and the peer must be on loopback.
+    Unauthenticated or wrongly authenticated connections are rejected at the
+    handshake by the middleware before this handler runs.
+    """
     await websocket.accept()
     service = BrowserBridgeService.get_instance()
     

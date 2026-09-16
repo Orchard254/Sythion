@@ -17,6 +17,35 @@ def _table_exists(conn, table_name: str) -> bool:
     return bool(rows)
 
 
+_CONVERSATION_TURNS_DDL = """
+CREATE TABLE conversation_turns_new (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    session_id VARCHAR NOT NULL,
+    task_id VARCHAR,
+    role VARCHAR DEFAULT 'user',
+    summary TEXT NOT NULL,
+    created_at DATETIME
+)
+"""
+
+
+def _rebuild_conversation_turns_table(conn) -> None:
+    """Rebuild ``conversation_turns`` so task_id is nullable (Phase 13B)."""
+    conn.execute(text(_CONVERSATION_TURNS_DDL))
+    conn.execute(text("""
+        INSERT INTO conversation_turns_new (id, session_id, task_id, role, summary, created_at)
+        SELECT id, session_id, task_id, role, summary, created_at FROM conversation_turns
+    """))
+    conn.execute(text("DROP TABLE conversation_turns"))
+    conn.execute(text("ALTER TABLE conversation_turns_new RENAME TO conversation_turns"))
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_conversation_turns_session_id ON conversation_turns (session_id)"
+    ))
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_conversation_turns_created_at ON conversation_turns (created_at)"
+    ))
+
+
 class DatabaseManager:
     """Manages SQLite database connections with WAL mode."""
 
@@ -115,6 +144,15 @@ class DatabaseManager:
                 "CREATE INDEX IF NOT EXISTS ix_conversation_turns_created_at "
                 "ON conversation_turns (created_at)"
             ))
+
+            # Phase 13B: conversation_turns.task_id must be nullable for pure conversations.
+            # SQLite does not support ALTER COLUMN, so if task_id has NOT NULL (notnull == 1),
+            # rebuild the table in-place preserving all existing rows and indexes.
+            if _table_exists(conn, "conversation_turns"):
+                turn_cols = conn.execute(text("PRAGMA table_info(conversation_turns)")).fetchall()
+                task_id_col = next((c for c in turn_cols if c[1] == "task_id"), None)
+                if task_id_col and task_id_col[3] == 1:  # notnull == 1
+                    _rebuild_conversation_turns_table(conn)
 
             # Edge decay review: memory edges gain a lifecycle status column
             # ("active"/"stale"/"removed"), mirroring proposed_skills.status.

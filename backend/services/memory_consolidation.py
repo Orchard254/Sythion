@@ -438,15 +438,15 @@ async def consolidate_memory(
     """
     if not turns:
         return []
-    from backend.adapters.ollama_adapter import get_adapter
+    from backend.runtime.model_provider import get_default_provider
 
-    adapter = adapter or get_adapter()
+    provider = adapter or get_default_provider()
     messages = [
         {"role": "system", "content": CONSOLIDATION_SYSTEM_PROMPT},
         {"role": "user", "content": _build_user_message(memory_entries, turns, memory_edges)},
     ]
     try:
-        resp = await adapter.chat(messages, max_tokens=4000, timeout=120.0)
+        resp = await provider.chat(messages, max_tokens=4000, timeout=120.0)
     except Exception as exc:  # best-effort: never break the task loop
         logger.warning("Memory consolidation chat failed: %s", exc)
         return []
@@ -490,25 +490,46 @@ async def consolidate_memory(
             continue
         to_apply_edges.append(op)
 
-    from backend.api.schemas import MemoryStoreInput, MemoryLinkInput
-    from backend.tools.persistent_memory_tools import MemoryStoreTool, MemoryLinkTool
+    from backend.api.schemas import MemoryLinkInput
+    from backend.tools.persistent_memory_tools import MemoryLinkTool
+    from backend.services.memory_service import MemoryService
 
-    store = MemoryStoreTool()
+    EVAL_VERSION_REF = "consolidation-pass"
+    service = MemoryService(db)
     link = MemoryLinkTool()
     applied: List[Dict[str, Any]] = []
     for op in to_apply:
         try:
-            out = await store.execute(
-                MemoryStoreInput(
-                    key=op["key"],
-                    value=op["value"],
-                    category=op["category"],
-                )
+            # Phase 7: consolidation writes flow through the Memory Service.
+            # LLM-proposed candidates are typed conservatively: user-stated
+            # facts become PREFERENCE/FACT via USER_CONVERSATION (unverified);
+            # everything else lands as ASSUMPTION/BELIEF via MODEL_INFERENCE —
+            # never auto-verified.
+            source = op.get("source", "model_inference").lower()
+            src_type = {
+                "user_statement": "USER_CONVERSATION",
+                "verified_tool_result": "TOOL_EVIDENCE",
+                "inference": "MODEL_INFERENCE",
+            }.get(source, "CONSOLIDATION")
+            kind = {
+                "profile": "FACT", "preference": "PREFERENCE",
+                "knowledge": "ASSUMPTION",
+            }.get(op.get("category", ""), "ASSUMPTION")
+            if src_type == "TOOL_EVIDENCE":
+                kind = "FACT"
+            elif src_type == "USER_CONVERSATION" and kind == "ASSUMPTION":
+                kind = "PREFERENCE"
+            confidence = 0.9 if op.get("confidence") == "high" else 0.6
+            service.create(
+                key=op["key"], value=op["value"], kind=kind,
+                source_type=src_type,
+                source_ref=f"consolidation:{EVAL_VERSION_REF}",
+                confidence=confidence,
+                category=op.get("category") or None,
             )
-            if out.success:
-                applied.append(op)
+            applied.append(op)
         except Exception as exc:
-            logger.warning("Memory store failed for %s: %s", op["key"], exc)
+            logger.warning("Memory store failed for %s: %s", op.get("key"), exc)
     for op in to_apply_edges:
         try:
             out = await link.execute(

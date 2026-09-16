@@ -32,11 +32,13 @@ def _transport(selected_model: str):
 async def test_onboarding_lists_authenticated_model_ids():
     adapter = OllamaCloudAdapter()
     adapter.api_key = "test-key"
+    import asyncio
     adapter._client = httpx.AsyncClient(
         base_url="https://ollama.com",
         headers={"Authorization": "Bearer test-key"},
         transport=_transport("minimax-m3"),
     )
+    adapter._client_loop = asyncio.get_running_loop()
 
     models = await adapter.list_models()
 
@@ -49,11 +51,13 @@ async def test_provider_unusable_without_proven_native_tool():
     adapter = OllamaCloudAdapter()
     adapter.api_key = "test-key"
     adapter.selected_model = "minimax-m3:cloud"
+    import asyncio
     adapter._client = httpx.AsyncClient(
         base_url="https://ollama.com",
         headers={"Authorization": "Bearer test-key"},
         transport=_transport("minimax-m3"),
     )
+    adapter._client_loop = asyncio.get_running_loop()
 
     profile = await adapter.ensure_capabilities()
 
@@ -77,11 +81,13 @@ async def test_stale_model_fails_closed():
     adapter = OllamaCloudAdapter()
     adapter.api_key = "test-key"
     adapter.selected_model = "retired-model"
+    import asyncio
     adapter._client = httpx.AsyncClient(
         base_url="https://ollama.com",
         headers={"Authorization": "Bearer test-key"},
         transport=_transport("minimax-m3"),
     )
+    adapter._client_loop = asyncio.get_running_loop()
 
     with pytest.raises(ProviderCapabilityError, match="unavailable"):
         await adapter.ensure_capabilities()

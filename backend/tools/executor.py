@@ -10,8 +10,10 @@ import sys
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Generic, Protocol, TypeVar
+from typing import Any, Generic, Optional, Protocol, TypeVar
 
 from pydantic import BaseModel
 
@@ -102,20 +104,17 @@ class BaseTool(ABC, Generic[T_Input]):
     - Type-safe input validation
     - IDE autocomplete for tool parameters
     - Static analysis of tool contracts
+
+    CANCELLATION (Phase 1): tools are shared singletons; per-execution state
+    (cancellation, task identity) lives in an execution-scoped
+    ``ToolExecutionContext`` carried by a ContextVar, never on the instance.
+    One task's cancellation state can therefore never affect another task,
+    even under concurrent workers.
     """
 
     name: str
     description: str
     input_schema: type[T_Input]
-    _active_cancelled_check: Callable[[], Awaitable[bool]] | None = None
-
-    def set_cancelled_check(self, check: Callable[[], Awaitable[bool]] | None) -> None:
-        """Set the cancellation check for this tool execution."""
-        self._active_cancelled_check = check
-
-    def clear_cancelled_check(self) -> None:
-        """Clear the cancellation check after execution."""
-        self._active_cancelled_check = None
 
     @abstractmethod
     async def execute(self, input_data: T_Input) -> ToolOutput:
@@ -131,17 +130,17 @@ class BaseTool(ABC, Generic[T_Input]):
         return None
 
     async def _is_cancelled(self) -> bool:
-        """Return True when the caller's task was cancelled mid-execution.
+        """Return True when the calling execution was cancelled mid-flight.
 
-        The executor sets `_active_cancelled_check` for the duration of
-        `execute`; multi-step tools consult this before a final, irreversible
-        OS swap (e.g. the atomic replace in file writes).
+        Reads the execution-scoped context installed by the executor for the
+        duration of `execute`. Multi-step tools consult this before a final,
+        irreversible OS swap (e.g. the atomic replace in file writes).
         """
-        check = self._active_cancelled_check
-        if check is None:
+        ctx = current_execution_context()
+        if ctx is None or ctx.cancelled_check is None:
             return False
         try:
-            return bool(await check())
+            return bool(await ctx.cancelled_check())
         except Exception:
             return False
 
@@ -156,16 +155,53 @@ class BaseTool(ABC, Generic[T_Input]):
 
 @dataclass(frozen=True)
 class PolicyContext:
-    """Trusted execution context supplied by the task runner, never the model."""
+    """Trusted execution context supplied by the task runner, never the model.
+
+    This is the execution-scoped runtime context: one instance per tool
+    execution, carrying everything a tool may consult about *its own*
+    execution and nothing about any other task.
+    """
 
     direct_user_instruction: bool = False
+    task_id: str = ""
+    """Identity of the owning task (execution scoping / diagnostics)."""
 
     cancelled_check: Callable[[], Awaitable[bool]] | None = None
     """Async predicate the executor calls immediately before an OS action.
 
-    Returns True when the caller's task has been cancelled, so the executor can
-    refuse the action at the last deterministic boundary.
+    Returns True when the caller's task has been cancelled, so the executor
+    can refuse the action at the last deterministic boundary.
     """
+
+
+# --- Execution-scoped context (replaces class-level mutable state) ----------
+
+_EXECUTION_CONTEXT: ContextVar[Optional["PolicyContext"]] = ContextVar(
+    "sythion_tool_execution_context", default=None
+)
+
+
+def current_execution_context() -> Optional[PolicyContext]:
+    """The execution-scoped context for the currently running tool call.
+
+    Each asyncio execution context gets its own value: concurrent workers
+    cannot observe each other's cancellation state or task identity.
+    """
+    return _EXECUTION_CONTEXT.get()
+
+
+@contextmanager
+def execution_context(ctx: PolicyContext):
+    """Install an execution-scoped context for the duration of a tool call."""
+    token = _EXECUTION_CONTEXT.set(ctx)
+    try:
+        yield ctx
+    finally:
+        _EXECUTION_CONTEXT.reset(token)
+
+
+# Backwards-compatible alias: the execution context IS the policy context.
+ToolExecutionContext = PolicyContext
 
 
 # =============================================================================
@@ -173,37 +209,37 @@ class PolicyContext:
 # =============================================================================
 
 class ToolExecutor:
-    """Executes tools with timing and error handling."""
+    """Executes tools with timing and error handling.
+
+    The registry is shared across concurrent specialist executions. Reads
+    (get/list/execute) are concurrent, writes (register) are serialized
+    and must not happen during active execution — callers must hold the
+    external composition lock (see backend/tools/registry.py). This lock
+    guarantees snapshot consistency for list_tools().
+    """
 
     def __init__(self) -> None:
         self._tools: dict[str, BaseTool[Any]] = {}
+        import threading as _thr
+        self._registry_lock = _thr.RLock()
 
     def register_tool(self, tool: BaseTool[Any]) -> None:
         """Register a tool for execution.
 
-        Args:
-            tool: Tool instance to register
+        Serialized — must not be called concurrently with execute_tool.
         """
-        self._tools[tool.name] = tool
+        with self._registry_lock:
+            self._tools[tool.name] = tool
 
     def get_tool(self, name: str) -> BaseTool[Any] | None:
-        """Get a registered tool by name.
-
-        Args:
-            name: Tool name
-
-        Returns:
-            Tool instance or None if not found
-        """
-        return self._tools.get(name)
+        """Get a registered tool by name."""
+        with self._registry_lock:
+            return self._tools.get(name)
 
     def list_tools(self) -> list[str]:
-        """List all registered tools.
-
-        Returns:
-            List of tool names
-        """
-        return list(self._tools.keys())
+        """List all registered tools — snapshot under lock."""
+        with self._registry_lock:
+            return list(self._tools.keys())
 
     async def execute_tool(
         self,
@@ -255,63 +291,73 @@ class ToolExecutor:
                 duration_ms=0,
             )
 
-        # Deterministic target validation before any OS action.
-        target_error = tool.validate_targets(validated_input)
-        if target_error:
-            return ToolOutput(
-                success=False,
-                error=target_error,
-                duration_ms=0,
-            )
+        # Install the execution-scoped context (task identity + cancellation)
+        # for validation, target checks, and execution alike. ContextVar
+        # semantics guarantee isolation between concurrent executions.
+        exec_ctx = PolicyContext(
+            direct_user_instruction=(
+                policy_context.direct_user_instruction if policy_context else False
+            ),
+            task_id=policy_context.task_id if policy_context else "",
+            cancelled_check=policy_context.cancelled_check if policy_context else None,
+        )
 
-        # Final cancellation check immediately before the OS action: a cancel
-        # that arrived during input/target validation must stop the action.
-        if policy_context is not None and policy_context.cancelled_check is not None:
-            try:
-                if await policy_context.cancelled_check():
-                    return ToolOutput(
-                        success=False,
-                        error={"code": "CANCELLED", "message": "Task was cancelled before the action could run"},
-                        duration_ms=0,
-                    )
-            except Exception as e:
+        with execution_context(exec_ctx):
+            # Deterministic target validation before any OS action.
+            target_error = tool.validate_targets(validated_input)
+            if target_error:
                 return ToolOutput(
                     success=False,
-                    error={"code": "CANCELLATION_CHECK_ERROR", "message": str(e)},
+                    error=target_error,
                     duration_ms=0,
                 )
 
-        # Execute with timing
-        start_time = time.time()
-        # Expose the active cancellation check to tools so multi-step mutations
-        # (e.g. write-temp then atomic replace) can stop before the final swap.
-        tool.set_cancelled_check(
-            policy_context.cancelled_check
-            if policy_context is not None
-            else None
-        )
-        try:
-            output = await tool.execute(validated_input)
-            duration_ms = int((time.time() - start_time) * 1000)
-            output.duration_ms = duration_ms
+            # Final cancellation check immediately before the OS action: a
+            # cancel that arrived during input/target validation must stop
+            # the action.
+            if exec_ctx.cancelled_check is not None:
+                try:
+                    if await exec_ctx.cancelled_check():
+                        return ToolOutput(
+                            success=False,
+                            error={
+                                "code": "CANCELLED",
+                                "message": "Task was cancelled before the action could run",
+                            },
+                            duration_ms=0,
+                        )
+                except Exception as e:
+                    return ToolOutput(
+                        success=False,
+                        error={"code": "CANCELLATION_CHECK_ERROR", "message": str(e)},
+                        duration_ms=0,
+                    )
 
-            # Verify if successful
-            if output.success:
-                verified = await tool.verify(validated_input, output)
-                if not verified:
-                    output.success = False
-                    output.error = {"code": "VERIFICATION_FAILED", "message": "Post-execution verification failed"}
+            # Execute with timing
+            start_time = time.time()
+            try:
+                output = await tool.execute(validated_input)
+                duration_ms = int((time.time() - start_time) * 1000)
+                output.duration_ms = duration_ms
 
-            return output
-        except Exception as e:
-            duration_ms = int((time.time() - start_time) * 1000)
-            return ToolOutput(
-                success=False,
-                error={"code": "EXECUTION_ERROR", "message": str(e)},
-                duration_ms=duration_ms,
-            )
-        finally:
-            tool.clear_cancelled_check()
+                # Verify if successful
+                if output.success:
+                    verified = await tool.verify(validated_input, output)
+                    if not verified:
+                        output.success = False
+                        output.error = {
+                            "code": "VERIFICATION_FAILED",
+                            "message": "Post-execution verification failed",
+                        }
+
+                return output
+            except Exception as e:
+                duration_ms = int((time.time() - start_time) * 1000)
+                return ToolOutput(
+                    success=False,
+                    error={"code": "EXECUTION_ERROR", "message": str(e)},
+                    duration_ms=duration_ms,
+                )
 
     @staticmethod
     def _policy_error(

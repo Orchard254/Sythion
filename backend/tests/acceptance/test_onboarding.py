@@ -59,6 +59,7 @@ def stubbed_models_adapter(isolated_profile):
         headers={"Authorization": "Bearer test-key"},
         transport=_models_transport(),
     )
+    # _client_loop will be set on first async call to _get_client
     yield adapter
     import asyncio
     try:

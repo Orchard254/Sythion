@@ -244,20 +244,18 @@ def ensure_task_objective(db: Session, task: Task) -> Objective:
         )
 
     if objective is None:
-        objective = Objective(
-            id=str(uuid.uuid4()),
-            title=_objective_title(task),
-            purpose=_objective_seed_text(task) or None,
-            status="active",
-            priority=3,
-            current_summary="Objective created from task request.",
-            last_task_id=task.id,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
-        )
-        db.add(objective)
-        db.flush()
+        # PHASE 3.5 SUNSET: creation goes through the canonical GoalManager
+        # (single creation authority + goal.created event). The attached
+        # steps remain un-planned legacy rows until this path retires.
+        from backend.services.goal_manager import GoalManager
+
         seed = _objective_seed_text(task)
+        objective = GoalManager(db).create_goal(
+            title=_objective_title(task),
+            purpose=seed or None,
+            priority=3,
+        )
+        objective.last_task_id = task.id
         steps = decompose_request(seed) or [seed or objective.title]
         for idx, description in enumerate(steps, start=1):
             db.add(
@@ -271,6 +269,7 @@ def ensure_task_objective(db: Session, task: Task) -> Objective:
                     updated_at=datetime.utcnow(),
                 )
             )
+        db.flush()
     else:
         open_step = _current_open_step(db, objective.id)
         if open_step is None:
@@ -332,6 +331,11 @@ def ensure_task_objective(db: Session, task: Task) -> Objective:
     return objective
 
 
+# Phase 2: goal statuses owned by GoalManager; once a goal reaches a
+# terminal state the legacy task-driven projection must not change it.
+_TERMINAL_GOAL_STATUSES = {"completed", "failed", "abandoned"}
+
+
 def sync_objective_state_for_task(
     db: Session,
     task: Task,
@@ -346,6 +350,24 @@ def sync_objective_state_for_task(
     objective = db.query(Objective).filter_by(id=task.objective_id).first()
     if objective is None:
         return None
+    if objective.status in _TERMINAL_GOAL_STATUSES:
+        # Terminal goals stay terminal; summaries remain untouched by the
+        # legacy projection. Lifecycle changes go through GoalManager.
+        return objective
+
+    # Phase 3 legacy-boundary guard: goals with a plan-backed step set are
+    # owned by GoalManager/Planner. The legacy projection must NEVER mutate
+    # their (or their steps') state — doing so corrupted orchestration by
+    # pausing goals on transient task failures.
+    plan_backed_goal = (
+        db.query(PlanStep.id)
+        .filter(PlanStep.objective_id == objective.id)
+        .filter(PlanStep.plan_id.isnot(None))
+        .first()
+        is not None
+    )
+    if plan_backed_goal:
+        return objective
 
     event_data = event_data or {}
     step = (
@@ -366,6 +388,9 @@ def sync_objective_state_for_task(
         return default
 
     state = task.state
+    # Phase 2: for plan-backed steps the Planner owns status transitions;
+    # this legacy projection only annotates summaries.
+    plan_backed_step = step is not None and getattr(step, "plan_id", None) is not None
     if state == "running":
         objective.status = "active"
         objective.current_summary = _note(
@@ -374,7 +399,7 @@ def sync_objective_state_for_task(
             task.original_request,
             default="Objective is in progress.",
         )
-        if step is not None:
+        if step is not None and not plan_backed_step:
             step.status = "in_progress"
             step.blocker_reason = None
             step.linked_task_id = task.id
@@ -386,7 +411,7 @@ def sync_objective_state_for_task(
             event_data.get("question"),
             default="Awaiting user input.",
         )
-        if step is not None:
+        if step is not None and not plan_backed_step:
             step.status = "blocked"
             step.blocker_reason = _note(task.pending_question, event_data.get("question"))
             step.linked_task_id = task.id
@@ -394,7 +419,7 @@ def sync_objective_state_for_task(
     elif state == "completed":
         completion_note = _note(task.final_result, event_data.get("summary"), default="Step completed.")
         objective.current_summary = completion_note
-        if step is not None:
+        if step is not None and not plan_backed_step:
             step.status = "completed"
             step.result_summary = completion_note
             step.blocker_reason = None
@@ -422,7 +447,7 @@ def sync_objective_state_for_task(
         failure_note = _note(task.terminal_reason, event_data.get("reason"), default="Task failed.")
         objective.status = "paused"
         objective.current_summary = f"Task failed: {failure_note}"
-        if step is not None:
+        if step is not None and not plan_backed_step:
             step.status = "failed"
             step.result_summary = failure_note
             step.blocker_reason = failure_note
@@ -432,7 +457,7 @@ def sync_objective_state_for_task(
         cancel_note = _note(task.terminal_reason, event_data.get("reason"), default="cancelled_by_user")
         objective.status = "paused"
         objective.current_summary = f"Task cancelled: {cancel_note}"
-        if step is not None:
+        if step is not None and not plan_backed_step:
             step.status = "skipped"
             step.result_summary = cancel_note
             step.blocker_reason = None
@@ -442,7 +467,7 @@ def sync_objective_state_for_task(
         pause_note = _note(event_data.get("note"), event_data.get("reason"), default=f"Task {state}.")
         objective.status = "paused"
         objective.current_summary = pause_note
-        if step is not None:
+        if step is not None and not plan_backed_step:
             step.status = "blocked"
             step.blocker_reason = pause_note
             step.linked_task_id = task.id

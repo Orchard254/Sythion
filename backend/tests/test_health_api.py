@@ -41,11 +41,33 @@ def test_health_reports_selected_model(monkeypatch):
     from backend.adapters import ollama_adapter
     monkeypatch.setattr(ollama_adapter, "get_adapter", lambda: None)
 
-    import core.config
-    monkeypatch.setattr(core.config, "resolve_selected_model", lambda: "minimax-m3:cloud")
+    import backend.core.config as core_config
+    monkeypatch.setattr(core_config, "resolve_selected_model", lambda: "minimax-m3:cloud")
 
-    import backend.api.routes as routes
-    monkeypatch.setattr(routes, "get_adapter", lambda: None)
+    # Phase 5: /health reads provider health through the neutral facade
+    # (function-local import resolves against this module at call time).
+    import backend.runtime.model_provider as model_provider_mod
+    from backend.runtime.model_provider import ModelHealth
+
+    class _HealthyProvider:
+        def provider_id(self):
+            return "test"
+
+        def selected_model_id(self):
+            return "minimax-m3:cloud"
+
+        def list_models(self):
+            return []
+
+        def health(self):
+            return ModelHealth("test", ModelHealth.HEALTHY)
+
+        async def chat(self, messages, max_tokens=4000, timeout=300.0):
+            return {}
+
+    import backend.api.routes as routes  # noqa: F401 (route under test)
+    monkeypatch.setattr(model_provider_mod, "get_default_provider",
+                        lambda: _HealthyProvider())
 
     client, previous_token = _client_with_db(session)
     try:
@@ -54,7 +76,9 @@ def test_health_reports_selected_model(monkeypatch):
         body = response.json()
         assert body["status"] == "healthy"
         assert body["selected_model"] == "minimax-m3:cloud"
-        assert body["cloud_configured"] is False
+        # PHASE 5: cloud_configured now reflects provider HEALTH via the
+        # neutral facade (the stubbed provider reports HEALTHY).
+        assert body["cloud_configured"] is True
     finally:
         import backend.main as backend_main
         backend_main.control_token = previous_token

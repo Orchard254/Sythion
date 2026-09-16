@@ -1,9 +1,10 @@
-"""
+﻿"""
 Tests for the durable objective / plan work-state layer.
 """
 
 from datetime import datetime
 
+import json
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -355,7 +356,7 @@ class TestObjectivesApi:
         body = created.json()
         assert body["title"] == "Build durable work-state layer"
         assert len(body["steps"]) == 2
-        assert body["steps"][0]["status"] == "pending"
+        assert body["steps"][0]["status"] == "ready"  # PHASE 3.5: canonical vocabulary
 
         objective_id = body["id"]
         updated = client.patch(
@@ -436,8 +437,9 @@ class TestObjectivePlanningTools:
         assert output.success is True, f"Tool failed: {output.error}"
         assert output.data["title"] == "Find remote work in Kenya"
         assert len(output.data["steps"]) == 4
-        assert output.data["steps"][0]["status"] == "in_progress"
-        assert output.data["steps"][1]["status"] == "pending"
+        # PHASE 3.5: canonical plan-backed vocabulary (was in_progress/pending).
+        assert output.data["steps"][0]["status"] == "ready"
+        assert output.data["steps"][1]["status"] == "blocked"
         assert output.data["priority"] == 2
 
         # Verify DB persistence
@@ -448,19 +450,21 @@ class TestObjectivePlanningTools:
             assert obj.status == "active"
             steps = session.query(PlanStep).filter_by(objective_id=obj.id).order_by(PlanStep.step_order).all()
             assert len(steps) == 4
-            assert steps[0].status == "in_progress"
-            assert steps[1].status == "pending"
+            assert steps[0].status == "ready"
+            assert steps[1].status == "blocked"
 
     @pytest.mark.asyncio
     async def test_objective_complete_step_advances_plan(self):
-        """ObjectiveCompleteStepTool marks step done and auto-advances the next one."""
+        """PHASE 3.5 canonical semantics: with proper runtime evidence the
+        tool completes the step, unlocks the dependent one via the Planner,
+        and reports goal status through GoalManager rules."""
         from backend.tools.objective_planning_tool import (
             ObjectiveCreateTool, ObjectiveCreateInput,
             ObjectiveCompleteStepTool, ObjectiveCompleteStepInput,
             ObjectiveGetPlanTool, ObjectiveGetPlanInput,
         )
+        from backend.models.database import Task, get_db_manager
 
-        # Create a plan first
         create_tool = ObjectiveCreateTool()
         create_out = await create_tool.execute(ObjectiveCreateInput(
             title="Learn Forex basics",
@@ -469,7 +473,20 @@ class TestObjectivePlanningTools:
         assert create_out.success is True
         objective_id = create_out.data["objective_id"]
 
-        # Complete step 1
+        # Seed REAL evidence for step 1: a terminal-completed clean task.
+        db_mgr = get_db_manager()
+        with db_mgr.get_session() as session:
+            step1 = (
+                session.query(PlanStep)
+                .filter_by(objective_id=objective_id, step_order=1)
+                .first()
+            )
+            task = Task(id="evidence-1", original_request="watch videos",
+                        state="completed", version=1, final_result="watched")
+            session.add(task)
+            step1.evidence_task_id = task.id
+            session.commit()
+
         complete_tool = ObjectiveCompleteStepTool()
         comp_out = await complete_tool.execute(ObjectiveCompleteStepInput(
             result_summary="Watched 5 Rayner Teo videos. Learned trend-following strategy and risk/reward basics.",
@@ -480,29 +497,47 @@ class TestObjectivePlanningTools:
         assert comp_out.data["next_step"] == 2
         assert comp_out.data["objective_status"] == "active"
 
-        # Verify via get_plan
         get_tool = ObjectiveGetPlanTool()
         plan_out = await get_tool.execute(ObjectiveGetPlanInput(objective_id=objective_id))
         assert plan_out.success is True
         steps = plan_out.data["steps"]
         assert steps[0]["status"] == "completed"
         assert "Rayner Teo" in steps[0]["result_summary"]
-        assert steps[1]["status"] == "in_progress"
+        # Dependent step unlocked by the Planner (canonical vocabulary).
+        assert steps[1]["status"] == "ready"
 
     @pytest.mark.asyncio
     async def test_complete_all_steps_marks_objective_completed(self):
-        """Completing every step transitions the objective to completed status."""
+        """PHASE 3.5 canonical: with evidence for every step, completing the
+        last one drives deterministic goal completion via GoalManager rules."""
         from backend.tools.objective_planning_tool import (
             ObjectiveCreateTool, ObjectiveCreateInput,
             ObjectiveCompleteStepTool, ObjectiveCompleteStepInput,
         )
+        from backend.models.database import Task, get_db_manager, PlanStep
 
         create_out = await ObjectiveCreateTool().execute(ObjectiveCreateInput(
             title="Quick two-step goal",
-            steps=["Step A", "Step B"],
+            steps=["First step action", "Second step action"],
         ))
         assert create_out.success is True
         obj_id = create_out.data["objective_id"]
+
+        # Seed clean evidence tasks for both steps up front.
+        db_mgr = get_db_manager()
+        with db_mgr.get_session() as session:
+            steps = (
+                session.query(PlanStep)
+                .filter_by(objective_id=obj_id)
+                .order_by(PlanStep.step_order)
+                .all()
+            )
+            for i, s in enumerate(steps, start=1):
+                session.add(Task(id=f"evidence-{i}", original_request=f"t{i}",
+                                 state="completed", version=1,
+                                 final_result=f"done {i}"))
+                s.evidence_task_id = f"evidence-{i}"
+            session.commit()
 
         complete_tool = ObjectiveCompleteStepTool()
         out1 = await complete_tool.execute(ObjectiveCompleteStepInput(
@@ -913,47 +948,63 @@ class TestObjectivePlanningToolVerification:
 
     @pytest.mark.asyncio
     async def test_objective_complete_step_tool_verification_failure_returns_error(self):
-        """ObjectiveCompleteStepTool returns VERIFICATION_FAILED error when verification fails (fix behavior).
+        """PHASE 3.5 canonical gate: the tool refuses completion without
+        acceptable runtime evidence and reports machine-readable codes.
 
-        This test FAILS on pre-fix code because:
-        1. Pre-fix code lacks the sessionmaker import (AttributeError when patching)
-        2. Pre-fix code has no verification - it always returns success
+        - no evidence task          -> STEP_EVIDENCE_REQUIRED
+        - completed but dirty proof -> STEP_EVIDENCE_UNVERIFIED
         """
-        from unittest.mock import patch, MagicMock
         from backend.tools.objective_planning_tool import ObjectiveCreateTool, ObjectiveCreateInput, ObjectiveCompleteStepTool, ObjectiveCompleteStepInput
+        from backend.models.database import Task, get_db_manager
 
-        # First create an objective with a step
-        create_tool = ObjectiveCreateTool()
-        create_inp = ObjectiveCreateInput(title="Test", steps=["Step 1"])
-        create_output = await create_tool.execute(create_inp)
-        obj_id = create_output.data["objective_id"] if create_output.success else None
+        create_output = await ObjectiveCreateTool().execute(
+            ObjectiveCreateInput(title="Test", steps=["First step action"])
+        )
+        obj_id = create_output.data["objective_id"]
         assert obj_id is not None
 
         complete_tool = ObjectiveCompleteStepTool()
-        comp_inp = ObjectiveCompleteStepInput(result_summary="Done", objective_id=obj_id, step_order=1)
 
-        # Mock the sessionmaker to simulate read-back failure
-        mock_verify_session = MagicMock()
-        mock_query = MagicMock()
-        mock_query.filter_by.return_value.first.return_value = None
-        mock_verify_session.query.return_value = mock_query
-        mock_verify_session.__enter__ = lambda self: mock_verify_session
-        mock_verify_session.__exit__ = lambda *args: None
+        # 1) No evidence at all -> refused.
+        no_evidence = await complete_tool.execute(ObjectiveCompleteStepInput(
+            result_summary="Done", objective_id=obj_id, step_order=1))
+        assert no_evidence.success is False
+        assert no_evidence.error.get("code") == "STEP_EVIDENCE_REQUIRED"
 
-        mock_session_class = MagicMock()
-        mock_session_class.return_value = mock_verify_session
+        # 2) Completed task whose last mutating action failed verification.
+        db_mgr = get_db_manager()
+        with db_mgr.get_session() as session:
+            from backend.models.database import TaskEvent
+            step = (
+                session.query(PlanStep)
+                .filter_by(objective_id=obj_id, step_order=1)
+                .first()
+            )
+            session.add(Task(id="dirty-evidence", original_request="t",
+                             state="completed", version=1))
+            session.commit()
+            last = (
+                session.query(TaskEvent)
+                .filter_by(task_id="dirty-evidence")
+                .order_by(TaskEvent.sequence_num.desc())
+                .first()
+            )
+            seq = last.sequence_num if last else 0
+            session.add(TaskEvent(
+                task_id="dirty-evidence", event_type="tool.executed",
+                event_data=json.dumps({
+                    "tool_name": "file_write", "success": False,
+                    "mutating": True, "verification": "failed",
+                }),
+                sequence_num=seq + 1,
+            ))
+            step.evidence_task_id = "dirty-evidence"
+            session.commit()
 
-        def mock_sessionmaker_func(*args, **kwargs):
-            return mock_session_class
-
-        with patch('backend.tools.objective_planning_tool.sessionmaker', mock_sessionmaker_func):
-            output = await complete_tool.execute(comp_inp)
-
-            # Fix behavior: returns VERIFICATION_FAILED error
-            # Pre-fix behavior: returns success (no verification)
-            assert output.success is False
-            assert output.error is not None
-            assert output.error.get("code") == "VERIFICATION_FAILED"
+        dirty = await complete_tool.execute(ObjectiveCompleteStepInput(
+            result_summary="Done", objective_id=obj_id, step_order=1))
+        assert dirty.success is False
+        assert dirty.error.get("code") == "STEP_EVIDENCE_UNVERIFIED"
 
     @pytest.mark.asyncio
     async def test_objective_update_summary_tool_verification_failure_returns_error(self):
@@ -998,4 +1049,5 @@ class TestObjectivePlanningToolVerification:
             assert output.success is False
             assert output.error is not None
             assert output.error.get("code") == "VERIFICATION_FAILED"
+
 

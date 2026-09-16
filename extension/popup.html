@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body {
+      width: 260px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      margin: 0;
+      padding: 16px;
+      background: #0f172a;
+      color: #f8fafc;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .logo {
+      font-size: 18px;
+      font-weight: 700;
+      color: #38bdf8;
+    }
+    .status-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #ef4444;
+    }
+    .dot.connected {
+      background: #22c55e;
+      box-shadow: 0 0 8px #22c55e;
+    }
+    .status-text {
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .settings {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .settings label {
+      font-size: 11px;
+      color: #94a3b8;
+    }
+    .settings input {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      color: #f8fafc;
+      padding: 6px 8px;
+      font-size: 12px;
+    }
+    .settings button {
+      margin-top: 6px;
+      background: #38bdf8;
+      color: #0f172a;
+      font-weight: 600;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+    #saved-note {
+      font-size: 11px;
+      color: #22c55e;
+    }
+    .info {
+      margin-top: 12px;
+      font-size: 11px;
+      color: #94a3b8;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">Sythion Bridge</div>
+  </div>
+  <div class="status-card">
+    <div id="dot" class="dot"></div>
+    <div id="status-text" class="status-text">Connecting to Sythion...</div>
+  </div>
+  <div class="settings">
+    <label for="port">Sidecar port</label>
+    <input id="port" type="text" inputmode="numeric" placeholder="8000">
+    <label for="token">Control token (per-launch)</label>
+    <input id="token" type="password" placeholder="Paste token from Sythion">
+    <button id="save">Save</button>
+    <span id="saved-note"></span>
+  </div>
+  <div class="info">
+    Provides real-time browser tab discovery, DOM inspection, and navigation to your local Sythion AI assistant.
+    The control token authenticates this extension to the local sidecar; it never leaves this machine.
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

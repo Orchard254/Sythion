@@ -12,7 +12,9 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
-from backend.adapters.ollama_adapter import get_adapter, format_tools_for_ollama
+from backend.runtime.interfaces import ModelClient
+from backend.runtime.model_client import get_default_model_client
+from backend.adapters.ollama_adapter import format_tools_for_ollama
 from backend.tools.executor import ToolExecutor
 from backend.core.budgets import TaskBudget, BudgetExceededError
 from backend.services.model_context_builder import ModelContextBuilder
@@ -127,10 +129,25 @@ class ModelDecisionEngine:
         r"\binstead\b",
     )
     
-    def __init__(self, db_session: Session, tool_executor: ToolExecutor):
+    def __init__(
+        self,
+        db_session: Session,
+        tool_executor: ToolExecutor,
+        model_client: Optional[ModelClient] = None,
+    ):
         self.db = db_session
         self.tool_executor = tool_executor
-        self.adapter = get_adapter()
+        # Model provider boundary (Phase 1): the engine depends on the narrow
+        # ModelClient interface, not the concrete Ollama adapter. No routing,
+        # no fallback — one provider-backed implementation today.
+        self.model_client: ModelClient = model_client or get_default_model_client()
+        self.adapter = get_default_model_client()._adapter  # compat: health/list use
+        # Phase 6: bounded evidence-based fallback state.
+        from backend.core.config import settings
+
+        self._model_override: Optional[str] = None
+        self._fallback_attempts = 0
+        self._max_fallback_attempts = max(1, settings.model_max_attempts - 1)
         self.token_count = 0
         self.decision_history: List[Dict[str, Any]] = []
         self._pending_tool_calls: List[Dict[str, Any]] = []
@@ -456,18 +473,32 @@ class ModelDecisionEngine:
         formatted_tools = format_tools_for_ollama(tool_metadata)
         
         try:
-            # Call Ollama Cloud under a hard deadline so a slow/unresponsive
-            # cloud call cannot leave the task loop hanging silently.
+            # Call the model under a hard deadline so a slow/unresponsive
+            # provider cannot leave the task loop hanging silently.
             from backend.core.config import settings
             decision_timeout = getattr(settings, "decision_timeout_seconds", 120.0)
-            response = await asyncio.wait_for(
-                self.adapter.execute_tool_call(
+            target_model = self._model_override
+
+            async def _call():
+                if hasattr(self.model_client, "decide"):
+                    import inspect
+
+                    if "model_id" in inspect.signature(
+                        self.model_client.decide
+                    ).parameters:
+                        return await self.model_client.decide(
+                            messages=messages,
+                            tools=formatted_tools,
+                            max_tokens=self.MAX_TOKENS_PER_REQUEST,
+                            model_id=target_model,
+                        )
+                return await self.model_client.decide(
                     messages=messages,
                     tools=formatted_tools,
-                    max_tokens=self.MAX_TOKENS_PER_REQUEST
-                ),
-                timeout=decision_timeout,
-            )
+                    max_tokens=self.MAX_TOKENS_PER_REQUEST,
+                )
+
+            response = await asyncio.wait_for(_call(), timeout=decision_timeout)
             
             # Track tokens (estimate)
             usage = response.get('usage', {})
@@ -502,12 +533,113 @@ class ModelDecisionEngine:
             raise
         except ModelDecisionError:
             raise
+        except asyncio.TimeoutError as e:
+            # Phase 6: classify timeout; failed attempts consume budget too
+            # (the provider did process the request until the deadline).
+            if budget is not None:
+                try:
+                    budget.record_cloud_request()
+                except BudgetExceededError as bexc:
+                    logger.warning(f"Fallback blocked: {bexc.message}")
+                    raise ModelDecisionError(code=bexc.code, message=bexc.message)
+            fallback = self._maybe_fallback("timeout", str(e)[:200])
+            if fallback:
+                return await self.make_decision(
+                    task_id=task_id,
+                    original_request=original_request,
+                    normalized_goal=normalized_goal,
+                    event_history=event_history,
+                    current_state=current_state,
+                    pending_question=pending_question,
+                    repair_context=repair_context,
+                    budget=budget,
+                    session_id=session_id,
+                )
+            raise ModelDecisionError(code="TIMEOUT", message=f"model request timed out: {e}")
         except Exception as e:
             logger.error(f"Model request failed: {e}")
+            if budget is not None:
+                try:
+                    budget.record_cloud_request()
+                except BudgetExceededError as bexc:
+                    logger.warning(f"Fallback blocked: {bexc.message}")
+                    raise ModelDecisionError(code=bexc.code, message=bexc.message)
+            fallback = self._maybe_fallback("provider_error", str(e)[:200])
+            if fallback:
+                return await self.make_decision(
+                    task_id=task_id,
+                    original_request=original_request,
+                    normalized_goal=normalized_goal,
+                    event_history=event_history,
+                    current_state=current_state,
+                    pending_question=pending_question,
+                    repair_context=repair_context,
+                    budget=budget,
+                    session_id=session_id,
+                )
             raise ModelDecisionError(
                 code="CLOUD_ERROR",
                 message=f"Ollama Cloud request failed: {str(e)}"
             )
+
+    def _maybe_fallback(self, category: str, detail: str) -> bool:
+        """Bounded, audited model fallback (Phase 6).
+
+        Attempts at most ``model_max_attempts - 1`` fallbacks per engine
+        instance; each attempt consumes normal cloud-request budget because
+        the retry goes through the same decision call. Returns True when a
+        fallback candidate was selected (caller retries the decision).
+        """
+        if self._fallback_attempts >= self._max_fallback_attempts:
+            return False
+        try:
+            from backend.models.database import ModelSelection
+            from backend.services.model_selection import (
+                ModelRequirements,
+                ModelSelector,
+                record_failure,
+            )
+
+            failed_model = self._model_override
+            if not failed_model:
+                try:
+                    from backend.runtime.model_provider import (
+                        get_default_provider,
+                    )
+
+                    failed_model = get_default_provider().selected_model_id()
+                except Exception:
+                    failed_model = None
+            selector = ModelSelector(self.db)
+            requirements = ModelRequirements(
+                tool_calling=True, structured_output=True, task_class="general")
+            record_failure(self.db, failed_model or "unknown", category, detail)
+
+            result = selector.next_fallback(requirements, failed_model or "")
+            if not result.selected:
+                return False
+
+            previous = failed_model
+            self._model_override = result.selected
+            self._fallback_attempts += 1
+            self.db.add(ModelSelection(
+                requirements_json=json.dumps(requirements.to_dict()),
+                selected_model=result.selected,
+                rejected_json=json.dumps(result.rejected),
+                reason=result.reason[:300],
+                fallback_of=previous,
+                created_at=datetime.utcnow(),
+            ))
+            self.db.commit()
+            logger.warning(
+                "Model %s failed (%s); falling back to %s (attempt %d/%d)",
+                previous, category, result.selected,
+                self._fallback_attempts, self._max_fallback_attempts,
+            )
+            return True
+        except Exception as exc:  # pragma: no cover - never mask the original
+            logger.warning(f"Fallback selection failed: {exc}")
+            return False
     
     def get_token_usage(self) -> int:
         """Get total tokens used for this task."""

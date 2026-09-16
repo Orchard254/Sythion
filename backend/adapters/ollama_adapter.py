@@ -3,6 +3,7 @@ Ollama Cloud adapter for Sythion (Synth).
 Handles authentication, model selection, and tool calls.
 """
 
+import asyncio
 import logging
 import time
 import httpx
@@ -57,12 +58,43 @@ class OllamaCloudAdapter:
         self.api_key = resolve_ollama_api_key(settings.ollama_api_key)
         self.selected_model = resolve_selected_model()
         self._client: Optional[httpx.AsyncClient] = None
+        self._client_loop: Optional[asyncio.AbstractEventLoop] = None
+        # Per-model capability cache — immutable profile per model, no cross-poisoning.
+        self._capability_profiles: Dict[str, ProviderCapabilityProfile] = {}
+        self._capability_failed_at_map: Dict[str, float] = {}
+        # Per-model async probes: only same-model concurrent cold starts serialize.
+        import asyncio as _asyncio
+        import threading as _thr
+        self._cap_lock = _thr.Lock()
+        self._capability_locks: Dict[str, _asyncio.Lock] = {}
+        # Back-compat aliases: single-model view for legacy callers/tests reading the old attrs.
         self._capability_profile: Optional[ProviderCapabilityProfile] = None
         self._capability_failed_at: Optional[float] = None
 
+    def _capability_lock_for(self, model_id: str):
+        """Per-model lock — narrow synchronization, no global bottleneck."""
+        import asyncio as _asyncio
+        with self._cap_lock:
+            lk = self._capability_locks.get(model_id)
+            if lk is None:
+                lk = _asyncio.Lock()
+                self._capability_locks[model_id] = lk
+            return lk
+
     async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client with authentication."""
-        if self._client is None or self._client.is_closed:
+        """Get or create HTTP client with authentication.
+
+        Recreates the client if the event loop has changed (e.g., when
+        called from a background task with a different event loop).
+        """
+        current_loop = asyncio.get_running_loop()
+        if (self._client is None or self._client.is_closed or
+                self._client_loop is None or self._client_loop is not current_loop):
+            if self._client and not self._client.is_closed:
+                try:
+                    await self._client.aclose()
+                except Exception:
+                    pass
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 headers={
@@ -71,6 +103,7 @@ class OllamaCloudAdapter:
                 },
                 timeout=httpx.Timeout(300.0, connect=30.0),
             )
+            self._client_loop = current_loop
         return self._client
 
     async def check_health(self) -> bool:
@@ -92,20 +125,30 @@ class OllamaCloudAdapter:
         except Exception as e:
             raise RuntimeError(f"Failed to list models: {_friendly_http_error(e)}")
 
-    async def ensure_capabilities(self) -> ProviderCapabilityProfile:
-        """Fail closed until the selected Cloud model proves native tool support."""
-        if self._capability_profile:
-            return self._capability_profile
+    async def ensure_capabilities(self, model_id: Optional[str] = None) -> ProviderCapabilityProfile:
+        """Fail closed until the Cloud model proves native tool support.
+
+        Per-model keyed synchronization: concurrent cold starts for the SAME
+        model serialize on a narrow per-model lock; different models never
+        block each other and never poison each other's cache entry. The
+        cached profile is immutable and replaced atomically.
+        """
+        target_model = model_id or self.selected_model
         if not self.api_key:
             raise ProviderCapabilityError("Cloud API key is not configured")
-        if not self.selected_model:
+        if not target_model:
             raise ProviderCapabilityError("No Cloud model has been selected")
 
-        # Negative cache: a recent probe/list failure (rate limit, outage) is
-        # not retried on every task, which would keep the provider hot.
-        if self._capability_failed_at is not None:
+        # Fast path: already cached for this model
+        cached = self._capability_profiles.get(target_model)
+        if cached is not None:
+            return cached
+
+        # Negative cache per model
+        failed_at = self._capability_failed_at_map.get(target_model)
+        if failed_at is not None:
             remaining = _CAPABILITY_FAILURE_COOLDOWN_SECONDS - (
-                time.monotonic() - self._capability_failed_at
+                time.monotonic() - failed_at
             )
             if remaining > 0:
                 raise ProviderCapabilityError(
@@ -113,71 +156,94 @@ class OllamaCloudAdapter:
                     f"retry in {int(remaining)}s"
                 )
 
-        try:
-            models = await self.list_models()
-        except RuntimeError as exc:
-            self._capability_failed_at = time.monotonic()
-            raise ProviderCapabilityError(f"Model listing failed: {exc}") from exc
+        # Narrow per-model serialization — only same-model probes contend.
+        lock = self._capability_lock_for(target_model)
+        async with lock:
+            # Double-check after acquiring lock (another coroutine may have filled)
+            cached2 = self._capability_profiles.get(target_model)
+            if cached2 is not None:
+                return cached2
+            failed_at2 = self._capability_failed_at_map.get(target_model)
+            if failed_at2 is not None:
+                remaining2 = _CAPABILITY_FAILURE_COOLDOWN_SECONDS - (
+                    time.monotonic() - failed_at2
+                )
+                if remaining2 > 0:
+                    raise ProviderCapabilityError(
+                        f"Cloud provider unavailable (rate limit or outage); "
+                        f"retry in {int(remaining2)}s"
+                    )
 
-        model_ids = {
-            model_id
-            for model in models
-            for model_id in (model.get("name"), model.get("model"))
-            if isinstance(model_id, str)
-        }
-        # Ollama Cloud tags aliases with a deployment suffix (e.g. the provider
-        # serves /api/chat for "minimax-m3:cloud" while /api/tags only lists
-        # the base "minimax-m3"). Accept the exact id or its base name, so a
-        # stale/retired model is still rejected while a valid tag passes.
-        base_model = self.selected_model.rsplit(":", 1)[0]
-        if self.selected_model not in model_ids and base_model not in model_ids:
-            raise ProviderCapabilityError(
-                f"Selected model '{self.selected_model}' is unavailable"
+            try:
+                models = await self.list_models()
+            except RuntimeError as exc:
+                self._capability_failed_at_map[target_model] = time.monotonic()
+                if target_model == self.selected_model:
+                    self._capability_failed_at = self._capability_failed_at_map[target_model]
+                raise ProviderCapabilityError(f"Model listing failed: {exc}") from exc
+
+            model_ids = {
+                mid
+                for model in models
+                for mid in (model.get("name"), model.get("model"))
+                if isinstance(mid, str)
+            }
+            base_model = target_model.rsplit(":", 1)[0]
+            if target_model not in model_ids and base_model not in model_ids:
+                raise ProviderCapabilityError(
+                    f"Selected model '{target_model}' is unavailable"
+                )
+
+            probe_tool_name = "sythion_capability_probe"
+            payload = {
+                "model": target_model,
+                "messages": [{
+                    "role": "user",
+                    "content": "Call the supplied health-check tool exactly once.",
+                }],
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": probe_tool_name,
+                        "description": "Non-mutating Sythion (Synth) provider capability check.",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }],
+                "num_ctx": NUM_CTX,
+                "stream": False,
+            }
+            try:
+                client = await self._get_client()
+                response = await client.post("/api/chat", json=payload)
+                response.raise_for_status()
+                tool_calls = response.json().get("message", {}).get("tool_calls", [])
+            except httpx.HTTPError as exc:
+                self._capability_failed_at_map[target_model] = time.monotonic()
+                if target_model == self.selected_model:
+                    self._capability_failed_at = self._capability_failed_at_map[target_model]
+                raise ProviderCapabilityError(
+                    f"Native tool probe failed: {_friendly_http_error(exc)}"
+                ) from exc
+
+            if len(tool_calls) != 1 or tool_calls[0].get("function", {}).get("name") != probe_tool_name:
+                raise ProviderCapabilityError("Selected model did not return one valid native tool call")
+
+            profile = ProviderCapabilityProfile(
+                model_id=target_model,
+                native_tool_calls=True,
             )
-
-        probe_tool_name = "sythion_capability_probe"
-        payload = {
-            "model": self.selected_model,
-            "messages": [{
-                "role": "user",
-                "content": "Call the supplied health-check tool exactly once.",
-            }],
-            "tools": [{
-                "type": "function",
-                "function": {
-                    "name": probe_tool_name,
-                    "description": "Non-mutating Sythion (Synth) provider capability check.",
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            }],
-            "num_ctx": NUM_CTX,
-            "stream": False,
-        }
-        try:
-            client = await self._get_client()
-            response = await client.post("/api/chat", json=payload)
-            response.raise_for_status()
-            tool_calls = response.json().get("message", {}).get("tool_calls", [])
-        except httpx.HTTPError as exc:
-            self._capability_failed_at = time.monotonic()
-            raise ProviderCapabilityError(
-                f"Native tool probe failed: {_friendly_http_error(exc)}"
-            ) from exc
-
-        if len(tool_calls) != 1 or tool_calls[0].get("function", {}).get("name") != probe_tool_name:
-            raise ProviderCapabilityError("Selected model did not return one valid native tool call")
-
-        self._capability_profile = ProviderCapabilityProfile(
-            model_id=self.selected_model,
-            native_tool_calls=True,
-        )
-        return self._capability_profile
+            # Immutable replacement — per-model entry, no cross-model poison.
+            self._capability_profiles[target_model] = profile
+            if target_model == self.selected_model:
+                self._capability_profile = profile
+            return profile
 
     async def execute_tool_call(
         self,
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
         max_tokens: int = 4000,
+        model_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute a tool call via Ollama Cloud.
 
@@ -199,7 +265,7 @@ class OllamaCloudAdapter:
                 client = await self._get_client()
                 
                 payload = {
-                    "model": self.selected_model,
+                    "model": model_id or self.selected_model,
                     "messages": messages,
                     "tools": tools,
                     "max_tokens": max_tokens,
@@ -255,16 +321,19 @@ class OllamaCloudAdapter:
         messages: List[Dict[str, Any]],
         max_tokens: int = 4000,
         timeout: float = 300.0,
+        model_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Plain chat completion with no tool calling.
 
         Used by background services (e.g. memory consolidation) that need a
         free-form LLM judgment rather than a decision loop tool call.
+        ``model_id`` targets a specific registered model (evaluation);
+        defaults to the configured selection.
         """
         try:
             client = await self._get_client()
             payload = {
-                "model": self.selected_model,
+                "model": model_id or self.selected_model,
                 "messages": messages,
                 "max_tokens": max_tokens,
                 "num_ctx": NUM_CTX,
@@ -320,6 +389,95 @@ def get_adapter() -> OllamaCloudAdapter:
     if _adapter is None:
         _adapter = OllamaCloudAdapter()
     return _adapter
+
+
+class OllamaCloudProvider:
+    """Provider-neutral facade over the Ollama Cloud adapter.
+
+    All Ollama-specific knowledge (endpoint names, request fields, retry
+    semantics, capability probing) stays in the adapter; higher layers see
+    only runtime.model_provider.ModelProvider.
+    """
+
+    @property
+    def _adapter(self) -> "OllamaCloudAdapter":
+        return get_adapter()
+
+    def provider_id(self) -> str:
+        return "ollama-cloud"
+
+    def selected_model_id(self) -> Optional[str]:
+        from ..core.config import resolve_selected_model
+
+        return resolve_selected_model()
+
+    def list_models(self) -> List[Dict[str, Any]]:
+        """Sync facade over the async adapter (provider-neutral contract)."""
+        import asyncio
+        import concurrent.futures
+
+        adapter = get_adapter()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(lambda: asyncio.run(adapter.list_models())).result(timeout=60)
+        return asyncio.run(adapter.list_models())
+
+    def health(self) -> "ModelHealth":
+        """Structured health via the existing capability probe (never raises).
+
+        Uses the adapter's negative-cached probe so repeated calls do not
+        hammer a rate-limited or offline provider.
+        """
+        from ..runtime.model_provider import ModelHealth
+
+        if not resolve_ollama_api_key(settings.ollama_api_key):
+            return ModelHealth(self.provider_id(), ModelHealth.UNAVAILABLE,
+                               "api key not configured")
+        try:
+            import asyncio
+
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        try:
+            if loop is not None:
+                import concurrent.futures
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    ok = pool.submit(
+                        lambda: asyncio.run(get_adapter().check_health())
+                    ).result(timeout=30)
+            else:
+                ok = asyncio.run(get_adapter().check_health())
+        except Exception as exc:  # pragma: no cover - defensive
+            return ModelHealth(self.provider_id(), ModelHealth.UNKNOWN,
+                               str(exc)[:200])
+        status = ModelHealth.HEALTHY if ok else ModelHealth.UNAVAILABLE
+        detail = "" if ok else "capability probe failed (rate limit/outage/stale model)"
+        return ModelHealth(self.provider_id(), status, detail)
+
+    async def chat(
+        self,
+        messages: List[Dict[str, Any]],
+        max_tokens: int = 4000,
+        timeout: float = 300.0,
+    ) -> Dict[str, Any]:
+        return await get_adapter().chat(messages, max_tokens=max_tokens,
+                                        timeout=timeout)
+
+
+_provider: Optional[OllamaCloudProvider] = None
+
+
+def get_default_provider() -> OllamaCloudProvider:
+    global _provider
+    if _provider is None:
+        _provider = OllamaCloudProvider()
+    return _provider
 
 
 def format_tools_for_ollama(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

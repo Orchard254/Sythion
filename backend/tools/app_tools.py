@@ -559,7 +559,7 @@ class AppFocusTool(BaseTool[AppFocusInput]):
         # foreground-lock restriction, so focus goes through the same
         # UI Automation mechanism gui_focus uses (which reliably brings
         # the window forward), with the same desktop/safety gates.
-        from tools.gui_tools import (
+        from backend.tools.gui_tools import (
             _desktop_gate,
             _run_on_worker,
             _target_window_safety,

@@ -5,6 +5,7 @@ Validates the per-launch control token on all requests.
 
 import hmac
 from collections.abc import Callable
+from urllib.parse import parse_qs
 
 from fastapi import Request, HTTPException, status
 
@@ -27,12 +28,38 @@ PROTECTED_PATHS = frozenset({"/health", "/tasks", "/tools"})
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
+BROWSER_BRIDGE_PREFIX = "/api/v1/browser/"
+
+# Browser extensions always send a scheme-based Origin on WebSocket and fetch
+# requests (e.g. chrome-extension://<id>). These schemes are accepted ONLY on
+# browser-bridge paths and ONLY together with the per-launch control token.
+EXTENSION_ORIGIN_SCHEMES = (
+    "chrome-extension://",
+    "moz-extension://",
+    "safari-web-extension://",
+)
+
 
 def control_origins(development_mode: bool) -> frozenset[str]:
     """Return the exact trusted origins for the active runtime mode."""
     if development_mode:
         return PACKAGED_APP_ORIGINS | DEVELOPMENT_APP_ORIGINS
     return PACKAGED_APP_ORIGINS
+
+
+def extract_websocket_token(scope: Scope) -> str:
+    """Extract the control token from a WebSocket handshake query string.
+
+    Browsers cannot set custom headers on WebSocket connections, so the
+    browser extension authenticates with ``?token=<per-launch control token>``.
+    """
+    query_string = scope.get("query_string", b"")
+    try:
+        params = parse_qs(query_string.decode("latin-1"), keep_blank_values=True)
+    except Exception:
+        return ""
+    values = params.get("token", [])
+    return values[0] if values else ""
 
 
 
@@ -65,6 +92,10 @@ class LocalControlBoundaryMiddleware:
             authorization = headers.get("authorization", "")
             if authorization.lower().startswith("bearer "):
                 token = authorization[7:]
+        if not token and scope["type"] == "websocket":
+            # WebSocket handshakes cannot carry custom headers; the browser
+            # extension authenticates via the query string instead.
+            token = extract_websocket_token(scope)
 
         expected_token = self.token_provider()
         if not expected_token or not token or not hmac.compare_digest(token, expected_token):
@@ -79,23 +110,34 @@ class LocalControlBoundaryMiddleware:
             return
 
         # The token already authenticates the caller. The origin check is an
-        # anti-CSRF boundary for browser requests: a trusted Origin must be one
-        # of the packaged/dev dashboard origins. Non-browser local clients
-        # (CLI, curl, smoke tests) send no Origin header and are authenticated
-        # by the token alone.
+        # anti-CSRF boundary for browser requests: a trusted Origin must be
+        # one of the packaged/dev dashboard origins — or, exclusively on the
+        # browser-bridge paths, a browser-extension origin. Non-browser local
+        # clients (CLI, curl, smoke tests) send no Origin header and are
+        # authenticated by the token alone.
         origin = headers.get("origin")
-        if origin and origin not in self.allowed_origins:
+        if origin and not self._origin_allowed(scope, origin):
             await self._reject(scope, send, 403, "Untrusted request origin")
             return
 
         await self.app(scope, receive, send)
 
+    def _origin_allowed(self, scope: Scope, origin: str) -> bool:
+        if origin in self.allowed_origins:
+            return True
+        path = scope.get("path", "")
+        if path.startswith(BROWSER_BRIDGE_PREFIX):
+            return any(origin.startswith(scheme) for scheme in EXTENSION_ORIGIN_SCHEMES)
+        return False
+
     @staticmethod
     def _is_protected(scope: Scope) -> bool:
         path = scope.get("path", "")
-        # The browser bridge WebSocket and status endpoints connect from local browser extensions
-        if path.startswith("/api/v1/browser/"):
-            return False
+        # Browser-bridge routes are protected like every other API route.
+        # WebSocket handshakes authenticate via query-string token (see
+        # extract_websocket_token); HTTP bridge routes use the standard
+        # X-Control-Token header. There is deliberately no unauthenticated
+        # path into browser-control capabilities.
         return path.startswith("/api/") or path in PROTECTED_PATHS
 
 

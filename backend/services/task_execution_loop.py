@@ -14,6 +14,14 @@ from sqlalchemy.orm import Session
 
 from backend.services.task_runner import TaskRunner
 from backend.services.model_engine import ModelDecisionEngine, ModelDecisionError, DecisionType
+from backend.services.execution_components import (
+    BudgetGuard,
+    CancellationController,
+    CompletionVerifier,
+    ExecutionGuard,
+    GuardDecision,
+    PostTaskPipeline,
+)
 from backend.services.skill_engine import execute_skill
 from backend.tools.executor import PolicyContext, ToolExecutor, ToolOutput
 from backend.models.database import Task, TaskEvent
@@ -26,34 +34,24 @@ logger = logging.getLogger(__name__)
 
 class TaskExecutionLoop:
     """
-    Main execution loop for processing tasks.
-    
-    This is the core intelligence loop that:
-    1. Observes current task state
-    2. Requests decision from LLM
-    3. Executes the decided action (tool/skill)
-    4. Verifies results
-    5. Updates task state
-    6. Repeats until completion or failure
+    Main execution loop for processing tasks — now an ORCHESTRATOR.
+
+    Phase 1 kernel extraction: the loop delegates narrow responsibilities to
+    explicit components (see services/execution_components.py):
+
+        TaskExecutionLoop
+            ├── BudgetGuard           (budget enforcement points)
+            ├── CancellationController (task-scoped cancellation contexts)
+            ├── ExecutionGuard        (repeat-failure / spin guards)
+            ├── ActionExecutor role   (_execute_decision dispatch, in-loop)
+            ├── CompletionVerifier    (evidence-gated completion)
+            └── PostTaskPipeline      (post-terminal best-effort hooks)
+
+    State transitions and events remain owned by TaskRunner; the model is
+    never the source of truth for any runtime concern.
     """
-    
-    MAX_ACTIONS_PER_TASK = 50
+
     MAX_REPAIR_ATTEMPTS = 2
-
-    # Repeated identical failing calls are a no-progress signal: after a call
-    # has failed once, an identical (tool, params) proposal is refused and the
-    # model is told to change approach; after REPEAT_HARD_FAIL_LIMIT identical
-    # proposals the task fails instead of burning more model tokens.
-    REPEAT_BLOCK_AFTER_FAILURES = 1
-    REPEAT_HARD_FAIL_LIMIT = 3
-
-    # Repeated identical *successful* calls are also no-progress: the action
-    # works but changes nothing, so the model is just spinning. After
-    # REPEAT_SPIN_BLOCK_LIMIT consecutive identical proposals the call is
-    # refused; after REPEAT_SPIN_FAIL_LIMIT the task fails instead of burning
-    # the whole action budget on unchanged re-executions.
-    REPEAT_SPIN_BLOCK_LIMIT = 3
-    REPEAT_SPIN_FAIL_LIMIT = 5
 
     # Provider-side failures (rate limit, cloud outage, retired/unavailable
     # model) are not repairable: no different model decision can fix them, so
@@ -63,7 +61,7 @@ class TaskExecutionLoop:
         "RATE_LIMITED",
         "MODEL_UNAVAILABLE",
     })
-    
+
     def __init__(
         self,
         db_session: Session,
@@ -74,38 +72,36 @@ class TaskExecutionLoop:
         self.runner = task_runner
         self.tool_executor = tool_executor
         self.model_engine = ModelDecisionEngine(db_session, tool_executor)
-        # fingerprint -> number of times the model has proposed this exact
-        # (tool, params) call (failed executions + refused repeats).
-        self._call_attempts: Dict[str, int] = {}
-        # Consecutive-run tracking for the spin guard: the fingerprint of the
-        # last proposed EXECUTE_TOOL call and how many times it was proposed
-        # in a row (resets whenever a different call is proposed).
-        self._last_call_fp: Optional[str] = None
-        self._run_len: int = 0
-        self._consecutive_readonly: int = 0  # tracks consecutive read-only tool calls
-        
+
+        # Extracted components (one responsibility each).
+        self.guard = ExecutionGuard()
+        self.cancellation = CancellationController(task_runner)
+        self.verifier = CompletionVerifier(db_session, self._get_event_history)
+        self.post_task_pipeline = PostTaskPipeline(db_session, task_runner, tool_executor)
+
     async def execute_task(self, task_id: str) -> None:
         """
         Execute a single task from start to completion.
-        
+
         Args:
             task_id: ID of the task to execute
-            
+
         Raises:
             Exception: If task execution fails critically
         """
         logger.info(f"Starting execution of task: {task_id}")
-        
+
         repair_attempts = 0
-        action_count = 0
         refused_completions = 0  # consecutive complete_task calls refused by precondition guard
-        budget = TaskBudget()
-        
+        budget = BudgetGuard(TaskBudget())
+
         # Start a lease heartbeat so long LLM calls don't let the lease
-        # expire mid-task (30s expiry). Without this, a second request can
-        # steal the lease and we get spurious 409s or double execution.
+        # expire mid-task (expiry governed by settings.lease_timeout_seconds,
+        # renewal interval by settings.lease_heartbeat_seconds). Without
+        # this, a second request can steal the lease and we get spurious
+        # 409s or double execution.
         heartbeat = asyncio.create_task(self._heartbeat_lease(task_id))
-        
+
         try:
             # Transition to running state (no-op if the route already did)
             task = await self.runner.get_task(task_id)
@@ -118,31 +114,32 @@ class TaskExecutionLoop:
                     event_type="task.execution_started",
                     event_data={"started_at": datetime.utcnow().isoformat()}
                 )
-            
+
             while True:
                 # Enforce budgets before each iteration: a task must fail
                 # honestly (never retry, mutate, or fall back locally) once any
                 # per-task budget is exhausted.
                 try:
-                    budget.check_elapsed()
+                    budget.ensure_time_left()
                 except BudgetExceededError as e:
                     await self._fail_task(task_id, code=e.code, message=e.message)
                     break
 
-                # Check action limit
-                if action_count >= self.MAX_ACTIONS_PER_TASK:
+                # Check action limit (single authority: TaskBudget.max_actions
+                # via the guard)
+                if not budget.can_execute_action():
                     await self._fail_task(
                         task_id,
                         code="ACTION_LIMIT_EXCEEDED",
-                        message=f"Exceeded maximum {self.MAX_ACTIONS_PER_TASK} actions"
+                        message=f"Exceeded maximum {budget.max_actions} actions"
                     )
                     break
-                
+
                 # Get current task state
                 task = await self.runner.get_task(task_id)
                 if not task:
                     raise RuntimeError(f"Task {task_id} not found")
-                
+
                 # Check for cancellation
                 if task.state == TaskState.CANCELLED.value:
                     logger.info(f"Task {task_id} was cancelled")
@@ -159,9 +156,7 @@ class TaskExecutionLoop:
                     p_params = pending.get("params", {})
                     if p_status == "approved" and p_tool:
                         logger.info(f"Executing approved pending action: {p_tool}")
-                        task.pending_action = None
-                        self.db.commit()
-                        action_count += 1
+                        await self.runner.clear_pending_action(task_id)
                         budget.record_action()
                         await self._execute_tool(
                             task_id,
@@ -171,8 +166,7 @@ class TaskExecutionLoop:
                         continue
                     elif p_status == "denied":
                         logger.info(f"Skipping denied pending action: {p_tool}")
-                        task.pending_action = None
-                        self.db.commit()
+                        await self.runner.clear_pending_action(task_id)
                         await self.runner.transition_state(
                             task_id=task_id,
                             new_state=TaskState.RUNNING,
@@ -180,10 +174,10 @@ class TaskExecutionLoop:
                             event_data={"tool_name": p_tool, "params": p_params},
                         )
                         continue
-                
+
                 # Get event history for context
                 events = self._get_event_history(task_id)
-                
+
                 # Request decision from model
                 repair_context = None
                 try:
@@ -195,10 +189,10 @@ class TaskExecutionLoop:
                         current_state=task.state,
                         pending_question=task.pending_question,
                         repair_context=repair_context,
-                        budget=budget,
+                        budget=budget.budget,
                     )
                     repair_attempts = 0  # Reset on successful decision
-                    
+
                 except BudgetExceededError as e:
                     # Budget exhaustion is terminal: fail honestly, never repair.
                     logger.warning(f"Task {task_id} exceeded budget {e.code}: {e.message}")
@@ -217,7 +211,7 @@ class TaskExecutionLoop:
                     repair_attempts += 1
                     budget.record_repair()
                     logger.warning(f"Model decision error (attempt {repair_attempts}): {e.message}")
-                    
+
                     if repair_attempts > self.MAX_REPAIR_ATTEMPTS:
                         await self._fail_task(
                             task_id,
@@ -225,7 +219,7 @@ class TaskExecutionLoop:
                             message=f"Model failed after {repair_attempts} repair attempts: {e.message}"
                         )
                         break
-                    
+
                     # Try again, telling the model what went wrong with actionable instructions
                     if e.code == "MISSING_CONTROL_CALL":
                         repair_context = (
@@ -240,7 +234,7 @@ class TaskExecutionLoop:
                         )
                     continue
 
-                
+
                 # Re-check cancellation before executing: a cancel request may
                 # have arrived during the (slow) model call. A cancelled task
                 # must never trigger an OS action.
@@ -249,100 +243,68 @@ class TaskExecutionLoop:
                     logger.info(f"Task {task_id} was cancelled during decision; not executing")
                     break
 
-                # Repeat-failure guard: an identical call that already failed
-                # is never re-run unchanged. Refusing the repeat (instead of
-                # executing and re-asking) stops the model from burning tokens
-                # on a dead-end; if it keeps proposing the same call the task
-                # fails honestly and quickly.
-                fingerprint = None
-                
-                if decision_type == DecisionType.EXECUTE_TOOL:
-                    fingerprint = self._call_fingerprint(params)
-                    attempts = self._call_attempts.get(fingerprint, 0)
-                    # Track consecutive identical proposals for the spin guard;
-                    # any different call resets the run.
-                    if self._last_call_fp != fingerprint:
-                        self._last_call_fp = fingerprint
-                        self._run_len = 0
-                    self._run_len += 1
-                    if attempts >= self.REPEAT_HARD_FAIL_LIMIT:
-                        await self._fail_task(
-                            task_id,
-                            code="REPEATED_ACTION_FAILURE",
-                            message=(
-                                f"Action {self._call_label(params)} was proposed "
-                                f"{attempts} times without progress; aborting instead of "
-                                "repeating the same failing approach"
-                            ),
-                        )
-                        break
-                    if attempts >= self.REPEAT_BLOCK_AFTER_FAILURES:
-                        await self.runner.transition_state(
-                            task_id=task_id,
-                            new_state=TaskState.RUNNING,
-                            event_type="action.repeat_blocked",
-                            event_data={
-                                "tool_name": params.get("tool_name"),
-                                "params": params.get("params", {}),
-                                "attempts": attempts,
-                                "reason": (
-                                    f"This exact action was already attempted {attempts} "
-                                    "time(s) without success and is now blocked. Propose a "
-                                    "different action (e.g. use gui_screenshot for visual inspection, "
-                                    "coordinate clicks gui_click, or alternative tools/window titles), "
-                                    "or complete/fail the task."
-                                ),
-                            },
-                        )
-                        self._call_attempts[fingerprint] = attempts + 1
-                        logger.warning(
-                            f"Blocked repeated failing action for task {task_id}: "
-                            f"{self._call_label(params)}"
-                        )
-                        continue
-# Spin guard: identical calls that keep succeeding but change
-                # nothing are refused, then fail the task, so the model can't
-                # burn the whole budget re-confirming the same state.
-                if self._run_len >= self.REPEAT_SPIN_FAIL_LIMIT:
+                # Repeat-failure / spin guards (ExecutionGuard): identical
+                # failing proposals are blocked then fail the task; identical
+                # successful-but-noop proposals are likewise refused.
+                fingerprint = self.guard.note_proposal(
+                    decision_type == DecisionType.EXECUTE_TOOL, params
+                )
+
+                failure_decision = self.guard.evaluate_failure_guard(fingerprint)
+                if failure_decision == GuardDecision.FAIL_REPEAT:
+                    attempts = self.guard.attempts_for(fingerprint)
+                    await self._fail_task(
+                        task_id,
+                        code="REPEATED_ACTION_FAILURE",
+                        message=(
+                            f"Action {ExecutionGuard.label(params)} was proposed "
+                            f"{attempts} times without progress; aborting instead of "
+                            "repeating the same failing approach"
+                        ),
+                    )
+                    break
+                if failure_decision == GuardDecision.BLOCK_REPEAT:
+                    await self.runner.transition_state(
+                        task_id=task_id,
+                        new_state=TaskState.RUNNING,
+                        event_type="action.repeat_blocked",
+                        event_data=self.guard.blocked_repeat_event(params, fingerprint),
+                    )
+                    logger.warning(
+                        f"Blocked repeated failing action for task {task_id}: "
+                        f"{ExecutionGuard.label(params)}"
+                    )
+                    continue
+
+                spin_decision = self.guard.evaluate_spin_guard()
+                if spin_decision == GuardDecision.FAIL_SPIN:
                     await self._fail_task(
                         task_id,
                         code="SPINNING_ACTION",
                         message=(
-                            f"Action {self._call_label(params)} was proposed "
-                            f"{self._run_len} consecutive times successfully without "
+                            f"Action {ExecutionGuard.label(params)} was proposed "
+                            f"{self.guard._run_len} consecutive times successfully without "
                             "changing the result; aborting instead of spinning"
                         ),
                     )
                     break
-                if self._run_len >= self.REPEAT_SPIN_BLOCK_LIMIT:
+                if spin_decision == GuardDecision.BLOCK_SPIN:
                     await self.runner.transition_state(
                         task_id=task_id,
                         new_state=TaskState.RUNNING,
                         event_type="action.spin_blocked",
-                        event_data={
-                            "tool_name": params.get("tool_name"),
-                            "params": params.get("params", {}),
-                            "run_length": self._run_len,
-                            "reason": (
-                                f"This exact action has already succeeded "
-                                f"{self._run_len - 1} consecutive time(s) with no "
-                                "change. It is blocked. Proceed to the next step, "
-                                "try a different action, or complete/fail the task."
-                            ),
-                        },
+                        event_data=self.guard.blocked_spin_event(params),
                     )
                     logger.warning(
                         f"Blocked repeated spinning action for task {task_id}: "
-                        f"{self._call_label(params)}"
+                        f"{ExecutionGuard.label(params)}"
                     )
                     continue
 
                 if decision_type != DecisionType.EXECUTE_TOOL:
-                    self._last_call_fp = None
-                    self._run_len = 0
+                    self.guard.reset_run()
 
                 # Execute the decision
-                action_count += 1
                 budget.record_action()
                 success = await self._execute_decision(
                     task_id=task_id,
@@ -356,7 +318,6 @@ class TaskExecutionLoop:
                     for pending_call in pending:
                         p_type = pending_call["decision_type"]
                         p_args = pending_call["args"]
-                        action_count += 1
                         budget.record_action()
                         p_success = await self._execute_decision(
                             task_id=task_id,
@@ -368,12 +329,7 @@ class TaskExecutionLoop:
                             success = False
                             break
 
-                if fingerprint:
-                    if success:
-                        self._call_attempts.pop(fingerprint, None)
-                    else:
-                        self._call_attempts[fingerprint] = \
-                            self._call_attempts.get(fingerprint, 0) + 1
+                self.guard.record_outcome(fingerprint, success)
 
                 if not success:
                     if decision_type == DecisionType.COMPLETE_TASK:
@@ -396,7 +352,7 @@ class TaskExecutionLoop:
                 else:
                     refused_completions = 0
 
-                
+
                 # Check if task reached terminal state
                 task = await self.runner.get_task(task_id)
                 if task.state in [
@@ -417,15 +373,18 @@ class TaskExecutionLoop:
                             await heartbeat
                         except (asyncio.CancelledError, Exception):
                             pass
-                    await self._record_budget_snapshot(task_id, budget)
+                    await self.post_task_pipeline.record_budget_snapshot(task_id, budget)
+                    # Phase 2: plan/goal state updates deterministically from
+                    # terminal task evidence (never from model claims).
+                    await self.post_task_pipeline.apply_plan_outcome(task_id)
                     if task.state == TaskState.COMPLETED.value:
-                        await self._propose_skill_from_trace(task_id)
-                        await self._save_conversation_turn(task_id, task)
-                        await self._consolidate_memory_from_trace(task_id)
+                        await self.post_task_pipeline.propose_skill_from_trace(task_id)
+                        await self.post_task_pipeline.save_conversation_turn(task_id)
+                        await self.post_task_pipeline.consolidate_memory_from_trace(task_id)
                     elif task.state == TaskState.FAILED.value:
-                        await self._save_conversation_turn(task_id, task)
+                        await self.post_task_pipeline.save_conversation_turn(task_id)
                     break
-                    
+
         except Exception as e:
             logger.error(f"Critical error in task execution: {e}", exc_info=True)
             await self._fail_task(
@@ -442,30 +401,25 @@ class TaskExecutionLoop:
                 pass
 
     async def _propose_skill_from_trace(self, task_id: str) -> None:
-        """Delegate post-task skill proposal growth to the intelligence hook layer."""
-        from backend.services.post_task_intelligence import propose_skill_from_trace
-
-        await propose_skill_from_trace(self.db, task_id, self.tool_executor)
+        """Delegate post-task skill proposal growth to the PostTaskPipeline."""
+        await self.post_task_pipeline.propose_skill_from_trace(task_id)
 
     async def _consolidate_memory_from_trace(self, task_id: str) -> None:
-        """Delegate post-task memory consolidation to the intelligence hook layer."""
-        from backend.services.post_task_intelligence import consolidate_memory_from_trace
+        """Delegate post-task memory consolidation to the PostTaskPipeline."""
+        await self.post_task_pipeline.consolidate_memory_from_trace(task_id)
 
-        await consolidate_memory_from_trace(self.db, task_id)
-
-    async def _record_budget_snapshot(self, task_id: str, budget: TaskBudget) -> None:
+    async def _record_budget_snapshot(self, task_id: str, budget) -> None:
         """Record an evidence-safe summary of per-task budget usage."""
-        try:
-            await self.runner.record_event(
-                task_id=task_id,
-                event_type="task.budget",
-                event_data=budget.snapshot(),
-            )
-        except Exception as e:  # pragma: no cover - evidence is best-effort
-            logger.warning(f"Could not record budget snapshot for task {task_id}: {e}")
+        await self.post_task_pipeline.record_budget_snapshot(task_id, budget)
 
     async def _heartbeat_lease(self, task_id: str) -> None:
-        """Renew the runner lease every few seconds during execution."""
+        """Renew the runner lease on the configured heartbeat interval.
+
+        Governing contract (backend/core/config.py): the heartbeat interval is
+        settings.lease_heartbeat_seconds and must stay strictly below
+        settings.lease_timeout_seconds, so a live runner never lets its lease
+        expire while long LLM calls are in flight.
+        """
         try:
             while True:
                 if not await self.runner.renew_lease(task_id):
@@ -474,58 +428,35 @@ class TaskExecutionLoop:
                         "another runner may have taken over"
                     )
                     return
-                await asyncio.sleep(10)
+                await asyncio.sleep(settings.lease_heartbeat_seconds)
         except asyncio.CancelledError:
             raise
     
     def _get_event_history(self, task_id: str) -> List[Dict[str, Any]]:
-        """Get event history for a task."""
-        events = self.db.query(TaskEvent).filter_by(task_id=task_id).order_by(
-            TaskEvent.sequence_num.asc()
-        ).all()
-        
-        def _safe_load(data):
-            if not data:
-                return {}
-            try:
-                return json.loads(data)
-            except (json.JSONDecodeError, TypeError):
-                # Fall back for malformed stored JSON (e.g. Windows paths)
-                try:
-                    return json.loads(data.replace("\\", "\\\\"))
-                except (json.JSONDecodeError, TypeError):
-                    return {"raw": str(data)}
-        
+        """Get event history for a task via the runtime EventLedger."""
+        events = self.runner.ledger.event_history(task_id)
         return [
             {
-                "event_type": e.event_type,
-                "event_data": _safe_load(e.event_data),
-                "created_at": e.created_at.isoformat() if e.created_at else ""
+                "event_type": e["event_type"],
+                "event_data": e["event_data"],
+                "created_at": (
+                    e["created_at"].isoformat()
+                    if isinstance(e.get("created_at"), datetime)
+                    else (e.get("created_at") or "")
+                ),
             }
             for e in events
         ]
-    
+
     @staticmethod
     def _call_fingerprint(params: Dict[str, Any]) -> str:
-        """Canonical identity of an EXECUTE_TOOL decision: tool + sorted params."""
-        if not isinstance(params, dict):
-            return ""
-        tool_name = params.get("tool_name")
-        tool_params = params.get("params", {})
-        if isinstance(tool_params, str):
-            try:
-                tool_params = json.loads(tool_params)
-            except (json.JSONDecodeError, TypeError):
-                tool_params = {}
-        if not isinstance(tool_params, dict):
-            tool_params = {}
-        return f"{tool_name}|{json.dumps(tool_params, sort_keys=True, default=str, ensure_ascii=False)}"
+        """Canonical identity of an EXECUTE_TOOL decision (ExecutionGuard)."""
+        return ExecutionGuard.fingerprint(params)
 
     @classmethod
     def _call_label(cls, params: Dict[str, Any]) -> str:
         """Human-readable, length-bounded label for logs and failure messages."""
-        label = cls._call_fingerprint(params)
-        return label if len(label) <= 160 else label[:157] + "..."
+        return ExecutionGuard.label(params)
 
     async def _execute_decision(
         self,
@@ -606,128 +537,21 @@ class TaskExecutionLoop:
         logger.info(f"Task {task_id} completed: {summary}")
         return True
 
-    # ------------------------------------------------------------------ #
-    # Result validator                                                     #
-    # ------------------------------------------------------------------ #
-
-    _TRUNCATION_MARKERS = (
-        "[...",
-        "(truncated",
-        "remaining items",
-        "remaining tabs",
-        "more items",
-        "more tabs",
-        "partial list",
-        "truncated by system",
-        "truncated list",
-    )
-
     def _validate_and_enrich_result(
         self,
         task_id: str,
         original_request: str,
         model_result: str,
     ) -> str:
-        """Validate the model's completion result against actual tool output data.
-
-        Three checks run in order:
-
-        1. **Truncation marker check** — if the model's text contains a known
-           shortening phrase (e.g. ``[...``, ``(truncated``), replace it with
-           the full ``model_summary`` from the most recent successful tool event.
-
-        2. **Count mismatch check** — if the last successful tool event recorded
-           a structured ``count`` (e.g. 10 browser tabs) but the model's result
-           mentions fewer items by counting newline-separated list entries,
-           substitute the full tool ``model_summary``.
-
-        3. **Pass-through** — if neither check fires, return the model's result
-           unchanged.
-        """
-        events = self._get_event_history(task_id)
-
-        # Walk events newest-first to find the most recent successful tool result
-        successful_tool_events = [
-            e for e in reversed(events)
-            if e.get("event_type") == "tool.executed"
-            and e.get("event_data", {}).get("success")
-        ]
-
-        if not successful_tool_events:
-            return model_result
-
-        last_event_data = successful_tool_events[0].get("event_data", {})
-        full_model_summary = last_event_data.get("model_summary", "")
-        tool_output = last_event_data.get("output") or {}
-
-        # --- Check 1: Truncation markers ---
-        lower_result = model_result.lower()
-        if any(marker.lower() in lower_result for marker in self._TRUNCATION_MARKERS):
-            if full_model_summary:
-                logger.info(
-                    "Completion result for task %s contains truncation marker — "
-                    "substituting full tool model_summary.",
-                    task_id,
-                )
-                return full_model_summary
-            return model_result
-
-        # --- Check 2: Count mismatch for enumerable listing tools (e.g. browser_tabs, window_list) ---
-        last_tool_name = last_event_data.get("tool_name", "")
-        if last_tool_name in ("browser_tabs", "window_list") and isinstance(tool_output, dict):
-            reported_count = tool_output.get("count")
-            if isinstance(reported_count, int) and reported_count > 1:
-                # Count numbered items or bullet lines in the model's result
-                import re
-                list_lines = re.findall(r"^\s*(?:\d+\.|[-*•])", model_result, re.MULTILINE)
-                model_item_count = len(list_lines)
-                # Only overwrite if the model result is very short or severely undercounted on a pure list tool
-                if model_item_count < (reported_count // 2) and len(model_result) < 300 and full_model_summary:
-                    logger.info(
-                        "Completion result for task %s mentions only %d item(s) on %s (tool returned %d) — substituting full tool model_summary.",
-                        task_id,
-                        model_item_count,
-                        last_tool_name,
-                        reported_count,
-                    )
-                    return full_model_summary
-
-        return model_result
+        """Delegate result validation to the CompletionVerifier component."""
+        return self.verifier.validate_and_enrich_result(
+            task_id, original_request, model_result
+        )
 
 
     def _completion_precondition_error(self, task_id: str) -> Optional[str]:
-
-        """Return why evidence does not permit a successful completion.
-
-        Only *mutating* tool failures block completion.  Read-only observation
-        failures (e.g. app_focus returning WINDOW_NOT_FOUND, or app_list
-        finding no matches) are normal exploration steps and must never
-        prevent a task from completing after a subsequent success.
-        """
-        task = self.db.query(Task).filter_by(id=task_id).first()
-        if not task:
-            return "Task no longer exists"
-        if task.state == TaskState.CANCELLED.value:
-            return "Task cancellation was accepted"
-
-        for event in self._get_event_history(task_id):
-            event_type = event["event_type"]
-            if event_type in {"action.uncertain", "task.interrupted"}:
-                return "An action outcome is uncertain"
-
-        mutating_events = [
-            e["event_data"]
-            for e in self._get_event_history(task_id)
-            if e.get("event_type") == "tool.executed" and e.get("event_data", {}).get("mutating")
-        ]
-        if mutating_events:
-            last_mutating = mutating_events[-1]
-            if not last_mutating.get("success", False):
-                return "The final mutating tool action failed and has no recorded resolution"
-            if last_mutating.get("verification") != "passed":
-                return "The final mutating action has no confirmed verification"
-
-        return None
+        """Delegate completion gating to the CompletionVerifier component."""
+        return self.verifier.precondition_error(task_id)
     
     async def _fail_task_from_model(
         self,
@@ -931,18 +755,15 @@ class TaskExecutionLoop:
             )
             # The warning will be included in the tool output so the model sees it
 
-        async def _is_cancelled() -> bool:
-            current = await self.runner.get_task(task_id)
-            return current is not None and current.state == TaskState.CANCELLED.value
+        # Execution-scoped context: task identity + cancellation bound to
+        # THIS task only (CancellationController), installed by the executor.
+        policy_context = await self.cancellation.policy_context(task_id)
 
         # Execute tool
         result: ToolOutput = await self.tool_executor.execute_tool(
             tool_name=tool_name,
             input_data=tool_params,
-            policy_context=PolicyContext(
-                direct_user_instruction=bool(task.original_request.strip()),
-                cancelled_check=_is_cancelled,
-            ),
+            policy_context=policy_context,
         )
         
         # Record event

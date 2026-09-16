@@ -28,10 +28,46 @@ jobs:
           python -m pip install pytest pytest-asyncio
 
       - name: Run backend test suite
+        # Provider-backed E2E (provider_e2e marker) is SKIPPED here: normal
+        # CI never incurs provider cost and never needs credentials.
         run: python -m pytest tests -q
 
       - name: Import gate (packaged entrypoint compiles)
         run: python -c "import backend.main; import backend.api.routes"
+
+  provider-e2e:
+    name: Provider-backed specialist E2E (gated)
+    runs-on: windows-latest
+    # NEVER on push/PR: requires an explicit, credentialed dispatch so the
+    # real provider is only exercised intentionally.
+    if: github.event_name == 'workflow_dispatch' &&
+        vars.RUN_PROVIDER_E2E == '1'
+    environment: provider-e2e
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pytest pytest-asyncio
+
+      - name: Run provider-backed specialist E2E
+        env:
+          SYTHION_RUN_PROVIDER_E2E: "1"
+          # Secrets are injected at runtime only; never written to the repo.
+          SYTHION_OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          SYTHION_SELECTED_MODEL: ${{ vars.SYTHION_SELECTED_MODEL }}
+        run: python -m pytest tests/test_phase975_provider_e2e.py -q -m provider_e2e
 
   frontend:
     name: Frontend build + lint

@@ -15,7 +15,8 @@ from sqlalchemy.orm import Session
 from backend.models.database import get_db, Objective, PlanStep, Skill, Task
 from backend.services.task_runner import get_runner, TaskRunner
 from backend.services.task_execution_loop import run_task
-from backend.adapters.ollama_adapter import get_adapter, format_tools_for_ollama
+from backend.adapters.ollama_adapter import format_tools_for_ollama
+from backend.api.dependencies import get_tool_executor as _get_shared_executor
 from backend.tools.executor import ToolExecutor
 from backend.api.schemas import (
     TaskCreate, TaskResponse, TaskListResponse, TaskReply,
@@ -29,6 +30,7 @@ from backend.api.schemas import (
     ModelSelectRequest, ModelSelectResponse, OnboardingStatusResponse,
     SkillSubmitRequest, SkillStateRequest,
     PurgeRequest, PurgeReceiptResponse, RetentionRunResponse,
+    GoalCreateRequest, GoalReplanRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,13 +39,14 @@ router = APIRouter()
 
 
 def get_tool_executor() -> ToolExecutor:
-    """Get or create tool executor instance."""
-    if not hasattr(get_tool_executor, '_executor'):
-        get_tool_executor._executor = ToolExecutor()
-        from backend.tools.registry import register_all_tools
-        register_all_tools(get_tool_executor._executor)
+    """Get the shared runtime ToolExecutor via the explicit dependency wiring.
 
-    return get_tool_executor._executor
+    Phase 1: the application lifespan installs the single shared executor
+    through ``api.dependencies.set_executor_provider``; there is no
+    function-attribute injection anymore. Without a provider (tests/dev),
+    an identically-registered executor is built on demand.
+    """
+    return _get_shared_executor()
 
 
 def _plan_step_to_response(step: PlanStep) -> PlanStepResponse:
@@ -85,11 +88,12 @@ def _objective_to_response(objective: Objective) -> ObjectiveResponse:
 @router.get("/health", response_model=HealthResponse)
 async def health_check(db: Session = Depends(get_db)):
     """Check system health status."""
-    from core.config import resolve_selected_model
+    from backend.core.config import resolve_selected_model
 
-    # Check Ollama Cloud connectivity
-    adapter = get_adapter()
-    cloud_ok = await adapter.check_health() if adapter else False
+    # Provider health via the neutral facade (Phase 5)
+    from backend.runtime.model_provider import get_default_provider, ModelHealth as _MH
+    _h = get_default_provider().health()
+    cloud_ok = _h.status == _MH.HEALTHY
     
     return HealthResponse(
         status="healthy",
@@ -104,7 +108,7 @@ async def health_check(db: Session = Depends(get_db)):
 async def version_check():
     """Return the sidecar version for the packaged-app update path."""
     from backend import __version__
-    from core.config import settings
+    from backend.core.config import settings
 
     return {
         "version": __version__,
@@ -122,6 +126,93 @@ async def create_task(
     tool_executor: ToolExecutor = Depends(get_tool_executor)
 ):
     """Create a new task from user request and start execution."""
+    
+    # Idempotent replay: if a task with this idempotency key already exists, return it immediately
+    if task_data.idempotency_key:
+        existing_task = db.query(Task).filter_by(idempotency_key=task_data.idempotency_key).first()
+        if existing_task:
+            return TaskResponse(
+                id=existing_task.id,
+                original_request=existing_task.original_request,
+                state=TaskState(existing_task.state),
+                created_at=existing_task.created_at,
+                updated_at=existing_task.updated_at,
+                version=existing_task.version,
+                objective_id=existing_task.objective_id,
+                final_result=existing_task.final_result,
+                terminal_reason=existing_task.terminal_reason,
+            )
+
+    # Phase 13C: Extract conversation context from recent turns if available
+    conv_context: Dict[str, Any] = {}
+    try:
+        from backend.models.database import ConversationTurn
+        from backend.core.session import get_current_session_id
+        session_id = get_current_session_id()
+        recent_turns = (
+            db.query(ConversationTurn)
+            .filter_by(session_id=session_id)
+            .order_by(ConversationTurn.created_at.desc())
+            .limit(4)
+            .all()
+        )
+        if recent_turns:
+            conv_context["in_conversation"] = True
+            conv_context["recent_turns"] = [
+                {"role": t.role, "summary": t.summary} for t in reversed(recent_turns)
+            ]
+            all_text = " ".join((t.summary or "") for t in recent_turns).lower()
+            if any(w in all_text for w in ("laptop", "battery", "pc", "computer", "system", "file", "folder")):
+                conv_context["has_target_entity"] = True
+    except Exception as exc:
+        logger.debug("Could not load conversation context for intent interpretation: %s", exc)
+
+    from backend.cognitive.intent import IntentInterpreter
+    from backend.cognitive.state import InteractionType
+
+    interpreter = IntentInterpreter()
+    intent = interpreter.interpret(task_data.original_request, context=conv_context)
+    interaction_type = interpreter.determine_interaction(task_data.original_request, intent=intent, context=conv_context)
+    
+    # Phase 13B: CONVERSATION does NOT create a Task
+    if interaction_type == InteractionType.CONVERSATION:
+        logger.info("Routing to ConversationRuntime (no task creation)")
+        from backend.services.conversation_runtime import ConversationRuntime, ConversationModelError
+        
+        runtime = ConversationRuntime(db)
+        try:
+            result = await runtime.handle_conversation(task_data.original_request)
+        except ConversationModelError as exc:
+            logger.error(f"Conversation model provider failure: {exc}")
+            raise HTTPException(
+                status_code=503,
+                detail=f"Conversation model provider unavailable: {str(exc)}"
+            )
+        except Exception as exc:
+            logger.error(f"Conversation runtime failure: {exc}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Conversation runtime failure: {str(exc)}"
+            )
+        
+        # Return conversation response with explicit interaction contract
+        conv_id = f"conv-{uuid.uuid4()}"
+        return TaskResponse(
+            id=conv_id,
+            conversation_id=conv_id,
+            interaction_type="CONVERSATION",
+            original_request=task_data.original_request,
+            state=TaskState.COMPLETED,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+            version=1,
+            objective_id=None,
+            final_result=result["response"],
+            response=result["response"],
+            terminal_reason=None,
+        )
+    
+    # For non-conversation requests, proceed with normal task execution
     runner = get_runner(db)
     
     # Acquire lease
@@ -138,12 +229,71 @@ async def create_task(
             idempotency_key=task_data.idempotency_key
         )
 
-        try:
-            from backend.services.work_state import ensure_task_objective
-        except ImportError:
-            from services.work_state import ensure_task_objective
+        # PHASE 8.75 / Phase 13A: full cognitive gate for FRESHLY created tasks.
+        # Determines interaction boundary (CONVERSATION vs INFORMATIONAL vs ACTION vs GOAL)
+        # before any goal/task materialization.
+        # Note: CONVERSATION is already handled above, so this won't see it.
+        routing = None
+        if task.state == TaskState.CREATED.value:
+            from backend.services.cognitive_runtime import CognitiveDecisionAdapter
+            from backend.cognitive.state import DecisionType
 
-        objective = ensure_task_objective(db, task)
+            adapter = CognitiveDecisionAdapter(runner, db)
+            routing = await adapter.route_new_input(task.id, task.original_request)
+
+            # clarify/park: the cognitive decision handed control back to the
+            # user (ambiguity, permission, or no-viable-action). The task is
+            # already parked durably in WAITING_FOR_USER by the adapter via
+            # the TaskRunner lifecycle; return without starting execution.
+            if routing.mode in ("clarify", "park"):
+                logger.info("Task %s held by cognitive decision (mode=%s, "
+                            "decision=%s, interaction=%s)",
+                            task.id, routing.mode,
+                            getattr(routing.decision, "decision_type", None),
+                            getattr(routing, "interaction_type", None))
+                return TaskResponse(
+                    id=task.id,
+                    original_request=task.original_request,
+                    state=TaskState(task.state),
+                    created_at=task.created_at,
+                    updated_at=task.updated_at,
+                    version=task.version,
+                    objective_id=task.objective_id,
+                )
+
+            # PHASE 9: bounded specialist delegation. The cognitive layer
+            # decided DELEGATE; the adapter runs propose→validate→assign→
+            # run(kernel)→verify→integrate and completes the parent task ONLY
+            # on an ACCEPTED verified result.
+            if routing.mode == "delegate":
+                logger.info("Task %s delegated to a bounded specialist",
+                            task.id)
+                await adapter.run_delegate_decision(
+                    task.id, task.original_request)
+                completed = await runner.get_task(task.id)
+                return TaskResponse(
+                    id=task.id,
+                    original_request=task.original_request,
+                    state=TaskState(completed.state),
+                    created_at=completed.created_at,
+                    updated_at=completed.updated_at,
+                    version=completed.version,
+                    objective_id=completed.objective_id,
+                    final_result=getattr(completed, "final_result", None),
+                    terminal_reason=getattr(completed, "terminal_reason", None),
+                )
+
+            # Phase 13A/13B: Attach objective ONLY if this is a genuine GOAL request.
+            # Ordinary conversation, informational questions, and direct single actions
+            # must NOT create fake Goal/Plan/PlanStep projections.
+            # Note: CONVERSATION is handled separately and doesn't create tasks, so won't reach here.
+            from backend.cognitive.state import InteractionType as IT_Check
+            if routing and (routing.interaction_type == IT_Check.GOAL or (routing.decision and getattr(routing.decision, "decision_type", None) in (DecisionType.CREATE_GOAL, DecisionType.UPDATE_GOAL))):
+                try:
+                    from backend.services.work_state import ensure_task_objective
+                    ensure_task_objective(db, task)
+                except Exception as exc:
+                    logger.warning("Goal objective attachment failed: %s", exc)
 
         # Idempotent replay: an existing task was already accepted and executed.
         # Never re-transition or re-run it (completed/failed/cancelled states are
@@ -193,7 +343,7 @@ async def create_task(
         # Start async task execution in background
         background_tasks.add_task(run_task, db, task.id, tool_executor)
         
-        logger.info(f"Task {task.id} created and execution started in background")
+        logger.info(f"Task {task.id} created and execution started in background (objective={task.objective_id})")
         
         return TaskResponse(
             id=task.id,
@@ -202,7 +352,7 @@ async def create_task(
             created_at=task.created_at,
             updated_at=task.updated_at,
             version=task.version,
-            objective_id=objective.id
+            objective_id=task.objective_id,
         )
         
     finally:
@@ -466,6 +616,14 @@ async def reply_to_task(task_id: str, reply_data: TaskReply, db: Session = Depen
                 detail=f"Cannot reply to task in state {task.state}. Only waiting_for_user tasks can receive replies."
             )
 
+        # PHASE 8.5: merge the clarification answer into the task's goal so
+        # resumed execution continues the ORIGINAL intent (multi-turn
+        # continuity) instead of starting an unrelated task.
+        from backend.services.cognitive_runtime import CognitiveDecisionAdapter
+
+        await CognitiveDecisionAdapter(runner, db).apply_clarification_answer(
+            task_id, reply_data.answer)
+
         # Record the reply as an immutable event and return to running.
         updated_task = await runner.transition_state(
             task_id=task_id,
@@ -508,23 +666,22 @@ async def get_task_events(task_id: str, after_sequence: int = 0, db: Session = D
     Events are returned in strict sequence order. Passing `after_sequence=N`
     returns only events with sequence_num > N, reconstructing exactly the
     committed timeline from that point (used by slow/disconnected clients).
-    """
-    from backend.models.database import TaskEvent
 
-    query = db.query(TaskEvent).filter_by(task_id=task_id)
-    if after_sequence:
-        query = query.filter(TaskEvent.sequence_num > after_sequence)
-    events = query.order_by(TaskEvent.sequence_num.asc()).all()
+    Phase 1: reads flow through the runtime EventLedger interface.
+    """
+    from backend.runtime.events import DbEventLedger
+
+    events = DbEventLedger(db).events_after(task_id, after_sequence)
 
     return {
         "task_id": task_id,
         "after_sequence": after_sequence,
         "events": [
             {
-                "event_type": e.event_type,
-                "event_data": _decode_event_data(e.event_data),
-                "sequence_num": e.sequence_num,
-                "created_at": e.created_at
+                "event_type": e["event_type"],
+                "event_data": e["event_data"],
+                "sequence_num": e["sequence_num"],
+                "created_at": e["created_at"],
             }
             for e in events
         ]
@@ -532,18 +689,10 @@ async def get_task_events(task_id: str, after_sequence: int = 0, db: Session = D
 
 
 def _decode_event_data(raw: Any) -> Dict[str, Any]:
-    """Decode stored event JSON, tolerating legacy malformed payloads."""
-    if raw is None:
-        return {}
-    if isinstance(raw, dict):
-        return raw
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        try:
-            return json.loads(str(raw).replace("\\", "\\\\"))
-        except (json.JSONDecodeError, TypeError):
-            return {"raw": str(raw)}
+    """Deprecated shim kept for import compatibility (see runtime.events)."""
+    from backend.runtime.events import decode_event_data
+
+    return decode_event_data(raw)
 
 
 @router.get("/objectives", response_model=ObjectiveListResponse)
@@ -567,61 +716,46 @@ async def list_objectives(
 async def create_objective(payload: ObjectiveCreate, db: Session = Depends(get_db)):
     """Create a durable objective with optional initial plan steps.
 
-    If plan_steps is empty but purpose/title contains a complex request,
-    decompose_request() is used to auto-split into ordered steps.
-    Explicit plan_steps are used as-is.
+    PHASE 3.5 SUNSET ADAPTER: creation now flows through the canonical
+    GoalManager (+ Planner when steps exist) so API-created objectives are
+    plan-backed from birth. Response shape is preserved. Status vocabulary
+    for steps is the canonical one (pending/ready/blocked/...).
     """
-    try:
-        from backend.services.work_state import decompose_request
-    except ImportError:
-        from services.work_state import decompose_request
+    from backend.services.goal_manager import GoalManager
+    from backend.services.planner import CandidateStepModel, Planner
+    from backend.services.work_state import decompose_request
 
-    objective = Objective(
-        id=str(uuid.uuid4()),
+    manager = GoalManager(db)
+    goal = manager.create_goal(
         title=payload.title.strip(),
         purpose=payload.purpose.strip() if payload.purpose else None,
-        status=ObjectiveStatus.ACTIVE.value,
         priority=payload.priority,
-        current_summary="Objective created manually.",
-        completion_criteria=payload.completion_criteria.strip() if payload.completion_criteria else None,
-        parent_objective_id=payload.parent_objective_id.strip() if payload.parent_objective_id else None,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        parent_objective_id=(
+            payload.parent_objective_id.strip()
+            if payload.parent_objective_id else None
+        ),
     )
-    db.add(objective)
-    db.flush()
 
-    # Determine plan steps and their initial statuses
+    # Determine step descriptions (explicit plan_steps win; else deterministic
+    # decomposition of purpose; else none).
     if payload.plan_steps:
-        # Explicit plan_steps: all pending (user controls the plan)
-        steps = payload.plan_steps
-        statuses = [PlanStepStatus.PENDING.value] * len(steps)
+        descriptions = [s.description if hasattr(s, "description") else str(s)
+                        for s in payload.plan_steps]
     elif payload.purpose:
-        decomposed = decompose_request(payload.purpose)
-        if decomposed:
-            # Auto-decomposed: first step in_progress, rest pending
-            steps = decomposed
-            statuses = [PlanStepStatus.IN_PROGRESS.value] + [PlanStepStatus.PENDING.value] * (len(decomposed) - 1)
-        else:
-            steps = [payload.purpose.strip()]
-            statuses = [PlanStepStatus.IN_PROGRESS.value]
+        descriptions = decompose_request(payload.purpose) or [payload.purpose.strip()]
     else:
-        # No purpose, no plan_steps: no auto-created steps
-        steps = []
-        statuses = []
+        descriptions = []
 
-    for idx, (description, status) in enumerate(zip(steps, statuses), start=1):
-        db.add(PlanStep(
-            objective_id=objective.id,
-            step_order=idx,
-            description=description,
-            status=status,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
-        ))
-    db.commit()
-    db.refresh(objective)
-    return _objective_to_response(objective)
+    if descriptions:
+        candidates = [
+            CandidateStepModel(key=f"step_{idx}", description=desc)
+            for idx, desc in enumerate(descriptions, start=1)
+        ]
+        Planner(db).create_plan(goal.id, candidates, source="user",
+                                reason="created via legacy-compatible /objectives API")
+
+    db.refresh(goal)
+    return _objective_to_response(goal)
 
 
 @router.get("/objectives/{objective_id}", response_model=ObjectiveResponse)
@@ -635,12 +769,25 @@ async def get_objective(objective_id: str, db: Session = Depends(get_db)):
 
 @router.patch("/objectives/{objective_id}", response_model=ObjectiveResponse)
 async def update_objective(objective_id: str, payload: ObjectiveUpdate, db: Session = Depends(get_db)):
-    """Update mutable durable-objective fields."""
+    """Update mutable durable-objective fields.
+
+    Phase 2: ``status`` is no longer writable directly â€” lifecycle changes
+    are validated by the GoalManager state machine (invalid transitions like
+    completed â†’ active are rejected deterministically).
+    """
+    from backend.services.goal_manager import GoalManager, InvalidGoalTransitionError
+
     objective = db.query(Objective).filter_by(id=objective_id).first()
     if objective is None:
         raise HTTPException(status_code=404, detail=f"Objective {objective_id} not found")
 
     data = payload.model_dump(exclude_unset=True)
+    requested_status_raw = data.pop("status", None)
+    requested_status = (
+        requested_status_raw.value
+        if hasattr(requested_status_raw, "value")
+        else requested_status_raw
+    )
     for key, value in data.items():
         if hasattr(value, "value"):
             value = value.value
@@ -648,7 +795,38 @@ async def update_objective(objective_id: str, payload: ObjectiveUpdate, db: Sess
     objective.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(objective)
+
+    if requested_status is not None:
+        manager = GoalManager(db)
+        try:
+            objective = _apply_goal_status_change(
+                manager, objective_id, str(requested_status)
+            )
+        except InvalidGoalTransitionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     return _objective_to_response(objective)
+
+
+def _apply_goal_status_change(manager, goal_id: str, requested: str):
+    """Map a requested goal status onto the GoalManager state machine.
+
+    'completed' is only accepted through complete_goal's deterministic
+    eligibility rules; API callers can never forge it.
+    """
+    if requested == "paused":
+        return manager.pause_goal(goal_id)
+    if requested == "active":
+        return manager.resume_goal(goal_id)
+    if requested == "abandoned":
+        return manager.abandon_goal(goal_id)
+    if requested == "failed":
+        return manager.fail_goal(goal_id, reason="requested_via_api")
+    if requested == "completed":
+        return manager.complete_goal(goal_id)
+    raise ValueError(f"Unknown goal status: {requested}")
 
 
 @router.post("/objectives/{objective_id}/verify-criteria", response_model=ObjectiveResponse)
@@ -724,6 +902,722 @@ async def update_plan_step(step_id: int, payload: PlanStepUpdate, db: Session = 
     db.commit()
     db.refresh(step)
     return _plan_step_to_response(step)
+
+
+# --- Goals & Planning (Phase 2) -----------------------------------------------
+
+
+def _goal_detail(db: Session, goal_id: str) -> Dict[str, Any]:
+    from backend.services.goal_manager import GoalManager
+    from backend.services.planner import Planner
+
+    manager = GoalManager(db)
+    goal = manager.get_goal(goal_id)
+    if goal is None:
+        raise HTTPException(status_code=404, detail=f"Goal {goal_id} not found")
+    planner = Planner(db)
+    plan = planner.active_plan(goal_id)
+    steps = planner.plan_steps(plan.id) if plan else []
+    return {
+        "goal": {
+            "id": goal.id,
+            "title": goal.title,
+            "purpose": goal.purpose,
+            "status": goal.status,
+            "priority": goal.priority,
+            "current_summary": goal.current_summary,
+            "completion_criteria": goal.completion_criteria,
+            "criteria_verified": goal.criteria_verified,
+        },
+        "progress": manager.progress(goal_id),
+        "active_plan": {
+            "id": plan.id,
+            "version": plan.version,
+            "status": plan.status,
+            "source": plan.source,
+            "reason": plan.reason,
+            "steps": [
+                {
+                    "id": s.id,
+                    "step_key": s.step_key,
+                    "step_order": s.step_order,
+                    "description": s.description,
+                    "status": s.status,
+                    "priority": s.priority,
+                    "depends_on": json.loads(s.depends_on) if s.depends_on else [],
+                    "attempt_count": s.attempt_count,
+                    "linked_task_id": s.linked_task_id,
+                    "evidence_task_id": s.evidence_task_id,
+                    "result_summary": s.result_summary,
+                    "failure_reason": s.failure_reason,
+                }
+                for s in steps
+            ],
+        } if plan else None,
+    }
+
+
+@router.post("/goals")
+async def create_goal(payload: GoalCreateRequest, db: Session = Depends(get_db)):
+    """Create a durable goal with an optional validated plan.
+
+    Candidate steps are schema-validated AND dependency-validated before any
+    persistence; malformed plans are rejected without partial state.
+    """
+    from backend.services.goal_manager import GoalManager
+    from backend.services.planner import CandidateStepModel, PlanValidationError, Planner
+
+    manager = GoalManager(db)
+    try:
+        goal = manager.create_goal(
+            title=payload.title,
+            purpose=payload.purpose,
+            priority=payload.priority,
+            completion_criteria=payload.completion_criteria,
+        )
+        if payload.steps:
+            candidates = [
+                CandidateStepModel(
+                    key=s.key, description=s.description,
+                    priority=s.priority, depends_on=s.depends_on,
+                )
+                for s in payload.steps
+            ]
+            Planner(db).create_plan(goal.id, candidates, source="user",
+                                    reason="initial plan from goal creation")
+    except PlanValidationError as exc:
+        raise HTTPException(status_code=422, detail={"errors": exc.errors})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _goal_detail(db, goal.id)
+
+
+@router.get("/goals")
+async def list_goals(status: Optional[str] = None, limit: int = 50,
+                     db: Session = Depends(get_db)):
+    """List goals with deterministic progress."""
+    from backend.services.goal_manager import GoalManager
+
+    manager = GoalManager(db)
+    return {
+        "goals": [
+            {
+                "id": g.id,
+                "title": g.title,
+                "status": g.status,
+                "priority": g.priority,
+                "progress": manager.progress(g.id),
+            }
+            for g in manager.list_goals(status=status, limit=limit)
+        ],
+        "total": len(manager.list_goals(status=status, limit=limit)),
+    }
+
+
+@router.get("/goals/runnable")
+async def list_runnable_goals(db: Session = Depends(get_db)):
+    """ACTIVE goals with an eligible step â€” scheduler-boundary query only.
+
+    Executes nothing; future schedulers may consume this listing.
+    """
+    from backend.services.planner import Planner
+    from backend.services.task_orchestrator import TaskOrchestrator
+
+    orchestrator = TaskOrchestrator(state_store=None, planner=Planner(db))
+    return {"runnable": orchestrator.list_runnable_goals()}
+
+
+# --- Model evaluation / selection (Phase 6) -----------------------------------
+
+
+@router.post("/models/registry/{model_id}/evaluate")
+async def evaluate_model(model_id: str, request: Request):
+    """Owner-triggered deterministic evaluation of ONE model.
+
+    Runs only SAFE fixed-prompt task classes (no tools/files/credentials).
+    Unknown or not-yet-implemented task classes are reported honestly.
+    """
+    from backend.services.model_selection import (
+        IMPLEMENTED_TASK_CLASSES,
+        NOT_IMPLEMENTED_TASK_CLASSES,
+        ModelEvaluator,
+    )
+
+    data = await request.json() if request.headers.get("content-length") else {}
+    requested = (data or {}).get("task_classes") or sorted(IMPLEMENTED_TASK_CLASSES)
+    unknown = [t for t in requested
+               if t not in IMPLEMENTED_TASK_CLASSES
+               and t not in NOT_IMPLEMENTED_TASK_CLASSES]
+    if unknown:
+        raise HTTPException(status_code=400,
+                            detail={"unknown_task_classes": unknown})
+
+    from backend.models.database import set_db_manager
+
+    session = set_db_manager.__self__ if False else None  # placeholder guard
+    from backend.core.db_manager import get_db_manager
+    from backend.models.database import set_db_manager
+
+    session = get_db_manager().new_session()
+    try:
+        evaluator = ModelEvaluator(session)
+        result = await evaluator.run(model_id, task_classes=requested)
+        skipped_real = [t for t in requested
+                        if t in NOT_IMPLEMENTED_TASK_CLASSES]
+        result["skipped_not_implemented"] = sorted(
+            set(result.get("skipped_not_implemented", [])) | set(skipped_real))
+        return result
+    finally:
+        session.close()
+
+
+@router.get("/models/registry/{model_id}/evaluations")
+async def model_evaluation_history(model_id: str, db: Session = Depends(get_db)):
+    from backend.models.database import ModelEvaluation
+
+    rows = (
+        db.query(ModelEvaluation)
+        .filter_by(model_id=model_id)
+        .order_by(ModelEvaluation.id.desc())
+        .limit(100)
+        .all()
+    )
+    return {
+        "evaluations": [
+            {
+                "task_class": r.task_class,
+                "evaluation_version": r.evaluation_version,
+                "score": r.score,
+                "passed": r.passed,
+                "latency_ms": r.latency_ms,
+                "usage_tokens": r.usage_tokens,
+                "created_at": r.created_at,
+            }
+            for r in rows
+        ],
+        "total": len(rows),
+    }
+
+
+@router.post("/models/select-preview")
+async def model_select_preview(request: Request, db: Session = Depends(get_db)):
+    """Deterministic selection EXPLANATION without executing anything."""
+    from backend.services.model_selection import (
+        ModelRequirements,
+        ModelSelector,
+    )
+
+    data = await request.json() if request.headers.get("content-length") else {}
+    requirements = ModelRequirements.from_dict(data or {})
+    selector = ModelSelector(db)
+    result = selector.select(requirements)
+    return result.to_dict()
+
+
+# --- Main Agent (Phase 4) -----------------------------------------------------
+
+
+@router.get("/agent")
+async def get_agent(db: Session = Depends(get_db)):
+    """Persistent Main Agent identity, state, and deterministic self-model."""
+    from backend.services.main_agent import MainAgentService
+
+    svc = MainAgentService(db)
+    agent = svc.get_or_create()
+    model = svc.self_model()
+    return {
+        "agent_id": agent.agent_id,
+        "name": agent.name,
+        "state": agent.state,
+        **model,
+        "last_wake_at": agent.last_wake_at,
+        "last_session_outcome": agent.last_session_outcome,
+    }
+
+
+@router.post("/agent/pause")
+async def pause_agent(db: Session = Depends(get_db)):
+    """Pause the Main Agent: no new background work until resumed.
+
+    Already-running tasks are not destroyed; their outcomes still apply.
+    """
+    from backend.services.main_agent import MainAgentService
+
+    agent = MainAgentService(db).set_state("paused", reason="owner_requested")
+    return {"agent_id": agent.agent_id, "state": agent.state}
+
+
+@router.post("/agent/resume")
+async def resume_agent(db: Session = Depends(get_db)):
+    from backend.services.main_agent import MainAgentService
+
+    agent = MainAgentService(db).set_state("active", reason="owner_requested")
+    return {"agent_id": agent.agent_id, "state": agent.state}
+
+
+@router.get("/agent/background")
+async def get_background_policy(db: Session = Depends(get_db)):
+    """Whether event-driven background orchestration is currently enabled."""
+    from backend.core.config import settings
+    from backend.services.main_agent import MainAgentService
+
+    svc = MainAgentService(db)
+    return {"enabled": svc.background_enabled(),
+            "default": bool(settings.background_orchestration_enabled)}
+
+
+@router.put("/agent/background")
+async def set_background_policy(request: Request, db: Session = Depends(get_db)):
+    """Operator switch for background orchestration (persisted, audited)."""
+    from backend.services.main_agent import MainAgentService
+    from backend.runtime.events import DbEventLedger
+
+    data = await request.json()
+    enabled = bool(data.get("enabled"))
+    svc = MainAgentService(db)
+    svc.set_background_enabled(enabled)
+    agent = svc.get_or_create()
+    DbEventLedger(db).append_event(
+        f"agent:{agent.agent_id}",
+        "agent.background_policy_changed",
+        {"enabled": enabled},
+    )
+    db.commit()
+    return {"enabled": svc.background_enabled()}
+
+
+@router.get("/agent/activity")
+async def agent_activity(limit: int = 20, db: Session = Depends(get_db)):
+    """Recent wakes + recent agent events (answers 'what is Sythion doing?')."""
+    from backend.services.main_agent import MainAgentService
+
+    svc = MainAgentService(db)
+    agent = svc.get_or_create()
+    events = list(reversed(svc.ledger.event_history(f"agent:{agent.agent_id}")[-limit:]))
+    return {
+        "wakes": svc.recent_wakes(limit=limit),
+        "events": [
+            {
+                "event_type": e["event_type"],
+                "event_data": e["event_data"],
+                "sequence_num": e["sequence_num"],
+                "created_at": e["created_at"],
+            }
+            for e in events
+        ],
+    }
+
+
+@router.post("/agent/wake")
+async def wake_agent(request: Request, db: Session = Depends(get_db)):
+    """Explicit owner-triggered wake (trigger_type='user.request').
+
+    Deduplication and policy apply exactly as for automatic triggers. The
+    bounded session runs synchronously in this call when allowed; otherwise
+    the skip is recorded and returned.
+    """
+    import uuid as _uuid
+
+    from backend.core.config import settings
+    from backend.services.goal_selector import RunnableGoalSelector
+    from backend.services.planner import Planner
+    from backend.services.task_orchestrator import TaskOrchestrator
+    from backend.services.main_agent import MainAgentService
+
+    data = await request.json() if request.headers.get("content-length") else {}
+    trigger_reference = (data or {}).get("reference")
+    idempotency_key = (data or {}).get("wake_key")
+
+    svc = MainAgentService(db)
+    allowed, reason = svc.may_execute_background()
+    wake_key = idempotency_key or f"user.request:{_uuid.uuid4()}"
+    if not allowed:
+        skipped = svc.skip_wake(
+            "user.request", reason,
+            trigger_reference=trigger_reference,
+            wake_key=wake_key,
+        )
+        return {"woke": False, "reason": reason,
+                "wake_id": skipped["wake"].id}
+
+    # Durable submit + atomic claim (duplicate keys can never re-execute).
+    submitted = svc.submit_wake(
+        "user.request",
+        trigger_reference=trigger_reference,
+        wake_key=wake_key,
+    )
+    if submitted["deduplicated"]:
+        return {"woke": False, "reason": "duplicate_wake_key",
+                "wake_id": submitted["wake"].id}
+
+    wake = svc.claim_wake(wake_key)
+    if wake is None:
+        return {"woke": False, "reason": "duplicate_wake_key"}
+
+    absorbed = svc.absorb_coalescable(wake)
+
+    runner = get_runner(db)
+    orchestrator = TaskOrchestrator(
+        state_store=runner,
+        planner=Planner(db),
+    )
+    selector = RunnableGoalSelector(db)
+    result = await orchestrator.run_background_cycle(
+        selector, max_steps=settings.max_steps_per_background_cycle)
+
+    outcome = ("completed" if any(e["outcome"] == "completed"
+                                  for e in result["executed"])
+               else ("executed" if result["executed"] else "no_work"))
+    svc.finish_wake(
+        wake, status="COMPLETED", outcome=outcome,
+        stop_reason=result["stopped_reason"],
+        steps_attempted=len(result["executed"]),
+        steps_completed=sum(1 for e in result["executed"]
+                            if e["outcome"] == "completed"),
+    )
+    resp = {"woke": True, **result, "wake_id": wake.id}
+    if absorbed:
+        resp["coalesced"] = absorbed
+    return resp
+
+
+@router.post("/goals/{goal_id}/execute")
+async def execute_goal_session(goal_id: str, db: Session = Depends(get_db)):
+    """Explicitly initiated goal execution session with automatic continuation.
+
+    Runs eligible steps back-to-back inside this call (bounded by
+    ``max_steps_per_goal_execution``), each through the protected runtime
+    worker. Stops on: no eligible step, retry exhaustion (goal paused),
+    budget bound, or lost lease. This is NOT a scheduler.
+    """
+    from backend.services.goal_manager import GoalManager
+    from backend.services.planner import Planner
+    from backend.services.task_orchestrator import TaskOrchestrator
+
+    if GoalManager(db).get_goal(goal_id) is None:
+        raise HTTPException(status_code=404, detail=f"Goal {goal_id} not found")
+
+    runner = get_runner(db)
+    orchestrator = TaskOrchestrator(state_store=runner, planner=Planner(db))
+    session_result = await orchestrator.execute_session(goal_id)
+    return {**session_result, **_goal_detail(db, goal_id)}
+
+
+@router.get("/goals/{goal_id}")
+async def get_goal(goal_id: str, db: Session = Depends(get_db)):
+    """Inspect a goal: state, active plan version, steps, progress."""
+    return _goal_detail(db, goal_id)
+
+
+@router.get("/goals/{goal_id}/plans")
+async def list_goal_plans(goal_id: str, db: Session = Depends(get_db)):
+    """Plan version history (replanning audit trail; nothing is erased)."""
+    from backend.models.database import GoalPlan
+    from backend.services.goal_manager import GoalManager
+
+    if GoalManager(db).get_goal(goal_id) is None:
+        raise HTTPException(status_code=404, detail=f"Goal {goal_id} not found")
+    plans = (
+        db.query(GoalPlan)
+        .filter_by(goal_id=goal_id)
+        .order_by(GoalPlan.version.desc())
+        .all()
+    )
+    return {
+        "plans": [
+            {"id": p.id, "version": p.version, "status": p.status,
+             "source": p.source, "reason": p.reason, "created_at": p.created_at}
+            for p in plans
+        ]
+    }
+
+
+@router.post("/goals/{goal_id}/advance")
+async def advance_goal(goal_id: str, background_tasks: BackgroundTasks,
+                       db: Session = Depends(get_db)):
+    """Select the next eligible step deterministically and execute its task.
+
+    Owner-triggered only â€” there is no autonomous scheduler. The task runs
+    through the existing protected runtime worker (`run_task`); plan/goal
+    state updates afterwards come exclusively from kernel evidence.
+    """
+    runner = get_runner(db)
+    if not await runner.acquire_lease():
+        raise HTTPException(status_code=409, detail="Another task runner is currently active")
+
+    try:
+        from backend.services.planner import Planner
+        from backend.services.task_orchestrator import TaskOrchestrator
+
+        orchestrator = TaskOrchestrator(state_store=runner, planner=Planner(db))
+        started = await orchestrator.start_next_step(goal_id)
+        if started is None:
+            return {
+                "advanced": False,
+                "detail": "No eligible step (all done, blocked, or no plan).",
+                **_goal_detail(db, goal_id),
+            }
+
+        task = started["task"]
+        await runner.transition_state(
+            task_id=task.id,
+            new_state=TaskState.RUNNING,
+            event_type="task.execution_started",
+            event_data={"started_at": datetime.utcnow().isoformat(),
+                        "goal_step_key": started["step"].step_key},
+        )
+    finally:
+        await runner.release_lease()
+
+    tool_executor = get_tool_executor()
+    background_tasks.add_task(run_task, db, task.id, tool_executor)
+    return {"advanced": True, "task_id": task.id, "step_key": started["step"].step_key}
+
+
+@router.post("/goals/{goal_id}/replan")
+async def replan_goal(goal_id: str, payload: GoalReplanRequest,
+                      db: Session = Depends(get_db)):
+    """Create a NEW validated plan version (owner-triggered).
+
+    Either explicit ``steps`` or ``use_model=true`` (structured reasoning via
+    the Phase 1 ModelClient boundary). Malformed proposals are rejected with
+    no partial state; previous versions remain fully auditable.
+    """
+    from backend.runtime.model_client import get_default_model_client
+    from backend.services.goal_manager import GoalManager
+    from backend.services.planner import CandidateStepModel, PlanValidationError, Planner
+
+    manager = GoalManager(db)
+    if manager.get_goal(goal_id) is None:
+        raise HTTPException(status_code=404, detail=f"Goal {goal_id} not found")
+    planner = Planner(db)
+
+    failure_context = None
+    failed_step = next(
+        (s for s in planner.goal_steps(goal_id) if s.status == "failed"), None
+    )
+    if failed_step is not None:
+        failure_context = planner.build_failure_context(failed_step.id)
+
+    try:
+        if payload.use_model:
+            candidates = planner.request_model_plan(
+                manager.get_goal(goal_id),
+                model_client=get_default_model_client(),
+                instruction=payload.instruction or (
+                    json.dumps(failure_context)[:1500] if failure_context else None
+                ),
+            )
+            source = "model"
+        else:
+            candidates = [
+                CandidateStepModel(
+                    key=s.key, description=s.description,
+                    priority=s.priority, depends_on=s.depends_on,
+                )
+                for s in (payload.steps or [])
+            ]
+            source = "user"
+        plan = planner.replan(
+            goal_id,
+            reason=payload.reason or ("replanned after failure" if failure_context else "manual replan"),
+            candidates=candidates or None,
+            source=source,
+        )
+    except PlanValidationError as exc:
+        # Record the rejection for audit; persist NOTHING.
+        from backend.runtime.events import DbEventLedger
+
+        DbEventLedger(db).append_event(
+            f"goal:{goal_id}", "plan.proposal.rejected", {"errors": exc.errors[:10]}
+        )
+        db.commit()
+        raise HTTPException(status_code=422, detail={"errors": exc.errors})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return _goal_detail(db, goal_id)
+
+
+# NOTE: the generic /{action} lifecycle route is registered LAST so it
+# can never shadow the specific POST routes above (/advance, /replan).
+
+@router.post("/goals/{goal_id}/{action}")
+async def goal_lifecycle_action(goal_id: str, action: str, db: Session = Depends(get_db)):
+    """Explicit lifecycle actions: pause | resume | abandon."""
+    from backend.services.goal_manager import GoalManager, InvalidGoalTransitionError
+
+    actions = {"pause", "resume", "abandon"}
+    if action not in actions:
+        raise HTTPException(status_code=404, detail=f"Unknown action '{action}'")
+
+    manager = GoalManager(db)
+    try:
+        if action == "pause":
+            manager.pause_goal(goal_id)
+        elif action == "resume":
+            manager.resume_goal(goal_id)
+        elif action == "abandon":
+            manager.abandon_goal(goal_id)
+    except InvalidGoalTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return _goal_detail(db, goal_id)
+
+
+# --- Capability / Model / Self-Model / Health (Phase 5) -----------------------
+
+
+@router.get("/capabilities")
+async def list_capabilities(include_details: bool = False,
+                            db: Session = Depends(get_db)):
+    """Deterministic capability registry. Metadata only — never authorization."""
+    from backend.services.capabilities import CapabilityRegistry
+
+    registry = CapabilityRegistry(db)
+    return {
+        "capabilities": registry.list_capabilities(include_details=include_details),
+        "consistency_issues": registry.validate(),
+        "total": len(registry.list_capabilities()),
+    }
+
+
+@router.get("/capabilities/{capability_id}")
+async def get_capability(capability_id: str, db: Session = Depends(get_db)):
+    from backend.services.capabilities import CapabilityRegistry
+
+    cap = CapabilityRegistry(db).get_capability(capability_id)
+    if cap is None:
+        raise HTTPException(status_code=404, detail=f"Unknown capability '{capability_id}'")
+    return cap
+
+
+@router.get("/models/registry")
+async def model_registry_listing(probe: bool = False, db: Session = Depends(get_db)):
+    """Structured model records with explicit truthfulness metadata."""
+    from backend.services.system_state import ModelRegistry
+
+    registry = ModelRegistry(db)
+    records = registry.list_models(probe=probe)
+    return {
+        "models": [
+            {
+                "model_id": r.model_id,
+                "provider_id": r.provider_id,
+                "selected": r.selected,
+                "available_now": r.available_now,
+                "tool_calling_supported": r.tool_calling_supported,
+                "evaluated": r.evaluated,
+                "health_status": r.health_status,
+            }
+            for r in records
+        ],
+        "total": len(records),
+        "note": "evaluated=false everywhere: no evaluation system exists yet; "
+                "no quality claims are made.",
+    }
+
+
+@router.get("/models/registry/{model_id}")
+async def model_registry_detail(model_id: str):
+    from backend.services.system_state import ModelRegistry
+
+    record = ModelRegistry(None).get_model(model_id)
+    if record is None:
+        raise HTTPException(status_code=404,
+                            detail=f"Model '{model_id}' not registered")
+    return {
+        **record.__dict__,
+        "capabilities": ModelRegistry(None).model_capabilities(model_id),
+    }
+
+
+@router.get("/agent/self-model")
+async def agent_self_model(db: Session = Depends(get_db)):
+    """Full deterministic SelfModel (identity/runtime/capabilities/models/
+    resources/health). Derived only from authoritative state; no LLM writes."""
+    from backend.api.dependencies import get_tool_executor
+    from backend.services.self_model import build_self_model
+
+    return build_self_model(db, tool_executor=get_tool_executor())
+
+
+@router.get("/agent/health")
+async def agent_health(include_provider: bool = False,
+                       db: Session = Depends(get_db)):
+    """Aggregated health checks (remote provider probe is opt-in)."""
+    from backend.services.system_state import run_health_checks
+
+    return run_health_checks(include_provider=include_provider, db_session=db)
+
+
+@router.get("/agents")
+async def list_agents(include_expired: bool = False,
+                      db: Session = Depends(get_db)):
+    """Phase 9 agent registry (Main Agent + specialist instances)."""
+    from backend.agents.service import AgentService
+
+    service = AgentService(db)
+    return {
+        "main": agents_main_payload(service),
+        "specialists": service.list_agents(include_expired=include_expired),
+        "definitions": [
+            {"id": d.id, "role": d.role, "name": d.name, "enabled": d.enabled,
+             "capabilities": _safe_json_loads(d.capabilities_json, []),
+             "model_requirements": _safe_json_loads(
+                 d.model_requirements_json, {})}
+            for d in service.ensure_definitions()
+        ],
+    }
+
+
+@router.get("/agents/delegations")
+async def list_delegations(limit: int = 50, db: Session = Depends(get_db)):
+    """Durable delegation records with their lifecycle status."""
+    from backend.agents.delegation import DelegationService
+
+    return {"delegations": DelegationService(db).list_delegations(limit)}
+
+
+@router.get("/agents/delegations/{delegation_id}")
+async def get_delegation(delegation_id: str, db: Session = Depends(get_db)):
+    """One delegation record incl. structured result and cost accounting."""
+    from backend.agents.delegation import DelegationService
+
+    delegation = DelegationService(db).get_delegation(delegation_id)
+    if delegation is None:
+        raise HTTPException(status_code=404, detail="delegation not found")
+    return {
+        "id": delegation.id,
+        "status": delegation.status,
+        "role": delegation.specialist_role,
+        "objective": delegation.objective,
+        "attempt": delegation.attempt,
+        "parent_agent_id": delegation.parent_agent_id,
+        "specialist_agent_id": delegation.specialist_agent_id,
+        "specialist_task_id": delegation.specialist_task_id,
+        "goal_id": delegation.goal_id,
+        "task_id": delegation.task_id,
+        "result": _safe_json_loads(delegation.result_json, None),
+        "integration_outcome": delegation.integration_outcome,
+        "failure_reason": delegation.failure_reason,
+        "budget": _safe_json_loads(delegation.budget_json, {}),
+    }
+
+
+def agents_main_payload(service) -> Dict[str, Any]:
+    row = service.get_or_create_main()
+    return {"agent_id": row.id, "type": row.type, "state": row.state}
+
+
+def _safe_json_loads(raw, default):
+    try:
+        import json as _json
+
+        return _json.loads(raw) if raw else default
+    except Exception:
+        return default
 
 
 @router.get("/tools", response_model=Dict[str, List[Dict[str, Any]]])
@@ -1092,10 +1986,11 @@ async def update_settings(request: Request, db: Session = Depends(get_db)):
 @router.get("/models")
 async def list_models():
     """List available Ollama Cloud models."""
-    adapter = get_adapter()
-    
+    from backend.runtime.model_provider import get_default_provider
+    provider = get_default_provider()
+
     try:
-        models = await adapter.list_models()
+        models = await provider.list_models()
         return {"models": models}
     except Exception as e:
         logger.error(f"Failed to list models: {e}")
@@ -1126,11 +2021,15 @@ async def select_model(body: ModelSelectRequest):
     model it cannot use. Only the non-secret model ID is persisted.
     """
     from backend.core.profile import set_selected_model
-    from backend.adapters.ollama_adapter import get_adapter
+    from backend.runtime.model_provider import get_default_provider
 
-    adapter = get_adapter()
+    from backend.runtime.model_provider import get_default_provider
+
+    provider = get_default_provider()
+    # The sync facade bridges into the adapter (provider-specific plumbing
+    # stays inside the implementation).
     try:
-        models = await adapter.list_models()
+        models = provider.list_models()
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Failed to fetch models: {str(e)}")
 
@@ -1147,34 +2046,40 @@ async def select_model(body: ModelSelectRequest):
         )
 
     set_selected_model(body.model_id)
-    # Refresh the live adapter so capability checks use the new selection.
-    adapter.selected_model = body.model_id
-    adapter._capability_profile = None
+    # Refresh the live provider so capability checks use the new selection
+    # (provider-specific cache invalidation stays inside the adapter).
+    from backend.runtime.model_provider import get_default_provider
+
+    _adapter_obj = get_default_provider()._adapter
+    _adapter_obj.selected_model = body.model_id
+    _adapter_obj._capability_profile = None
     return ModelSelectResponse(selected_model=body.model_id, persisted=True)
 
 
 @router.post("/chat/completions")
 async def chat_completion(request: Request):
-    """Send a chat completion request to Ollama Cloud."""
-    adapter = get_adapter()
+    """Send a chat completion request to the configured provider."""
+    from backend.runtime.model_provider import get_default_provider
+    from backend.adapters.ollama_adapter import format_tools_for_ollama
+
+    provider = get_default_provider()
     data = await request.json()
-    
+
     messages = data.get("messages", [])
     tools = data.get("tools", [])
-    
+
     if not messages:
         raise HTTPException(status_code=400, detail="Messages are required")
-    
+
     try:
         # Format tools if provided
         formatted_tools = format_tools_for_ollama(tools) if tools else []
-        
-        response = await adapter.execute_tool_call(
+
+        response = await provider.chat(
             messages=messages,
-            tools=formatted_tools,
-            max_tokens=data.get("max_tokens", 4000)
+            max_tokens=data.get("max_tokens", 4000),
         )
-        
+
         return response
     except Exception as e:
         logger.error(f"Chat completion failed: {e}")
@@ -1308,15 +2213,16 @@ def _segment_to_schema(segment) -> VoiceSegmentResponse:
 
 @router.post("/tools/propose")
 async def propose_tool(request: Request, db: Session = Depends(get_db)):
-    """Submit a model-authored tool proposal for validation and approval.
+    """Submit a model-authored tool proposal for validation and review.
 
-    The proposal is validated, sandbox-tested, and stored. Owner approval
-    is required before the tool becomes live.
+    PROTECTED RUNTIME CONTRACT: the proposal is validated with static
+    analysis only â€” its implementation is never compiled or executed in this
+    process. The stored proposal is an inert review artifact.
     """
     from backend.services.tool_authoring import (
         ToolProposal,
         validate_tool_proposal,
-        sandbox_test,
+        static_interface_check,
         ProposedTool,
     )
 
@@ -1331,8 +2237,8 @@ async def propose_tool(request: Request, db: Session = Depends(get_db)):
     if not validation.valid:
         raise HTTPException(status_code=422, detail=validation.errors)
 
-    # Sandbox test
-    sandbox = sandbox_test(proposal)
+    # Static interface check (no execution of proposal code)
+    check = static_interface_check(proposal)
 
     # Store
     tool_proposal = ProposedTool(
@@ -1341,8 +2247,8 @@ async def propose_tool(request: Request, db: Session = Depends(get_db)):
         input_schema_json=json.dumps(proposal.input_schema),
         implementation=proposal.implementation,
         validation_errors=json.dumps([]),
-        sandbox_result=json.dumps(sandbox.model_dump()),
-        status="sandbox_passed" if sandbox.passed else "proposed",
+        sandbox_result=json.dumps(check.model_dump()),
+        status="sandbox_passed" if check.passed else "proposed",
     )
     db.add(tool_proposal)
     db.commit()
@@ -1353,8 +2259,8 @@ async def propose_tool(request: Request, db: Session = Depends(get_db)):
         "name": proposal.name,
         "status": tool_proposal.status,
         "validation": validation.model_dump(),
-        "sandbox": sandbox.model_dump(),
-        "detail": "Tool proposal submitted. Approve via POST /tools/proposals/{id}/approve.",
+        "static_check": check.model_dump(),
+        "detail": "Proposal stored for owner review; implementation is never executed in-process. Approve via POST /tools/proposals/{id}/approve.",
     }
 
 
@@ -1374,7 +2280,11 @@ async def approve_tool(
     db: Session = Depends(get_db),
     tool_executor: ToolExecutor = Depends(get_tool_executor),
 ):
-    """Approve a tool proposal and enable it in guarded mode."""
+    """Record an explicit owner review decision on a tool proposal.
+
+    PROTECTED RUNTIME CONTRACT: approval marks the proposal as reviewed but
+    never loads or executes its implementation in this process.
+    """
     from backend.services.tool_authoring import (
         get_proposed_tool,
         approve_tool_proposal,
@@ -1419,3 +2329,5 @@ async def reject_tool(
         "name": rejected.name,
         "status": rejected.status,
     }
+
+

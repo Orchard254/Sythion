@@ -52,6 +52,10 @@ class TaskResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     terminal_reason: Optional[str] = None
+    # Phase 13C: Explicit contract distinguishing CONVERSATION from TASK
+    interaction_type: str = "TASK"
+    conversation_id: Optional[str] = None
+    response: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -71,12 +75,15 @@ class ObjectiveStatus(str, Enum):
 
 
 class PlanStepStatus(str, Enum):
-    """Valid durable plan-step states."""
+    """Valid durable plan-step states (Phase 2 canonical set + legacy aliases)."""
     PENDING = "pending"
+    READY = "ready"
+    RUNNING = "running"
     IN_PROGRESS = "in_progress"
     BLOCKED = "blocked"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
     SKIPPED = "skipped"
 
 
@@ -347,6 +354,31 @@ class BrowserScreenshotInput(ToolInput):
         default=None,
         description="Optional file path to save the PNG image. If omitted, automatically saves to Sythion screenshots directory."
     )
+
+
+class PlanStepCandidate(BaseModel):
+    """A validated candidate step inside a goal plan (Phase 2)."""
+    key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    description: str = Field(min_length=3, max_length=500)
+    priority: int = Field(default=3, ge=1, le=5)
+    depends_on: List[str] = Field(default_factory=list)
+
+
+class GoalCreateRequest(BaseModel):
+    """Create a durable goal with an optional validated plan."""
+    title: str = Field(min_length=1, max_length=200)
+    purpose: Optional[str] = None
+    priority: int = Field(default=3, ge=1, le=5)
+    completion_criteria: Optional[str] = None
+    steps: List[PlanStepCandidate] = Field(default_factory=list)
+
+
+class GoalReplanRequest(BaseModel):
+    """Request a new plan version: explicit steps or model-proposed."""
+    steps: Optional[List[PlanStepCandidate]] = None
+    use_model: bool = False
+    instruction: Optional[str] = None
+    reason: Optional[str] = None
 
 
 class ToolProposeInput(ToolInput):

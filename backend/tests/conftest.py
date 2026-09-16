@@ -16,6 +16,14 @@ try:
 except ImportError:
     from core.config import settings
 
+# Compatibility fix for httpx >= 0.28 with Starlette TestClient (Starlette passes app= which httpx 0.28 dropped)
+import httpx
+_orig_httpx_client_init = httpx.Client.__init__
+def _compat_httpx_client_init(self, *args, **kwargs):
+    kwargs.pop("app", None)
+    return _orig_httpx_client_init(self, *args, **kwargs)
+httpx.Client.__init__ = _compat_httpx_client_init
+
 
 # ---- pytest markers ----
 # Use: @pytest.mark.slow, @pytest.mark.flaky, @pytest.mark.integration
@@ -26,6 +34,17 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "acceptance: marks acceptance tests (select with '-m acceptance')")
     config.addinivalue_line("markers", "gui: marks tests requiring GUI (deselect with '-m \"not gui\"')")
     config.addinivalue_line("markers", "network: marks tests requiring network (deselect with '-m \"not network\"')")
+    config.addinivalue_line(
+        "markers",
+        "process_kill: real Windows process-kill integration tests "
+        "(run explicitly with SYTHION_RUN_PROCESS_KILL=1)",
+    )
+    config.addinivalue_line(
+        "markers",
+        "provider_e2e: real provider-backed specialist E2E tests "
+        "(run explicitly with SYTHION_RUN_PROVIDER_E2E=1 plus configured "
+        "provider credentials/model; skipped otherwise)",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -117,10 +136,10 @@ def tool_executor():
     """Provide a ToolExecutor with all registered tools."""
     try:
         from backend.tools.executor import ToolExecutor
-        from backend.tools import create_all_tools
+        from backend.tools.registry import create_all_tools
     except ImportError:
         from tools.executor import ToolExecutor
-        from tools import create_all_tools
+        from tools.registry import create_all_tools
 
     ex = ToolExecutor()
     for tool in create_all_tools():

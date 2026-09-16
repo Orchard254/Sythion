@@ -102,9 +102,14 @@ def format_event_message(event):
 
 def run_single_request(request, log_path=None):
     res = api("/tasks", method="POST", data={"original_request": request})
-    task_id = res.get("id") if isinstance(res, dict) else None
-    if task_id:
-        return watch_task(task_id, log_path=log_path)
+    if isinstance(res, dict):
+        if res.get("interaction_type") == "CONVERSATION" or str(res.get("id", "")).startswith("conv-"):
+            content = res.get("response") or res.get("final_result") or ""
+            print(f"\n{content}\n")
+            return "completed"
+        task_id = res.get("id")
+        if task_id:
+            return watch_task(task_id, log_path=log_path)
     return None
 
 
@@ -176,6 +181,8 @@ def fetch_task_objective(task_id):
 
 
 def watch_task(task_id, log_path=None):
+    if str(task_id).startswith("conv-"):
+        return "completed"
     last_event_seq = 0
     last_question = None
     last_objective_signature = None
@@ -372,12 +379,20 @@ def interactive_mode():
             print()
             continue
 
-        # Submit user request as task
+        # Submit user request as task / conversation
         try:
-            print(f"\n[Submitting task] {user_input}")
             task = api("/tasks", method="POST", data={"original_request": user_input})
+
+            # Phase 13C: Conversation contract - direct response, no task polling
+            if task.get("interaction_type") == "CONVERSATION" or str(task.get("id", "")).startswith("conv-"):
+                content = task.get("response") or task.get("final_result") or ""
+                print()
+                print(content)
+                print()
+                continue
+
             task_id = task["id"]
-            print(f"Task ID: {task_id} (State: {task['state']})")
+            print(f"\nTask ID: {task_id} (State: {task['state']})")
             print("Executing...")
             result_state = watch_task(task_id)
 
@@ -427,6 +442,13 @@ def main():
     print()
 
     task = api("/tasks", method="POST", data={"original_request": request})
+
+    # Phase 13C: Conversation contract - direct response, no task polling
+    if task.get("interaction_type") == "CONVERSATION" or str(task.get("id", "")).startswith("conv-"):
+        content = task.get("response") or task.get("final_result") or ""
+        print(content)
+        return
+
     task_id = task["id"]
     print(f"Task: {task_id} ({task['state']})")
     print("Working...")

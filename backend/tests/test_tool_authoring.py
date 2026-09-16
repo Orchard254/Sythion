@@ -1,9 +1,10 @@
 """
 Tests for the L3 tool-authoring pipeline.
 
-Contract: model-authored tool proposals must pass validation, sandbox testing,
-and owner approval before becoming live tools. The pipeline enforces strict
-security gates: no forbidden imports, no secrets, no coordinates, no side effects.
+Contract (Phase 0 protected runtime contract): model-authored tool proposals
+are validated with STATIC analysis only — the implementation source is never
+compiled or executed in this process. Proposals are stored as inert review
+artifacts; owner approval records a decision, never a live executable.
 """
 
 import json
@@ -16,7 +17,7 @@ from backend.services.tool_authoring import (
     validate_input_schema,
     validate_implementation,
     validate_tool_proposal,
-    sandbox_test,
+    static_interface_check,
 )
 from backend.models.database import ProposedTool
 
@@ -220,10 +221,10 @@ class MyTool(BaseTool):
         assert result.errors == []
 
 
-# --- Sandbox tests ----------------------------------------------------------
+# --- Static interface checks (never execute the implementation) --------------
 
-class TestSandbox:
-    def test_valid_tool_passes_sandbox(self):
+class TestStaticInterfaceCheck:
+    def test_valid_tool_passes(self):
         proposal = ToolProposal(
             name="my_tool",
             description="A valid tool",
@@ -243,44 +244,47 @@ class MyTool(BaseTool):
         return {"risk_level": "none"}
 ''',
         )
-        result = sandbox_test(proposal)
+        result = static_interface_check(proposal)
         assert result.passed is True
+        assert "NOT executed" in result.detail
 
-    def test_syntax_error_fails_sandbox(self):
+    def test_syntax_error_fails_without_executing(self):
         proposal = ToolProposal(
             name="broken",
             description="Broken tool",
             input_schema={"type": "object", "properties": {}},
             implementation="def broken(",
         )
-        result = sandbox_test(proposal)
+        result = static_interface_check(proposal)
         assert result.passed is False
-        assert "SyntaxError" in result.error
+        assert any("syntax error" in e for e in result.errors)
 
-    def test_no_class_fails_sandbox(self):
+    def test_no_class_fails(self):
         proposal = ToolProposal(
             name="noclass",
             description="No class tool",
             input_schema={"type": "object", "properties": {}},
             implementation="def my_tool(): pass",
         )
-        result = sandbox_test(proposal)
+        result = static_interface_check(proposal)
         assert result.passed is False
-        assert "No tool class" in result.error
+        assert any("class" in e.lower() for e in result.errors)
 
-    def test_runtime_error_fails_sandbox(self):
+    def test_top_level_raise_is_never_triggered(self):
+        """Code that would crash on execution stays inert during checking."""
         proposal = ToolProposal(
             name="crasher",
-            description="Crashes on import",
+            description="Crashes if ever executed",
             input_schema={"type": "object", "properties": {}},
             implementation='''
-class Crasher:
+raise RuntimeError("I must never run")
+
+from backend.tools.executor import BaseTool
+
+class Crasher(BaseTool):
     name = "crasher"
     description = "Crashes"
     input_schema = None
-
-    def __init__(self):
-        raise RuntimeError("I crash on init")
 
     async def execute(self, input_data):
         return None
@@ -289,6 +293,29 @@ class Crasher:
         return {}
 ''',
         )
-        result = sandbox_test(proposal)
+        # Static analysis completes; nothing raised.
+        result = static_interface_check(proposal)
+        assert isinstance(result.passed, bool)
+
+    def test_missing_interface_attrs_reported_statically(self):
+        proposal = ToolProposal(
+            name="incomplete",
+            description="Incomplete tool",
+            input_schema={"type": "object", "properties": {}},
+            implementation='''
+from backend.tools.executor import BaseTool
+
+class Incomplete(BaseTool):
+    name = "incomplete"
+
+    async def execute(self, input_data):
+        return None
+
+    def get_policy_requirements(self):
+        return {}
+''',
+        )
+        result = static_interface_check(proposal)
         assert result.passed is False
-        assert "I crash on init" in result.error
+        joined = "; ".join(result.errors)
+        assert "description" in joined or "input_schema" in joined

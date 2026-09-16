@@ -291,14 +291,14 @@ async def test_app_focus_resolves_registry_guid_to_display_name(app_executor, mo
         focused["title"] = title
         return {"ok": True, "window": {"hwnd": 7, "title": "gemma4 - Google Chrome", "pid": 1234, "foreground": True}}
 
-    monkeypatch.setattr("tools.gui_tools._uia_driver", types.SimpleNamespace(focus=_fake_focus))
+    monkeypatch.setattr("backend.tools.gui_tools._uia_driver", types.SimpleNamespace(focus=_fake_focus))
 
     async def _patched_run(fn):
         return fn()
 
-    monkeypatch.setattr("tools.gui_tools._run_on_worker", _patched_run)
-    monkeypatch.setattr("tools.gui_tools._desktop_gate", lambda: None)
-    monkeypatch.setattr("tools.gui_tools._target_window_safety", lambda hwnd, title: None)
+    monkeypatch.setattr("backend.tools.gui_tools._run_on_worker", _patched_run)
+    monkeypatch.setattr("backend.tools.gui_tools._desktop_gate", lambda: None)
+    monkeypatch.setattr("backend.tools.gui_tools._target_window_safety", lambda hwnd, title: None)
 
     out = await _run(app_executor, "app_focus", {"app_id": guid})
     assert out.success

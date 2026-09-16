@@ -29,11 +29,15 @@ ALLOWED_SETTINGS = frozenset(
         "voice_tts_voice",
         "retention_days",
         "file_roots",
+        # Phase 4: explicit operator switch for event-driven background
+        # orchestration. Default OFF (safe); enabling is an owner decision.
+        "background_orchestration_enabled",
     }
 )
 
 _INT_KEYS = frozenset({"retention_days"})
-_BOOL_KEYS = frozenset({"voice_enabled", "voice_recording_enabled"})
+_BOOL_KEYS = frozenset({"voice_enabled", "voice_recording_enabled",
+                        "background_orchestration_enabled"})
 
 
 def get_setting(db: Session, key: str) -> Optional[str]:

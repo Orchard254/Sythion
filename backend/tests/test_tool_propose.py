@@ -1,8 +1,9 @@
 """
 Tests for the ToolProposeTool (L3 tool proposal endpoint).
 
-Contract: the tool_propose tool must validate, sandbox-test, and store
-tool proposals. Owner approval is required before the tool becomes live.
+Contract (Phase 0 protected runtime contract): tool_propose validates
+proposals with static analysis and stores them as inert review artifacts.
+Proposal code is never executed inside the core process.
 """
 
 import json
@@ -124,11 +125,11 @@ class EvalTool:
         assert output.success is False
         assert "VALIDATION_FAILED" in output.error.get("code", "")
 
-    def test_crash_in_init_fails_sandbox(self, propose_tool):
-        """A tool that crashes on __init__ should fail sandbox test."""
+    def test_crash_on_init_is_never_triggered(self, propose_tool):
+        """A tool that would crash on __init__ is stored WITHOUT executing it."""
         input_data = ToolProposeInput(
             name="crasher",
-            description="Crashes on init",
+            description="Crashes",
             input_schema={"type": "object", "properties": {}},
             implementation='''
 from backend.tools.executor import BaseTool
@@ -151,10 +152,13 @@ class Crasher(BaseTool):
         import asyncio
         output = asyncio.run(propose_tool.execute(input_data))
 
+        # The proposal is accepted and statically checked; the crashing
+        # constructor was never invoked, so nothing raised.
         assert output.success is True
-        assert output.data["status"] == "proposed"
-        sandbox = output.data.get("sandbox", {})
-        assert sandbox.get("passed") is False
+        assert output.data["status"] in ("sandbox_passed", "proposed")
+        static_check = output.data.get("static_check", {})
+        assert static_check.get("passed") is True
+        assert "NOT executed" in (static_check.get("detail") or "")
 
     def test_collision_with_builtin_rejected(self, propose_tool):
         """A tool with a name that collides with a built-in should fail validation."""

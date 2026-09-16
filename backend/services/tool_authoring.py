@@ -4,9 +4,15 @@ L3 tool-authoring pipeline: model-written tool proposals with strict gates.
 A tool proposal includes a name, description, input schema, and Python
 implementation. Every proposal must pass:
 1. Code validation (no secrets, no dangerous imports, read-only first)
-2. Sandbox testing (isolated execution, timeout, no side effects)
+2. Static interface checking (AST-only; the implementation is NEVER executed)
 3. Owner approval (explicit review)
-4. Staged enablement (guarded → autonomous after N verified uses)
+
+PROTECTED RUNTIME CONTRACT (Phase 0): proposal implementations are treated as
+untrusted data everywhere in this process. They are stored verbatim for review
+but are never compiled, executed, imported, or registered as live tools.
+Executable enablement of custom tools requires a genuine out-of-process
+isolation boundary and is deferred to a later phase. See
+docs/PROTECTED_RUNTIME_CONTRACT.md ("Process isolation").
 """
 
 import ast
@@ -62,12 +68,16 @@ class ValidationResult(BaseModel):
     warnings: List[str] = []
 
 
-class SandboxResult(BaseModel):
-    """Result of sandbox testing a tool proposal."""
+class StaticCheckResult(BaseModel):
+    """Result of statically checking a tool proposal.
+
+    Static analysis only — the implementation source is parsed with ``ast``
+    but never compiled or executed, so no proposal code can run inside the
+    core process at any stage of the authoring pipeline.
+    """
     passed: bool
-    error: Optional[str] = None
-    output: Optional[str] = None
-    duration_ms: int = 0
+    errors: List[str] = []
+    detail: Optional[str] = None
 
 
 # --- Validation ------------------------------------------------------------
@@ -241,104 +251,104 @@ def validate_tool_proposal(proposal: ToolProposal) -> ValidationResult:
     return ValidationResult(valid=len(errors) == 0, errors=errors, warnings=warnings)
 
 
-# --- Sandbox testing -------------------------------------------------------
+# --- Static interface checking (no execution) -------------------------------
 
-def sandbox_test(proposal: ToolProposal, timeout_seconds: int = 10) -> SandboxResult:
-    """Test the tool implementation in an isolated sandbox.
+def static_interface_check(proposal: ToolProposal) -> StaticCheckResult:
+    """Statically check the proposal's declared interface without executing it.
 
-    Runs the implementation in a restricted namespace with:
-    - No network access
-    - No file I/O
-    - No subprocess
-    - Timeout enforcement
+    PROTECTED RUNTIME CONTRACT: this check parses the implementation with
+    ``ast`` only. It never compiles, exec()s, imports, or instantiates any
+    code from the proposal, so untrusted implementation source can never run
+    inside the core process at proposal time. (The previous "sandbox test"
+    executed the implementation in a restricted namespace; that was removed
+    because restricted builtins are not a security boundary.)
+
+    Checks performed statically:
+    - The source parses (syntax validity).
+    - Exactly-shaped tool class exists: inherits from BaseTool/Tool, defines
+      name/description/input_schema class attributes and execute +
+      get_policy_requirements methods.
     """
-    import signal
-    import time
-
-    start_time = time.monotonic()
-
-    # Build restricted namespace
-    from backend.tools.executor import BaseTool
-    from backend.api.schemas import ToolOutput
-    restricted_globals = {
-        "__builtins__": {
-            # Allow basic types and functions
-            "True": True, "False": False, "None": None,
-            "int": int, "float": float, "str": str, "bool": bool,
-            "list": list, "dict": dict, "tuple": tuple, "set": set,
-            "len": len, "range": range, "enumerate": enumerate,
-            "zip": zip, "map": map, "filter": filter,
-            "sorted": sorted, "reversed": reversed,
-            "min": min, "max": max, "sum": sum, "abs": abs,
-            "round": round, "pow": pow,
-            "isinstance": isinstance, "type": type,
-            "print": print, "repr": repr, "str": str,
-            "ValueError": ValueError, "TypeError": TypeError,
-            "KeyError": KeyError, "IndexError": IndexError,
-            "Exception": Exception, "RuntimeError": RuntimeError,
-            "AttributeError": AttributeError,
-            # Allow imports and class creation (validation already blocked dangerous ones)
-            "__import__": __import__,
-            "__build_class__": __build_class__,
-            "__name__": "__main__",
-        },
-        # Pre-populate base classes so tool implementations can inherit
-        # without relying on import working inside the restricted env
-        "BaseTool": BaseTool,
-        "ToolOutput": ToolOutput,
-    }
+    errors: List[str] = []
 
     try:
-        # Compile and execute the implementation
-        compiled = compile(proposal.implementation, f"<tool:{proposal.name}>", "exec")
-        exec(compiled, restricted_globals)
-
-        # Find the tool class (skip abstract base classes)
-        import inspect
-        tool_class = None
-        for obj in restricted_globals.values():
-            if (
-                isinstance(obj, type)
-                and hasattr(obj, "execute")
-                and not getattr(obj, "__abstractmethods__", None)
-            ):
-                tool_class = obj
-                break
-
-        if tool_class is None:
-            return SandboxResult(
-                passed=False,
-                error="No tool class found with execute method",
-            )
-
-        # Instantiate and verify interface
-        tool_instance = tool_class()
-        if not hasattr(tool_instance, "name"):
-            return SandboxResult(passed=False, error="Tool class missing 'name' attribute")
-        if not hasattr(tool_instance, "description"):
-            return SandboxResult(passed=False, error="Tool class missing 'description' attribute")
-        if not hasattr(tool_instance, "input_schema"):
-            return SandboxResult(passed=False, error="Tool class missing 'input_schema' attribute")
-
-        # Test get_policy_requirements
-        reqs = tool_instance.get_policy_requirements()
-        if not isinstance(reqs, dict):
-            return SandboxResult(passed=False, error="get_policy_requirements must return a dict")
-
-        duration_ms = int((time.monotonic() - start_time) * 1000)
-        return SandboxResult(
-            passed=True,
-            output=f"Tool class {tool_class.__name__!r} instantiated successfully",
-            duration_ms=duration_ms,
-        )
-
-    except Exception as e:
-        duration_ms = int((time.monotonic() - start_time) * 1000)
-        return SandboxResult(
+        tree = ast.parse(proposal.implementation)
+    except SyntaxError as e:
+        return StaticCheckResult(
             passed=False,
-            error=f"Sandbox test failed: {type(e).__name__}: {e}",
-            duration_ms=duration_ms,
+            errors=[f"Implementation has syntax error: {e}"],
         )
+
+    candidate_classes = [
+        node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)
+    ]
+    if not candidate_classes:
+        return StaticCheckResult(passed=False, errors=["No class definition found"])
+
+    def _base_names(node: ast.ClassDef) -> List[str]:
+        names = []
+        for base in node.bases:
+            if isinstance(base, ast.Name):
+                names.append(base.id)
+            elif isinstance(base, ast.Attribute):
+                names.append(base.attr)
+        return names
+
+    def _method_names(node: ast.ClassDef) -> set:
+        return {
+            n.name
+            for n in node.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+
+    def _assigned_attrs(node: ast.ClassDef) -> set:
+        attrs = set()
+        for stmt in node.body:
+            if isinstance(stmt, ast.Assign):
+                for target in stmt.targets:
+                    if isinstance(target, ast.Name):
+                        attrs.add(target.id)
+            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                attrs.add(stmt.target.id)
+        return attrs
+
+    conforming: Optional[ast.ClassDef] = None
+    for node in candidate_classes:
+        if not any("BaseTool" in b or "Tool" in b for b in _base_names(node)):
+            continue
+        methods = _method_names(node)
+        attrs = _assigned_attrs(node)
+        missing = []
+        if "execute" not in methods:
+            missing.append("execute method")
+        if "get_policy_requirements" not in methods:
+            missing.append("get_policy_requirements method")
+        for attr in ("name", "description", "input_schema"):
+            if attr not in attrs and attr not in methods:
+                missing.append(f"{attr!r} attribute")
+        if missing:
+            errors.append(
+                f"Class {node.name!r} is missing: {', '.join(missing)}"
+            )
+        else:
+            conforming = node
+
+    if conforming is None and not any(
+        any("BaseTool" in b or "Tool" in b for b in _base_names(c))
+        for c in candidate_classes
+    ):
+        errors.append("No class inheriting from BaseTool found")
+
+    if errors:
+        return StaticCheckResult(passed=False, errors=errors)
+
+    detail = (
+        "Static interface check passed; implementation was NOT executed "
+        "(no in-process execution of proposal code)."
+    )
+    if conforming is not None:
+        detail += f" Tool class {conforming.name!r} declares the required interface."
+    return StaticCheckResult(passed=True, detail=detail)
 
 
 # --- Persistence -----------------------------------------------------------
@@ -378,10 +388,18 @@ def approve_tool_proposal(
     proposal: ProposedTool,
     tool_executor: Any,
 ) -> ProposedTool:
-    """Approve a tool proposal and enable it in guarded mode.
+    """Approve a tool proposal after validation and static interface checks.
 
-    The tool must have passed validation and sandbox testing first.
+    PROTECTED RUNTIME CONTRACT (Phase 0): approval records the owner review
+    decision on the proposal artifact only. The implementation is NEVER
+    executed, imported, or registered with the executor — the core process
+    must not run database-stored or model-authored Python. ``tool_executor``
+    is accepted for interface compatibility but is intentionally unused.
+    Executable enablement of custom tools requires a genuine out-of-process
+    isolation boundary (future phase).
     """
+    del tool_executor  # unused by contract; kept for signature stability
+
     if proposal.status not in ("proposed", "sandbox_passed"):
         raise ValueError(f"Proposal {proposal.id} is {proposal.status}, not approvable")
 
@@ -400,16 +418,18 @@ def approve_tool_proposal(
             "Tool proposal failed validation: " + "; ".join(validation.errors)
         )
 
-    # Re-run sandbox test
-    sandbox = sandbox_test(tool_proposal)
-    if not sandbox.passed:
-        proposal.sandbox_result = json.dumps(sandbox.model_dump())
+    # Re-run static interface check (no execution)
+    check = static_interface_check(tool_proposal)
+    if not check.passed:
+        proposal.sandbox_result = json.dumps(check.model_dump())
         db.commit()
         raise ValueError(
-            "Tool proposal failed sandbox test: " + (sandbox.error or "unknown")
+            "Tool proposal failed static interface check: "
+            + "; ".join(check.errors or ["unknown"])
         )
 
-    # Enable in guarded mode
+    # Record the approval decision on the proposal artifact. The stored
+    # implementation remains inert data: it is never loaded as a live tool.
     proposal.status = "enabled"
     proposal.enabled_mode = "guarded"
     proposal.enabled_at = datetime.utcnow()
@@ -417,24 +437,12 @@ def approve_tool_proposal(
     db.commit()
     db.refresh(proposal)
 
-    # Dynamically load and register the approved tool with the executor
-    try:
-        namespace = {"__builtins__": __builtins__}
-        exec(proposal.implementation, namespace)
-        for obj in namespace.values():
-            if (
-                isinstance(obj, type)
-                and hasattr(obj, "execute")
-                and not getattr(obj, "__abstractmethods__", None)
-                and hasattr(obj, "name")
-            ):
-                tool_executor.register_tool(obj())
-                logger.info("Registered approved tool '%s' with executor", proposal.name)
-                break
-    except Exception as e:
-        logger.warning("Failed to register approved tool '%s': %s", proposal.name, e)
-
-    logger.info("Approved tool proposal %s (%s) in guarded mode", proposal.id, proposal.name)
+    logger.info(
+        "Approved tool proposal %s (%s); stored as an inert reviewed artifact "
+        "(in-process execution of proposed tools is disabled)",
+        proposal.id,
+        proposal.name,
+    )
     return proposal
 
 
@@ -456,9 +464,12 @@ def reject_tool_proposal(
 
 
 def record_tool_use(db: Session, tool_name: str) -> Optional[ProposedTool]:
-    """Record a successful use of a proposed tool.
+    """Record a successful use of a proposed tool (metadata only).
 
-    When the use count reaches the threshold, promote to autonomous mode.
+    Phase 0 contract: proposed tools are inert artifacts and are never
+    executed, so this counter does not advance under normal operation.
+    Retained for lifecycle compatibility; mode promotion is metadata only
+    and confers no execution capability.
     """
     proposal = db.query(ProposedTool).filter_by(name=tool_name, status="enabled").first()
     if not proposal:

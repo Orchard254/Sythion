@@ -54,8 +54,15 @@ class Settings(BaseSettings):
     # Continuation detection window (hours)
     continuation_window_hours: int = 12
     
-    # Runner lease timeout (seconds)
+    # Runner lease contract (single source of truth):
+    # - lease_timeout_seconds: lease expiry AND stale-takeover threshold.
+    #   A lease whose expires_at has passed may be taken over; the previous
+    #   holder's task is marked interrupted on takeover.
+    # - lease_heartbeat_seconds: how often the active execution loop renews
+    #   the lease. MUST be strictly smaller than lease_timeout_seconds
+    #   (enforced at import in services/task_runner.py).
     lease_timeout_seconds: int = 30
+    lease_heartbeat_seconds: int = 10
     
     # Voice
     voice_enabled: bool = True
@@ -65,11 +72,103 @@ class Settings(BaseSettings):
     # Memory consolidation (background LLM distillation of conversations)
     memory_consolidation_enabled: bool = True
 
+    # Phase 3 work orchestration:
+    # - step_max_attempts: persisted, bounded per-step retry limit. A retry is
+    #   an audited event; exhausting the limit fails the step and pauses the
+    #   goal (replanning remains owner-triggered).
+    # - max_steps_per_goal_execution: hard bound on automatic continuation
+    #   within ONE explicitly initiated goal execution session.
+    # - background_orchestration_enabled: operator switch for the Phase 4
+    #   event-driven Main Agent wake worker. DEFAULT OFF; persisted override
+    #   via settings_store ('background_orchestration_enabled').
+    step_max_attempts: int = 3
+    max_steps_per_goal_execution: int = 10
+    max_steps_per_background_cycle: int = 5
+    background_orchestration_enabled: bool = False
+
+    # Phase 4.5 hardening:
+    # - wake_reclaim_seconds: a wake stuck in RUNNING (worker crash) older
+    #   than this may be reclaimed by another worker pass.
+    # - backoff: after `backoff_failure_threshold` consecutive failed sessions
+    #   a goal is deprioritized for base * 2^(n-threshold) seconds, capped.
+    wake_reclaim_seconds: int = 600
+    backoff_failure_threshold: int = 2
+    backoff_base_seconds: int = 300
+    backoff_max_seconds: int = 3600
+
+    # Phase 6 model selection/fallback:
+    # - model_max_attempts: total decision attempts (primary + fallbacks)
+    #   per engine instance; each attempt consumes normal cloud budget.
+    # - model_eval_version pins the deterministic evaluation suite version.
+    model_max_attempts: int = 2
+
     # Skill self-growth (L2): auto-enable a proposal once its verified trace
     # count reaches this threshold (default 5; 0 or negative restores explicit
     # owner review of every proposal). Auto-enabling re-validates against the
     # current read-only tool set and creates a versioned, pinned skill.
     skill_auto_enable_threshold: int = 5
+
+    # Phase 9 bounded specialist delegation policy. All caps come from
+    # configuration — no specialist recursion (max_specialist_depth = 1),
+    # no unbounded fan-out, no unbounded specialist runtime.
+    specialists_enabled: bool = True
+    max_specialists_per_task: int = 2
+    max_specialist_depth: int = 1
+    max_specialist_steps: int = 5
+    max_specialist_time_seconds: int = 300
+    max_specialist_model_calls: int = 10
+    max_specialist_revisions: int = 1
+    specialist_ttl_seconds: int = 3600
+
+    # Phase 10 multi-specialist coordination & controlled parallelism.
+    # All fan-out / budget / concurrency caps are configuration, never
+    # prompt-invented. Parallelism defaults OFF.
+    max_specialists_per_plan: int = 5
+    max_active_specialists_per_parent: int = 5
+    max_total_specialist_model_calls: int = 50
+    max_total_specialist_steps: int = 25
+    max_total_specialist_time_seconds: int = 1800
+
+    # Controlled parallelism — Stage 0 default is serialized.
+    parallelism_enabled: bool = False
+    max_parallel_specialists: int = 2
+    max_parallel_model_calls: int = 4
+    max_parallel_runtime_actions: int = 2
+
+    # GUI concurrency: always serialized unless explicitly validated.
+    gui_parallelism_enabled: bool = False
+
+    # Phase 11 — controlled learning layer
+    strategy_learning_enabled: bool = True
+    strategy_evidence_ttl_days: int = 90
+    strategy_recent_window_days: int = 30
+    strategy_min_samples_supported: int = 5
+    strategy_min_samples_established: int = 20
+    strategy_low_sample_threshold: int = 3
+    strategy_exploration_rate: float = 0.10
+    strategy_max_exploration_cost: float = 2.0
+    strategy_min_confidence_to_exploit: float = 0.65
+    strategy_high_risk_threshold: str = "HIGH"
+    strategy_decay_half_life_days: int = 45
+
+    # Phase 12 — planning/replanning adaptive policy learning
+    planning_learning_enabled: bool = True
+    planning_learning_mode: str = "LEARNING_ONLY"  # LEARNING_ONLY | SHADOW | ACTIVE
+    planning_evidence_ttl_days: int = 90
+    planning_recent_window_days: int = 30
+    planning_min_samples_supported: int = 5
+    planning_min_samples_established: int = 20
+    planning_low_sample_threshold: int = 3
+    planning_exploration_rate: float = 0.05
+    planning_max_exploration_cost: float = 2.0
+    planning_min_confidence_to_exploit: float = 0.65
+    planning_high_risk_threshold: str = "HIGH"
+    planning_shadow_enabled: bool = True
+    planning_promotion_requires_owner_approval: bool = True
+    planning_safe_auto_promotion: bool = False  # only LOW-cost policies may auto-promote when True
+    # Phase 12.5 — promotion requires real evidence (synthetic alone cannot promote)
+    planning_min_real_samples: int = 5
+    planning_min_real_verified_successes: int = 3
 
     model_config = {
         "env_prefix": "SYTHION_",

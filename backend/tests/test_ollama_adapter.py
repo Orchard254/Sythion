@@ -35,11 +35,13 @@ async def test_capability_probe_requires_selected_model_and_native_tool_call():
     adapter = OllamaCloudAdapter()
     adapter.api_key = "test-key"
     adapter.selected_model = "available-model"
+    import asyncio
     adapter._client = httpx.AsyncClient(
         base_url="https://ollama.com",
         headers={"Authorization": "Bearer test-key"},
         transport=capability_transport("available-model"),
     )
+    adapter._client_loop = asyncio.get_running_loop()
 
     profile = await adapter.ensure_capabilities()
 
@@ -53,11 +55,13 @@ async def test_capability_probe_rejects_stale_model_id():
     adapter = OllamaCloudAdapter()
     adapter.api_key = "test-key"
     adapter.selected_model = "retired-model"
+    import asyncio
     adapter._client = httpx.AsyncClient(
         base_url="https://ollama.com",
         headers={"Authorization": "Bearer test-key"},
         transport=capability_transport("available-model"),
     )
+    adapter._client_loop = asyncio.get_running_loop()
 
     with pytest.raises(ProviderCapabilityError, match="unavailable"):
         await adapter.ensure_capabilities()
@@ -69,11 +73,13 @@ async def test_capability_probe_accepts_tagged_model_matching_base_name():
     adapter = OllamaCloudAdapter()
     adapter.api_key = "test-key"
     adapter.selected_model = "available-model:cloud"
+    import asyncio
     adapter._client = httpx.AsyncClient(
         base_url="https://ollama.com",
         headers={"Authorization": "Bearer test-key"},
         transport=capability_transport("available-model"),
     )
+    adapter._client_loop = asyncio.get_running_loop()
 
     profile = await adapter.ensure_capabilities()
 
@@ -87,11 +93,13 @@ async def test_capability_probe_rejects_plain_text_or_wrong_tool_call():
     adapter = OllamaCloudAdapter()
     adapter.api_key = "test-key"
     adapter.selected_model = "available-model"
+    import asyncio
     adapter._client = httpx.AsyncClient(
         base_url="https://ollama.com",
         headers={"Authorization": "Bearer test-key"},
         transport=capability_transport("available-model", tool_name="wrong_tool"),
     )
+    adapter._client_loop = asyncio.get_running_loop()
 
     with pytest.raises(ProviderCapabilityError, match="valid native tool call"):
         await adapter.ensure_capabilities()
@@ -110,11 +118,13 @@ async def test_rate_limited_probe_reports_clean_message():
     adapter = OllamaCloudAdapter()
     adapter.api_key = "test-key"
     adapter.selected_model = "available-model"
+    import asyncio
     adapter._client = httpx.AsyncClient(
         base_url="https://ollama.com",
         headers={"Authorization": "Bearer test-key"},
         transport=rate_limited_transport(),
     )
+    adapter._client_loop = asyncio.get_running_loop()
 
     with pytest.raises(ProviderCapabilityError, match="Rate limit exceeded"):
         await adapter.ensure_capabilities()
@@ -129,11 +139,13 @@ async def test_failed_capability_is_cached_for_a_cooldown(monkeypatch):
     adapter.selected_model = "available-model"
     calls = {"n": 0}
     transport = rate_limited_transport()
+    import asyncio
     adapter._client = httpx.AsyncClient(
         base_url="https://ollama.com",
         headers={"Authorization": "Bearer test-key"},
         transport=transport,
     )
+    adapter._client_loop = asyncio.get_running_loop()
 
     async def _count_send(request, *args, **kwargs):
         calls["n"] += 1
@@ -183,14 +195,17 @@ async def test_execute_tool_call_payload_sets_num_ctx():
     adapter = OllamaCloudAdapter()
     adapter.api_key = "test-key"
     adapter.selected_model = "available-model"
-    adapter._capability_profile = ProviderCapabilityProfile(
+    adapter._capability_profiles["available-model"] = ProviderCapabilityProfile(
         model_id="available-model", native_tool_calls=True
     )
+    adapter._capability_profile = adapter._capability_profiles["available-model"]
+    import asyncio
     adapter._client = httpx.AsyncClient(
         base_url="https://ollama.com",
         headers={"Authorization": "Bearer test-key"},
         transport=_payload_transport(seen),
     )
+    adapter._client_loop = asyncio.get_running_loop()
 
     result = await adapter.execute_tool_call(
         messages=[{"role": "user", "content": "hi"}],
@@ -212,11 +227,13 @@ async def test_chat_payload_sets_num_ctx():
     adapter = OllamaCloudAdapter()
     adapter.api_key = "test-key"
     adapter.selected_model = "available-model"
+    import asyncio
     adapter._client = httpx.AsyncClient(
         base_url="https://ollama.com",
         headers={"Authorization": "Bearer test-key"},
         transport=_payload_transport(seen),
     )
+    adapter._client_loop = asyncio.get_running_loop()
 
     result = await adapter.chat(messages=[{"role": "user", "content": "hi"}])
 

@@ -132,7 +132,8 @@ async def test_elapsed_budget_fails_honestly(db_session, task_runner):
 
     loop.model_engine.make_decision = _decision
     loop._execute_decision = _tool
-    loop.MAX_ACTIONS_PER_TASK = 1000  # Never trip the action budget here.
+    # Action authority is settings.max_actions_per_task (default 100); this
+    # test only executes a couple of actions so it never trips it.
 
     with pytest.MonkeyPatch.context() as mp:
         import backend.services.task_execution_loop as loop_module

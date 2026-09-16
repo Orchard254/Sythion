@@ -1,0 +1,47 @@
+{
+  "description": "Quick test corpus for Sythion web research evaluation",
+  "categories": {
+    "current_facts": [
+      "What is the current population of Japan?",
+      "What is the current population of India?",
+      "What is the capital of France?",
+      "Who is the current President of the United States?",
+      "What is the current GDP of the United States?"
+    ],
+    "historical_facts": [
+      "What was the population of Japan in 1950?",
+      "When did World War II end?",
+      "When did the Berlin Wall fall?",
+      "When did the Soviet Union dissolve?",
+      "When did India gain independence?"
+    ],
+    "prices": [
+      "What is the current price of Bitcoin?",
+      "What is the current price of gold per ounce?",
+      "What is the current price of Apple stock (AAPL)?"
+    ],
+    "exchange_rates": [
+      "What is the current USD to EUR exchange rate?",
+      "What is the current USD to JPY exchange rate?",
+      "What is the current USD to GBP exchange rate?"
+    ],
+    "technology": [
+      "What is the latest version of Python?",
+      "What is the latest version of Node.js?",
+      "What is the latest version of Windows?"
+    ],
+    "ambiguous": [
+      "Who is the president of Georgia?",
+      "What is the population of Springfield?"
+    ],
+    "comparison": [
+      "What is the population of Japan versus South Korea?",
+      "What is the GDP of China versus the US?"
+    ],
+    "adversarial": [
+      "What is the population of a city that doesn't exist?",
+      "What is the exchange rate between USD and a fictional currency?"
+    ]
+  },
+  "total_queries": 35
+}

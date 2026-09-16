@@ -70,6 +70,53 @@ async def lifespan(app: FastAPI):
     db_manager = init_database(db_path)
     set_db_manager(db_manager)
     logger.info(f"Database initialized at: {db_path}")
+
+    # Phase 4.5: single authoritative startup ordering (task/lease recovery →
+    # goal migration → agent init → wake recovery). The wake worker starts
+    # only AFTER this sequence, so no wake ever executes against unrecovered
+    # state. Failures are logged, never fatal to startup.
+    try:
+        from .services.bootstrap import run_startup_sequence
+
+        boot = run_startup_sequence(db_manager)
+        logger.info("Startup sequence order: %s", boot["order"])
+    except Exception as exc:
+        logger.warning(f"Startup sequence skipped due to error: {exc}")
+
+    # Phase 4: persistent Main Agent identity + event-driven wake worker.
+    # The worker is ALWAYS started (so policy toggles apply live), but it can
+    # only execute background sessions when the operator explicitly enabled
+    # them (settings_store: background_orchestration_enabled, default OFF).
+    agent_service = None
+    wake_worker = None
+    try:
+        from .services.main_agent import MainAgentService
+        from .services.wake_worker import WakeWorker, set_wake_worker
+
+        agent_session = db_manager.new_session()
+        try:
+            agent_service = MainAgentService(agent_session)
+            main_agent = agent_service.get_or_create()
+            logger.info("Main agent %s state=%s", main_agent.agent_id, main_agent.state)
+        finally:
+            agent_session.close()
+
+        wake_worker = WakeWorker(db_manager)
+        set_wake_worker(wake_worker)
+        wake_worker.start()
+
+        if agent_service.background_enabled():
+            # Explicit-policy startup wake: once per process boot. Drain any
+            # durable PENDING wakes recovered by the bootstrap sequence too.
+            fresh = db_manager.new_session()
+            try:
+                svc = MainAgentService(fresh)
+                wake_worker.submit_startup(svc.get().agent_id)
+            finally:
+                fresh.close()
+            await wake_worker.drain_durable()
+    except Exception as exc:
+        logger.warning(f"Main agent initialization skipped due to error: {exc}")
     
     # Initialize tool executor
     tool_executor = ToolExecutor()
@@ -79,54 +126,38 @@ async def lifespan(app: FastAPI):
     from .tools.registry import register_all_tools
     register_all_tools(tool_executor)
 
-    # Load any previously approved tools from the database
-    # Use restricted builtins matching the sandbox policy to prevent
-    # elevated access at startup (no eval/exec/open/compile/etc.).
+    # PROTECTED RUNTIME CONTRACT (Phase 0): the core process never executes
+    # Python stored in the database or authored by the model. Previously this
+    # startup block ran enabled ProposedTool.implementation source with
+    # restricted builtins; restricted builtins are not a security boundary,
+    # so that path was removed entirely. Approved proposals remain inert
+    # review artifacts; executable enablement of custom tools requires a
+    # genuine out-of-process isolation boundary (future phase). See
+    # docs/PROTECTED_RUNTIME_CONTRACT.md ("Process isolation").
     try:
         from .models.database import ProposedTool
-        from .core.db_manager import DatabaseManager
-        from .tools.executor import BaseTool as _BaseTool
-        from .api.schemas import ToolOutput as _ToolOutput
         db_mgr = get_db_manager()
         with db_mgr.get_session() as session:
-            approved = session.query(ProposedTool).filter_by(status="enabled").all()
-            restricted_builtins = {
-                "__import__": __import__,
-                "__build_class__": __build_class__,
-                "__name__": "__main__",
-            }
-            for proposal in approved:
-                try:
-                    # SECURITY TRUST BOUNDARY: exec() on DB-stored code.
-                    # The DB is local-only (ACL'd by storage.py), but if
-                    # tampered with, arbitrary code runs in this process.
-                    # restricted_builtins limits __import__ access, but
-                    # the code can still call any registered tool or
-                    # access objects in this namespace.
-                    namespace = {"__builtins__": restricted_builtins, "BaseTool": _BaseTool, "ToolOutput": _ToolOutput}
-                    exec(proposal.implementation, namespace)
-                    for obj in namespace.values():
-                        if (
-                            isinstance(obj, type)
-                            and hasattr(obj, "execute")
-                            and not getattr(obj, "__abstractmethods__", None)
-                            and hasattr(obj, "name")
-                        ):
-                            tool_executor.register_tool(obj())
-                            logger.info("Loaded approved tool '%s' from database", proposal.name)
-                            break
-                except Exception as e:
-                    logger.warning("Failed to load approved tool '%s': %s", proposal.name, e)
+            enabled_count = (
+                session.query(ProposedTool).filter_by(status="enabled").count()
+            )
+        if enabled_count:
+            logger.warning(
+                "%d approved tool proposal(s) exist but are NOT loaded or "
+                "executed: in-process execution of database-stored tool code "
+                "is disabled by the protected runtime contract.",
+                enabled_count,
+            )
     except Exception as e:
-        logger.warning("Could not load approved tools from database: %s", e)
+        logger.warning("Could not inspect proposed tools at startup: %s", e)
         
     logger.info(f"Registered {len(tool_executor.list_tools())} tools")
 
-    # Expose the fully-loaded executor to the API/routes dependency so the
-    # model engine and skill engine share the same tool set (including
-    # DB-approved tools) instead of creating a separate bare executor.
-    from .api.routes import get_tool_executor
-    get_tool_executor._executor = tool_executor
+    # Expose the fully-loaded executor to the API layer through the explicit
+    # dependency wiring (composition root) instead of function-attribute
+    # injection. The model engine and skill engine share this same tool set.
+    from .api import dependencies as api_dependencies
+    api_dependencies.set_executor_provider(lambda: tool_executor)
 
     # Phase A handshake: expose the bound port + token to the launcher. The
     # launcher pre-selects a free port (`SYTHION_PORT` or --port) and reads this
@@ -142,6 +173,31 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Sythion (Synth) shutting down...")
+
+    # Phase 4: stop accepting new background work and persist agent shutdown.
+    # Unfinished goals/tasks are NOT marked done — the existing lease/recovery
+    # machinery remains authoritative for interrupted work.
+    try:
+        from .services.wake_worker import get_wake_worker, set_wake_worker
+        from .services.main_agent import MainAgentService
+
+        worker = get_wake_worker()
+        if worker is not None:
+            await worker.stop()
+            set_wake_worker(None)
+    except Exception as exc:
+        logger.warning(f" Wake worker shutdown skipped: {exc}")
+    try:
+        if db_manager is not None:
+            session = db_manager.new_session()
+            try:
+                MainAgentService(session).set_state(
+                    "shutdown", reason="process_shutdown")
+            finally:
+                session.close()
+    except Exception as exc:
+        logger.warning(f"Main agent shutdown state not persisted: {exc}")
+
     if profile_lock is not None:
         profile_lock.release()
         profile_lock = None
@@ -165,6 +221,9 @@ app.include_router(api_router, prefix="/api/v1")
 
 from backend.api.browser_bridge_routes import router as browser_router
 app.include_router(browser_router)
+
+from backend.api.learning_routes import router as learning_router
+app.include_router(learning_router, prefix="/api/v1")
 
 
 # CORS middleware - only allow local origin

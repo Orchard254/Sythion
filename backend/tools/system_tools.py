@@ -1352,18 +1352,20 @@ class SystemVolumeTool(BaseTool[SystemVolumeInput]):
 
 
 class ToolProposeTool(BaseTool[ToolProposeInput]):
-    """Propose a new tool for validation, sandbox testing, and owner approval.
+    """Propose a new tool for validation, static checking, and owner approval.
 
     Use this when you encounter a capability gap that no existing tool can
-    fill. The proposal will be validated (no forbidden imports, no secrets,
-    proper BaseTool interface), sandbox-tested, and require owner approval
-    before becoming a live tool.
+    fill. The proposal is validated statically (no forbidden imports, no
+    secrets, proper BaseTool interface) and stored for owner review.
+    PROTECTED RUNTIME CONTRACT: proposal code is never executed in the core
+    process; executable enablement requires a future isolated boundary.
     """
 
     name = "tool_propose"
     description = ("Propose a new tool by providing its name, description, input schema, "
-                   "and Python implementation. The proposal is validated, sandbox-tested, "
-                   "and requires owner approval before becoming live")
+                   "and Python implementation. The proposal is validated and stored for "
+                   "owner review; it is never executed inside the core runtime")
+
     input_schema = ToolProposeInput
 
     @handle_tool_errors("TOOL_PROPOSE_ERROR")
@@ -1371,7 +1373,7 @@ class ToolProposeTool(BaseTool[ToolProposeInput]):
         from backend.services.tool_authoring import (
             ToolProposal,
             validate_tool_proposal,
-            sandbox_test,
+            static_interface_check,
         )
         from backend.models.database import get_db_manager, ProposedTool
 
@@ -1394,8 +1396,8 @@ class ToolProposeTool(BaseTool[ToolProposeInput]):
                 duration_ms=0,
             )
 
-        # Sandbox test
-        sandbox = sandbox_test(proposal)
+        # Static interface check (never executes the implementation)
+        check = static_interface_check(proposal)
 
         # Store
         db_mgr = get_db_manager()
@@ -1406,8 +1408,8 @@ class ToolProposeTool(BaseTool[ToolProposeInput]):
                 input_schema_json=__import__("json").dumps(proposal.input_schema),
                 implementation=proposal.implementation,
                 validation_errors=__import__("json").dumps([]),
-                sandbox_result=__import__("json").dumps(sandbox.model_dump()),
-                status="sandbox_passed" if sandbox.passed else "proposed",
+                sandbox_result=__import__("json").dumps(check.model_dump()),
+                status="sandbox_passed" if check.passed else "proposed",
             )
             session.add(tool_proposal)
             session.flush()
@@ -1417,9 +1419,9 @@ class ToolProposeTool(BaseTool[ToolProposeInput]):
 
         model_summary = (
             f"Tool proposal '{proposal.name}' submitted: "
-            f"validation passed, sandbox {'passed' if sandbox.passed else 'failed'}. "
-            f"Owner must approve via POST /tools/proposals/{proposal_id}/approve "
-            f"before it becomes a live tool."
+            f"validation passed, static interface check {'passed' if check.passed else 'failed'}. "
+            f"The implementation is stored as inert review data and is never executed "
+            f"in the core runtime."
         )
 
         return ToolOutput(
@@ -1429,7 +1431,7 @@ class ToolProposeTool(BaseTool[ToolProposeInput]):
                 "name": proposal.name,
                 "status": proposal_status,
                 "validation": validation.model_dump(),
-                "sandbox": sandbox.model_dump(),
+                "static_check": check.model_dump(),
             },
             model_summary=model_summary,
             evidence={"source": "tool_proposal"},

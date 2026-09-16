@@ -313,17 +313,74 @@ def _find_window_hwnd_win32(title: str) -> int:
 # UIA driver -- every call below runs inside the MTA worker thread.
 # --------------------------------------------------------------------------
 
+def _clear_comtypes_gen_cache():
+    """Remove stale comtypes gen cache that causes 'Typelib different than module'.
+
+    Happens when comtypes version changes but generated wrappers remain from
+    prior version. Clearing forces regeneration on next GetModule.
+    """
+    try:
+        import comtypes.gen as _gen
+        import pathlib, shutil
+        gen_path = pathlib.Path(_gen.__file__).parent
+        for p in gen_path.glob("_944DE083*"):
+            try:
+                if p.is_file():
+                    p.unlink()
+                elif p.is_dir():
+                    shutil.rmtree(p)
+            except Exception:
+                pass
+        # also clear __pycache__
+        for p in gen_path.glob("__pycache__/_944DE083*"):
+            try:
+                p.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _import_uia():
+    """Import UIAutomationClient with stale-cache recovery."""
+    try:
+        from comtypes.gen import UIAutomationClient as _uia
+        return _uia
+    except ImportError as exc:
+        if "Typelib different than module" in str(exc):
+            _clear_comtypes_gen_cache()
+            try:
+                import comtypes.client as _cc
+                _cc.GetModule("UIAutomationCore.dll")
+                from comtypes.gen import UIAutomationClient as _uia2
+                return _uia2
+            except Exception:
+                raise exc
+        raise
+
+
 class _UIADriver:
     """Real comtypes-backed UIA layer; tests substitute a fake."""
 
     def _session(self):
         import comtypes.client
-        comtypes.client.GetModule("UIAutomationCore.dll")
-        from comtypes.gen import UIAutomationClient as uia
-        return comtypes.client.CreateObject(uia.CUIAutomation).QueryInterface(uia.IUIAutomation)
+        try:
+            comtypes.client.GetModule("UIAutomationCore.dll")
+            from comtypes.gen import UIAutomationClient as uia
+            return comtypes.client.CreateObject(uia.CUIAutomation).QueryInterface(uia.IUIAutomation)
+        except ImportError as exc:
+            if "Typelib different than module" in str(exc):
+                _clear_comtypes_gen_cache()
+                try:
+                    comtypes.client.GetModule("UIAutomationCore.dll")
+                    from comtypes.gen import UIAutomationClient as uia2
+                    return comtypes.client.CreateObject(uia2.CUIAutomation).QueryInterface(uia2.IUIAutomation)
+                except Exception:
+                    raise exc
+            raise
 
     def list_windows(self) -> List[Dict[str, Any]]:
-        from comtypes.gen import UIAutomationClient as _uia
+        _uia = _import_uia()
         uia = self._session()
         root = uia.GetRootElement()
         wcond = uia.CreatePropertyCondition(_uia.UIA_ControlTypePropertyId, _uia.UIA_WindowControlTypeId)
@@ -340,7 +397,7 @@ class _UIADriver:
         return windows
 
     def observe(self, window_title: str, max_depth: int, max_elements: int) -> Dict[str, Any]:
-        from comtypes.gen import UIAutomationClient as _uia
+        _uia = _import_uia()
         uia = self._session()
         root = uia.GetRootElement()
         element = self._find_window(uia, root, window_title)
@@ -353,7 +410,7 @@ class _UIADriver:
         return identity
 
     def _find_window(self, uia, root, title: str):
-        from comtypes.gen import UIAutomationClient as _uia
+        _uia = _import_uia()
         import re
         exact = uia.CreatePropertyCondition(_uia.UIA_NamePropertyId, title)
         # TreeScope_Descendants (4): search top-level and modal/child windows.
@@ -415,7 +472,7 @@ class _UIADriver:
         return None
 
     def _window_identity(self, uia, element) -> Dict[str, Any]:
-        from comtypes.gen import UIAutomationClient as _uia
+        _uia = _import_uia()
         runtime_ids = []
         try:
             rid = element.GetRuntimeId()
@@ -438,7 +495,7 @@ class _UIADriver:
         }
 
     def _build_tree(self, uia, element, depth: int, max_depth: int, max_elements: int, count: int) -> Dict[str, Any]:
-        from comtypes.gen import UIAutomationClient as _uia
+        _uia = _import_uia()
         if depth > max_depth or count >= max_elements:
             return {"name": "...", "truncated": True}
         count += 1
@@ -481,7 +538,7 @@ class _UIADriver:
             return None
 
     def focus(self, window_title: str) -> Dict[str, Any]:
-        from comtypes.gen import UIAutomationClient as _uia
+        _uia = _import_uia()
         uia = self._session()
         root = uia.GetRootElement()
         element = self._find_window(uia, root, window_title)
@@ -506,7 +563,7 @@ class _UIADriver:
         return {"ok": True, "window": identity}
 
     def find_element(self, window_title: str, description: str, pattern_type: str = "any") -> Dict[str, Any]:
-        from comtypes.gen import UIAutomationClient as _uia
+        _uia = _import_uia()
         uia = self._session()
         root = uia.GetRootElement()
         window = self._find_window(uia, root, window_title)
@@ -526,7 +583,7 @@ class _UIADriver:
         return {"ok": True, "element": identity, "window": self._window_identity(uia, window)}
 
     def _find_element_recursive(self, uia, element, needle: str, depth: int, count: int, pattern_type: str = "any"):
-        from comtypes.gen import UIAutomationClient as _uia
+        _uia = _import_uia()
         if depth > _MAX_UI_TREE_DEPTH or count >= _MAX_UI_ELEMENTS:
             return None
         name = (element.CurrentName or "").strip().lower()
@@ -577,7 +634,7 @@ class _UIADriver:
             return (0, 0, 0, 0)
 
     def invoke(self, window_title: str, description: str) -> Dict[str, Any]:
-        from comtypes.gen import UIAutomationClient as _uia
+        _uia = _import_uia()
         found = self.find_element(window_title, description, pattern_type="invoke")
         if not found["ok"]:
             return found
@@ -627,7 +684,7 @@ class _UIADriver:
                     "message": f"Element '{description}' invocation failed: {exc}"}
 
     def set_value(self, window_title: str, description: str, value: str) -> Dict[str, Any]:
-        from comtypes.gen import UIAutomationClient as _uia
+        _uia = _import_uia()
         found = self.find_element(window_title, description, pattern_type="value")
         if not found["ok"]:
             return found
@@ -657,7 +714,7 @@ class _UIADriver:
         identity = self.observe(window_title, 1, 1)
         if not identity.get("found"):
             return {"ok": False, "code": "WINDOW_NOT_FOUND", "message": f"Window '{window_title}' not found"}
-        from comtypes.gen import UIAutomationClient as _uia
+        _uia = _import_uia()
         uia = self._session()
         root = uia.GetRootElement()
         window = self._find_window(uia, root, window_title)

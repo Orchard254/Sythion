@@ -37,7 +37,9 @@ from sqlalchemy.orm import sessionmaker
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-OPEN_STEP_STATUSES = {"pending", "in_progress", "blocked"}
+# PHASE 3.5: canonical open-step set (superset of the legacy trio) so step
+# selection/remaining counts understand plan-backed states.
+OPEN_STEP_STATUSES = {"pending", "ready", "running", "in_progress", "blocked"}
 ACTIVE_OBJECTIVE_STATUSES = {"active", "paused"}
 
 
@@ -79,6 +81,47 @@ def _next_step_order(session, objective_id: str) -> int:
         .first()
     )
     return (latest.step_order + 1) if latest else 1
+
+
+def _plan_step_evidence_error(session, step: PlanStep) -> dict[str, str] | None:
+    """Deterministic evidence gate for plan-backed steps.
+
+    Returns an error dict when runtime evidence does NOT permit completion,
+    or None when the associated task completed cleanly.
+    """
+    from backend.api.schemas import TaskState
+    from backend.models.database import Task
+    from backend.runtime.events import DbEventLedger
+    from backend.services.execution_components import CompletionVerifier
+
+    task_id = step.evidence_task_id or step.linked_task_id
+    if not task_id:
+        return {
+            "code": "STEP_EVIDENCE_REQUIRED",
+            "message": (
+                "This plan step has no execution task yet. Execute the step "
+                "(a verified runtime task) before declaring it complete."
+            ),
+        }
+    task = session.query(Task).filter_by(id=task_id).first()
+    if task is None or task.state != TaskState.COMPLETED.value:
+        return {
+            "code": "STEP_EVIDENCE_REQUIRED",
+            "message": (
+                f"Step evidence task '{task_id}' is "
+                f"{getattr(task, 'state', 'missing')}, not completed. "
+                "Complete the work with tools first; the step then completes "
+                "automatically from runtime evidence."
+            ),
+        }
+    error = CompletionVerifier(session, DbEventLedger(session).event_history) \
+        .precondition_error(task_id)
+    if error:
+        return {
+            "code": "STEP_EVIDENCE_UNVERIFIED",
+            "message": f"Runtime evidence does not permit completion: {error}",
+        }
+    return None
 
 
 def _format_plan(objective: Objective, steps: list[PlanStep]) -> dict[str, Any]:
@@ -217,47 +260,47 @@ class ObjectiveCreateTool(BaseTool[ObjectiveCreateInput]):
 
     async def execute(self, input_data: ObjectiveCreateInput) -> ToolOutput:
         try:
+            # PHASE 3.5 SUNSET: model-created objectives now go through the
+            # canonical GoalManager + Planner (plan-backed from birth). The
+            # legacy raw-construction path is retired for creation; statuses
+            # use the canonical vocabulary (ready/blocked).
             db_mgr = get_db_manager()
             with db_mgr.get_session() as session:
-                now = datetime.utcnow()
-                objective = Objective(
-                    id=str(uuid.uuid4()),
-                    title=_trim(input_data.title.strip(), 90),
-                    purpose=_trim(input_data.purpose, 300) if input_data.purpose else None,
-                    status="active",
+                from backend.services.goal_manager import GoalManager
+                from backend.services.planner import CandidateStepModel, Planner
+
+                manager = GoalManager(session)
+                goal = manager.create_goal(
+                    title=input_data.title.strip(),
+                    purpose=input_data.purpose,
                     priority=input_data.priority,
-                    current_summary="Objective created by model planning.",
-                    created_at=now,
-                    updated_at=now,
                 )
-                session.add(objective)
-                session.flush()
 
-                steps_created = []
-                for idx, description in enumerate(input_data.steps, start=1):
-                    status = "in_progress" if idx == 1 else "pending"
-                    step = PlanStep(
-                        objective_id=objective.id,
-                        step_order=idx,
-                        description=_trim(description.strip(), 200),
-                        status=status,
-                        created_at=now,
-                        updated_at=now,
+                descriptions = [s.strip() for s in input_data.steps]
+                candidates = [
+                    CandidateStepModel(
+                        key=f"step_{idx}",
+                        description=desc,
+                        depends_on=[f"step_{idx - 1}"] if idx > 1 else [],
                     )
-                    session.add(step)
-                    steps_created.append(step)
+                    for idx, desc in enumerate(descriptions, start=1)
+                ]
+                plan = Planner(session).create_plan(
+                    goal.id,
+                    candidates,
+                    source="model",
+                    reason="created via objective_create tool",
+                )
+                steps_created = Planner(session).plan_steps(plan.id)
 
-                session.commit()
-                session.refresh(objective)
-                for s in steps_created:
-                    session.refresh(s)
+                session.refresh(goal)
 
                 # Verify the objective and plan steps persisted
                 try:
                     engine = session.bind
                     SessionLocal = sessionmaker(bind=engine)
                     with SessionLocal() as verify_session:
-                        obj_verify = verify_session.query(Objective).filter_by(id=objective.id).first()
+                        obj_verify = verify_session.query(Objective).filter_by(id=goal.id).first()
                         if obj_verify is None:
                             import logging
                             logging.getLogger(__name__).warning("Verification failed: Objective not found for create")
@@ -266,10 +309,10 @@ class ObjectiveCreateTool(BaseTool[ObjectiveCreateInput]):
                                 error={"code": "VERIFICATION_FAILED", "message": "Objective not persisted"},
                                 duration_ms=0,
                             )
-                        steps_verify = verify_session.query(PlanStep).filter_by(objective_id=objective.id).all()
+                        steps_verify = verify_session.query(PlanStep).filter_by(objective_id=goal.id).all()
                         if not steps_verify:
                             import logging
-                            logging.getLogger(__name__).warning("Verification failed: No plan steps for objective %s", objective.id)
+                            logging.getLogger(__name__).warning("Verification failed: No plan steps for objective %s", goal.id)
                             return ToolOutput(
                                 success=False,
                                 error={"code": "VERIFICATION_FAILED", "message": "Plan steps not persisted"},
@@ -284,17 +327,17 @@ class ObjectiveCreateTool(BaseTool[ObjectiveCreateInput]):
                         duration_ms=0,
                     )
 
-                plan = _format_plan(objective, steps_created)
+                plan_data = _format_plan(goal, steps_created)
                 summary = (
-                    f"Created objective '{objective.title}' "
-                    f"({len(steps_created)} steps). "
-                    f"Step 1 is now in_progress: {steps_created[0].description}"
+                    f"Created objective '{goal.title}' "
+                    f"({len(steps_created)} steps, canonical plan v{plan.version}). "
+                    f"First eligible step: {steps_created[0].description}"
                 )
                 return ToolOutput(
                     success=True,
-                    data=plan,
+                    data=plan_data,
                     model_summary=summary,
-                    evidence={"objective_id": objective.id},
+                    evidence={"objective_id": goal.id, "plan_id": plan.id},
                 )
         except Exception as exc:
             return ToolOutput(
@@ -466,45 +509,102 @@ class ObjectiveCompleteStepTool(BaseTool[ObjectiveCompleteStepInput]):
                             duration_ms=0,
                         )
 
+                # PHASE 2 EVIDENCE GATE: a plan-backed step may only be
+                # completed from runtime evidence. The model's claim alone is
+                # never sufficient — the step's execution task must be
+                # terminal-completed and free of completion precondition
+                # errors (uncertain actions, unverified mutations).
+                if getattr(step, "plan_id", None) is not None:
+                    gate_error = _plan_step_evidence_error(session, step)
+                    if gate_error:
+                        return ToolOutput(
+                            success=False,
+                            error=gate_error,
+                            duration_ms=0,
+                        )
+
                 step.status = "completed"
                 step.result_summary = _trim(input_data.result_summary, 500)
                 step.blocker_reason = None
                 step.updated_at = now
                 session.flush()  # ensure completed status is visible to the count query below
 
-                # Auto-advance the next pending step to in_progress
-                next_step = (
-                    session.query(PlanStep)
-                    .filter(
-                        PlanStep.objective_id == objective.id,
-                        PlanStep.status == "pending",
-                    )
-                    .order_by(PlanStep.step_order.asc(), PlanStep.id.asc())
-                    .first()
-                )
-                if next_step:
-                    next_step.status = "in_progress"
-                    next_step.updated_at = now
+                # PHASE 3.5: advancement/completion for plan-backed steps goes
+                # through the canonical Planner + GoalManager.
+                if getattr(step, "plan_id", None) is not None:
+                    from backend.services.planner import Planner as _Planner
 
-                # Check if all steps are done → mark objective completed
-                remaining_open = (
-                    session.query(PlanStep)
-                    .filter(
-                        PlanStep.objective_id == objective.id,
-                        PlanStep.status.in_(tuple(OPEN_STEP_STATUSES)),
+                    planner = _Planner(session)
+                    planner.refresh_readiness(step.plan_id)
+                    next_step = planner.select_next_step(objective.id)
+
+                    remaining_open = (
+                        session.query(PlanStep)
+                        .filter(
+                            PlanStep.objective_id == objective.id,
+                            PlanStep.status.in_(tuple(OPEN_STEP_STATUSES | {"failed"})),
+                        )
+                        .count()
                     )
-                    .count()
-                )
-                if remaining_open == 0:
-                    objective.status = "completed"
-                    objective.current_summary = f"All steps completed. Last result: {_trim(input_data.result_summary, 200)}"
+                    objective_status = objective.status
+                    if remaining_open == 0:
+                        from backend.services.goal_manager import GoalManager
+
+                        try:
+                            manager = GoalManager(session)
+                            manager.complete_goal(
+                                objective.id,
+                                note=f"All steps completed. Last result: {_trim(input_data.result_summary, 200)}",
+                            )
+                            objective_status = "completed"
+                        except ValueError as exc:
+                            # Criteria unverified or similar: goal stays as-is,
+                            # deterministically ineligible.
+                            objective_status = objective.status
+                            objective.current_summary = f"All steps complete; awaiting eligibility: {_trim(str(exc), 150)}"
+                    else:
+                        objective.current_summary = (
+                            f"Step {step.step_order} completed. "
+                            + (f"Now working on step {next_step.step_order}: {next_step.description}" if next_step else "No further steps pending.")
+                        )
+                    objective.updated_at = now
+                    session.commit()
+                    next_order = next_step.step_order if next_step else None
                 else:
-                    objective.current_summary = (
-                        f"Step {step.step_order} completed. "
-                        + (f"Now working on step {next_step.step_order}: {next_step.description}" if next_step else "No further steps pending.")
+                    # Legacy auto-advance the next pending step to in_progress
+                    next_step = (
+                        session.query(PlanStep)
+                        .filter(
+                            PlanStep.objective_id == objective.id,
+                            PlanStep.status == "pending",
+                        )
+                        .order_by(PlanStep.step_order.asc(), PlanStep.id.asc())
+                        .first()
                     )
-                objective.updated_at = now
-                session.commit()
+                    if next_step:
+                        next_step.status = "in_progress"
+                        next_step.updated_at = now
+
+                    # Check if all steps are done → mark objective completed
+                    remaining_open = (
+                        session.query(PlanStep)
+                        .filter(
+                            PlanStep.objective_id == objective.id,
+                            PlanStep.status.in_(tuple(OPEN_STEP_STATUSES)),
+                        )
+                        .count()
+                    )
+                    if remaining_open == 0:
+                        objective.status = "completed"
+                        objective.current_summary = f"All steps completed. Last result: {_trim(input_data.result_summary, 200)}"
+                    else:
+                        objective.current_summary = (
+                            f"Step {step.step_order} completed. "
+                            + (f"Now working on step {next_step.step_order}: {next_step.description}" if next_step else "No further steps pending.")
+                        )
+                    objective.updated_at = now
+                    session.commit()
+                    next_order = next_step.step_order if next_step else None
 
                 # Verify the step completion and objective status persisted
                 try:
@@ -547,8 +647,8 @@ class ObjectiveCompleteStepTool(BaseTool[ObjectiveCompleteStepInput]):
                     data={
                         "objective_id": objective.id,
                         "completed_step": step.step_order,
-                        "next_step": next_step.step_order if next_step else None,
-                        "objective_status": objective.status,
+                        "next_step": next_order,
+                        "objective_status": objective_status if getattr(step, "plan_id", None) is not None else objective.status,
                     },
                     model_summary=summary,
                 )

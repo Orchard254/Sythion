@@ -143,8 +143,8 @@ async def test_budget_exhaustion_fails_without_further_actions(db_session, task_
     await task_runner.transition_state(task.id, TaskState.RUNNING, "task.execution_started", {})
 
     loop = TaskExecutionLoop(db_session, task_runner, tool_executor=None)
-    loop.MAX_ACTIONS_PER_TASK = 3
-
+    # Single action-budget authority: settings.max_actions_per_task, read
+    # through TaskBudget.max_actions when the loop starts.
     decision_calls = {"n": 0}
 
     async def _always_tool(*args, **kwargs):
@@ -157,7 +157,10 @@ async def test_budget_exhaustion_fails_without_further_actions(db_session, task_
     loop.model_engine.make_decision = _always_tool
     loop._execute_decision = _tool
 
-    await loop.execute_task(task.id)
+    from backend.core.config import settings as _settings
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_settings, "max_actions_per_task", 3)
+        await loop.execute_task(task.id)
 
     task = await task_runner.get_task(task.id)
     assert task.state == TaskState.FAILED.value

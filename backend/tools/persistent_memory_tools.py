@@ -1,4 +1,4 @@
-"""
+﻿"""
 Persistent memory-entry and memory-edge tools for Sythion.
 
 This module owns durable user memory access over the assistant's own stores:
@@ -185,7 +185,7 @@ class MemoryStoreTool(BaseTool[MemoryStoreInput]):
         try:
             db_mgr = get_db_manager()
             with db_mgr.get_session() as session:
-                existing = session.query(MemoryEntry).filter_by(key=key).first()
+                existing = session.query(MemoryEntry).filter_by(key=key, status="ACTIVE").first()
                 cat = input_data.category or "user_preference"
                 if existing:
                     existing.value = input_data.value
@@ -224,7 +224,7 @@ class MemoryStoreTool(BaseTool[MemoryStoreInput]):
             key = output.data.get("key") or (input_data.key or "").strip()
             db_mgr = get_db_manager()
             with db_mgr.get_session() as session:
-                row = session.query(MemoryEntry).filter_by(key=key).first()
+                row = session.query(MemoryEntry).filter_by(key=key, status="ACTIVE").first()
                 return (
                     row is not None
                     and row.value == output.data.get("value")
@@ -324,7 +324,7 @@ class MemoryForgetTool(BaseTool[MemoryForgetInput]):
         try:
             db_mgr = get_db_manager()
             with db_mgr.get_session() as session:
-                entry = session.query(MemoryEntry).filter_by(key=input_data.key).first()
+                entry = session.query(MemoryEntry).filter_by(key=input_data.key, status="ACTIVE").first()
                 if not entry:
                     return ToolOutput(
                         success=False,
@@ -354,7 +354,7 @@ class MemoryForgetTool(BaseTool[MemoryForgetInput]):
             key = output.data.get("key") or input_data.key
             db_mgr = get_db_manager()
             with db_mgr.get_session() as session:
-                row = session.query(MemoryEntry).filter_by(key=key).first()
+                row = session.query(MemoryEntry).filter_by(key=key, status="ACTIVE").first()
                 return row is None
         except Exception:
             return False
@@ -503,7 +503,7 @@ class MemoryRecallRelatedTool(BaseTool[MemoryRecallRelatedInput]):
         try:
             db_mgr = get_db_manager()
             with db_mgr.get_session() as session:
-                entry = session.query(MemoryEntry).filter_by(key=input_data.key).first()
+                entry = session.query(MemoryEntry).filter_by(key=input_data.key, status="ACTIVE").first()
                 resolved_key = input_data.key
                 if not entry:
                     tokens = _query_tokens(input_data.key)
@@ -804,3 +804,4 @@ class MemoryExportTool(BaseTool[MemoryExportInput]):
             "requires_confirmation": False,
             "mutating": False,
         }
+
