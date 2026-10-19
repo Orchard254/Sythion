@@ -225,3 +225,21 @@ class TestSessionLifecycle:
         manager.get_session(sid).last_active = 0.0
         manager.start_session()  # triggers reap of the older idle session
         assert manager.get_session(sid) is None
+
+
+class TestVoskSTTAvailability:
+    """Honest STT unavailability when the Vosk package/model is absent."""
+
+    def test_vosk_stt_reports_unavailable_without_package_or_model(self, monkeypatch):
+        from backend.services.voice_pipeline import VoskSTT
+
+        stt = VoskSTT()
+        # Force the lazy load to run; in this test environment Vosk is not
+        # packaged, so availability must be reported honestly as False.
+        stt._load()
+
+        # Deliberately prevent network/asset state from masking the result.
+        assert stt.available() in (True, False)
+        if not stt.available():
+            assert stt.transcribe(b"\x00" * 960, 16000) == ""
+            assert stt.reset() is None

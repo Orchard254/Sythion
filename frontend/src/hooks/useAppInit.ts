@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAppStore } from '../store/appStore';
 import { healthService, taskService, configureBridge } from '../services/api';
 import { resolveBridgeConfig, isTauri } from '../services/bridge';
@@ -28,45 +28,53 @@ async function initBridge(): Promise<void> {
 }
 
 export function useAppInit() {
-  const { 
-    setHealthStatus, 
-    setConnected, 
-    setError, 
-    setTasks,
-    setLoading 
-  } = useAppStore();
+  const setHealthStatus = useAppStore((s) => s.setHealthStatus);
+  const setConnected = useAppStore((s) => s.setConnected);
+  const setError = useAppStore((s) => s.setError);
+  const setTasks = useAppStore((s) => s.setTasks);
+  const setLoading = useAppStore((s) => s.setLoading);
+  const setDataMode = useAppStore((s) => s.setDataMode);
 
   const [isInitialized, setIsInitialized] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+
+  const connect = useCallback(async () => {
+    setLoading(true);
+    try {
+      await initBridge();
+
+      const health = await healthService.check();
+      setHealthStatus(health);
+      setConnected(true);
+      setError(null);
+      // A deep-linked ?preview=1 is honoured only while no backend answers.
+      if (typeof window === 'undefined' || new URLSearchParams(window.location.search).get('preview') !== '1') {
+        setDataMode('live');
+      }
+
+      const tasks = await taskService.list();
+      setTasks(tasks);
+
+      setIsInitialized(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to connect to backend');
+      setConnected(false);
+      // Mark initialised so the UI can offer the offline / preview paths
+      // instead of an indefinite spinner.
+      setIsInitialized(true);
+    } finally {
+      setLoading(false);
+    }
+  }, [setConnected, setDataMode, setError, setHealthStatus, setLoading, setTasks]);
 
   useEffect(() => {
-    const initializeApp = async () => {
-      setLoading(true);
-      
-      try {
-        await initBridge();
+    void connect();
+  }, [connect, attempt]);
 
-        // Check health
-        const health = await healthService.check();
-        setHealthStatus(health);
-        setConnected(true);
-        
-        // Load tasks
-        const tasks = await taskService.list();
-        setTasks(tasks);
-        
-        setIsInitialized(true);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to connect to backend');
-        setConnected(false);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    initializeApp();
-    // Mount-once initialization; the zustand setters are stable references.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const retry = useCallback(() => {
+    setIsInitialized(false);
+    setAttempt((n) => n + 1);
   }, []);
 
-  return { isInitialized };
+  return { isInitialized, retry };
 }

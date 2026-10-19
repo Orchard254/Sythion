@@ -1,7 +1,37 @@
+import { useEffect, useMemo, useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Icon, SythionMark } from './components/icons';
+import { Sidebar } from './components/Sidebar';
+import { TopBar } from './components/TopBar';
+import { Button, Notice, Panel, DemoTag } from './components/ui';
+import { AssistantScreen } from './screens/Assistant';
+import { AutomationsScreen } from './screens/Automations';
+import { CommunicationsScreen } from './screens/Communications';
+import { DevicesScreen } from './screens/Devices';
+import { LifeManagementScreen } from './screens/LifeManagement';
+import { MemoryScreen } from './screens/Memory';
+import { CompanionPreviewScreen } from './screens/CompanionPreview';
+import { CompanionSurface } from './components/CompanionSurface';
+import { GoalsScreen } from './screens/Goals';
+import { isCompanionSurface } from './lib/surface';
+import { OperationsScreen } from './screens/Operations';
+import { SecurityScreen } from './screens/Security';
+import { SettingsScreen } from './screens/Settings';
+import { SystemScreen } from './screens/SystemIntegrations';
 import { useAppInit } from './hooks/useAppInit';
-import { Dashboard } from './components/Dashboard';
 import { useAppStore } from './store/appStore';
+import { assessRuntimeHealth } from './lib/runtimeHealth';
+import { useNavStore } from './store/navStore';
+import { routeById, type RouteId } from './lib/routes';
+import {
+  useAgent,
+  useAgentHealth,
+  useHealth,
+  useSkillProposals,
+  useTasks,
+  useToolProposals,
+  useVersion,
+} from './hooks/useBackend';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -12,69 +42,279 @@ const queryClient = new QueryClient({
   },
 });
 
+function ScreenFor({ route }: { route: RouteId }) {
+  switch (route) {
+    case 'assistant':
+      return <AssistantScreen />;
+    case 'missions':
+      // Canonical user-facing term is Goals. `missions` is retained as the route
+      // id so existing deep links keep resolving (see ROUTE_ALIASES).
+      return <GoalsScreen />;
+    case 'companion-preview':
+      // Development-only. Not reachable from the navigation.
+      return <CompanionPreviewScreen />;
+    case 'life':
+      return <LifeManagementScreen />;
+    case 'devices':
+      return <DevicesScreen />;
+    case 'comms':
+      return <CommunicationsScreen />;
+    case 'memory':
+      return <MemoryScreen />;
+    case 'automations':
+      return <AutomationsScreen />;
+    case 'security':
+      return <SecurityScreen />;
+    case 'system':
+      return <SystemScreen />;
+    case 'settings':
+      return <SettingsScreen />;
+    case 'overview':
+    default:
+      // Operations is the Control Center landing view.
+      return <OperationsScreen />;
+  }
+}
+
 function AppContent() {
-  const { isInitialized } = useAppInit();
-  const { isConnected, error } = useAppStore();
+  const { isInitialized, retry } = useAppInit();
+  const isConnected = useAppStore((s) => s.isConnected);
+  const error = useAppStore((s) => s.error);
+  const dataMode = useAppStore((s) => s.dataMode);
+  const setDataMode = useAppStore((s) => s.setDataMode);
+  const notify = useAppStore((s) => s.notify);
+
+  const route = useNavStore((s) => s.route);
+  const setRoute = useNavStore((s) => s.setRoute);
+
+  const health = useHealth();
+  const runtimeHealth = useMemo(
+    () =>
+      assessRuntimeHealth({
+        isConnected,
+        isFetching: health.isFetching,
+        isError: health.isError,
+        hasData: health.data !== undefined,
+        dataUpdatedAt: health.dataUpdatedAt,
+        now: Date.now(),
+      }),
+    [isConnected, health.isFetching, health.isError, health.data, health.dataUpdatedAt]
+  );
+  const agent = useAgent();
+  const agentHealth = useAgentHealth();
+  const version = useVersion();
+  const tasks = useTasks();
+  const skillProposals = useSkillProposals();
+  const toolProposals = useToolProposals();
+
+  const [seenTaskStates, setSeenTaskStates] = useState<Record<string, string>>({});
+
+  // Raise an in-app notification the first time a task reaches an interesting
+  // terminal state. Derived from polled backend state, not fabricated.
+  useEffect(() => {
+    if (dataMode !== 'live') return;
+    const interesting = new Set(['failed', 'waiting_for_user', 'interrupted']);
+    const next = { ...seenTaskStates };
+    for (const t of tasks.data ?? []) {
+      const prev = seenTaskStates[t.id];
+      if (prev !== t.state && interesting.has(t.state)) {
+        next[t.id] = t.state;
+        notify({
+          id: `task-${t.id}-${t.state}`,
+          tone: t.state === 'failed' ? 'danger' : 'warn',
+          title: `Task ${t.state === 'failed' ? 'failed' : 'needs your input'}`,
+          body: t.terminal_reason ?? t.pending_question ?? t.normalized_goal ?? t.original_request,
+          route: 'assistant',
+        });
+      } else if (prev !== t.state) {
+        next[t.id] = t.state;
+      }
+    }
+    if (Object.keys(next).length !== Object.keys(seenTaskStates).length) {
+      setSeenTaskStates(next);
+    }
+  }, [tasks.data, dataMode, notify, seenTaskStates]);
+
+  const attentionCount = useMemo(() => {
+    const skillPending = (skillProposals.data ?? []).filter((p) => (p.status ?? '').includes('pending')).length;
+    const toolPending = (toolProposals.data ?? []).filter((p) => p.status === 'pending_review').length;
+    const held = (tasks.data ?? []).filter((t) => t.state === 'interrupted').length;
+    return skillPending + toolPending + held;
+  }, [skillProposals.data, toolProposals.data, tasks.data]);
 
   if (!isInitialized) {
     return (
-      <div style={styles.loadingContainer}>
-        <div style={styles.loadingSpinner}>Loading...</div>
+      <div className="shell" style={{ gridTemplateColumns: '1fr', gridTemplateAreas: '"boot"' }}>
+        <div className="shell__main" style={{ gridArea: 'boot', placeItems: 'center' }}>
+          <div className="stack" style={{ alignItems: 'center', gap: 14, maxWidth: 340 }}>
+            <SythionMark size={40} />
+            <div style={{ textAlign: 'center' }}>
+              <div className="t-title">Connecting to Sythion</div>
+              <div className="t-muted">Resolving the local runtime bridge…</div>
+            </div>
+            <div className="bar bar--indeterminate" style={{ maxWidth: 200 }}>
+              <div className="bar__fill" />
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
 
-  if (!isConnected) {
+  if (!isConnected && dataMode !== 'preview') {
     return (
-      <div style={styles.errorContainer}>
-        <h2>Connection Error</h2>
-        <p>{error || 'Unable to connect to Sythion (Synth) backend'}</p>
-        <p style={styles.errorHint}>
-          Restart the Sythion (Synth) app, or in development re-run start_sythion.cmd.
-        </p>
+      <div className="shell" style={{ gridTemplateColumns: '1fr', gridTemplateAreas: '"boot"' }}>
+        <div className="shell__main" style={{ gridArea: 'boot', overflowY: 'auto', padding: 40 }}>
+          <div className="stack" style={{ maxWidth: 560, margin: '0 auto' }}>
+            <div className="row" style={{ gap: 12 }}>
+              <SythionMark size={34} />
+              <div>
+                <h1 className="screen-head__title" style={{ fontSize: 19 }}>
+                  Sythion backend unreachable
+                </h1>
+                <p className="t-muted" style={{ margin: '3px 0 0' }}>
+                  The interface needs the local FastAPI runtime to show live state.
+                </p>
+              </div>
+            </div>
+
+            <Notice tone="danger" icon="alert">
+              <span>{error || 'No response from the Sythion sidecar.'}</span>
+            </Notice>
+
+            <Panel title="What you can do" icon="info">
+              <div className="stack stack--tight">
+                <span className="t-muted">
+                  <strong className="t-body" style={{ color: 'var(--text-0)' }}>
+                    Start the backend
+                  </strong>{' '}
+                  — run <span className="t-mono">start_sythion.cmd</span> from the project root, or{' '}
+                  <span className="t-mono">python -m uvicorn backend.main:app</span>, then retry.
+                </span>
+                <span className="t-muted">
+                  <strong className="t-body" style={{ color: 'var(--text-0)' }}>
+                    Retry the connection
+                  </strong>{' '}
+                  — re-resolves the bridge handshake and re-checks health.
+                </span>
+                <span className="t-muted">
+                  <strong className="t-body" style={{ color: 'var(--text-0)' }}>
+                    Open the interface in preview mode
+                  </strong> — every screen renders with clearly labelled demonstration data so the layout and
+                  navigation can be inspected. No command submitted here will do anything.
+                </span>
+              </div>
+              <div className="row" style={{ gap: 8, marginTop: 14 }}>
+                <Button variant="primary" icon="refresh" onClick={() => void retry()}>
+                  Retry connection
+                </Button>
+                <Button
+                  variant="subtle"
+                  icon="eye"
+                  onClick={() => {
+                    setDataMode('preview');
+                    notify({
+                      tone: 'warn',
+                      title: 'Preview mode',
+                      body: 'Demonstration data. Nothing here is read from a backend.',
+                    });
+                  }}
+                >
+                  Open preview mode
+                </Button>
+              </div>
+            </Panel>
+          </div>
+        </div>
       </div>
     );
   }
 
-  return <Dashboard />;
+  const def = routeById(route);
+
+  return (
+    <div className="shell">
+      <Sidebar
+        route={route}
+        onNavigate={setRoute}
+        pendingApprovals={attentionCount}
+        agent={agent.data}
+        overallHealth={agentHealth.data?.overall}
+        connected={isConnected}
+        runtimeState={runtimeHealth.state}
+        runtimeAgeMs={runtimeHealth.ageMs}
+        preview={dataMode === 'preview'}
+        version={version.data?.version ?? health.data?.version}
+        onOpenSettings={() => setRoute('settings')}
+      />
+
+      <TopBar
+        route={def}
+        origin={dataMode === 'preview' ? 'demo' : 'live'}
+        connected={isConnected}
+        runtimeState={runtimeHealth.state}
+        attentionCount={attentionCount}
+        onNavigate={setRoute}
+      />
+
+      <main className="shell__main">
+        {dataMode === 'preview' && (
+          <div className="banner">
+            <Icon name="alert" size={14} />
+            <strong>Preview mode.</strong>
+            <span className="banner__text">
+              Panels marked <DemoTag compact /> show demonstration data. No backend is attached and nothing on these
+              screens will run.
+            </span>
+            <span className="banner__spacer" />
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setDataMode('live');
+                void retry();
+              }}
+            >
+              Try live connection
+            </Button>
+          </div>
+        )}
+        <ScreenFor route={route} />
+      </main>
+    </div>
+  );
 }
 
 function App() {
+  // The Companion overlay is the same bundle mounted without the Control Center
+  // chrome. This branch must come BEFORE AppContent, because the boot and
+  // offline shells paint an opaque full-screen background that a transparent
+  // desktop window cannot tolerate.
+  const companion = isCompanionSurface();
+
   return (
     <QueryClientProvider client={queryClient}>
-      <AppContent />
+      {companion ? (
+        <>
+          <CompanionBridge />
+          <CompanionSurface />
+        </>
+      ) : (
+        <AppContent />
+      )}
     </QueryClientProvider>
   );
 }
 
-export default App;
+/**
+ * Runs the same bridge bootstrap as the Control Center, but its result never
+ * replaces the overlay. If the sidecar is unavailable the capsule reports an
+ * honest error on submission rather than covering the desktop with a
+ * connection screen.
+ */
+function CompanionBridge() {
+  useAppInit();
+  return null;
+}
 
-const styles: { [key: string]: React.CSSProperties } = {
-  loadingContainer: {
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    height: '100vh',
-    backgroundColor: '#1a1a1a',
-    color: '#fff',
-  },
-  loadingSpinner: {
-    fontSize: '18px',
-  },
-  errorContainer: {
-    display: 'flex',
-    flexDirection: 'column',
-    justifyContent: 'center',
-    alignItems: 'center',
-    height: '100vh',
-    backgroundColor: '#1a1a1a',
-    color: '#fff',
-    padding: '24px',
-    textAlign: 'center',
-  },
-  errorHint: {
-    marginTop: '16px',
-    color: '#888',
-    fontSize: '14px',
-  },
-};
+export default App;

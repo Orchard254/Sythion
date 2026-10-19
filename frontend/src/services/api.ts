@@ -1,5 +1,32 @@
 import axios from 'axios';
-import type { Task, HealthStatus, ToolInfo, TaskEvent, VoiceAssets } from '../types';
+import type {
+  AgentActivity,
+  AgentHealthReport,
+  AgentIdentity,
+  AgentRegistry,
+  AppSettings,
+  BackgroundPolicy,
+  Capability,
+  Delegation,
+  GoalSummary,
+  HealthStatus,
+  MemoryEdge,
+  MemoryReport,
+  Objective,
+  PurgeReceipt,
+  SecretStatusResponse,
+  SecretsList,
+  SkillProposal,
+  SkillSummary,
+  Task,
+  TaskEvent,
+  ToolInfo,
+  ToolProposal,
+  VersionInfo,
+  VoiceAssets,
+  GoalDetail,
+  GoalPlanVersion,
+} from '../types';
 
 const API_BASE_URL = '/api/v1';
 
@@ -56,6 +83,11 @@ export const healthService = {
     const response = await apiClient.get('/health');
     return response.data;
   },
+
+  version: async (): Promise<VersionInfo> => {
+    const response = await apiClient.get('/version');
+    return response.data;
+  },
 };
 
 export const taskService = {
@@ -95,6 +127,203 @@ export const taskService = {
     return response.data.events || [];
   },
 };
+
+/* --- Objectives and plans ------------------------------------------------ */
+
+export const objectiveService = {
+  list: async (): Promise<Objective[]> => {
+    const response = await apiClient.get('/objectives');
+    return response.data.objectives || [];
+  },
+
+  get: async (objectiveId: string): Promise<Objective> => {
+    const response = await apiClient.get(`/objectives/${objectiveId}`);
+    return response.data;
+  },
+
+  addStep: async (objectiveId: string, description: string): Promise<Objective> => {
+    const response = await apiClient.post(`/objectives/${objectiveId}/steps`, { description });
+    return response.data;
+  },
+
+  updateStep: async (
+    stepId: number,
+    updates: { status?: string; result_summary?: string; blocker_reason?: string }
+  ) => {
+    const response = await apiClient.patch(`/objectives/steps/${stepId}`, updates);
+    return response.data;
+  },
+
+  verifyCriteria: async (objectiveId: string): Promise<Objective> => {
+    const response = await apiClient.post(`/objectives/${objectiveId}/verify-criteria`);
+    return response.data;
+  },
+};
+
+export const goalService = {
+  list: async (): Promise<GoalSummary[]> => {
+    const response = await apiClient.get('/goals');
+    return response.data.goals || [];
+  },
+
+  /** Goal, deterministic progress and the active plan version with its steps. */
+  detail: async (goalId: string): Promise<GoalDetail> => {
+    const response = await apiClient.get(`/goals/${goalId}`);
+    return response.data;
+  },
+
+  /** Plan version history. Replanning is audited, so earlier versions persist. */
+  plans: async (goalId: string): Promise<GoalPlanVersion[]> => {
+    const response = await apiClient.get(`/goals/${goalId}/plans`);
+    return response.data.plans || [];
+  },
+
+  /**
+   * Lifecycle action. The backend accepts exactly pause | resume | abandon and
+   * rejects anything else with 404, so the union is closed on purpose.
+   */
+  lifecycle: async (goalId: string, action: 'pause' | 'resume' | 'abandon'): Promise<GoalDetail> => {
+    const response = await apiClient.post(`/goals/${goalId}/${action}`);
+    return response.data;
+  },
+};
+
+/* --- Agent runtime ------------------------------------------------------- */
+
+export const agentService = {
+  identity: async (): Promise<AgentIdentity> => {
+    const response = await apiClient.get('/agent');
+    return response.data;
+  },
+
+  health: async (includeProvider = false): Promise<AgentHealthReport> => {
+    const response = await apiClient.get('/agent/health', {
+      params: { include_provider: includeProvider },
+    });
+    return response.data;
+  },
+
+  activity: async (limit = 20): Promise<AgentActivity> => {
+    const response = await apiClient.get('/agent/activity', { params: { limit } });
+    return { wakes: response.data.wakes || [], events: response.data.events || [] };
+  },
+
+  backgroundPolicy: async (): Promise<BackgroundPolicy> => {
+    const response = await apiClient.get('/agent/background');
+    return response.data;
+  },
+
+  setBackgroundPolicy: async (enabled: boolean): Promise<BackgroundPolicy> => {
+    const response = await apiClient.put('/agent/background', { enabled });
+    return response.data;
+  },
+
+  pause: async (): Promise<AgentIdentity> => {
+    const response = await apiClient.post('/agent/pause');
+    return response.data;
+  },
+
+  resume: async (): Promise<AgentIdentity> => {
+    const response = await apiClient.post('/agent/resume');
+    return response.data;
+  },
+
+  wake: async (): Promise<unknown> => {
+    const response = await apiClient.post('/agent/wake');
+    return response.data;
+  },
+};
+
+export const agentRegistryService = {
+  list: async (): Promise<AgentRegistry> => {
+    const response = await apiClient.get('/agents');
+    return response.data;
+  },
+
+  delegations: async (limit = 50): Promise<Delegation[]> => {
+    const response = await apiClient.get('/agents/delegations', { params: { limit } });
+    return response.data.delegations || [];
+  },
+};
+
+export const capabilityService = {
+  list: async (): Promise<{ capabilities: Capability[]; consistency_issues: string[] }> => {
+    const response = await apiClient.get('/capabilities', {
+      params: { include_details: true },
+    });
+    return {
+      capabilities: response.data.capabilities || [],
+      consistency_issues: response.data.consistency_issues || [],
+    };
+  },
+};
+
+/* --- Skills / tools review queues ---------------------------------------- */
+
+export const skillService = {
+  list: async (): Promise<SkillSummary[]> => {
+    const response = await apiClient.get('/skills');
+    return Array.isArray(response.data) ? response.data : [];
+  },
+
+  proposals: async (): Promise<SkillProposal[]> => {
+    const response = await apiClient.get('/skills/proposals');
+    return Array.isArray(response.data) ? response.data : [];
+  },
+
+  approveProposal: async (proposalId: string | number): Promise<unknown> => {
+    const response = await apiClient.post(`/skills/proposals/${proposalId}/approve`);
+    return response.data;
+  },
+
+  rejectProposal: async (proposalId: string | number): Promise<unknown> => {
+    const response = await apiClient.post(`/skills/proposals/${proposalId}/reject`);
+    return response.data;
+  },
+};
+
+export const toolProposalService = {
+  list: async (): Promise<ToolProposal[]> => {
+    const response = await apiClient.get('/tools/proposals');
+    return Array.isArray(response.data) ? response.data : [];
+  },
+
+  approve: async (proposalId: number): Promise<unknown> => {
+    const response = await apiClient.post(`/tools/proposals/${proposalId}/approve`);
+    return response.data;
+  },
+
+  reject: async (proposalId: number): Promise<unknown> => {
+    const response = await apiClient.post(`/tools/proposals/${proposalId}/reject`);
+    return response.data;
+  },
+};
+
+/* --- Memory -------------------------------------------------------------- */
+
+export const memoryService = {
+  report: async (): Promise<MemoryReport> => {
+    const response = await apiClient.get('/memory/report');
+    return response.data;
+  },
+
+  edges: async (): Promise<MemoryEdge[]> => {
+    const response = await apiClient.get('/memory/edges');
+    return Array.isArray(response.data) ? response.data : [];
+  },
+
+  reinforceEdge: async (edgeId: number): Promise<MemoryEdge> => {
+    const response = await apiClient.post(`/memory/edges/${edgeId}/reinforce`);
+    return response.data;
+  },
+
+  removeEdge: async (edgeId: number): Promise<MemoryEdge> => {
+    const response = await apiClient.post(`/memory/edges/${edgeId}/remove`);
+    return response.data;
+  },
+};
+
+/* --- Voice --------------------------------------------------------------- */
 
 export interface VoiceSegment {
   segment_id: string;
@@ -148,15 +377,14 @@ export const voiceService = {
     const response = await apiClient.get('/voice/assets');
     return response.data;
   },
+
+  installAssets: async (): Promise<VoiceAssets> => {
+    const response = await apiClient.post('/voice/assets/install');
+    return response.data;
+  },
 };
 
-export interface AppSettings {
-  voice_enabled: boolean;
-  voice_recording_enabled: boolean;
-  voice_tts_voice: string;
-  retention_days: number;
-  file_roots: string[];
-}
+/* --- Settings, secrets, models, retention -------------------------------- */
 
 export const settingsService = {
   get: async (): Promise<AppSettings> => {
@@ -166,7 +394,42 @@ export const settingsService = {
 
   update: async (updates: Record<string, string | boolean | number>): Promise<AppSettings> => {
     const response = await apiClient.put('/settings', updates);
-    return response.data.settings || {};
+    return response.data.settings || response.data;
+  },
+};
+
+export const secretService = {
+  status: async (): Promise<SecretsList> => {
+    const response = await apiClient.get('/secrets');
+    return { configured: response.data.configured || [] };
+  },
+
+  set: async (name: string, value: string): Promise<SecretStatusResponse> => {
+    const response = await apiClient.put(`/secrets/${name}`, { value });
+    return response.data;
+  },
+};
+
+export const modelService = {
+  available: async (): Promise<string[]> => {
+    const response = await apiClient.get('/models');
+    return response.data.models || [];
+  },
+
+  registry: async (): Promise<Record<string, unknown>[]> => {
+    const response = await apiClient.get('/models/registry');
+    const payload = response.data;
+    if (Array.isArray(payload)) return payload;
+    if (payload && Array.isArray(payload.models)) return payload.models;
+    if (payload && Array.isArray(payload.registry)) return payload.registry;
+    return [];
+  },
+};
+
+export const retentionService = {
+  receipts: async (): Promise<PurgeReceipt[]> => {
+    const response = await apiClient.get('/retention/receipts');
+    return Array.isArray(response.data) ? response.data : [];
   },
 };
 

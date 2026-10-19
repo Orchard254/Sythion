@@ -58,13 +58,14 @@ class DatabaseManager:
         self.database_path = database_path
         self.engine = create_engine(
             f"sqlite:///{database_path}",
-            connect_args={"check_same_thread": False},
+            connect_args={"check_same_thread": False, "timeout": 30},
             echo=False  # Set to True for SQL debugging
         )
 
         # Enable WAL mode for concurrent reads
         with self.engine.connect() as conn:
             conn.execute(text("PRAGMA journal_mode=WAL"))
+            conn.execute(text("PRAGMA busy_timeout=5000"))
             conn.commit()
 
         # Create the baseline schema, then apply additive SQLite migrations.

@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "companion",
+  "description": "Companion overlay window only. Starts from the same `core:default` base the main window already uses, and adds exactly three window commands the overlay cannot work without: `start-dragging`, so the robot can be repositioned; `set-ignore-cursor-events`, so empty transparent areas pass clicks through to the application underneath; and `close`, so the overlay can be dismissed - a window with no title bar and no taskbar button would otherwise be undismissable. The renderer only ever supplies hit-region rectangles; the decision to toggle the flag is made by a Rust poller reading the native cursor position, because the WebView cannot observe the pointer at all while the window ignores it. Nothing here widens the main window's capability. No filesystem, shell, process, or window-creation permission is granted; those plugin commands do not exist in this build, and `create_webview_window` is deliberately withheld so the renderer cannot spawn further windows.",
+  "windows": ["companion"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-ignore-cursor-events",
+    "core:window:allow-close"
+  ]
+}

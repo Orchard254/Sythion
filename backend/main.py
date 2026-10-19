@@ -159,6 +159,14 @@ async def lifespan(app: FastAPI):
     from .api import dependencies as api_dependencies
     api_dependencies.set_executor_provider(lambda: tool_executor)
 
+    # Phase A handshake: honor the launcher-provided port if present.
+    _port_env = os.environ.get("SYTHION_PORT")
+    if _port_env:
+        try:
+            settings.port = int(_port_env)
+        except ValueError:
+            pass
+
     # Phase A handshake: expose the bound port + token to the launcher. The
     # launcher pre-selects a free port (`SYTHION_PORT` or --port) and reads this
     # file to learn where the sidecar is listening.

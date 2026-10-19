@@ -116,7 +116,11 @@ def main():
             results.append(False)
         else:
             print(f"task {task['id'][:8]} created (state={task['state']})")
-            done = wait_for_terminal(task["id"])
+            done = (
+                task
+                if task.get("state") in TERMINAL_STATES
+                else wait_for_terminal(task["id"])
+            )
             if done is None:
                 print("[FAIL] task did not reach a terminal state in time")
                 results.append(False)
@@ -137,7 +141,11 @@ def main():
             results.append(False)
         else:
             print(f"task {task['id'][:8]} created (state={task['state']})")
-            done = wait_for_terminal(task["id"])
+            done = (
+                task
+                if task.get("state") in TERMINAL_STATES
+                else wait_for_terminal(task["id"])
+            )
             if done is None:
                 print("[FAIL] task did not reach a terminal state in time")
                 results.append(False)

@@ -7,11 +7,11 @@ uvicorn[standard]==0.27.0
 python-multipart==0.0.6
 
 # Database
-sqlalchemy==2.0.25
+sqlalchemy==2.0.40
 
 # Validation
-pydantic==2.5.3
-pydantic-settings==2.1.0
+pydantic==2.10.6
+pydantic-settings==2.7.0
 
 # System utilities
 psutil==5.9.7
@@ -31,6 +31,8 @@ webrtcvad-wheels==2.0.14; sys_platform == 'win32'
 numpy>=1.24.0
 
 # Speech-to-Text
+vosk==0.3.45; sys_platform == 'win32'
+setuptools>=68; sys_platform == 'win32'
 whispercpp==0.0.17; sys_platform == 'win32'
 openai-whisper>=20231117; sys_platform != 'win32'
 
@@ -43,7 +45,7 @@ pytest-asyncio==0.23.3
 pytest-cov==4.1.0
 
 # Windows-specific (optional, will be installed on Windows)
-pywin32==306; sys_platform == 'win32'
+pywin32==311; sys_platform == 'win32'
 
 # GUI screenshot support
-Pillow>=10.0.0; sys_platform == 'win32'
+Pillow==11.3.0; sys_platform == 'win32'

@@ -19,6 +19,10 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "resources": {
+      "resources/python-runtime": "python-runtime",
+      "resources/backend": "backend"
+    },
     "icon": [
       "icons/icon.ico",
       "icons/icon.png",

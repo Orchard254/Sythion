@@ -31,6 +31,7 @@ export function useVoiceCapture() {
     isListening,
     setListening,
     setRecording,
+    setVoiceSpeaking,
     setVoiceSttAvailable,
     appendTranscriptSegment,
     setTranscriptDraft,
@@ -92,8 +93,9 @@ export function useVoiceCapture() {
 
     setListening(false);
     setRecording(false);
+    setVoiceSpeaking(false);
     frameBufferRef.current = new Uint8Array(0);
-  }, [setListening, setRecording]);
+  }, [setListening, setRecording, setVoiceSpeaking]);
 
   const flushFrames = useCallback(() => {
     const sessionId = sessionIdRef.current;
@@ -110,6 +112,10 @@ export function useVoiceCapture() {
           if (result.stt_available) {
             setVoiceSttAvailable(true);
           }
+          // The sidecar's VAD reports whether the user is speaking right now.
+          // This is a real measurement, not an animation timer, so the UI can
+          // show a genuine 'speaking' state while the mic is open.
+          setVoiceSpeaking(Boolean(result.is_speaking));
           for (const segment of result.segments) {
             if (segment.text) {
               appendTranscriptSegment(segment.segment_id, segment.text);
@@ -124,7 +130,7 @@ export function useVoiceCapture() {
         });
     }
     frameBufferRef.current = buffer.slice(offset);
-  }, [appendTranscriptSegment, setVoiceSttAvailable]);
+  }, [appendTranscriptSegment, setVoiceSpeaking, setVoiceSttAvailable]);
 
   const startCapture = useCallback(async () => {
     // Capture only while visible and voice mode is on.
@@ -181,12 +187,13 @@ export function useVoiceCapture() {
       isListeningRef.current = true;
       setListening(true);
       setRecording(true);
+      setVoiceSpeaking(false);
     } catch (error) {
       // Permission denied or no device: keep the dashboard usable, no capture.
       await stopCapture();
       throw error;
     }
-  }, [flushFrames, isVoiceEnabled, setListening, setRecording, setVoiceSttAvailable, stopCapture]);
+  }, [flushFrames, isVoiceEnabled, setListening, setRecording, setVoiceSpeaking, setVoiceSttAvailable, stopCapture]);
 
   // Stop on minimize/close/lock (document hidden) or window blur.
   useEffect(() => {

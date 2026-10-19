@@ -445,92 +445,96 @@ class DelegationService:
                 pass
             return {"ok": False, "reasons": reasons}
 
-        # --- Atomic admission at the persistence boundary ---------------
-        try:
-            params = {
-                "now": datetime.utcnow(), "did": d.id,
-                "tid": d.task_id, "gid": d.goal_id,
-                "limit": max_per_task,
-            }
-            stmt = _ADMIT_SQL if (d.task_id or d.goal_id) \
-                else _NO_SCOPE_ADMIT_SQL
-            result = self.db.execute(stmt, params)
-            admitted = bool(result.rowcount == 1)
-
-            if admitted:
-                self.ledger.append_event(_scope(d.id), "agent.progress", {
-                    "stage": "validated",
-                })
-                self.db.commit()
-
-                # Defensive validation ONLY (never the correctness mechanism):
-                # recount admitted rows; if the invariant were somehow broken,
-                # revert honestly to FAILED.
-                if d.task_id or d.goal_id:
-                    post = self.db.execute(_ADMITTED_COUNT_SQL, {
-                        "tid": d.task_id, "gid": d.goal_id}).scalar()
-                    if post is not None and int(post) > max_per_task:
-                        try:
-                            assert_delegation_transition(
-                                DelegationStatus.VALIDATED.value,
-                                DelegationStatus.FAILED.value)
-                            d.status = DelegationStatus.FAILED.value
-                            d.failure_reason = (
-                                f"max_specialists_per_task exceeded "
-                                f"({post}/{max_per_task})")
-                            d.updated_at = datetime.utcnow()
-                            self.ledger.append_event(_scope(d.id),
-                                                     "agent.failed", {
-                                                         "stage":
-                                                         "validation_defensive_recount",
-                                                         "post_count": int(post),
-                                                     })
-                            self.db.commit()
-                            return {"ok": False,
-                                    "reasons": [d.failure_reason]}
-                        except InvalidTransition:
-                            pass
-                return {"ok": True, "reasons": []}
-
-            # rowcount == 0: the conditional guard refused admission.
-            # Re-read the authoritative status fresh from the database.
-            self.db.rollback()
-            fresh = (
-                self.db.query(Delegation)
-                .filter(Delegation.id == delegation_id).first()
-            )
-            current = fresh.status if fresh is not None else None
-            if current == DelegationStatus.VALIDATED.value:
-                return {"ok": True, "reasons": []}  # concurrent/idempotent admit
-            if current == DelegationStatus.PROPOSED.value:
-                limit_reason = (
-                    f"max_specialists_per_task reached "
-                    f"(limit {max_per_task})")
-                try:
-                    assert_delegation_transition(
-                        current, DelegationStatus.FAILED.value)
-                    fresh.status = DelegationStatus.FAILED.value
-                    fresh.failure_reason = limit_reason
-                    fresh.updated_at = datetime.utcnow()
-                    self.ledger.append_event(_scope(d.id), "agent.failed", {
-                        "stage": "validation_limit",
-                        "limit": max_per_task,
+        with _admission_lock:
+            # --- Atomic admission at the persistence boundary ---------------
+            try:
+                # Serialize writers across sessions/processes so the
+                # conditional count subquery sees the committed state.
+                self.db.execute(_sql_text("BEGIN IMMEDIATE"))
+                params = {
+                    "now": datetime.utcnow(), "did": d.id,
+                    "tid": d.task_id, "gid": d.goal_id,
+                    "limit": max_per_task,
+                }
+                stmt = _ADMIT_SQL if (d.task_id or d.goal_id) \
+                    else _NO_SCOPE_ADMIT_SQL
+                result = self.db.execute(stmt, params)
+                admitted = bool(result.rowcount == 1)
+    
+                if admitted:
+                    self.ledger.append_event(_scope(d.id), "agent.progress", {
+                        "stage": "validated",
                     })
                     self.db.commit()
-                except InvalidTransition:
-                    pass
-                return {"ok": False, "reasons": [limit_reason]}
-            return {"ok": False, "reasons": [
-                f"delegation no longer admissible (status {current})"]}
-        except InvalidTransition:
-            raise
-        except Exception as exc:
-            self.db.rollback()
-            logger.warning("Atomic validate failed for %s: %s",
-                           delegation_id, exc)
-            return {"ok": False, "reasons": [str(exc)[:300]]}
-
-    # -- assignment ------------------------------------------------------------
+    
+                    # Defensive validation ONLY (never the correctness mechanism):
+                    # recount admitted rows; if the invariant were somehow broken,
+                    # revert honestly to FAILED.
+                    if d.task_id or d.goal_id:
+                        post = self.db.execute(_ADMITTED_COUNT_SQL, {
+                            "tid": d.task_id, "gid": d.goal_id}).scalar()
+                        if post is not None and int(post) > max_per_task:
+                            try:
+                                assert_delegation_transition(
+                                    DelegationStatus.VALIDATED.value,
+                                    DelegationStatus.FAILED.value)
+                                d.status = DelegationStatus.FAILED.value
+                                d.failure_reason = (
+                                    f"max_specialists_per_task exceeded "
+                                    f"({post}/{max_per_task})")
+                                d.updated_at = datetime.utcnow()
+                                self.ledger.append_event(_scope(d.id),
+                                                         "agent.failed", {
+                                                             "stage":
+                                                             "validation_defensive_recount",
+                                                             "post_count": int(post),
+                                                         })
+                                self.db.commit()
+                                return {"ok": False,
+                                        "reasons": [d.failure_reason]}
+                            except InvalidTransition:
+                                pass
+                    return {"ok": True, "reasons": []}
+    
+                # rowcount == 0: the conditional guard refused admission.
+                # Re-read the authoritative status fresh from the database.
+                self.db.rollback()
+                fresh = (
+                    self.db.query(Delegation)
+                    .filter(Delegation.id == delegation_id).first()
+                )
+                current = fresh.status if fresh is not None else None
+                if current == DelegationStatus.VALIDATED.value:
+                    return {"ok": True, "reasons": []}  # concurrent/idempotent admit
+                if current == DelegationStatus.PROPOSED.value:
+                    limit_reason = (
+                        f"max_specialists_per_task reached "
+                        f"(limit {max_per_task})")
+                    try:
+                        assert_delegation_transition(
+                            current, DelegationStatus.FAILED.value)
+                        fresh.status = DelegationStatus.FAILED.value
+                        fresh.failure_reason = limit_reason
+                        fresh.updated_at = datetime.utcnow()
+                        self.ledger.append_event(_scope(d.id), "agent.failed", {
+                            "stage": "validation_limit",
+                            "limit": max_per_task,
+                        })
+                        self.db.commit()
+                    except InvalidTransition:
+                        pass
+                    return {"ok": False, "reasons": [limit_reason]}
+                return {"ok": False, "reasons": [
+                    f"delegation no longer admissible (status {current})"]}
+            except InvalidTransition:
+                raise
+            except Exception as exc:
+                self.db.rollback()
+                logger.warning("Atomic validate failed for %s: %s",
+                               delegation_id, exc)
+                return {"ok": False, "reasons": [str(exc)[:300]]}
+    
+        # -- assignment ------------------------------------------------------------
 
     def assign(self, delegation_id: str) -> Dict[str, Any]:
         """Instantiate the temporary specialist and build its BOUNDED context.

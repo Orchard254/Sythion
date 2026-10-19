@@ -239,7 +239,10 @@ class StrategySelector:
                 max_cost = float(getattr(settings, "strategy_max_exploration_cost", 2.0))
                 alt_cost = scored[1]["stats"].mean_cost
                 alt_cost_ok = alt_cost is None or alt_cost <= max_cost
-                if frac < rate and alt_cost_ok:
+                # Controlled exploration must not promote a candidate whose
+                # supporting evidence has expired/decayed (sample_count == 0).
+                alt_supported = scored[1]["stats"].sample_count > 0
+                if frac < rate and alt_cost_ok and alt_supported:
                     # EXPLORE: pick the best alternative (credible) when cost/risk low
                     mode = "EXPLORE"
                     # For now we still return best as strategy but mark mode EXPLORE and include alternative
