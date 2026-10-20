@@ -333,7 +333,7 @@ def test_the_suite_does_not_inherit_the_local_env_file():
         # displayed, so a failure reveals THAT the values differ and never
         # WHAT they are.
         same = getattr(core_config.settings, name) == getattr(clean, name)
-        assert same is True, f"{name} differs from the clean-checkout value"
+        assert same is True, f"{name} differs from the value a clean tree has"
 
 
 def test_the_clean_settings_snapshot_survives_an_in_place_mutation(clean_settings_snapshot):

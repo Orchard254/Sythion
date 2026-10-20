@@ -204,7 +204,7 @@ _CLEAN_SETTINGS = _clean_settings_snapshot()
 
 @pytest.fixture
 def clean_settings_snapshot():
-    """The shared CLEAN-checkout snapshot the isolation fixture assigns from.
+    """The shared snapshot of the CLEAN values the isolation fixture uses.
 
     Exposed so a test can prove that the snapshot itself survives a test which
     mutates one of the isolated list values IN PLACE.
