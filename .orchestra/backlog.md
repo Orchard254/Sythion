@@ -49,7 +49,7 @@
 - Likely files: `backend/tests/test_setup_readiness.py`, `backend/tests/conftest.py`
 - Sensitivity: none
 - Domain: none
-- Status: planned
+- Status: in-review
 
 ### 003 Documentation states the measured baseline and drops deleted modules
 - Why: R-004 and R-017 are both Gate 4 ("docs must reflect reality") and Gate 9 ("honest handling of debt"), and they edit the same documentation files, so they ship as one branch. R-004: every documented baseline in the repository is wrong - 692 passed / 32 skipped (README:103, docs/TESTING.md:30, docs/PROJECT_STATUS.md:41, docs/OPERATIONS.md:159), 683 (README badge :6), 659 (docs/ROADMAP.md:24), 196 acceptance (README:104, docs/TESTING.md:9, docs/PROJECT_STATUS.md:42, docs/ROADMAP.md:25, docs/OPERATIONS.md:160) - while 1609 tests are collected, and the quoted runtimes ("~55s", "~25s", "~10s") are off by roughly 10x. The badge and the prose of the same file contradict each other. R-017: `docs/CODEBASE_BOUNDARIES.md` (named by docs/QUALITY_GATES.md:50-53 as an authority doc), `backend/services/README.md`, `docs/ROADMAP.md:36` and `docs/PROJECT_STATUS.md:16-18` still list `backend/services/response_strategy.py` and `backend/services/speech_act_classifier.py`, both deleted by commit `db10f86`. Confirmed number set for the docs to quote (baseline report, two clean runs): full suite `1564 passed, 45 skipped`, `1609 collected`, wall time 389-436 s on CPython 3.14.7 / Windows; acceptance suite `191 passed, 2 skipped` (the documented 196 is refuted); CI pins Python 3.11. The WARNING COUNT MUST NOT BE QUOTED - it moved between three runs of an unchanged tree (407,733 / 406,252 / 407,719). Build after items 001 and 002 merge: criterion 7 checks these docs against the final `Makefile` and `.github/workflows/ci.yml`.

@@ -56,9 +56,9 @@
       "domain": "infra"
     },
     "006": {
-      "status": "planned",
-      "owner": "planner-006",
-      "branch": null,
+      "status": "in-review",
+      "owner": "reviewer-006",
+      "branch": "orchestra/006-readiness-test-isolation",
       "mergeSha": null,
       "round": 0,
       "verifyRounds": 0,
