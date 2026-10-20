@@ -20,11 +20,83 @@ from sqlalchemy.pool import StaticPool
 from backend.models.database import Base, get_db
 from backend.api.routes import router as api_router
 from backend.core.auth import LocalControlBoundaryMiddleware, control_origins
+from backend.core import secrets as secrets_module
 from backend.tools.executor import ToolExecutor
 from backend.services.task_runner import TaskRunner
 
 
 ACCEPTANCE_CONTROL_TOKEN = "acceptance-control-token"
+
+
+# ---------------------------------------------------------------------------
+# Product-credential write guard
+# ---------------------------------------------------------------------------
+# The acceptance suite must never write to, or delete, the PRODUCT's own
+# Windows Credential Manager entry (``Sythion (Synth)/ollama_api_key``).
+# ``test_secret_storage.py::test_credential_manager_round_trip`` still drives
+# the real ``win32cred`` store, but under a test-scoped prefix.
+#
+# The production prefix is snapshotted HERE, at conftest IMPORT time. The
+# round-trip test monkeypatches ``secrets_module._CM_TARGET_PREFIX`` to a
+# test-only prefix, so a guard that read that attribute at CALL time would be
+# disarmed by the very fix it is meant to police.
+
+_PRODUCT_TARGET_PREFIX = secrets_module._CM_TARGET_PREFIX
+
+
+class ProductCredentialWriteAttempt(AssertionError):
+    """Raised when a test tries to write or delete the product credential.
+
+    Deliberately NOT a ``pywintypes.error``: ``CredentialManagerStore.delete``
+    swallows those (``backend/core/secrets.py``), which would make the delete
+    path look toothless. An ``AssertionError`` subclass is reported by pytest
+    as a failure.
+    """
+
+
+@pytest.fixture(autouse=True)
+def _forbid_product_credential_writes(request, monkeypatch):
+    """Fail any acceptance test that writes or deletes a product credential.
+
+    The check happens BEFORE the original ``win32cred`` call is delegated to,
+    so a blocked attempt never reaches the real vault. Reads (``CredRead``)
+    are not intercepted: they are non-destructive, and blocking them would
+    change what other acceptance tests observe.
+
+    The guard never touches ``secrets_module._store`` - no other acceptance
+    test sees a different secret store than before.
+    """
+    try:
+        import win32cred
+    except ImportError:
+        # Not Windows (or pywin32 missing): there is no vault to protect.
+        yield
+        return
+
+    def _reject(target, action):
+        if isinstance(target, str) and target.startswith(_PRODUCT_TARGET_PREFIX):
+            raise ProductCredentialWriteAttempt(
+                f"acceptance test {request.node.nodeid} attempted to {action} the "
+                f"product credential target {target!r}. Tests must never write to "
+                f"or delete targets under {_PRODUCT_TARGET_PREFIX!r}; use a "
+                f"test-scoped prefix instead."
+            )
+
+    original_write = win32cred.CredWrite
+    original_delete = win32cred.CredDelete
+
+    def guarded_write(cred, flags=0):
+        target = cred.get("TargetName", "") if hasattr(cred, "get") else ""
+        _reject(target, "write")
+        return original_write(cred, flags)
+
+    def guarded_delete(target, *args, **kwargs):
+        _reject(target, "delete")
+        return original_delete(target, *args, **kwargs)
+
+    monkeypatch.setattr(win32cred, "CredWrite", guarded_write)
+    monkeypatch.setattr(win32cred, "CredDelete", guarded_delete)
+    yield
 
 
 @pytest.fixture
