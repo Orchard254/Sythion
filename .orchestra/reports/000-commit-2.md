@@ -469,10 +469,14 @@ modified.
 - `backlog.md`: item 004's `- Status:` line changed `accepted` -> `merged` (line 149). The edit
   was made by me and is already committed - the orchestrator's `702ffc5` swept it in together with
   its briefs (Evidence 9). The working tree contains no uncommitted change of mine.
-- **`board.json` was NOT touched** - it belongs to the orchestrator. `items."004".status` and
-  `items."004".mergeSha` are the orchestrator's to write.
-- `log.md` was NOT appended to - the brief scopes my writes to `backlog.md` and this report, and
-  `log.md` is orchestrator state. If the orchestrator wants a merge line there, it can add it.
+- **`board.json` was NOT touched by me** - it belongs to the orchestrator. It has since been
+  written by the orchestrator itself (`e2cbb1f`), and I verified the result:
+  `items."004"` = `{status: merged, mergeSha: "4d827c0ee744c170bf81a74c4d75fc1aff6d5104",
+  branch: "orchestra/004-real-assertions", conflicts: 0, sensitivity: sensitive}` - **the merge
+  sha matches the one in this report.**
+- `log.md`: I did not append to it (the brief scopes my writes to `backlog.md` and this report).
+  A `committer-004` merge line exists there, written and committed by the orchestrator in
+  `38ee87e`; it records the same merge sha `4d827c0`.
 
 ## Not checked
 
