@@ -23,9 +23,9 @@
       "domain": "none"
     },
     "003": {
-      "status": "planned",
+      "status": "building",
       "owner": "implementer-003",
-      "branch": null,
+      "branch": "orchestra/003-docs-baseline",
       "mergeSha": null,
       "round": 0,
       "verifyRounds": 0,
