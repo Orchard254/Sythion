@@ -904,3 +904,36 @@ This is the measurement that matters most, because it is the only one taken on t
 - verdict: ACCEPT
 - reason: The central claim - the documents state the measured baseline, and the measurement script fails when they stop stating it - is established on the tree the item will land on, with the measurement taken by the Verifier and the fail path proven on the real documents rather than on a substitute. All seven criteria are met, the SENSITIVE gate's four conditions are checked by name, the vault guard was proved live before anything was run, and the report's own limits are stated plainly - including the one that is genuinely a gap (exit 2 not exercised on this tree). The Verifier found two real inaccuracies in the orchestrator's own account of its work and recorded them instead of assuming them, which is the behaviour that makes a verification stage worth having. ACCEPTED for merge.
 
+
+## 2026-10-21 05:30 - committer - 000 - ACCEPT
+- note: the final merge of item 003 and the closing state of the run.
+- brief: briefs/000-commit-4.md (the orchestrator's own merge plan for item 003, the sixth and last item)
+- report: (the orchestrator is the Committer for this run; the merge evidence is recorded here)
+- evidence: **Item 003 was merged as `f0d9806` with `git merge --no-ff`, and the merge was CLEAN** - `Merge made by the 'ort' strategy`, 11 files changed, 2375 insertions, 115 deletions, **no conflict**. The branch's `.orchestra/reports/003-implement-1.md` came across with the branch's newer version and no conflict markers. This was the item the plan called "last", and it is now merged.
+
+**The drift detector agrees on the tree that shipped.** The orchestrator ran the item's OWN invariant on the merged master: `python scripts/measure_test_baseline.py --check-collected` -> `documents agree with the measurement: collected 1614`, exit 0. This is the check item 003 exists to install, running on the tree item 003 produced - the round trip the whole item was built for.
+
+**The Verifier caught the orchestrator committing a mid-write snapshot, and the orchestrator corrected it.** The 003 Verifier writes its report incrementally, and the orchestrator committed the file while the Verifier was still appending to it. The Verifier reported this plainly rather than letting it pass: "Your commit `075759a` captured a mid-write snapshot - the complete version is the working-tree file." The orchestrator committed the complete 1182-line version in a follow-up commit, and the working tree is now clean. **A report that is written incrementally must be re-read after the writer says it is done, and the writer's own statement that the file changed after the commit is a correction that must be acted on, not noted.**
+
+**The final state of the run, verified from git rather than from the board:**
+
+| item | title | merge sha | tier |
+|---|---|---|---|
+| 001 | CI gates, a repository that can gate itself | `7c478d1` | external |
+| 002 | Makefile test selections and pytest configuration stop claiming what they do not do | `76e4f14` | sensitive+external |
+| 003 | Documentation states the measured baseline and drops deleted modules | `f0d9806` | sensitive |
+| 004 | Four tautological assertions replaced with real ones | `4d827c0` | sensitive |
+| 006 | The readiness test must not borrow the developer's gitignored `backend/.env` | `82a3aa7` | sensitive |
+| 007 | The acceptance suite must never write to or delete the product's real credential | `6424dd4` | sensitive |
+
+**All six merge SHAs are ancestors of `master`** (`git merge-base --is-ancestor` exits 0 for each), and **every branch ref is preserved** - `orchestra/001-ci-gates-repo`, `orchestra/002-test-selection-truth`, `orchestra/003-docs-baseline`, `orchestra/003-final-merged`, `orchestra/003-measure-final`, `orchestra/003-measure-merged`, `orchestra/004-real-assertions`, `orchestra/006-readiness-test-isolation`, `orchestra/007-no-real-vault-writes`. **No branch was deleted**, because a branch is the last handle on a merge SHA and the skill requires the SHA to be recorded before a branch is removed; this run records and keeps. **Nothing was pushed** - the run is 100+ commits ahead of `origin/master` and local, as the skill requires. The working tree is clean.
+
+**The audit passes.** `python verify.py .orchestra` exits 0: `items: 9  merged: 6  budget: 6`. The only two warnings are the `001/1` and `002/1` headings, which are the run's own convention for a superseded round and which now carry a `- note:` line explaining it.
+
+- coverage: The final merge was performed, its cleanliness recorded, the item's own detector run on the resulting tree, the mid-write-snapshot defect caught by the Verifier and fixed, and the whole run's final state verified from git rather than from the board's own word.
+- consistency: The six merge SHAs in `board.json` are the actual commits and all six are ancestors of `master`. The collection count measured by the orchestrator (1614), by item 002's Verifier, by item 006's Verifier, by item 007's Verifier, by item 003's Verifier (1569/45 on the branch) and by the drift detector on the shipped tree all agree.
+- not checked: The Committer's full-suite re-run on the base branch was not performed for the final merge. Item 003's Verifier measured the full suite on the branch (1569 passed / 45 skipped / 1614 collected, clean on the first attempts, no native fault) and the orchestrator's `--check-collected` on the shipped tree confirmed the same collection; the other five items' verifiers measured the full suite on the merged tree. The frontend lint, vitest and build were not re-run after the merges; item 001's Verifier ran them and no merged item touches the frontend.
+- self-directed: yes
+- verdict: ACCEPT
+- reason: Six of six budgeted items are merged, each with its own branch, its own review, its own independent verification, and its own merge SHA recorded in the board and provable from git. The final tree passes the detector the last item installed. The budget is met exactly and the run stops here.
+
