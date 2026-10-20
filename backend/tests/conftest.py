@@ -181,8 +181,15 @@ def _clean_settings_snapshot():
     Built with the env FILE disabled (``Settings(_env_file=None)``), so the
     developer's ``backend/.env`` is never read to obtain these values: the
     result is the process environment's ``SYTHION_*`` value when that variable
-    is exported, otherwise the field default. The values are copied so a test
-    that mutates one of them in place cannot corrupt the snapshot.
+    is exported, otherwise the field default.
+
+    A list value is copied out of ``clean``, so the snapshot does not alias
+    ``clean``'s own list. That copy is NOT on its own enough to protect the
+    snapshot: the snapshot is module-level and shared by every test in the
+    session, so the fixture below hands EVERY TEST its own fresh copy of the
+    list values. That per-test copy is what stops a test which mutates
+    ``settings.file_roots`` IN PLACE (``.append(...)``) from corrupting the
+    snapshot the NEXT test is isolated from.
     """
     clean = Settings(_env_file=None)
     snapshot = {}
@@ -193,6 +200,16 @@ def _clean_settings_snapshot():
 
 
 _CLEAN_SETTINGS = _clean_settings_snapshot()
+
+
+@pytest.fixture
+def clean_settings_snapshot():
+    """The shared CLEAN-checkout snapshot the isolation fixture assigns from.
+
+    Exposed so a test can prove that the snapshot itself survives a test which
+    mutates one of the isolated list values IN PLACE.
+    """
+    return _CLEAN_SETTINGS
 
 
 @pytest.fixture(autouse=True)
@@ -214,4 +231,8 @@ def _isolate_local_env_settings(monkeypatch, request):
         # real credential, so those modules keep the ambient value.
         return
     for name, value in _CLEAN_SETTINGS.items():
-        monkeypatch.setattr(settings, name, value)
+        # A FRESH copy per test. The snapshot is shared by the whole session,
+        # so handing out the snapshot's own list would let a test that mutates
+        # ``settings.file_roots`` IN PLACE (``.append(...)``) corrupt the value
+        # every LATER test is isolated from.
+        monkeypatch.setattr(settings, name, list(value) if isinstance(value, list) else value)
