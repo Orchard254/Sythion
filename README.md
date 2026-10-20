@@ -3,7 +3,7 @@
 > This repository is the **trusted local runtime core** of a larger
 > intelligence system. It is not the whole intelligence stack by itself.
 
-[![Backend tests](https://img.shields.io/badge/backend%20tests-1568%20passed%20%2F%2045%20skipped-green)]()
+[![Backend tests](https://img.shields.io/badge/backend%20tests-1569%20passed%20%2F%2045%20skipped-green)]()
 [![Boundary](https://img.shields.io/badge/boundary-runtime%20core-blue)]()
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F%2F11-lightgrey)]()
 
@@ -100,7 +100,7 @@ used as the current status baseline:
 
 ## Current verified baseline
 
-- Full backend suite: **1568 passed, 45 skipped** (1613 collected)
+- Full backend suite: **1569 passed, 45 skipped** (1614 collected)
 - Acceptance suite: **191 passed, 2 skipped**
 
 Measured on CPython 3.14.7 / Windows by

@@ -40,7 +40,7 @@ python -m pytest tests -q
 
 ### Current verified baseline
 
-- Full backend suite: **1568 passed, 45 skipped** (1613 collected)
+- Full backend suite: **1569 passed, 45 skipped** (1614 collected)
 - Acceptance suite: **191 passed, 2 skipped**
 
 Measured on CPython 3.14.7 / Windows by
@@ -72,9 +72,9 @@ machine-specific.
 
 | Command | What it selects | Runtime |
 |---------|-----------------|---------|
-| `make test` | The full backend suite (every test under `backend/tests`) | 377.6 s (reference machine) |
+| `make test` | The full backend suite (every test under `backend/tests`) | 375.7 s (reference machine) |
 | `make test-fast` | The suite without the slow tests, the tests that need a live interactive desktop, and the provider-backed network tests | machine-specific (not measured here) |
-| `make test-acceptance` | The acceptance sub-suite (`backend/tests/acceptance`) | 19.9 s (reference machine) |
+| `make test-acceptance` | The acceptance sub-suite (`backend/tests/acceptance`) | 28.4 s (reference machine) |
 | `make test-unit` | The suite without the acceptance sub-suite | machine-specific (not measured here) |
 | `make test-gui` | The tests that need a live interactive Windows desktop and the real UI Automation stack (`backend/tests/acceptance/test_gui_fixture.py`) | machine-specific (not measured here) |
 | `make test-network` | The provider-backed E2E tests; skipped unless `SYTHION_RUN_PROVIDER_E2E=1` and provider credentials are configured, so the target never makes a credentialed provider call by itself | machine-specific (not measured here) |
@@ -176,9 +176,9 @@ baseline below.
 ## Makefile Commands
 
 ```bash
-make test                   # Full backend suite (377.6 s, reference machine)
+make test                   # Full backend suite (375.7 s, reference machine)
 make test-fast              # Fast suite (machine-specific)
-make test-acceptance        # Acceptance gates only (19.9 s, reference machine)
+make test-acceptance        # Acceptance gates only (28.4 s, reference machine)
 make test-unit              # Unit tests only (machine-specific)
 make check-test-selections  # Prove every -m expression selects a non-empty set
 make test-cov               # Coverage report (HTML + terminal)
