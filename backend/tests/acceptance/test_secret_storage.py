@@ -183,12 +183,14 @@ def test_credential_manager_round_trip(monkeypatch):
         # write that never happened all fail here. Only target NAMES are
         # inspected - no credential blob is read.
         #
-        # The enumeration is deliberately UNFILTERED and filtered here. The
-        # prefix-filtered form, ``CredEnumerate(prefix, 0)``, returns winerror
-        # 1168 on this machine even for credentials that demonstrably exist
-        # (it fails for every prefix tried), so it cannot tell "absent" from
-        # "broken enumerator". The unfiltered form really does see the entry,
-        # which is what makes an "absent" observation non-vacuous.
+        # The enumeration is deliberately UNFILTERED and filtered here.
+        # Measured on this machine: a PARTIAL prefix - a directory-style
+        # prefix of a credential that demonstrably exists included - makes
+        # ``CredEnumerate(prefix, 0)`` return winerror 1168, whereas the
+        # EXACT-MATCH form ``CredEnumerate(<exact target name>, 0)`` works
+        # for every existing credential. The unfiltered form is used because
+        # it cannot be defeated by either quirk, and it really does see the
+        # entry, which is what makes an "absent" observation non-vacuous.
         try:
             enumerated = win32cred.CredEnumerate(None, 0)
         except Exception as exc:  # pywintypes.error 1168 when nothing matches
