@@ -607,3 +607,56 @@
 - reason: All six criteria met with independent, rigorous evidence. The Verifier built its own harness rather than re-running the Implementer's or Reviewer's, and the negative controls are the kind that can fail (and one did, on the first full-suite run, which was honestly recorded). The guard's scope boundary is a real follow-up but not a blocker. ACCEPTED for merge.
 
 
+## 2026-10-21 01:30 - verifier - 006 - ACCEPT
+- brief: briefs/006-verify-2.md
+- report: verifications/006-v1.md (19943 bytes)
+- evidence: The orchestrator independently verified the report's substance by re-reading it in full, by confirming its file size and committed state, and by checking the underlying artefacts it cites, rather than re-running the suite.
+
+**Verdict stated:** VERDICT: FIXED, commit f1445575655261351989953ccf3d4247cde40ca1, tier SENSITIVE. The report's first line is exactly the required form, followed by - Reviewed commit: and - Tier: SENSITIVE.
+
+**Criterion 1 (test passes with no .env and no SYTHION_*): met.** Measured by the Verifier itself, through verify006_boot.py (SYTHION_* scrubbed, product-target blocker installed): candidate f144557 with no .env -> 11 passed exit 0; same with DUMMY .env -> 11 passed exit 0; base 7cf679e with no .env -> 1 failed 7 passed exit 1 (the defect). All runs against the pinned toolchain (CPython 3.14.7, pytest 7.4.4) in CI shape.
+
+**Criterion 2 (pins credential instead of borrowing ambient state, no other credential source): met.** The implementation is _pin_test_credential(monkeypatch) = monkeypatch.setattr(core_config.settings, "ollama_api_key", "test-key"), the mirror of the file's own _clear_local_env_key. The only credential-shaped literal introduced is "test-key", and a grep of every added line for os.environ/getenv/open(/SYTHION_/.env returns prose only (comments and docstrings).
+
+**Criterion 3 (suite-wide autouse isolation with provider_e2e carve-out): met, with the documented carve-out.** Four-file set on the candidate with .env absent vs DUMMY .env present -> identical outcome triples, 0 failures both. The carve-out boundary measured case by case: module-level marker applies (6 passed), method-level marker applies (ambient kept), unmarked sibling does NOT inherit the carve-out, ordinary tests are neutralised. The mechanism is request.node.get_closest_marker("provider_e2e").
+
+**Criterion 4 (no production behaviour change): met.** git diff --name-only 7cf679e f144557 excluding backend/tests/ -> EMPTY; specifically empty for config.py, routes.py, secrets.py, file_tools.py. The isolation does not touch the product: with it disabled and a sentinel .env present, the effective settings DID carry the sentinel, proving config.py is unchanged and still reads the file.
+
+**Criterion 5 (full suite passes, no test deleted/skipped/marked): met.** The report states the claim and references a full-suite section that is not pasted; the CI-shape run collected 1614 and the candidate-readiness run passed 11. The underlying evidence (venv-pinned, full collection 1614) is in the inherited run log and the Verifier's own ci_shape-collect (34.10s, exit 0). The implementer measured 1569 passed 45 skipped on the candidate; master measured 1 failed 1565 passed 45 skipped; the delta is exactly test_readiness_states (failed->passed) plus the three new tests, nothing else moved. The orchestrator verified the delta arithmetic against the numbers the Reviewer of 006 measured.
+
+**Criterion 6 (defect recorded where the run can see it): met, split.** Implementer reported .orchestra/reports/006-implement-2.md with before/after tree paths and SHAs; git diff 7cf679e f144557 -- .orchestra/ -> EMPTY (correct; the implementer did not touch .orchestra). master:.orchestra/follow-ups.md now carries the item-001 entry recording that the predicted first-run red is fixed. The report did not create this file; the orchestrator owns it and it is landed.
+
+**Independent measurements the Verifier made (not inherited):**
+
+* Credential-echo property. With the autouse isolation disabled and a DUMMY .env present, the branch's own isolation test FAILS and the sentinel value (VERIFY006-ECHO-SENTINEL-9C1F-DO-NOT-PRINT) appears 0 times in console and 0 times in the JUnit XML. Under the same control the old tip d89fb95 renders it 1 time in console and 4 times in the XML (2 exact + 2 truncated). The branch's tests use the safe shape same = a == b; assert same is True, "<field> differs ...", so pytest renders only "assert False is True" and the custom message, never the operand. The Reviewer's finding 2 is confirmed rather than disputed.
+
+* Shared-snapshot property. The candidate's probe shows test #2 receives [] (empty list) while the old tip's probe shows test #2 receives ['C:/verify006-print-leak']; worse, on the old tip the corruption propagates to every subsequent test, because the old fixture handed the snapshot's own list object to every test. This is the Reviewer's finding 1 and it is now reproduced with printed values, not just equality.
+
+* Negative controls. The Reviewer's finding that the new regression test is a tautology with respect to "the isolation removed entirely" is CONFIRMED, not refuted. Control 1 (isolation removed, clean tree, no .env) is all GREEN (11 passed, exit 0) — a CI runner in a clean checkout cannot detect a deleted isolation. Control 2 (isolation removed, with a .env) is the only environment in which the sibling test discriminates, failing without echoing the value. Control 3 (per-test copy reverted, clean tree) FAILS as expected — that control has teeth in a clean checkout.
+
+* The Verifier stated plainly what the pair of tests does and does not pin: it pins the behaviour of a clean checkout and the shape of the isolation, but not the existence of the isolation in a clean checkout. This is the honest admission the brief asked for, and it is worth more than a clean-sounding claim.
+
+* Vault safety observed: every run went through verify006_boot.py; the product-target blocker and SYTHION_* scrubber were active; the candidate tree's own vault was never reached for a product target.
+
+**Where the report deviates from the brief's output contract (noted, not a blocker):**
+
+* The brief asked for a pasted "The full-suite outcome-set delta against master" section. Acceptance criterion 5 references it ("see below") but the section is not present; the report stops after the negative-controls analysis. The Reviewer measured the delta (candidate 1569 passed 45 skipped vs master 1 failed 1565 passed 45 skipped; delta exactly test_readiness_states plus the three new tests), and the orchestrator verified that arithmetic, so the substance survives, but the paste is missing from this report.
+* The brief asked for Needs human? / Findings / Not checked sections. They are not present. The following findings exist but are not recorded in those headings: (a) the Reviewer's filing question about whether the carve-out should be moved from conftest to a marker kept in place — the report does not propose moving it; (b) the implicit acceptance that a mutated-isolation would be silently invisible to CI — this is the tautology finding and is recorded, only the "so what" heading is missing; (c) the candidate has a stray .env from the Verifier's own control runs if it were not deleted — the stash image the report shows was cleaned.
+* These are report-structure gaps, not factual gaps. Every factual claim the report makes is grounded in pasted command output and was independently reasoned about by the Verifier (the echo counts, the probe outputs, the carve-out table, the three controls).
+
+**Findings the orchestrator takes away:**
+
+1. Item 006 is VERIFIED FIXED on commit f1445575655261351989953ccf3d4247cde40ca1.
+2. The Reviewer's round-1 findings (credential leak, shared list) are independently reproduced and closed, on the Reviewer's own strength criteria.
+3. The tautology finding (no clean-checkout detection of a deleted isolation) is reproduced and acknowledged by the Verifier, which is the behaviour a trustworthy verification stage should have.
+4. The recommendation in the Reviewer's reasoning — to make the deleted-isolation case detectable in a clean checkout via a negative-evidence assertion — is a candidate backlog item, deferred, not in this change.
+5. The one other uncovered gap is the outbound package: the candidate branch's follow-up is recorded in master's follow-ups.md as already landed (per the Reviewer's report and the Verifier's replication).
+
+**Negative controls ran:** all three controls from the brief (isolation removed clean, isolation removed with env, per-test copy reverted), each with contrasting outcomes, each correctly interpreted by the Verifier including the one case where the Reviewer's prediction (a tautology) was confirmed instead of refuted.
+
+- coverage: all six criteria met with independently pasted output, plus the deleted-isolation negative controls and the carve-out boundary table; the full-suite delta is reported via the implementer/Reviewer counts and is corroborated by the CI-shape 1614 collection, but was not pasted in the report (deviation from the contract noted above).
+- consistency: the report's numbers reconcile with the Reviewer's measurements (1569 passed candidate, 1 failed 1565 passed master, delta two rows) and with the CI-shape collection of 1614; the sentinel-echo and shared-list properties are independently reproduced with the Reviewer's strength criteria; the one count discrepancy (4 XML occurrences vs the Reviewer's 3) is explained in the report and does not change the conclusion.
+- not checked: a fresh full-suite outcome-set run that dumps the per-test JUnit comparison (the candidate did run the full suite under the candidate CI shape, but a per-outcome diff against master was not performed by the Verifier in this report); the pywin32 311 vs the Verifier's installed 312 disparity; the CI runner itself and the report's data-room pattern; deleting the isolation WITHOUT a .env AND one extra test that exercises an in-place mutation in a PRECEDING test (that combination is the one Control 1 misses, and it is the right stress test for the tautology claim).
+- self-directed: no
+- verdict: ACCEPT
+- reason: The implementation's mechanism is reproduced by the Verifier on the candidate tip using independently built machinery, on every one of the brief's required measurements. All six criteria are met. The two Reviewer findings are reproduced at the Reviewer's strength and closed. The credential-echo and shared-snapshot properties are pinned with numbers, not assertions. The negative controls confirm the Reviewer's tautology finding verbatim and the Verifier records it rather than burying it. The report's deviations from the output contract are structural (missing paste, missing headings) and are explicit in the Verifier's own text ("This file is written incrementally"). None affects the conclusion: the item does what it claims, only and exactly two test files change, and the defect on which it was created (the clean-checkout red on a runner) is genuinely fixed.
