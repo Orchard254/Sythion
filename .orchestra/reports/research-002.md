@@ -188,18 +188,42 @@ The file already contains the correct pattern, and the two sibling tests use it:
   `test_admission_concurrency_process.py::TestAdmissionCrossProcess::test_concurrent_admission_across_processes`
   (`assert not p1.is_alive() and not p2.is_alive(), "child hung"` at
   `test_admission_concurrency_process.py:102`).
-- The admission failure is **not** `.env`-sensitive, on three independent grounds:
+- The admission failure is **not** `.env`-sensitive, on four independent grounds:
   1. the test imports `settings` at `test_admission_concurrency_process.py:14` and
      **never uses it** - no credential, no provider, no model;
   2. it fails identically in the scratch tree **with** a dummy
      `SYTHION_OLLAMA_API_KEY` present;
   3. it passes 3/3 in the scratch tree and 3/3 in the main tree when it is not
      competing with a second pytest process for the machine - it is a load-induced
-     multiprocessing-barrier flake (30 s `join`), unrelated to the credential.
+     multiprocessing-barrier flake (30 s `join`), unrelated to the credential;
+  4. in a third full-suite run of the scratch tree **with** a dummy key, its only
+     failure before the run died was the admission test again - the `F` at 13%
+     maps to collection index 215, `backend/tests/test_admission_concurrency_process.py::TestAdmissionCrossProcess::test_concurrent_admission_across_processes`
+     (position computed from the 72-character progress rows and the collected
+     order) - while **the readiness test passed**.
 - The baseline the orchestrator and the baseline agent measured is
   `1564 passed, 45 skipped, 1609 collected`. The `.env`-free scratch tree gives
   `1562 passed + 2 failed = 1564`, i.e. **exactly one test differs because of the
   missing `.env`**, and the second failure is a flake.
+
+**The third run then died with the known native fault.** Exit code `-1073741819`
+(`0xC0000005`, access violation):
+
+```
+Current thread 0x0000d4b0 [Thread-137 (validate_in_thread)] (most recent call first):
+  File "...\sqlalchemy\orm\query.py", line 2823 in first
+  File "...\envprobe\backend\agents\delegation.py", line 1358 in get_delegation
+  File "...\envprobe\backend\agents\delegation.py", line 1374 in _require
+  File "...\envprobe\backend\agents\delegation.py", line 394 in validate
+  File "...\envprobe\backend\tests\test_phase95_hardening.py", line 68 in validate_in_thread
+```
+
+That is the same fault **class** the baseline agent characterised as "Fault B" under
+R-007 - a native sqlite3 access violation under concurrency - in a third test file
+(their observation was `test_phase105_concurrency.py::TestBudgetAtomicity::test_concurrent_budget_does_not_exceed`
+-> `backend/agents/coordination.py:1127 atomic_commit_spent`). It corroborates R-007
+and widens its blast radius; it is **not** a credential issue, and it is why the third
+run could not produce a complete summary line.
 
 ### E5 - The fix shape works
 
@@ -294,6 +318,17 @@ behavioural one.
    will fail there for exactly the reason reproduced above. The pipeline goes red on
    its first real run for a reason that has nothing to do with the pipeline.
 
+7. **R-007 is corroborated again, in a third test file.** The third scratch-tree run
+   died with `Windows fatal exception: access violation` (`0xC0000005`) in native
+   sqlite3, reached from `backend/tests/test_phase95_hardening.py:68 validate_in_thread`
+   -> `backend/agents/delegation.py:394 validate` -> `:1374 _require` -> `:1358
+   get_delegation`. The baseline agent's "Fault B" was the same class of native
+   sqlite3 access violation under concurrency, in
+   `test_phase105_concurrency.py::TestBudgetAtomicity::test_concurrent_budget_does_not_exceed`.
+   Two observers, three test files, one fault class - R-007's blast radius is wider
+   than the single test its own report named. I am not filing a candidate for it
+   (this pass was scoped to one candidate); it strengthens the existing R-007.
+
 ## Not checked
 
 - **I did not execute the failing test against the real Windows Credential Manager.**
@@ -315,7 +350,8 @@ behavioural one.
 - **I did not re-run the full suite in the main tree in this pass.** The
   `1564 passed / 45 skipped / 1609 collected` figure I compare against is the
   orchestrator's and the baseline agent's, not a fresh sample from this pass; my own
-  fresh samples are the two scratch-tree runs.
+  fresh samples are the scratch-tree runs (two completed, one died with the native
+  access violation described in E4).
 - **I did not check whether the GitHub-side environment carries
   `SYTHION_OLLAMA_API_KEY`.** The `provider-e2e` job injects
   `secrets.OLLAMA_API_KEY` into that one job's environment
