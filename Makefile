@@ -1,40 +1,65 @@
 # Sythion (Synth) - Test & Development Commands
 # Usage: make <target>
-#   make test          - run full backend test suite
-#   make test-fast     - run backend tests, skip slow/flaky/integration
-#   make test-acceptance - run only acceptance tests
-#   make test-unit     - run only unit tests (skip acceptance)
-#   make test-gui      - run GUI tests only
-#   make test-network  - run network tests only
-#   make lint          - run linting (if configured)
-#   make build         - build frontend + backend
-#   make clean         - clean build artifacts
+#
+# Every test target below states WHAT IT SELECTS. The marker sets are
+# defined by the root pytest.ini and applied by backend/tests/conftest.py;
+# `make check-test-selections` proves that each -m expression below selects a
+# real, non-empty set of tests.
+#
+#   make test                  - the full backend suite (every test under backend/tests)
+#   make test-fast             - the suite without the slow, live-GUI and network tests
+#   make test-acceptance       - the acceptance sub-suite (backend/tests/acceptance)
+#   make test-unit             - the suite without the acceptance sub-suite
+#   make test-gui              - the tests that need a live interactive desktop
+#   make test-network          - the provider-backed E2E tests
+#   make check-test-selections - verify that every -m expression selects a non-empty set
+#   make lint                  - run linting (if configured)
+#   make build                 - build frontend + backend
+#   make clean                 - clean build artifacts
 
-.PHONY: test test-fast test-acceptance test-unit test-gui test-network lint build clean
+.PHONY: test test-fast test-acceptance test-unit test-gui test-network check-test-selections lint build clean
 
-# Default test command - full backend suite
+# Full backend suite - every test under backend/tests.
 test:
 	python -m pytest backend/tests -q
 
-# Fast test: skip slow, flaky, integration, gui, network tests
+# Fast test: the suite without the slow tests, the tests that need a live
+# interactive desktop and the provider-backed network tests.
 test-fast:
-	python -m pytest backend/tests -q -m "not slow and not flaky and not integration and not gui and not network"
+	python -m pytest backend/tests -q -m "not slow and not gui and not network"
 
-# Acceptance tests only
+# Acceptance tests only: the sub-suite under backend/tests/acceptance.
+# Equivalent to `-m acceptance`; the selection-contract guard in
+# backend/tests/conftest.py enforces that the two select the same tests.
 test-acceptance:
 	python -m pytest backend/tests/acceptance -q
 
-# Unit tests only (skip acceptance)
+# Unit tests only: everything except the acceptance sub-suite.
 test-unit:
 	python -m pytest backend/tests -q -m "not acceptance"
 
-# GUI tests only
+# GUI tests only: the tests that need a live interactive Windows desktop and
+# the real UI Automation stack (backend/tests/acceptance/test_gui_fixture.py).
+# `-rs` reports the skip reason when no interactive desktop is available
+# instead of silently reporting it as a pass.
 test-gui:
-	python -m pytest backend/tests -q -m gui
+	python -m pytest backend/tests -q -m gui -rs
 
-# Network tests only
+# Network tests only: the provider-backed E2E tests. They are skipped unless
+# SYTHION_RUN_PROVIDER_E2E=1 and provider credentials are configured, so this
+# target never makes a credentialed provider call by itself. `-rs` reports
+# the skip reason.
 test-network:
-	python -m pytest backend/tests -q -m network
+	python -m pytest backend/tests -q -m network -rs
+
+# Verify that every marker expression this Makefile uses selects a non-empty
+# set of tests. pytest exits 5 for an empty selection, so an empty selection
+# fails this target instead of passing silently.
+check-test-selections:
+	python -m pytest backend/tests -m "not slow and not gui and not network" --collect-only -q
+	python -m pytest backend/tests -m "not acceptance" --collect-only -q
+	python -m pytest backend/tests -m gui --collect-only -q
+	python -m pytest backend/tests -m network --collect-only -q
 
 # Run a single test file
 test-file:
@@ -90,12 +115,13 @@ help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $$1, $$2}'
 
 ## Help descriptions
-test: ## Run full backend test suite
-test-fast: ## Run backend tests, skip slow/flaky/integration/gui/network
-test-acceptance: ## Run only acceptance tests
-test-unit: ## Run only unit tests (skip acceptance)
-test-gui: ## Run GUI tests only
-test-network: ## Run network tests only
+test: ## Run the full backend test suite
+test-fast: ## Run the backend suite without the slow, live-GUI and network tests
+test-acceptance: ## Run the acceptance sub-suite (backend/tests/acceptance)
+test-unit: ## Run the backend suite without the acceptance sub-suite
+test-gui: ## Run the tests that need a live interactive desktop
+test-network: ## Run the provider-backed E2E tests (skipped without credentials)
+check-test-selections: ## Verify that every -m expression selects a non-empty set
 test-file: ## Run a single test file (FILE=...)
 test-fn: ## Run a single test function (FILE=... FN=...)
 test-cov: ## Run tests with coverage report
