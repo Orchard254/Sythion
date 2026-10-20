@@ -546,3 +546,14 @@
 - verdict: ACCEPT
 - reason: A measurement, not a stage transition. The finding is delivered to item 003's implementer with the rebuild instructions. The detector is demonstrated to work on real drift, which is stronger evidence than any amount of reading.
 
+## 2026-10-20 resumed - reviewer - 006 - ACCEPT
+- brief: briefs/006-review-2.md
+- report: reviews/006-r2.md
+- evidence: Review pins f1445575655261351989953ccf3d4247cde40ca1. Lines 26-37 reproduce the credential leak before and its absence after, including zero sentinel hits in console and JUnit XML versus three XML hits before. Lines 74-97 distinguish the per-test-copy negative control from removing isolation entirely. Lines 114-126 report environment comparisons, full-suite outcome delta, and the combined-tree check.
+- coverage: Both blocking findings closed. Review independently reports 1569 passed, 45 skipped and 1614 cases; the delta is readiness failing-to-passing plus three new tests. CI working-directory shape was explicitly not rerun, so the Verifier must cover it.
+- consistency: Reviewed SHA and SENSITIVE tier agree with the recorded branch. The older 1568/1613 expectations are stale. A green clean checkout does not prove the isolation fixture exists; the generated-env negative control must remain part of verification. The follow-up's current FIXED wording is premature until the actual merge and will be reconciled separately.
+- not checked: No real provider run, GitHub Actions, packaged build, or native-crash root cause. Reviewer disclosed proceeding without memory despite AGENTS.md; this is a process violation, not a successful protocol step. Next agent must stop if memory is unavailable. Absence of a vault target after a run does not prove no product-target write occurred; next verification must use 007's guard or a non-delegating product blocker.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Evidence supports both fixes with clearly bounded regression coverage. Advance to independent verification, not merge. Remaining process-env isolation and CI tripwire limits are deferred, not silently treated as solved.
+
