@@ -47,7 +47,7 @@
 - Size: S
 - Risk: low (test-only; the proven fix shape is a monkeypatch on an existing singleton, and the product's behaviour is untouched)
 - Likely files: `backend/tests/test_setup_readiness.py`, `backend/tests/conftest.py`
-- Sensitivity: none
+- Sensitivity: sensitive
 - Domain: none
 - Status: in-review
 
