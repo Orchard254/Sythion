@@ -126,7 +126,15 @@ master
 
 ## Budget for this run
 
-5 merged items.
+**6 merged items.** (Raised from the default 5 on 2026-10-20, with a reason:
+implementing item 001 exposed a pre-existing defect - `backend/.env` is
+gitignored, so `test_setup_readiness.py::test_readiness_states` FAILS in a
+clean checkout, and a GitHub Actions runner is a clean checkout. The pipeline
+item 001 repairs would therefore go RED on its first run for a reason that has
+nothing to do with item 001. The plan for item 001 explicitly forbids fixing
+such a pre-existing failure inside that item, so it becomes its own item (006).
+Shipping a knowingly-red pipeline would defeat the purpose of item 001. The
+raise is one item, not an open-ended extension.)
 
 ## Baseline notes
 
