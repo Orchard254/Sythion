@@ -67,8 +67,8 @@
       "domain": "none"
     },
     "007": {
-      "status": "building",
-      "owner": "implementer-007",
+      "status": "verifying",
+      "owner": "verifier-007",
       "branch": "orchestra/007-no-real-vault-writes",
       "mergeSha": null,
       "round": 1,
