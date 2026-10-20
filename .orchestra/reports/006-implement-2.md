@@ -80,7 +80,7 @@ $ git -C wt-006 status --short --branch
 ## orchestra/006-readiness-test-isolation
 ```
 
-Four scratch trees were used for the proof, all OUTSIDE the repository, and all
+Five scratch trees were used for the proof, all OUTSIDE the repository, and all
 removed again at the end:
 
 ```
@@ -316,8 +316,16 @@ $ git ... diff --stat master...f144557
 
 ### E8 - criterion 5: the full suite
 
-See the table and the delta in "Acceptance criteria". The numbers are in
-"Acceptance criteria" -> criterion 5.
+The full-suite runs, the outcome-SET delta and the two crashes are all in
+"Acceptance criteria" -> criterion 5 and in "Findings" 1. The numbers:
+
+```
+run 1  BASE   (7cf679e) .env absent : 1 failed, 1565 passed, 45 skipped   (371.96s)  exit 1
+run 4  BRANCH (f144557) .env absent : 1569 passed, 45 skipped               (284.27s)  exit 0
+```
+
+1611 triples in the base, 1614 in the branch, and the difference is EXACTLY the
+item's own change (see the delta table in criterion 5).
 
 ### E9 - the sensitivity tier, and that I add NO new credential-shaped match
 
@@ -468,21 +476,63 @@ f144557
 
 | Run | Tree | Code | `backend/.env` | Result |
 |---|---|---|---|---|
-| 1 | `wt-006-base` | base `7cf679e` | absent | `1 failed, 1565 passed, 45 skipped` (exit 1) - only `test_readiness_states` |
-| 2 | `wt-006-post` | `009a455` | absent | `1 failed, 1568 passed, 45 skipped` - the failure is `test_phase95_hardening.py::TestAdmissionAtomicity::test_two_callers_at_boundary_only_one_admits` (a concurrency race, see "Findings" 1) |
+| 1 | `wt-006-base` | base `7cf679e` | absent | `1 failed, 1565 passed, 45 skipped` (371.96s, exit 1) - only `test_readiness_states` |
+| 2 | `wt-006-post` | `009a455` | absent | `1 failed, 1568 passed, 45 skipped` (319.76s, exit 1) - the failure is `test_phase95_hardening.py::TestAdmissionAtomicity::test_two_callers_at_boundary_only_one_admits` (a concurrency race - see "Findings" 1) |
 | 3 | `wt-006-post` | `009a455` | dummy | **native access violation** `0xC0000005`, exit `-1073741819`, at ~35% - the known R-007 crash class |
-| 4 | `wt-006-post` | `f144557` | absent | FINAL_FULL_NOENV |
-| 5 | `wt-006-post` | `f144557` | dummy | FINAL_FULL_DUMMYENV |
+| 4 | `wt-006-post` | **`f144557`** | absent | **`1569 passed, 45 skipped`** (284.27s, **exit 0**) |
+| 5 attempt 1 | `wt-006-post` | **`f144557`** | dummy | **native access violation** `0xC0000005`, exit `-1073741819`, at ~4% |
+| 5 attempt 2 | `wt-006-post` | **`f144557`** | dummy | **`1569 passed, 45 skipped`** (347.32s, **exit 0**) |
 
-Runs 4 and 5 are the re-runs of the final commit; their numbers are in the table
-produced by the command below.
+Runs 4 and 5 are on the FINAL commit; run 5 is the re-run the brief requires after the
+native crash, and **both attempts are recorded above**.
 
 **The delta vs the base** (the plan's required DELTA, on outcome SETS):
 
-DELTA_TABLE
+```
+############ BASE (7cf679e, .env absent)  vs  BRANCH (f144557, .env absent) ############
+A: ...\full-base-noenv.xml -> 1611 triples
+B: ...\full-post2-noenv.xml -> 1614 triples
+--- in A but not in B (A outcome | B outcome) ---
+  backend.tests.test_setup_readiness::test_readiness_states  [failed -> passed]
+--- in B but not in A ---
+  backend.tests.test_setup_readiness::test_readiness_states  [passed -> failed]
+  backend.tests.test_setup_readiness::test_the_clean_settings_snapshot_survives_an_in_place_mutation  [passed -> ABSENT]
+  backend.tests.test_setup_readiness::test_the_readiness_credential_check_follows_the_effective_configuration  [passed -> ABSENT]
+  backend.tests.test_setup_readiness::test_the_suite_does_not_inherit_the_local_env_file  [passed -> ABSENT]
+failures in A: [('backend.tests.test_setup_readiness', 'test_readiness_states', 'failed')]
+failures in B: []
+OUTCOME SETS EQUAL: False
+```
+
+**The difference is EXACTLY the item's own change**: the readiness test moves failed ->
+passed, and the three tests this item adds appear (absent -> passed). Nothing else
+moved. 1611 -> 1614 collected, no test deleted, skipped or marked.
+
+**The environment-level invariant** - the whole suite's outcome set is identical with
+and without a `.env`:
+
+```
+############ BRANCH (f144557) .env ABSENT  vs  BRANCH (f144557) dummy .env PRESENT ############
+A: ...\full-post2-noenv.xml -> 1614 triples
+B: ...\full-post2-dummyenv.xml -> 1614 triples
+--- in A but not in B (A outcome | B outcome) ---
+--- in B but not in A ---
+failures in A: []
+failures in B: []
+OUTCOME SETS EQUAL: True
+```
+
+**On the absolute counts.** The plan quotes a baseline of `1564 passed, 45 skipped`
+(1609 collected). That baseline predates item 004's merge, which added exactly two
+tests (`backend/tests/test_no_tautological_asserts.py`), so the BASE tree measures
+`1565 passed, 45 skipped` (1611 collected) and this branch measures
+`1569 passed, 45 skipped` (1614 collected). The **collected** count is 1611 -> 1614,
+i.e. **+3 = exactly this item's three new tests**; the **passed** count is
+1565 -> 1569, i.e. +3 for the new tests plus the one test that moves from failed to
+passed. The **skipped** count is 45 in both - no test was skipped, marked or deleted.
 
 **The pre-existing native crash and the concurrency flake are NOT mine** - measured,
-not asserted (see "Findings" 1 and 2).
+not asserted (see "Findings" 1).
 
 ### The follow-up the orchestrator must land (criterion 6, second half)
 
@@ -700,12 +750,13 @@ goal wants. I would not narrow it to one field.** I found no counter-evidence.
    `backend/tests/test_phase95_hardening.py`.** Not caused by this change, and I
    measured that rather than asserting it. Run 2 of the full suite failed
    `TestAdmissionAtomicity::test_two_callers_at_boundary_only_one_admits`
-   (`assert 3 <= 2`), and run 3 died with `0xC0000005`. Running that ONE test in
-   ISOLATION, 12 times per tree:
+   (`assert 3 <= 2`), and runs 3 and 5-attempt-1 died with `0xC0000005`. Running that
+   ONE test in ISOLATION, 12 times per tree:
 
    ```
-   tree wt-006-base : pass=9  failed=0  native_crash=3  (12 runs)   <- the BASE tree, none of my changes
-   tree wt-006-post : pass=7  failed=1  native_crash=4  (12 runs)
+   tree wt-006-base (no .env)     : pass=9  failed=0  native_crash=3  (12 runs)   <- the BASE tree, none of my changes
+   tree wt-006-base (dummy .env)  : pass=3  failed=2  native_crash=7  (12 runs)
+   tree wt-006-post (no .env)     : pass=7  failed=1  native_crash=4  (12 runs)
    ```
 
    The BASE tree - which contains none of my commits - crashes natively 3 times out of
@@ -714,6 +765,24 @@ goal wants. I would not narrow it to one field.** I found no counter-evidence.
    `file_roots`, `ollama_api_key` or `selected_model`, and it does not import either
    file this item changes. This is the R-007 crash class the brief warned about, and
    it is item 008's neighbourhood (concurrency), not this item's.
+
+   **Honest caveat on the `.env` correlation.** In my samples the crash rate was
+   higher with the dummy `.env` present than without it (base tree: 7/12 with the
+   dummy `.env` vs 3/12 without; two of the three full-suite runs that had the dummy
+   `.env` crashed, and neither of the two that did not). I can measure the
+   correlation; I cannot demonstrate a MECHANISM by which a dummy `.env` would cause a
+   native sqlite access violation - the crash trace is in SQLAlchemy/sqlite flush and
+   commit paths inside threads, and the dummy `.env` only sets three configuration
+   fields. The sample is small (12 runs), the crash is a known pre-existing condition
+   (R-007) that reproduces in the BASE tree with none of my changes, and it also
+   reproduces with no `.env` at all. I record the numbers rather than explaining them
+   away, and I did not "fix" it: it is outside this item, and the brief forbids
+   touching production code.
+
+   **The bottom line for criterion 5**: on the FINAL commit the suite is
+   `1569 passed, 45 skipped`, exit 0, with and without a `.env`, and the outcome sets
+   are identical. The crash and the concurrency flake are pre-existing, measured, and
+   reproducible without this item's changes.
 
 2. **The classifier counts the word `checkout` as a `payments` pattern** (it splits
    identifiers on hyphens, so `clean-checkout` matches). Two of my new messages used
@@ -792,11 +861,21 @@ goal wants. I would not narrow it to one field.** I found no counter-evidence.
 * **The developer's tree was NOT run with the branch code**, and the developer's real
   `backend/.env` was never read, copied, moved, renamed, deleted or printed. The
   "with a `.env` present" half of every proof is the DUMMY `.env` in a scratch tree.
+* **`make` is NOT installed on this machine**, so the Makefile's recipes were run
+  VERBATIM instead of through `make`:
+  ```
+  $ make --version
+  make : The term 'make' is not recognized as the name of a cmdlet, function, script
+  file, or operable program.
+  ```
+  The recipe bodies are `python -m pytest backend/tests -q` (and the marker
+  variants), which is exactly what was executed - through `run_env.py`, which wraps
+  `python -m pytest` with the `SYTHION_*` scrub. No `make` target was run, and
+  `make clean` was not run.
 * **The packaged/installed product, the sidecar, the Tauri shell and the release
-  payload were not tested.** No migration was run, no `make` target was run
-  (`make` is NOT installed on this machine - the recipe commands were run verbatim
-  instead), `scripts/stage_python_runtime.py` and `npx tauri build` were not run.
-  Nothing was pushed, deployed or published.
+  payload were not tested.** No migration was run, no
+  `scripts/stage_python_runtime.py` and no `npx tauri build`. Nothing was pushed,
+  deployed or published.
 * **Item 002's own findings were not verified.** I used its `conftest.py`, `pytest.ini`
   and `backend/tests/acceptance/test_gui_fixture.py` only as inputs to the combined-tree
   experiment.
@@ -822,8 +901,8 @@ goal wants. I would not narrow it to one field.** I found no counter-evidence.
   `probe_roots.py`, `probe_mechanism.py`, `disable_isolation.py`, `break_endpoint.py`,
   `write_dummy_env.py`, `blob_tail.py`, `classify_diff.py`, `build_combined.py`,
   `probe_inplace.py`, `probe_carveout.py`, `run_full_suite.ps1`,
-  `run_full_suite2.ps1`, `run_final_checks.ps1`), the JUnit XMLs and the run logs. All
-  OUTSIDE the repository; none committed.
+  `run_full_suite2.ps1`, `run_full_suite3.ps1`, `run_final_checks.ps1`), the JUnit XMLs
+  and the run logs. All OUTSIDE the repository; none committed.
 * `wt-006-pre`, `wt-006-base`, `wt-006-post`, `wt-006-teeth`, `wt-006-combined` -
   scratch trees OUTSIDE the repository, all removed again.
 * The DUMMY `backend/.env` files inside the scratch trees - placeholders only, all

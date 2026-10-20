@@ -12,22 +12,22 @@
       "domain": "infra"
     },
     "002": {
-      "status": "in-review",
-      "owner": "reviewer-002-r2",
+      "status": "merged",
+      "owner": "verifier-002",
       "branch": "orchestra/002-test-selection-truth",
-      "mergeSha": null,
+      "mergeSha": "76e4f14",
       "round": 1,
       "verifyRounds": 0,
       "conflicts": 0,
-      "sensitivity": "none",
+      "sensitivity": "sensitive+external",
       "domain": "none"
     },
     "003": {
-      "status": "planned",
-      "owner": "implementer-003",
-      "branch": null,
+      "status": "in-review",
+      "owner": "reviewer-003",
+      "branch": "orchestra/003-docs-baseline",
       "mergeSha": null,
-      "round": 0,
+      "round": 1,
       "verifyRounds": 0,
       "conflicts": 0,
       "sensitivity": "none",
@@ -56,10 +56,10 @@
       "domain": "infra"
     },
     "006": {
-      "status": "in-review",
-      "owner": "reviewer-006-r2",
+      "status": "merged",
+      "owner": "verifier-006",
       "branch": "orchestra/006-readiness-test-isolation",
-      "mergeSha": null,
+      "mergeSha": "82a3aa7988c9b97a171964f515b71782bfb2ae63",
       "round": 1,
       "verifyRounds": 0,
       "conflicts": 0,
@@ -67,10 +67,10 @@
       "domain": "none"
     },
     "007": {
-      "status": "verifying",
+      "status": "merged",
       "owner": "verifier-007",
       "branch": "orchestra/007-no-real-vault-writes",
-      "mergeSha": null,
+      "mergeSha": "6424dd489239ce7d70107fa49b96ccaaf79d974b",
       "round": 1,
       "verifyRounds": 0,
       "conflicts": 0,

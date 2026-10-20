@@ -5,8 +5,13 @@ Maps to docs/ACCEPTANCE_TESTS.md SEC-2 (No secrets in SQLite; Secrets in
 Credential Manager mock) and the architecture rule that secrets never enter
 .env, SQLite, logs, task events, exports, or model context.
 
-These tests run against the in-memory secret backend so the real Windows
-Credential Manager vault is never touched.
+Most of these tests run against the in-memory secret backend. The exception is
+``test_credential_manager_round_trip``, which drives the REAL Windows
+Credential Manager store - but against a TEST-SCOPED target
+(``Sythion (Synth) [TEST]/...``), never the product's own
+``Sythion (Synth)/ollama_api_key``. ``conftest.py`` installs a guard that
+fails any acceptance test attempting to write to or delete a product-prefixed
+credential target.
 """
 
 import pytest
@@ -22,6 +27,17 @@ from backend.adapters.ollama_adapter import OllamaCloudAdapter
 from .conftest import ACCEPTANCE_CONTROL_TOKEN
 
 SECRET_NAME = "ollama_api_key"
+
+# Snapshot of the PRODUCT credential target prefix, taken at import time. The
+# round-trip test below monkeypatches ``secrets_module._CM_TARGET_PREFIX``, so
+# this MUST be a snapshot: comparing a composed target against the *patched*
+# attribute would be a tautology.
+_PRODUCT_TARGET_PREFIX = secrets_module._CM_TARGET_PREFIX
+
+# Test-scoped prefix. It is deliberately NOT under the product prefix - the
+# character after "Sythion (Synth)" is a space, not a "/" - and it is visibly
+# test-scoped to a human browsing the Windows Credential Manager.
+_TEST_TARGET_PREFIX = "Sythion (Synth) [TEST]/"
 
 
 @pytest.fixture
@@ -125,23 +141,64 @@ def test_resolve_returns_empty_when_unset(memory_secret_store):
 # --- Real Credential Manager round trip (Windows only) -----------------------
 
 
-def test_credential_manager_round_trip(tmp_path):
+def test_credential_manager_round_trip(monkeypatch):
     """The production backend writes/reads via win32cred when available.
 
     Skipped automatically on machines without pywin32; on Windows this verifies
-    the real vault round trip, then cleans up.
+    the real vault round trip against a TEST-SCOPED target
+    (``Sythion (Synth) [TEST]/ollama_api_key``) - never the product's own
+    ``Sythion (Synth)/ollama_api_key`` - then cleans up after itself.
     """
     try:
-        import win32cred  # noqa: F401
+        import win32cred
     except ImportError:
         pytest.skip("pywin32 not available")
 
+    # Pin the target prefix for the duration of this test. ``_cm_target()``
+    # reads the module global at call time, so the REAL win32cred store is
+    # still exercised - only the target NAME changes.
+    monkeypatch.setattr(secrets_module, "_CM_TARGET_PREFIX", _TEST_TARGET_PREFIX)
+
     store = secrets_module.CredentialManagerStore()
+    # Pin the active store so ``has_secret()`` / ``list_secret_names()`` answer
+    # from the real Credential Manager instead of a MemoryStore that another
+    # test may have left behind. ``monkeypatch`` restores the previous value.
+    monkeypatch.setattr(secrets_module, "_store", store)
+
+    # The composed target must be the test-scoped one AND must not sit under
+    # the PRODUCT prefix (asserted against the import-time snapshot, not
+    # against the attribute this test just patched).
+    target = secrets_module._cm_target(SECRET_NAME)
+    assert target == "Sythion (Synth) [TEST]/ollama_api_key"
+    assert not target.startswith(_PRODUCT_TARGET_PREFIX)
+
     store.set(SECRET_NAME, "sk-roundtrip-zz")
     try:
         assert store.get(SECRET_NAME) == "sk-roundtrip-zz"
         assert secrets_module.has_secret(SECRET_NAME) is True
         assert SECRET_NAME in secrets_module.list_secret_names()
+
+        # Read-only self-check (anti-mock tripwire): the credential must really
+        # be in the REAL vault. A MemoryStore, a mocked ``win32cred`` or a
+        # write that never happened all fail here. Only target NAMES are
+        # inspected - no credential blob is read.
+        #
+        # The enumeration is deliberately UNFILTERED and filtered here.
+        # Measured on this machine: a PARTIAL prefix - a directory-style
+        # prefix of a credential that demonstrably exists included - makes
+        # ``CredEnumerate(prefix, 0)`` return winerror 1168, whereas the
+        # EXACT-MATCH form ``CredEnumerate(<exact target name>, 0)`` works
+        # for every existing credential. The unfiltered form is used because
+        # it cannot be defeated by either quirk, and it really does see the
+        # entry, which is what makes an "absent" observation non-vacuous.
+        try:
+            enumerated = win32cred.CredEnumerate(None, 0)
+        except Exception as exc:  # pywintypes.error 1168 when nothing matches
+            pytest.fail(
+                "the test-scoped credential was not found in the real Windows "
+                f"Credential Manager: {exc!r}"
+            )
+        assert target in [entry.get("TargetName") for entry in enumerated]
     finally:
         store.delete(SECRET_NAME)
     assert store.get(SECRET_NAME) == ""

@@ -137,8 +137,8 @@ reasoning about it.
    Credential Manager entry. Safe before 007 merges: `--collect-only` (no
    test bodies execute), the D1/D2 sandbox Makefiles outside the repository,
    and `check_doc_paths.py` (pure file reading).
-5. **006 adds 2 tests; 002 and 007 add 0.** So the merged tree collects
-   **1613** where `master` collects **1611**. Any measurement taken on a tree
+5. **006 adds 3 tests; 002 and 007 add 0.** So the merged tree collects
+   **1614** where `master` collects **1611**. Any measurement taken on a tree
    without 006 is stale by exactly those two, and item 003's own `--check`
    mode is designed to say so.
 
