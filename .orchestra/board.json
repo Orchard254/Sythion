@@ -1,15 +1,15 @@
 {
   "items": {
-    "001": { "status": "ready", "owner": null, "branch": null, "round": 0, "verifyRounds": 0, "conflicts": 0, "sensitivity": "infra" },
-    "002": { "status": "ready", "owner": null, "branch": null, "round": 0, "verifyRounds": 0, "conflicts": 0, "sensitivity": "none" },
+    "001": { "status": "planned", "owner": "planner-001", "branch": null, "round": 0, "verifyRounds": 0, "conflicts": 0, "sensitivity": "infra" },
+    "002": { "status": "planned", "owner": "planner-002", "branch": null, "round": 0, "verifyRounds": 0, "conflicts": 0, "sensitivity": "none" },
     "003": { "status": "ready", "owner": null, "branch": null, "round": 0, "verifyRounds": 0, "conflicts": 0, "sensitivity": "none" },
-    "004": { "status": "ready", "owner": null, "branch": null, "round": 0, "verifyRounds": 0, "conflicts": 0, "sensitivity": "none" },
+    "004": { "status": "planned", "owner": "planner-004", "branch": null, "round": 0, "verifyRounds": 0, "conflicts": 0, "sensitivity": "none" },
     "005": { "status": "ready", "owner": null, "branch": null, "round": 0, "verifyRounds": 0, "conflicts": 0, "sensitivity": "none" }
   },
   "roles": {
     "researcher": { "state": "idle", "task": null, "since": null },
     "scout": { "state": "idle", "task": null, "since": null },
-    "planner": { "state": "working", "task": "001,002,004", "since": "2026-10-20T16:20:00Z" },
+    "planner": { "state": "idle", "task": null, "since": null },
     "implementer-1": { "state": "idle", "task": null, "since": null },
     "implementer-2": { "state": "idle", "task": null, "since": null },
     "reviewer": { "state": "idle", "task": null, "since": null },
