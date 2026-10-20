@@ -325,6 +325,38 @@ def test_the_suite_does_not_inherit_the_local_env_file():
     import backend.core.config as core_config
 
     clean = core_config.Settings(_env_file=None)
-    assert core_config.settings.ollama_api_key == clean.ollama_api_key
-    assert core_config.settings.selected_model == clean.selected_model
-    assert core_config.settings.file_roots == clean.file_roots
+    for name in ("ollama_api_key", "selected_model", "file_roots"):
+        # Compare WITHOUT rendering the value. pytest renders BOTH operands of
+        # ``assert a == b``, and one of those operands IS the developer's
+        # credential, so such a failure would print the key into the terminal
+        # and into any JUnit XML the run writes. Only the BOOLEAN is ever
+        # displayed, so a failure reveals THAT the values differ and never
+        # WHAT they are.
+        same = getattr(core_config.settings, name) == getattr(clean, name)
+        assert same is True, f"{name} differs from the clean-checkout value"
+
+
+def test_the_clean_settings_snapshot_survives_an_in_place_mutation(clean_settings_snapshot):
+    """The shared clean snapshot must survive a test that mutates in place.
+
+    The isolation fixture hands EVERY TEST its own copy of the list values, so
+    a test that appends to ``settings.file_roots`` in place cannot reach the
+    snapshot the NEXT test is isolated from. Without the per-test copy the
+    snapshot is corrupted for every later test in the session - and this is
+    the safety-gate field, not a harmless list.
+    """
+    import backend.core.config as core_config
+
+    leaked = "C:/leaked-by-a-previous-test"
+    original = list(core_config.settings.file_roots)
+    try:
+        core_config.settings.file_roots.append(leaked)
+        # The in-place mutation happened ...
+        assert leaked in core_config.settings.file_roots
+        # ... and it did NOT reach the shared snapshot ...
+        assert leaked not in clean_settings_snapshot["file_roots"]
+        # ... because the fixture handed out a COPY, not the snapshot itself.
+        assert core_config.settings.file_roots is not clean_settings_snapshot["file_roots"]
+    finally:
+        # Leave the process exactly as it was found.
+        core_config.settings.file_roots[:] = original
