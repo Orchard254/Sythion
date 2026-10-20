@@ -761,8 +761,19 @@ class TestProviderE2EGated:
                 pkt = svc.build_specialist_packet(res["delegations"][idx])
                 reasoner = SpecialistReasoner(db=sess, context_packet=pkt, allowed_tools=[], budget={"steps": 3, "model_calls": 3})
                 analysis = await reasoner.analyze()
-                # Attribute correctly
-                assert analysis.get("delegation_id") is None or True  # reasoner returns findings
+                # Attribute correctly: the reasoner returns either a normalized
+                # artifact or a fallback artifact, and both have a guaranteed
+                # shape. Delegation attribution is the CALLER's job
+                # (backend/agents/coordination.py attaches delegation_id when
+                # it builds the evidence bundle; SpecialistContextPacket has no
+                # delegation field), so the reasoner's artifact must not carry
+                # one - an explicit negative assertion.
+                assert isinstance(analysis, dict)
+                assert isinstance(analysis.get("findings"), list)
+                assert isinstance(analysis.get("fallback"), bool)
+                confidence = analysis.get("confidence")
+                assert confidence is None or isinstance(confidence, float)
+                assert analysis.get("delegation_id") is None
                 return analysis
             a_res, b_res = await asyncio.gather(run_reasoner(0), run_reasoner(1))
             assert a_res is not None and b_res is not None
