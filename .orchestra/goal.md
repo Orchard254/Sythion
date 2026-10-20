@@ -143,11 +143,36 @@ master
   are `concurrency` and `gated_soak`. The markers the Makefile selects on are
   applied to almost no test: `gui`, `network` and `acceptance` to zero (R-003).
   pytest-asyncio currently reports `asyncio: mode=Mode.STRICT`.
-- The suite is NOT deterministic on this machine. One run aborted with
-  `Windows fatal exception: code 0x80040155` (a COM `CLASS_E_CLASSNOTAVAILABLE`
-  fault) inside the `sythion-uia-mta` worker thread
-  (`backend/tools/gui_tools.py`); an identical second run completed normally
-  with `1564 passed, 45 skipped, 1609 collected` (R-007).
+- The suite is NOT deterministic on this machine. Across six observed full-suite
+  runs there were **2 native crashes of two different kinds** (R-007):
+  - **Fault A** - a BURST of 294 native COM faults (277x `0x80040155`
+    CLASS_E_CLASSNOTAVAILABLE, 18x `0x8001010d` RPC_E_INVALID_REFERENCE) on the
+    single `sythion-uia-mta` thread inside `_UIADriver._find_window`
+    (`backend/tools/gui_tools.py:417`/`:426`, reached via `:403` observe from
+    the dispatch lambdas at `:1537` and `:1749`). It does **not** kill the
+    process; the captured run continued another 23 percentage points.
+  - **Fault B** - `Windows fatal exception: access violation` (`0xC0000005`)
+    inside native sqlite3, in the two `tfn` threads of
+    `backend/tests/test_phase105_concurrency.py::TestBudgetAtomicity::test_concurrent_budget_does_not_exceed`
+    -> `backend/agents/coordination.py:1127 atomic_commit_spent`. It **does**
+    kill the interpreter, with no pytest summary.
+  - The smallest reproducer is the FULL SUITE. The single test that reaches
+    Fault A's frame was clean in 30/30 separate-process runs and Fault B's
+    test in 25/25, so a single-test loop will report "not reproducible" and
+    send the next agent down the wrong path.
+  - `CLSID_CUIAutomation` is registered `ThreadingModel = Both`, so the
+    apartment-mismatch explanation for `CLASS_E_CLASSNOTAVAILABLE` is refuted.
+- **Measured baseline** (CPython 3.14.7, Windows): full suite `1564 passed,
+  45 skipped`, `1609 collected`, wall time **389-436 s** (two clean runs;
+  the Researcher's `533 s` is refuted). Acceptance suite `191 passed,
+  2 skipped` (the documented `196` is refuted; the claim that the two skips
+  ARE the symlink-privilege skips is confirmed). Frontend lint exit 0; vitest
+  5 files / 49 tests passed.
+- **The warning count is NOT a stable baseline** (407,733 / 406,252 / 407,719
+  across three runs of an unchanged tree). Do not quote it in a document.
+- A faulthandler dump is a snapshot of ALL threads. The faulting thread must
+  be identified from the dump, not from the main thread's stack - attributing
+  a crash to "the test the main thread was running" is a misreading.
 - The local interpreter is CPython **3.14.7**; CI pins **3.11**. Differences
   between the two are a plausible source of local-only failures and must not be
   reported as project defects without a check.
