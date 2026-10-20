@@ -34,10 +34,10 @@
       "domain": "none"
     },
     "004": {
-      "status": "accepted",
-      "owner": "verifier-004",
+      "status": "merged",
+      "owner": "committer-2",
       "branch": "orchestra/004-real-assertions",
-      "mergeSha": null,
+      "mergeSha": "4d827c0ee744c170bf81a74c4d75fc1aff6d5104",
       "round": 0,
       "verifyRounds": 0,
       "conflicts": 0,
