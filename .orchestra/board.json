@@ -56,8 +56,8 @@
       "domain": "infra"
     },
     "006": {
-      "status": "ready",
-      "owner": null,
+      "status": "planned",
+      "owner": "planner-006",
       "branch": null,
       "mergeSha": null,
       "round": 0,
@@ -67,8 +67,8 @@
       "domain": "none"
     },
     "007": {
-      "status": "ready",
-      "owner": null,
+      "status": "planned",
+      "owner": "planner-007",
       "branch": null,
       "mergeSha": null,
       "round": 0,
