@@ -151,3 +151,88 @@ def tool_executor():
 def acceptance_control_token():
     """Standard token for acceptance tests."""
     return "acceptance-control-token"
+
+
+# ---- Ambient ``backend/.env`` isolation -------------------------------------
+#
+# ``backend/core/config.py`` points pydantic-settings at ``<repo>/backend/.env``
+# (``model_config["env_file"]``) and builds the ``settings`` singleton ONCE, at
+# import time. ``backend/.env`` is gitignored, so it exists in a developer's
+# working tree and in NO clean checkout and on NO CI runner. A test that
+# inherits it is a test whose result depends on a file that is deliberately not
+# in the repository - the suite would be RED on a fresh clone for a reason
+# that has nothing to do with the code under test.
+#
+# Contract: ``_LOCAL_ENV_FIELDS`` names the fields a developer's ``.env`` can
+# supply. This block is the single place where the suite stops inheriting a
+# local working tree. To extend the isolation, add the field name to
+# ``_LOCAL_ENV_FIELDS`` - the snapshot and the fixture below pick it up.
+_LOCAL_ENV_FIELDS = ("ollama_api_key", "selected_model", "file_roots")
+
+try:
+    from backend.core.config import Settings
+except ImportError:  # pragma: no cover - the standalone ``backend/`` layout
+    from core.config import Settings
+
+
+def _clean_settings_snapshot():
+    """The values ``_LOCAL_ENV_FIELDS`` have in a CLEAN checkout.
+
+    Built with the env FILE disabled (``Settings(_env_file=None)``), so the
+    developer's ``backend/.env`` is never read to obtain these values: the
+    result is the process environment's ``SYTHION_*`` value when that variable
+    is exported, otherwise the field default.
+
+    A list value is copied out of ``clean``, so the snapshot does not alias
+    ``clean``'s own list. That copy is NOT on its own enough to protect the
+    snapshot: the snapshot is module-level and shared by every test in the
+    session, so the fixture below hands EVERY TEST its own fresh copy of the
+    list values. That per-test copy is what stops a test which mutates
+    ``settings.file_roots`` IN PLACE (``.append(...)``) from corrupting the
+    snapshot the NEXT test is isolated from.
+    """
+    clean = Settings(_env_file=None)
+    snapshot = {}
+    for name in _LOCAL_ENV_FIELDS:
+        value = getattr(clean, name)
+        snapshot[name] = list(value) if isinstance(value, list) else value
+    return snapshot
+
+
+_CLEAN_SETTINGS = _clean_settings_snapshot()
+
+
+@pytest.fixture
+def clean_settings_snapshot():
+    """The shared snapshot of the CLEAN values the isolation fixture uses.
+
+    Exposed so a test can prove that the snapshot itself survives a test which
+    mutates one of the isolated list values IN PLACE.
+    """
+    return _CLEAN_SETTINGS
+
+
+@pytest.fixture(autouse=True)
+def _isolate_local_env_settings(monkeypatch, request):
+    """Stop the suite inheriting a developer's gitignored ``backend/.env``.
+
+    The assignment is undone by ``monkeypatch`` at teardown, so it cannot leak
+    into another test. Only CLEAN values are ever assigned - in a clean
+    checkout ``""``, ``""`` and ``[]`` - so this fixture can never introduce a
+    credential into the test process.
+    """
+    if request.node.get_closest_marker("provider_e2e") is not None:
+        # Deliberate carve-out: the two provider-e2e modules gate themselves
+        # with ``pytestmark ... skipif(not _provider_ready())``, which is
+        # evaluated at IMPORT time - before any fixture runs. Neutralising the
+        # key here would make that gate pass (it would see the developer's
+        # key) and then fail the live provider call with no credential. That
+        # run is explicitly opt-in (``SYTHION_RUN_PROVIDER_E2E=1``) and needs a
+        # real credential, so those modules keep the ambient value.
+        return
+    for name, value in _CLEAN_SETTINGS.items():
+        # A FRESH copy per test. The snapshot is shared by the whole session,
+        # so handing out the snapshot's own list would let a test that mutates
+        # ``settings.file_roots`` IN PLACE (``.append(...)``) corrupt the value
+        # every LATER test is isolated from.
+        monkeypatch.setattr(settings, name, list(value) if isinstance(value, list) else value)

@@ -143,6 +143,11 @@ def test_inference_success_and_failure(monkeypatch):
 
 def test_readiness_states(monkeypatch):
     set_secret_store_for_testing(MemoryStore())
+    # The credential is a CONSTANT of this test, not a variable: it is pinned
+    # here so the readiness answer never depends on the developer's gitignored
+    # ``backend/.env``. The pin is function-scoped and covers both blocks
+    # below, so they differ ONLY in what this test is about.
+    _pin_test_credential(monkeypatch)
     # healthy
     provider = _Provider(healthy=True)
     client, previous_token, backend_main = _client(monkeypatch, provider=provider, selected="m1")
@@ -157,6 +162,8 @@ def test_readiness_states(monkeypatch):
         res = client.get("/api/v1/setup/readiness")
         assert res.status_code == 200
         body = res.json()
+        # The tenth check is STATED here, not inherited from ambient state.
+        assert body["checks"]["ollama_api_key_ok"] is True
         assert body["full_ready"] is True
     finally:
         backend_main.control_token = previous_token
@@ -169,8 +176,11 @@ def test_readiness_states(monkeypatch):
     try:
         res = client.get("/api/v1/setup/readiness")
         body = res.json()
-        assert body["full_ready"] is False
+        # A CONFIGURED credential is not readiness: the model is not selected
+        # and nothing was verified, so the world is still incomplete.
+        assert body["checks"]["ollama_api_key_ok"] is True
         assert body["checks"]["selected_model_ok"] is False
+        assert body["full_ready"] is False
     finally:
         backend_main.control_token = previous_token
         app.dependency_overrides.clear()
@@ -202,6 +212,25 @@ def _clear_local_env_key(monkeypatch):
     import backend.core.config as core_config
 
     monkeypatch.setattr(core_config.settings, "ollama_api_key", "")
+
+
+def _pin_test_credential(monkeypatch, value="test-key"):
+    """Pin a NON-SECRET placeholder credential on the effective settings.
+
+    The exact mirror of :func:`_clear_local_env_key` in the other direction.
+    ``backend/.env`` is developer-local and never shipped, and the
+    ``SYTHION_OLLAMA_API_KEY`` shell variable is a developer convenience, so a
+    test that asserts the READY state has to supply the credential itself
+    instead of borrowing the developer's working tree.
+
+    ``"test-key"`` is this repository's existing placeholder idiom (see
+    ``backend/tests/acceptance/test_onboarding.py:55``) and is in the release
+    payload checker's placeholder vocabulary, so it can never be mistaken for a
+    credential. ``monkeypatch`` undoes the assignment at teardown.
+    """
+    import backend.core.config as core_config
+
+    monkeypatch.setattr(core_config.settings, "ollama_api_key", value)
 
 
 def test_a_clean_installation_without_credentials_is_not_ready(monkeypatch):
@@ -253,3 +282,81 @@ def test_the_supported_credential_flow_makes_the_key_configured(monkeypatch):
         backend_main.control_token = previous_token
         app.dependency_overrides.clear()
         set_secret_store_for_testing(None)
+
+
+def test_the_readiness_credential_check_follows_the_effective_configuration(monkeypatch):
+    """The credential check must answer for the credential that is in effect.
+
+    With no credential configured the check must be False; with one configured
+    it must be True. Both directions are exercised, so a hard-coded answer
+    fails this test, and the response must never echo the credential back.
+    """
+    set_secret_store_for_testing(MemoryStore())
+    provider = _Provider(healthy=True, models=[{"name": "m1"}])
+    client, previous_token, backend_main = _client(monkeypatch, provider=provider, selected=None)
+    try:
+        _clear_local_env_key(monkeypatch)
+        cleared = client.get("/api/v1/setup/readiness")
+        assert cleared.status_code == 200
+        assert cleared.json()["checks"]["ollama_api_key_ok"] is False
+
+        _pin_test_credential(monkeypatch)
+        pinned = client.get("/api/v1/setup/readiness")
+        assert pinned.status_code == 200
+        assert pinned.json()["checks"]["ollama_api_key_ok"] is True
+        # The endpoint reports PRESENCE, never the credential itself.
+        assert "test-key" not in pinned.text
+    finally:
+        backend_main.control_token = previous_token
+        app.dependency_overrides.clear()
+        set_secret_store_for_testing(None)
+
+
+def test_the_suite_does_not_inherit_the_local_env_file():
+    """The effective settings must be the ones a CLEAN checkout has.
+
+    The isolation in ``backend/tests/conftest.py`` assigns the values a
+    ``Settings`` instance has when the env FILE is disabled
+    (``Settings(_env_file=None)``), so a developer's gitignored
+    ``backend/.env`` cannot leak into the suite. This is a DISCRIMINATOR in a
+    tree that HAS a ``backend/.env`` and a tautology in a clean checkout: it
+    fails if the isolation is removed or a field is dropped from the list.
+    """
+    import backend.core.config as core_config
+
+    clean = core_config.Settings(_env_file=None)
+    for name in ("ollama_api_key", "selected_model", "file_roots"):
+        # Compare WITHOUT rendering the value. pytest renders BOTH operands of
+        # ``assert a == b``, and one of those operands IS the developer's
+        # credential, so such a failure would print the key into the terminal
+        # and into any JUnit XML the run writes. Only the BOOLEAN is ever
+        # displayed, so a failure reveals THAT the values differ and never
+        # WHAT they are.
+        same = getattr(core_config.settings, name) == getattr(clean, name)
+        assert same is True, f"{name} differs from the value a clean tree has"
+
+
+def test_the_clean_settings_snapshot_survives_an_in_place_mutation(clean_settings_snapshot):
+    """The shared clean snapshot must survive a test that mutates in place.
+
+    The isolation fixture hands EVERY TEST its own copy of the list values, so
+    a test that appends to ``settings.file_roots`` in place cannot reach the
+    snapshot the NEXT test is isolated from. Without the per-test copy the
+    snapshot is corrupted for every later test in the session - and this is
+    the safety-gate field, not a harmless list.
+    """
+    import backend.core.config as core_config
+
+    leaked = "C:/leaked-by-a-previous-test"
+    original = list(core_config.settings.file_roots)
+    try:
+        core_config.settings.file_roots.append(leaked)
+        # The in-place mutation happened ...
+        assert leaked in core_config.settings.file_roots
+        # ... and it did NOT reach the shared snapshot ...
+        assert leaked not in clean_settings_snapshot["file_roots"]
+        # ... because the fixture handed out a COPY, not the snapshot itself.
+        assert core_config.settings.file_roots is not clean_settings_snapshot["file_roots"]
+    finally:
+        # Leave the process exactly as it was found.
+        core_config.settings.file_roots[:] = original
