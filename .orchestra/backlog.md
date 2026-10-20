@@ -64,7 +64,7 @@
 - Size: M
 - Risk: low (documentation plus two small read-only scripts; no runtime behaviour, no payload, no auth surface)
 - Likely files: `scripts/measure_test_baseline.py`, `scripts/check_doc_paths.py`, `README.md`, `docs/TESTING.md`, `docs/PROJECT_STATUS.md`, `docs/ROADMAP.md`, `docs/OPERATIONS.md`, `docs/CODEBASE_BOUNDARIES.md`, `backend/services/README.md`
-- Sensitivity: none
+- Sensitivity: sensitive
 - Domain: none
 - Status: verifying
 

@@ -122,7 +122,7 @@ design and is documented in the report; note it as a limit, not a defect.
 
 **Your file's FIRST LINE must be exactly `VERDICT: FIXED` or `VERDICT: NOT
 FIXED` or `VERDICT: REGRESSED`.** Nothing may precede it. It must also carry
-a line `- Reviewed commit: <full sha>` and a line `- Tier: none`.
+a line `- Reviewed commit: <full sha>` and a line `- Tier: SENSITIVE`.
 
 **WRITE THE REPORT EARLY AND INCREMENTALLY.** Write the file as soon as you
 have your first result, then append each subsequent result as you obtain it.
@@ -188,7 +188,7 @@ disk is the deliverable that survives an interruption.
 
 ```
 - Reviewed commit: <full sha>
-- Tier: none
+- Tier: SENSITIVE
 
 # Verification of 003
 
