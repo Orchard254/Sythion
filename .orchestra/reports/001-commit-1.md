@@ -290,8 +290,9 @@ PS> git merge-base --is-ancestor 7c478d1 master ; $LASTEXITCODE
 - (the orchestrator mirrors this into `board.json` - `items."001".status` must become
   `merged`; at the time of writing, `board.json` still said `accepted` and carries the
   orchestrator's own in-flight edits, which I did not touch)
-- `backlog.md`: item 001's `- Status:` line changed `building` -> `merged`
+- `backlog.md`: item 001's `- Status:` line changed `accepted` -> `merged`
 - `log.md`: one line appended for the merge
+- committed on `master` as `2a9705e` (three `.orchestra/` files only; `board.json` untouched)
 
 ## Cleanup
 
@@ -351,11 +352,13 @@ PS> git merge-base --is-ancestor 7c478d1 master ; $LASTEXITCODE
   the Verifier did, on the identical content.
 - **`actionlint` / a GitHub Actions schema validator was not run** (not installed on this
   machine). The merged file was validated with PyYAML and by reading back every step's keys.
-- **I did not commit the `.orchestra/` files** the brief asked me to write (report,
-  `backlog.md`, `log.md`) beyond leaving them in the working tree for the orchestrator's own
-  state commit; the only commit I made on `master` is the merge itself. `board.json` was **not**
-  touched - it belongs to the orchestrator, and it carried the orchestrator's own uncommitted
-  edits while I worked.
+- **I did not touch `board.json`** - it belongs to the orchestrator, and it carried the
+  orchestrator's own uncommitted edits while I worked. `items."001".status` must still be
+  mirrored to `merged` by the orchestrator. The three `.orchestra/` files the brief asked me to
+  write (this report, `backlog.md`'s status line, `log.md`'s merge line) are committed on
+  `master` as `2a9705e chore(orchestra): item 001 merged into master (merge 7c478d1), committer
+  report`; nothing else of the orchestrator's was included in that commit, and
+  `.orchestra/reports/002-implement-1.md` (another item's untracked report) was left alone.
 - **The rebase target was `c407899`, not `c9fc0f1`** - see the note in Evidence 2. The
   orchestrator committed `c9fc0f1` between the two steps; the merge picked it up with no
   conflict and the resulting tree is identical to a rebase onto `c9fc0f1`.
