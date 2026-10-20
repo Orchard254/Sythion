@@ -522,3 +522,27 @@
 - reason: The last review round clears the item: all three findings closed by reproduction, every previously-established property re-measured with the Reviewer's own numbers, the cross-item conflict reproduced and resolved correctly, and no credentialed call made. ACCEPTED; item 002 goes to the Verifier.
   **THE REVIEWER'S FIVE NON-BLOCKING FINDINGS ARE QUEUED, and one of them is worth naming.** Its first finding is that `backend/tests/test_phase115_soak.py:1` - a file this item was NOT permitted to write - still has the module docstring "Gated soak test". That is the same class of false statement the item exists to remove, sitting one line away from the description the item did fix. The Reviewer is right that it is not a criterion failure and that the item's own file is truthful; the orchestrator records it as a follow-up rather than reopening a closed item for a one-line change in a file the item never owned.
 
+
+## 2026-10-20 02:55 - orchestrator - 000 - ACCEPT
+- brief: briefs/003-implement-1.md
+- report: n/a - a mid-flight measurement of item 003's in-progress work
+- note: the drift detector PROVED ITSELF on real drift, and the orchestrator's own count was stale
+- evidence: **THE `--check-collected` DETECTOR CAUGHT REAL DRIFT, and it was drift the orchestrator had ALREADY WRITTEN DOWN AS THE TRUTH.** This is the strongest possible evidence that item 003's core mechanism works, and it happened by accident.
+  **What happened.** Item 003's implementer measured the merged tree and wrote **`1568 passed, 45 skipped` (1613 collected)** into the documents. The orchestrator then rebuilt the merged tree itself - merge `007`, then `002`, then `006`, resolving the conftest conflict by keeping both sides - and the resulting tree collects **1614**, not 1613.
+  **The reason is item 006's REDO round.** When item 003 measured, item 006 had two new tests. Item 006's redo round then added a **third** - `test_the_clean_settings_snapshot_survives_an_in_place_mutation` - to pin the snapshot-corruption fix. So the count moved by one between the measurement and now.
+  **The detector caught it, with a precise message.** Running the implementer's own script against the rebuilt tree:
+  ```
+  python scripts/measure_test_baseline.py --check-collected
+  -> README.md:103: states '1613' collected but the measurement collected 1614
+  -> exit 1
+  ```
+  That is the design working exactly as specified: the cheap ~100-second drift detector found a one-test drift in a document that a human had written with a measurement in hand, and named the file and the line. **The whole point of item 003 was that "fixing the docs" once fixes a symptom; the detector is the mechanism that stops the decay.** It has now caught the first real decay.
+  **AND THE ORCHESTRATOR'S OWN RECORD WAS STALE IN THE SAME WAY.** `goal.md` and the item-003 plan amendment both said the merged tree would collect **1613** - correct when written (item 006 had two tests), wrong now. The orchestrator has corrected both to **1614**. This is worth recording precisely because it is the orchestrator's own error: the count was derived by arithmetic from a number that a later round changed, and nobody re-derived it. **The lesson generalises: a derived number in a plan goes stale exactly like a derived number in a document, and the fix is the same - re-measure, do not re-derive.**
+  **WHAT THE IMPLEMENTER MUST DO.** Its documents currently quote `1568 passed, 45 skipped (1613 collected)`, which was a TRUE measurement of the tree it measured - the measurement is sound, the TREE is one test behind. It must re-measure on a tree that includes item 006's redo (or, equivalently, on the merged tree the orchestrator has now built) and paste the new numbers. The report must state which tree it measured.
+- coverage: The orchestrator rebuilt the merged tree in a scratch clone outside the repository and ran the implementer's own script against it.
+- consistency: The drift is real and the detector is real; the orchestrator's record has been corrected in the same commit.
+- not checked: The orchestrator did not run the full suite on the rebuilt tree - only `--collect-only`, which is what the drift detector uses.
+- self-directed: no
+- verdict: ACCEPT
+- reason: A measurement, not a stage transition. The finding is delivered to item 003's implementer with the rebuild instructions. The detector is demonstrated to work on real drift, which is stronger evidence than any amount of reading.
+
