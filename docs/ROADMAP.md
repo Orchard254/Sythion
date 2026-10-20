@@ -19,10 +19,15 @@ For the larger layered vision, see
 
 ## Current verified baseline
 
-As of the latest verified workspace state (2026-08-16):
+- Full backend suite: **1569 passed, 45 skipped** (1614 collected)
+- Acceptance suite: **191 passed, 2 skipped**
 
-- full backend suite: **659 passed, 32 skipped**;
-- acceptance suite: **196 passed, 2 skipped**;
+Measured on CPython 3.14.7 / Windows by
+`python scripts/measure_test_baseline.py` on 2026-10-20.
+CI pins Python 3.11.
+
+Also true of the tree the baseline above was measured on:
+
 - runtime/intelligence boundaries have been clarified in code and docs;
 - `skill_engine.py` has been split into runtime vs proposal concerns;
 - memory tooling has been split into durable memory vs runtime activity recall;
@@ -31,9 +36,9 @@ As of the latest verified workspace state (2026-08-16):
 - a durable work-state layer exists with `Objective` + `PlanStep`,
   task linkage, plan APIs, and prompt-context injection;
 - **objective completion criteria + verification** (completion_criteria, criteria_verified, parent_objective_id, verify-criteria endpoint);
-- **parallel tool call execution** (sequential multi-call in single model turn);
+- **sequential multi-call tool execution** (several tool calls in one model
+  turn are executed one after another, not in parallel);
 - **memory retrieval quality** (stale edge filter, bidirectional traversal, fallback scoring);
-- **response strategy** (stage-aware opening/closing/deepening, emotional persistence blending, social-act override);
 - **executor static-analysis cleanup** (modern imports, types, exception handling, protected member access).
 
 ## Now

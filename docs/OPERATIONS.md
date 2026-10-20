@@ -136,14 +136,25 @@ The launcher writes the token file for the current dev/runtime session.
 
 ## Windows/shell note for this workspace
 
-When running tests from the host shell in this environment, the path style that
-has been verified to work is:
+Two invocations are verified to work on this machine (Windows, CPython
+3.14.7):
 
 ```bash
-PYTHONPATH=/c/Ai/sythion:/c/Ai/sythion/backend python -m pytest sythion/backend/tests -q
+# from the repository root
+python -m pytest backend/tests -q
+
+# from the backend/ directory
+python -m pytest tests -q
 ```
 
-This is a workspace-specific execution detail, not a product requirement.
+Both collect the same suite. The second one is what the CI backend job runs
+(`.github/workflows/ci.yml`, job `backend-tests`, step "Run backend test
+suite").
+
+An earlier revision of this section recorded a `PYTHONPATH=` invocation
+naming a checkout that does not exist in this repository. It was removed
+rather than kept as a "verified" instruction, because a verified instruction
+that cannot work is worse than no instruction.
 
 ## Recommended validation sequence after meaningful backend changes
 
@@ -154,11 +165,20 @@ This is a workspace-specific execution detail, not a product requirement.
 
 ## Current verified baseline
 
-Most recently verified in this workspace:
+- Full backend suite: **1569 passed, 45 skipped** (1614 collected)
+- Acceptance suite: **191 passed, 2 skipped**
 
-- full backend suite: **692 passed, 32 skipped**;
-- acceptance suite: **196 passed, 2 skipped**;
-- live smoke script: documented as **6/6 live** in `TESTING.md`.
+Measured on CPython 3.14.7 / Windows by
+`python scripts/measure_test_baseline.py` on 2026-10-20.
+CI pins Python 3.11.
+
+The live smoke test (`python scripts/smoke_test.py --all`) is a MANUAL check:
+it needs a running sidecar, and no executed run of it is recorded in this
+repository. It is not a result this repository can quote, and it is not part
+of the measured baseline above.
+
+`python scripts/measure_test_baseline.py --check` re-measures and fails if
+this document stops agreeing with the measurement.
 
 ## Manual/operator gates that still matter
 

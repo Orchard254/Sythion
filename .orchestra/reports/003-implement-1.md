@@ -1,9 +1,432 @@
-# Report: implement - 003 - attempt 1
+# Report: implement - 003 - attempt 2 (re-measurement on the final merged tree)
 
 Item: **003 - Documentation states the measured baseline and drops deleted
 modules**. Branch: `orchestra/003-docs-baseline`.
 
-## What I did
+**This file is the round-1 report, updated in place.** Round 1's evidence,
+decisions and findings are kept; the numbers are corrected and the round-2
+work is added. Where a section quotes round 1's own measurement it says so.
+
+**Where the file lives.** The brief names
+`C:\Sythion\sythion\.orchestra\reports\003-implement-1.md`, but this branch
+already **tracks** `.orchestra/reports/003-implement-1.md` (the orchestrator
+committed round 1's copy into `346066e`). An untracked copy at the master's
+path would make a later merge of this branch fail with "untracked working
+tree file would be overwritten by merge", so the file is updated **here**,
+in the branch, where round 1's copy is - and nothing was written into
+`master`'s working tree.
+
+## What changed in this round
+
+Round 1's measurement was **one test out of date**. It was taken on a tree
+that carried item 006's **round-1** version (two new tests in
+`backend/tests/test_setup_readiness.py`). Item 006 has since had a **redo
+round**, which added a third:
+
+```
+backend/tests/test_setup_readiness.py:339
+def test_the_clean_settings_snapshot_survives_an_in_place_mutation(clean_settings_snapshot):
+```
+
+So the merged tree now collects **1614**, not 1613, and the numbers round 1
+wrote into the documents were stale by exactly one test.
+
+**This round changed the numbers and nothing else.** The two scripts, the
+exit-code contract, the placeholder mechanism, the path checker, the removal
+of every wrong number and of every deleted-module reference are all as
+round 1 left them - the orchestrator verified and recorded them as accepted,
+and I did not touch them. The only other change is one small documentation
+truthfulness fix that was sitting uncommitted in the worktree when this
+round started (see "What round 1 did" -> "The one leftover commit").
+
+### The tree that was measured
+
+**`orchestra/003-final-merged` at `b0127b0`** - the tree the orchestrator
+built and verified for this purpose (items 002, 006 and 007 merged into
+`master`, the one conftest conflict resolved by keeping both sides). It
+carries item 007's **hardened** vault guard, so a full-suite measurement on
+it is safe:
+
+```
+$ git -C wt-003-final grep -n "PRODUCT_TARGET_PREFIX\|startswith(" -- backend/tests/acceptance/conftest.py
+backend/tests/acceptance/conftest.py:44:_PRODUCT_TARGET_PREFIX = secrets_module._CM_TARGET_PREFIX
+backend/tests/acceptance/conftest.py:58:_PRODUCT_TARGET_PREFIX_LOWER = _PRODUCT_TARGET_PREFIX.lower()
+backend/tests/acceptance/conftest.py:117:        if target.lower().startswith(_PRODUCT_TARGET_PREFIX_LOWER):
+```
+
+I did **not** measure on `orchestra/003-measure-merged` (round 1's tree): it
+predates item 006's redo round and carries the pre-hardening guard.
+
+The measurement worktree is a NEW one, outside the repository:
+
+```
+$ git -C C:\Sythion\sythion worktree add C:\Users\orcha\AppData\Local\Temp\opencode\wt-003-final orchestra/003-final-merged
+HEAD is now at b0127b0 resolve 002/006 conftest conflict: keep both blocks + trailing newline
+```
+
+(`wt-003` already had `orchestra/003-docs-baseline` checked out, and git
+refuses to check one branch out twice, so the brief's instruction to use a
+new path was necessary.)
+
+**My scripts and my documents were then overlaid onto that tree** - the same
+way round 1 did it - and the overlay was committed so that the worktree the
+orchestrator inspects is clean:
+
+```
+$ git -C wt-003-final switch -c orchestra/003-measure-final
+$ git -C wt-003-final add README.md TESTING_GUIDE.md backend/services/README.md \
+      docs/CODEBASE_BOUNDARIES.md docs/OPERATIONS.md docs/PROJECT_STATUS.md \
+      docs/ROADMAP.md docs/TESTING.md scripts/measure_test_baseline.py scripts/check_doc_paths.py
+$ git -C wt-003-final commit -m "overlay: item 003's measurement scripts and baseline documents ..."
+a22b13b overlay: item 003's measurement scripts and baseline documents on the final merged tree
+```
+
+`orchestra/003-final-merged` itself is **untouched and still at `b0127b0`** -
+the overlay lives on the branch `orchestra/003-measure-final`, whose parent
+is `b0127b0`. The overlay touches only item 003's own files:
+```
+$ git -C wt-003-final diff --stat b0127b0
+ README.md                        |  17 +-
+ TESTING_GUIDE.md                 |  13 +-
+ backend/services/README.md       |   7 +-
+ docs/CODEBASE_BOUNDARIES.md      |  14 +-
+ docs/OPERATIONS.md               |  36 +-
+ docs/PROJECT_STATUS.md           |  19 +-
+ docs/ROADMAP.md                  |  15 +-
+ docs/TESTING.md                  | 172 +++++--
+ scripts/check_doc_paths.py       | 486 +++++++++++++++++++
+ scripts/measure_test_baseline.py | 986 +++++++++++++++++++++++++++++++++++++++
+ 10 files changed, 1675 insertions(+), 90 deletions(-)
+```
+
+**No `backend/**` runtime or test file, no `Makefile`, no `pytest.ini`, no
+`backend/tests/conftest.py` and no `.github/workflows/ci.yml` is in the
+overlay** (the only `backend/` path in the diff is
+`backend/services/README.md`, a document), so the code that was measured is
+byte-identical to `b0127b0`'s:
+
+```
+$ git -C wt-003-final diff --name-only b0127b0 -- backend/ Makefile pytest.ini .github/
+backend/services/README.md
+```
+
+**The worktrees.** `wt-003-final` is the one this round measures in and is
+kept for inspection, clean (`git status --short` empty). `wt-003` (the
+branch worktree) is clean. Round 1's measurement worktree
+`wt-003-merged` is **superseded** - it carries item 006's pre-redo tests
+and the pre-hardening guard - and it is left in place, clean, so that
+nothing of round 1's record is destroyed; `git worktree remove
+C:/Users/orcha/AppData/Local/Temp/opencode/wt-003-merged` removes it (the
+branch `orchestra/003-measure-merged` survives either way).
+
+### The numbers before and after
+
+Every number below is copied out of the run's JSON; none is typed.
+
+| | before (round 1, `orchestra/003-measure-merged`) | after (round 2, `orchestra/003-final-merged`) |
+|---|---|---|
+| backend suite | 1568 passed, 45 skipped (1613 collected) | **1569 passed, 45 skipped (1614 collected)** |
+| acceptance suite | 191 passed, 2 skipped (193 collected) | 191 passed, 2 skipped (193 collected) |
+| backend runtime | 377.6 s | **375.7 s** |
+| acceptance runtime | 19.9 s | **28.4 s** |
+
+The acceptance pair did not move: item 006's third test is in
+`backend/tests/test_setup_readiness.py`, which applies **no marker at all**
+(no module-level `pytestmark`, no decorators), so the marker populations in
+`docs/TESTING.md` are unchanged by it.
+
+### The commits
+
+```
+$ git -C wt-003 log --oneline -4
+<this report's commit>  chore(orchestra): item 003 report - attempt 2 (re-measurement)
+4c1c579 docs: restate the measured baseline from the final merged tree (1614 collected)
+3b0fdb0 chore(orchestra): item 003 report - the final commit ids and the diff stat
+346066e chore(orchestra): the item 003 implementation report
+485a797 docs: state the measured test baseline and drop the deleted modules
+```
+
+(The top commit is this report's own last edit, so its hash necessarily
+changes with every edit to this file; the two substantive commits of this
+round are `4c1c579` - the numbers - and the report commit above.)
+
+The branch tip was `485a797` when the brief for this round was written. Two
+orchestrator commits landed on the branch while this round was running
+(`346066e` adds the round-1 report **and** the leftover
+`docs/CODEBASE_BOUNDARIES.md` fix; `3b0fdb0` amends the report with the
+commit ids and the diff stat). This round's commits sit on top of the
+actual tip, `3b0fdb0`.
+
+**The one leftover commit.** Round 1 left one uncommitted change in the
+worktree - the Notes bullet in `docs/CODEBASE_BOUNDARIES.md` that said the
+conversation-guidance adapter "is the only module that reads"
+`conversation_state.py`. That claim is **false**:
+`backend/services/conversation_runtime.py:153` imports
+`get_or_create_state` and `format_state_for_context` from the same module.
+The bullet now says what the adapter actually does - it formats the
+persisted conversation state for a model request. It is the same defect
+class as the rest of this item, so it is committed rather than dropped;
+the orchestrator swept it into `346066e` before this round's commit.
+
+## The drift the detector caught
+
+The orchestrator ran the cheap drift detector against round 1's documents
+and the final merged tree, and it found the one-test drift immediately:
+
+```
+$ python scripts/measure_test_baseline.py --check-collected
+the documents are STALE:
+  README.md:103: states '1613' collected but the measurement collected 1614
+exit=1
+```
+
+I reproduced that transcript **on the final tree** for this report, by
+putting round 1's `README.md` (the one that says 1613) back into the
+measurement worktree and running the detector again:
+
+```
+$ git show 3b0fdb0:README.md > README.md        # round 1's README, temporarily
+$ python scripts/measure_test_baseline.py --measured .../measurement-003-r2.json \
+      --check-collected --root .
+the documents are STALE:
+  C:\Users\orcha\AppData\Local\Temp\opencode\wt-003-final\README.md:103: states '1613' collected but the measurement collected 1614
+exit=1
+```
+
+and the file was then restored (`git status --short` is empty again; the
+tree is byte-identical to the committed overlay):
+
+```
+$ git -C wt-003-final status --short
+$ git -C wt-003-final diff --stat
+```
+
+**This is the item's whole point working.** The number in the document was
+produced by a measurement, and when the tree moved the document said so by
+itself - with the file and the line.
+
+## The measurement (round 2)
+
+**The tree**: `C:\Users\orcha\AppData\Local\Temp\opencode\wt-003-final`
+(branch `orchestra/003-measure-final`, commit `a22b13b`, whose parent is
+`orchestra/003-final-merged`'s `b0127b0`).
+
+**The command**:
+
+```
+$ cd C:\Users\orcha\AppData\Local\Temp\opencode\wt-003-final
+$ python scripts/measure_test_baseline.py --attempts 3 \
+      --out C:\Users\orcha\AppData\Local\Temp\opencode\measurement-003-r2.json
+```
+
+**The JSON** (the `tail` fields are elided; the complete file is at
+`C:\Users\orcha\AppData\Local\Temp\opencode\measurement-003-r2.json`):
+
+```json
+{
+  "schema_version": 1,
+  "status": "ok",
+  "complete": true,
+  "measured_at": "2026-10-20T20:51:18+00:00",
+  "git": {
+    "commit": "b0127b0603216cfc8e9d54e10ec24c41b7d55b0f",
+    "branch": "orchestra/003-final-merged",
+    "dirty": true
+  },
+  "python_version": "3.14.7",
+  "platform": "Windows",
+  "platform_release": "11",
+  "pytest_version": "8.4.2",
+  "ci_python_version": "3.11",
+  "suites": {
+    "backend": {
+      "suite": "backend",
+      "command": [
+        "C:\\Users\\orcha\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+        "-m", "pytest", "backend/tests", "-q"
+      ],
+      "exit_code": 0,
+      "status": "ok",
+      "complete": true,
+      "duration_seconds": 375.68,
+      "fault_markers": [],
+      "passed": 1569,
+      "skipped": 45,
+      "collected": 1614,
+      "collected_source": "outcome_sum"
+    },
+    "acceptance": {
+      "suite": "acceptance",
+      "command": [
+        "C:\\Users\\orcha\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+        "-m", "pytest", "backend/tests/acceptance", "-q"
+      ],
+      "exit_code": 0,
+      "status": "ok",
+      "complete": true,
+      "duration_seconds": 28.42,
+      "fault_markers": [],
+      "passed": 191,
+      "skipped": 2,
+      "collected": 193,
+      "collected_source": "outcome_sum"
+    }
+  },
+  "attempts": [
+    {
+      "suite": "backend",
+      "attempt": 1,
+      "exit_code": 1,
+      "status": "failed",
+      "seconds": 423.833,
+      "fault_markers": [],
+      "tail": "... FAILED backend/tests/test_phase95_hardening.py::TestAdmissionAtomicity::test_two_callers_at_boundary_only_one_admits ... 1 failed, 1568 passed, 45 skipped, 414712 warnings in 416.07s (0:06:56)"
+    },
+    {
+      "suite": "backend",
+      "attempt": 2,
+      "exit_code": 0,
+      "status": "ok",
+      "seconds": 383.807,
+      "fault_markers": [],
+      "tail": "<elided: 2000 characters>"
+    },
+    {
+      "suite": "acceptance",
+      "attempt": 1,
+      "exit_code": 0,
+      "status": "ok",
+      "seconds": 33.04,
+      "fault_markers": [],
+      "tail": "<elided: 2000 characters>"
+    }
+  ],
+  "scope": "backend+acceptance",
+  "backend_measured": true,
+  "passed": 1569,
+  "skipped": 45,
+  "collected": 1614,
+  "collected_source": "outcome_sum",
+  "duration_seconds": 375.68
+}
+```
+
+**Every attempt, including the failed one.** The backend suite's first
+attempt exited **1** with a genuine test failure -
+`backend/tests/test_phase95_hardening.py::TestAdmissionAtomicity::test_two_callers_at_boundary_only_one_admits`
+("1 failed, 1568 passed, 45 skipped, 414712 warnings in 416.07s"). It
+published **nothing**: the script retried in a **fresh process** and the
+second attempt completed with the numbers above. The `git.dirty` flag is
+`true` in this JSON because the overlay was still uncommitted when the run
+started; the commit it names, `b0127b0`, is the tree the code came from,
+and the overlay commit (`a22b13b`) is the same code plus the documents.
+
+**The measurement date** is `2026-10-20` in local time (the run's
+`measured_at` is `2026-10-20T20:51:18+00:00` = `2026-10-20 23:51 +03:00`),
+which is the date the documents already carry.
+
+**Round 1's measurement is superseded.** It was taken on
+`orchestra/003-measure-merged` (`8a4f85b`) and reported 1568 / 45 / 1613 and
+191 / 2 - true of that tree, stale for this one. Its transcript is kept
+below for the record.
+
+## --check now exits 0
+
+**The objective check for criterion 2**, run against the final tree with the
+final numbers in the documents:
+
+```
+$ cd C:\Users\orcha\AppData\Local\Temp\opencode\wt-003-final
+$ python scripts/measure_test_baseline.py --check --out .../check-003-r2b.json
+the documents agree with the measurement (6 documents checked)
+exit=0
+```
+
+That run re-measured from scratch. Its JSON
+(`C:\Users\orcha\AppData\Local\Temp\opencode\check-003-r2b.json`):
+
+```
+status ok | complete True
+git {'commit': 'a22b13b97800305faa7092bb648bb8b42e39c921', 'branch': 'orchestra/003-measure-final', 'dirty': False}
+backend     1569 passed, 45 skipped, 1614 collected, 598.46 s, status ok
+acceptance   191 passed,  2 skipped,  193 collected,  42.27 s, status ok
+attempt backend 1 exit 3221225477 crashed 389.06 ['Windows fatal exception', 'Thread 0x0000bb94 [', 'Current thread 0x0000ca4c']
+attempt backend 2 exit 0 ok 615.219 []
+attempt acceptance 1 exit 0 ok 50.384 []
+```
+
+The same counts as the measurement run, from an independent run. The
+wall clock is longer because the machine was more loaded during this run
+(598 s against 376 s); the counts are identical, and the runtimes quoted in
+`docs/TESTING.md` come from the dedicated measurement run's JSON.
+
+**The first `--check` attempt was INCONCLUSIVE, and that is recorded too.**
+The known hazard (a native crash in the full suite) struck on the first try:
+
+```
+$ python scripts/measure_test_baseline.py --check --out .../check-003-r2.json
+the measurement did not complete (status 'failed'): the documents are not implicated, this check is INCONCLUSIVE
+exit=2
+```
+
+with all three backend attempts recorded in that run's JSON:
+
+```
+attempt backend 1 exit 3221225477 crashed 263.694 ['Windows fatal exception', 'Thread 0x00002b5c [', 'Current thread 0x0000994c']
+attempt backend 2 exit 3221225477 crashed 265.994 ['Windows fatal exception', 'Thread 0x00009474 [', 'Current thread 0x00000c74']
+attempt backend 3 exit 1 failed 640.574 []
+   ERROR backend/tests/test_memory_tools.py::test_memory_link_verify_reads_back
+   1568 passed, 45 skipped, 414701 warnings, 1 error in 627.72s (0:10:27)
+```
+
+Exit **2** is the contract's "inconclusive" code: the documents were not
+implicated, and no count was published from any of those three attempts.
+The run was repeated and the second run completed (above). Both attempts
+are recorded here, as the brief requires.
+
+**`--check-collected` also exits 0**, in its cheap form (a `--collect-only`
+pass against the recorded measurement, which is what the flag is for):
+
+```
+$ python scripts/measure_test_baseline.py --measured .../measurement-003-r2.json --check-collected --root .
+documents agree with the measurement: collected 1614
+exit=0
+```
+
+and in its standalone form (the literal command, which re-measures the whole
+suite and then re-measures the collected count):
+
+```
+$ python scripts/measure_test_baseline.py --check-collected
+documents agree with the measurement: collected 1614
+exit=0
+```
+
+That run's JSON (`.../checkcoll-003-r2-full.json`) is the **third**
+independent completed measurement of the final tree in this round, and it
+agrees with the other two:
+
+```
+status ok | complete True | git a22b13b97800305faa7092bb648bb8b42e39c921 | dirty False
+backend     1569 passed, 45 skipped, 1614 collected, 493.91 s, status ok
+acceptance   191 passed,  2 skipped,  193 collected,  27.03 s, status ok
+attempt backend 1 exit 3221225477 crashed 367.174 ['Windows fatal exception', 'Thread 0x000013c0 [', 'Current thread 0x00002b40']
+attempt backend 2 exit 0 ok 503.053 []
+attempt acceptance 1 exit 0 ok 32.459 []
+```
+
+**Three independent completed runs of the final tree, three identical
+counts**: 1569 passed / 45 skipped / 1614 collected, and 191 passed /
+2 skipped. Six further attempts died - four native crashes, one test failure
+and one collection error - and published nothing.
+
+## What round 1 did (kept: the scripts, the document edits, the decisions)
+
+> Everything in this section is round 1's record. It is kept because the
+> scripts, the exit-code contract, the document edits and the decisions
+> still stand and the orchestrator verified them; the **numbers** quoted in
+> it are round 1's and are superseded by "The measurement (round 2)" above.
+> Round 2 changed the numbers and one documentation sentence - nothing else.
 
 **The branch.** Cut from `master` (at `9770fb9`), rebased onto `master`
 (`7fc7a4a`) at the end of the run:
@@ -144,6 +567,18 @@ exit=0
 
 ### The documents agree with the measurement
 
+**Round 2 (the current state):**
+
+```
+$ cd C:\Users\orcha\AppData\Local\Temp\opencode\wt-003-final
+$ python scripts/measure_test_baseline.py --check --out .../check-003-r2b.json
+the documents agree with the measurement (6 documents checked)
+exit=0
+```
+
+**Round 1's transcript** (the same command against round 1's numbers, kept
+for the record):
+
 ```
 $ python scripts/measure_test_baseline.py \
       --measured C:/Users/orcha/AppData/Local/Temp/opencode/measurement-003.stdout.json \
@@ -184,9 +619,9 @@ exit=1
 | # | Criterion | Result | Evidence |
 |---|-----------|--------|----------|
 | 1 | `scripts/measure_test_baseline.py` exists, runs the backend suite and the acceptance suite from the repository root, prints machine-readable JSON with `passed`, `skipped`, `collected`, `duration_seconds`, `python_version`, `platform`; hard-codes no counts; publishes no warning count; the count keys are absent unless the run COMPLETED; exits 0 / 2 / 3 | **met** | The JSON in "The measurement" below has every required key; R1 prints nothing; the JSON has no warning key (the summary parser does not even match the word "warnings"); D1 and D2 show the count keys absent with exit 2; the exit-3 path is exercised below |
-| 2 | The baseline quoted in README.md (badge and prose), docs/TESTING.md, docs/PROJECT_STATUS.md, docs/ROADMAP.md and docs/OPERATIONS.md equals the numbers printed by the last executed run, and each document states the interpreter, the OS and that CI pins Python 3.11 | **met** | The numbers are copied out of the measurement JSON below (1568 / 45 / 1613 and 191 / 2); each of the five documents carries the "Measured on CPython 3.14.7 / Windows ... CI pins Python 3.11" block; `ci_python_version` is read from `.github/workflows/ci.yml:19`; `--check` exits 0 |
+| 2 | The baseline quoted in README.md (badge and prose), docs/TESTING.md, docs/PROJECT_STATUS.md, docs/ROADMAP.md and docs/OPERATIONS.md equals the numbers printed by the last executed run, and each document states the interpreter, the OS and that CI pins Python 3.11 | **met** | **Round 2**: the numbers are copied out of the round-2 measurement JSON (1569 / 45 / 1614 and 191 / 2); each of the five documents carries the "Measured on CPython 3.14.7 / Windows ... CI pins Python 3.11" block; `ci_python_version` is read from `.github/workflows/ci.yml:19`; **`--check` exits 0 against the final merged tree** ("--check now exits 0") and **`--check-collected` exits 0** |
 | 3 | The README badge and the README prose state the same numbers | **met** | Rule C3 of `--check` exits 0; badge and prose side by side in "The document edits" |
-| 4 | The runtime estimates "~55s", "~25s" and "~10s" in docs/TESTING.md are replaced by measured values or labelled machine-specific | **met** | R7 prints nothing; the table carries `377.6 s (reference machine)` and `19.9 s (reference machine)` (measured) and `machine-specific (not measured here)` for the targets that were not measured; rule C5 exits 0 |
+| 4 | The runtime estimates "~55s", "~25s" and "~10s" in docs/TESTING.md are replaced by measured values or labelled machine-specific | **met** | R7 prints nothing; the table carries `375.7 s (reference machine)` and `28.4 s (reference machine)` (measured in round 2) and `machine-specific (not measured here)` for the targets that were not measured; rule C5 exits 0 |
 | 5 | The unverified live claim "Currently 6/6 live" is removed or re-labelled as a manual check that no executed run in this repository produced | **met** | R6 prints nothing; rule C7 exits 0; the replaced sentences are quoted in "The document edits" |
 | 6 | `backend/services/response_strategy.py` and `backend/services/speech_act_classifier.py` appear in none of the four documents, and `scripts/check_doc_paths.py` exits 0 with zero missing paths; the same check must fail on a document naming a module that does not exist | **met** | R5 prints nothing; `python scripts/check_doc_paths.py` -> `missing paths: 0`, exit 0; the fail path is demonstrated in "The path check's two paths" (exit 1, naming the path and its line) |
 | 7 | docs/TESTING.md's "Common Test Commands" table, "Pytest Markers" table and "CI Pipeline" section describe the merged Makefile and ci.yml | **met** | The side-by-side table with `file:line` for every claim is in "The document edits" |
@@ -203,7 +638,7 @@ exit=3
 
 "On `master`" = the base commit this branch was cut from (`9770fb9`, before
 the item 002/006/007 merges); "on the branch" = the tip of
-`orchestra/003-docs-baseline` (the three commits listed above).
+`orchestra/003-docs-baseline` (the commits listed above).
 
 **R1** - `git grep -nE "1564|1609|692|683|659|196" -- scripts/measure_test_baseline.py`
 
@@ -218,9 +653,11 @@ the item 002/006/007 merges); "on the branch" = the tip of
 **R3** - `python scripts/measure_test_baseline.py --check`
 
 * master: the file does not exist.
-* branch: **exit 0** on the post-merge tree (the tree the documents describe);
-  see "The measurement" for the transcript and for what the command does on
-  the un-merged branch.
+* branch: **exit 0** on the final merged tree (the tree the documents
+  describe) - "the documents agree with the measurement (6 documents
+  checked)"; see "--check now exits 0" for the transcript, and "The
+  measurement (round 1 - SUPERSEDED...)" for what the command does on the
+  un-merged branch.
 
 **R4** - `git grep -nE "\b(692|683|659)\b|196 passed" -- README.md docs/ TESTING_GUIDE.md`
 
@@ -268,7 +705,46 @@ master:docs/TESTING.md:31:  the full backend suite, and **196 passed, 2 skipped*
 * master: **1 match**.
 * branch: **no output** (exit 1 = no match).
 
-## The measurement
+**Round 2, re-run on the branch tip** (`4c1c579`, the commit that restates the
+numbers) - every row is empty or green:
+
+```
+$ cd C:\Users\orcha\AppData\Local\Temp\opencode\wt-003
+=== R1 ===
+(exit=1)                                   # no output: no hard-coded count
+=== R2 ===
+missing paths: 0
+(exit=0)
+=== R4 ===
+(exit=1)                                   # no output: no wrong number
+=== R5 ===
+(exit=1)                                   # no output: no deleted module
+=== R6 ===
+(exit=1)                                   # no output: no "6/6 live" claim
+=== R7 ===
+(exit=1)                                   # no output: no "~55s" estimate
+=== R8 ===
+(exit=1)                                   # no output: no deleted module
+=== residual round-1 numbers 1568/1613 in the scope documents ===
+(exit=1)                                   # no output
+```
+
+(`exit=1` from `git grep` means "no match" - the row is satisfied by an empty
+output.)
+
+**R4's count is 15, not the 14 the plan claimed** - the README contributes
+three matching lines (the badge at `:6` and the prose at `:103` and `:104`).
+
+## The measurement (round 1 - SUPERSEDED, kept for the record)
+
+> **Superseded.** This is round 1's measurement, taken on
+> `orchestra/003-measure-merged` (`8a4f85b`), which predates item 006's redo
+> round. It reported 1568 / 45 / 1613 and 191 / 2. That was true of that
+> tree and is one test out of date for the tree item 003 lands in.
+> **The current measurement is "The measurement (round 2)" above.**
+> The transcript below is kept because it is the evidence that the script
+> publishes a number only from a completed run, and because it is the run
+> that caught the one-test drift.
 
 **The tree that was measured**: `C:\Users\orcha\AppData\Local\Temp\opencode\wt-003-merged`
 at commit `8a4f85b` - `master` (6281659) with item 007, item 006 and item
@@ -443,6 +919,27 @@ difference: the branch does not carry item 006's two tests, so the
 documents (which quote the post-merge numbers) do not match a measurement
 of the branch itself. That is the drift detector working, not a failure.
 
+### Round 2: the drift detector on the final tree
+
+The same command, on the final merged tree, with the round-2 numbers in the
+documents:
+
+```
+$ cd C:\Users\orcha\AppData\Local\Temp\opencode\wt-003-final
+$ python scripts/measure_test_baseline.py --measured .../measurement-003-r2.json --check-collected --root .
+documents agree with the measurement: collected 1614
+EXITCODE=0
+```
+
+and with round 1's `README.md` (the one that says 1613) temporarily put
+back, it says exactly what the orchestrator saw:
+
+```
+the documents are STALE:
+  C:\Users\orcha\AppData\Local\Temp\opencode\wt-003-final\README.md:103: states '1613' collected but the measurement collected 1614
+EXITCODE=1
+```
+
 ## The two failure demonstrations (D1, D2)
 
 Both sandbox Makefiles live **outside** the repository, in
@@ -525,6 +1022,43 @@ count keys present in the JSON: []
 
 `"status": "failed"`, **no counts at all**, **exit 2**.
 
+### Round 2: D1 and D2 re-run on the final merged tree
+
+Both demonstrations were re-run against the final tree with the round-2
+overlay, and they behave exactly as before - the guards were not weakened:
+
+```
+$ cd C:\Users\orcha\AppData\Local\Temp\opencode\wt-003-final
+$ python scripts/measure_test_baseline.py --makefile .../Makefile.crash --attempts 3
+D1 exit=2
+status: crashed | complete: False
+top-level count keys present: []
+suite count keys present: ['duration_seconds']
+  attempt 1 exit_code 1 status crashed fault_markers ['Windows fatal exception', 'Current thread 0x00001478']
+  attempt 2 exit_code 1 status crashed fault_markers ['Windows fatal exception', 'Current thread 0x00007914']
+  attempt 3 exit_code 1 status crashed fault_markers ['Windows fatal exception', 'Current thread 0x00001d78']
+first attempt tail:
+  Windows fatal exception: access violation
+  Current thread 0x00001478 (most recent call first):
+    File "C:\Users\orcha\AppData\Local\Programs\Python\Python314\Lib\ctypes\__init__.py", line 621 in string_at
+
+$ python scripts/measure_test_baseline.py --makefile .../Makefile.fail --attempts 3
+D2 exit=2
+status: failed | complete: False
+top-level count keys present: []
+suite count keys present: ['duration_seconds']
+  attempt 1 exit_code 4 status failed fault_markers []
+  attempt 2 exit_code 4 status failed fault_markers []
+  attempt 3 exit_code 4 status failed fault_markers []
+first attempt tail:
+  ERROR: file or directory not found: C:/Users/orcha/AppData/Local/Temp/opencode/sandbox003/no_such_test_path
+  no tests ran in 0.01s
+```
+
+(`duration_seconds` is the wall clock of the attempt, not a count - the
+count keys `passed`, `skipped` and `collected` are absent, which is the
+invariant.)
+
 ## The path check's two paths
 
 **The pass path** - the four real documents:
@@ -577,7 +1111,26 @@ exit=1
 
 ## The document edits
 
-The canonical block, identical in the five baseline documents:
+**Round 2: the canonical block, identical in the five baseline documents
+(the numbers below are the ones the documents now carry):**
+
+```
+- Full backend suite: **1569 passed, 45 skipped** (1614 collected)
+- Acceptance suite: **191 passed, 2 skipped**
+
+Measured on CPython 3.14.7 / Windows by
+`python scripts/measure_test_baseline.py` on 2026-10-20.
+CI pins Python 3.11.
+```
+
+Round 1's block was the same shape with `1568 passed, 45 skipped`
+(`1613 collected`); only the numbers changed, and they were substituted
+mechanically out of the two measurement JSONs by a scratch script outside
+the repository (`sandbox003/substitute_baseline_r2.py`), which reads the OLD
+values out of round 1's JSON and the NEW values out of round 2's JSON - no
+number in the documents was typed by hand.
+
+**Round 1's block, for the record:**
 
 ```
 - Full backend suite: **1568 passed, 45 skipped** (1613 collected)
@@ -595,11 +1148,13 @@ CI pins Python 3.11.
 
 ```
 before: [![Backend tests](https://img.shields.io/badge/backend%20tests-683%20passed%20%2F%202%20skipped-green)]()
-after:  [![Backend tests](https://img.shields.io/badge/backend%20tests-1568%20passed%20%2F%2045%20skipped-green)]()
+after:  [![Backend tests](https://img.shields.io/badge/backend%20tests-1569%20passed%20%2F%2045%20skipped-green)]()
 ```
 
-  Decoded, the badge reads `backend tests-1568 passed / 45 skipped`; the
-  prose line reads `1568 passed, 45 skipped` - the same pair (rule C3).
+  Decoded, the badge reads `backend tests-1569 passed / 45 skipped`; the
+  prose line reads `1569 passed, 45 skipped` - the same pair (rule C3).
+  (Round 1's badge said `1568 passed / 45 skipped`; round 2 changed the
+  number to the one the final tree measures.)
 * Lines 101-107 became the canonical block. The per-skip breakdown
   ("32 skipped = 27 power/network real-system tests + 3 volume system-audio
   tests + 2 symlink privilege tests") is **deleted, not re-derived**: it was
@@ -621,7 +1176,10 @@ after:  [![Backend tests](https://img.shields.io/badge/backend%20tests-1568%20pa
   otherwise.
 * "Pytest Markers" now covers **all ten** canonical markers with the
   population each one actually has today (measured with one
-  `--collect-only` pass on the measurement tree: 1613 items), and says
+  `--collect-only` pass on the measurement tree: 1613 items in round 1;
+  the populations are unchanged in round 2, because item 006's third test
+  is in `backend/tests/test_setup_readiness.py`, which applies **no marker
+  at all** - no module-level `pytestmark`, no decorators), and says
   honestly that `flaky` and `integration` are applied to zero tests.
 * "Test Fixtures" was re-read against the merged `backend/tests/conftest.py`
   and now also names the two autouse fixtures (the guarded-autonomy default
@@ -684,7 +1242,9 @@ EXITCODE=0
 
   (the collection pass, not a full run, because the full run from the
   repository root is the measurement itself and the two invocations collect
-  the same 1613 tests).
+  the same tests). Round 1's tree collected 1613; on the **final** tree the
+  same invocation collects **1614** - that is what the `--check-collected`
+  run above measured.
 
 **`docs/CODEBASE_BOUNDARIES.md`**
 
@@ -776,6 +1336,20 @@ change, which redirects the round-trip test to the test-scoped target
 acceptance test that writes to or deletes a product-prefixed credential
 target.
 
+**Round 2: the guard on the final tree is the HARDENED one** (item 007's
+redo round), so the full-suite runs in this round are safe in the same way -
+the guard compares the lower-cased target against the lower-cased product
+prefix:
+
+```
+backend/tests/acceptance/conftest.py:117:        if target.lower().startswith(_PRODUCT_TARGET_PREFIX_LOWER):
+```
+
+No credential value was printed at any point in this round, and nothing was
+written to or deleted from the product target `Sythion (Synth)/...` in any
+spelling; the only credential target the suite touches is the test-scoped
+`Sythion (Synth) [TEST]/...`.
+
 ## The decisions and their reasons
 
 **The two corrections BEYOND the seven criteria** (the plan includes them;
@@ -834,13 +1408,52 @@ built (a plan proposes them), which is why the scope is explicit, and
 **The marker populations** were measured with ONE `--collect-only` pass
 over the measurement tree using a scratch plugin outside the repository
 (`--collect-only` executes no test bodies, so it is safe on any tree). The
-result: 1613 items; `acceptance` 193, `concurrency` 53, `gated_soak` 1,
-`gui` 4, `network` 5, `process_kill` 8, `provider_e2e` 5, `slow` 1,
-`flaky` 0, `integration` 0. `concurrency` (53) and `gated_soak` (1) match
-what the merged `pytest.ini` claims; `network` (5) equals the
+result (round 1's tree): 1613 items; `acceptance` 193, `concurrency` 53,
+`gated_soak` 1, `gui` 4, `network` 5, `process_kill` 8, `provider_e2e` 5,
+`slow` 1, `flaky` 0, `integration` 0. `concurrency` (53) and `gated_soak` (1)
+match what the merged `pytest.ini` claims; `network` (5) equals the
 `provider_e2e` population (5), as the selection-contract guard requires.
 
+**Round 2: the populations are unchanged.** The final tree collects 1614
+items instead of 1613, and the extra test is
+`backend/tests/test_setup_readiness.py::test_the_clean_settings_snapshot_survives_an_in_place_mutation`
+- a file that applies **no marker at all** (no module-level `pytestmark`,
+no decorators), so no marker's population moves. The table in
+`docs/TESTING.md` therefore stays true without an edit.
+
 ## Findings
+
+**Round 2 (this round):**
+
+1. **The cheap drift detector caught a real one-test drift in a document
+   that had been written with a measurement in hand** - the whole point of
+   this item, demonstrated on the item's own work. `README.md:103` said
+   `1613`; the tree collected `1614`.
+2. **The suite is no less flaky than round 1 found it - if anything more
+   so.** In this round's full-suite runs on the final tree: one run failed
+   on a test (`test_phase95_hardening.py::TestAdmissionAtomicity::test_two_callers_at_boundary_only_one_admits`),
+   one crashed with `0xC0000005` twice and then failed on an error
+   (`test_memory_tools.py::test_memory_link_verify_reads_back`), and two
+   more crashed with `0xC0000005` once each before completing.
+   **Every one of those attempts published no count at all**, and the three
+   runs that completed agreed exactly: **1569 passed, 45 skipped, 1614
+   collected** and 191 passed, 2 skipped.
+3. **The first `--check` attempt was INCONCLUSIVE (exit 2), not green.**
+   That is the contract working: exit 2 means "no complete measurement could
+   be made", the documents were not implicated, and the run had to be
+   repeated. Both attempts are recorded above.
+4. **The wall clock is not a stable number.** The same tree and the same
+   suite took 375.68 s, 598.46 s and 627.72 s in three runs on this
+   machine. The documents quote the dedicated measurement run's figure
+   (`375.7 s (reference machine)`) and label it as machine-specific; the
+   counts, which are what the baseline is about, did not move.
+5. **A derived number goes stale exactly like a documented one.** The
+   orchestrator's own plan amendment and `goal.md` said 1613 because the
+   count had been derived by arithmetic from item 006's then-current test
+   count; item 006's redo round moved it. The fix is the same in both
+   places: re-measure, do not re-derive.
+
+**Round 1 (kept):**
 
 1. **The suite's warning count is not a baseline, and the script proves
    it**: the backend run reported `412809 warnings` and the acceptance run
@@ -869,8 +1482,48 @@ what the merged `pytest.ini` claims; `network` (5) equals the
    makes the readiness test green on the measurement tree. On the tree
    without item 006, `test_setup_readiness.py::test_readiness_states`
    fails - that is item 006's subject, not this item's.
+7. **`docs/CODEBASE_BOUNDARIES.md` claimed the conversation-guidance
+   adapter was "the only module that reads" `conversation_state.py`.** That
+   was false - `backend/services/conversation_runtime.py:153` reads the
+   same module. The bullet now says what the adapter does. This was the
+   one uncommitted change left in the worktree from round 1; it is
+   committed (the orchestrator swept it into `346066e`).
 
 ## Not checked
+
+**Round 2 (this round):**
+
+1. **The measurement was still taken on a tree that is not yet `master`.**
+   `orchestra/003-final-merged` (`b0127b0`) merges items 002, 006 and 007
+   into `master`, but item 003's own commit lands on top of them. If any of
+   002/006/007 changes before they merge, the numbers move again and
+   `--check` / `--check-collected` will report it - which is the design, not
+   a defect.
+2. **The numbers were not re-verified against `master` itself.** The
+   measurement is of the merged tree, which is the tree item 003's documents
+   describe; `master` alone collects fewer tests.
+3. **The per-skip breakdown of the 45 full-suite skips is still not
+   measured**, and the per-marker populations were not re-measured with the
+   scratch plugin in this round - they did not need to be: item 006's third
+   test applies no marker, so no population can have moved.
+4. **The marker-population claim was reasoned, not re-measured** (see
+   "The marker populations" above). A re-measurement would be a ~100-second
+   `--collect-only` pass; it was not repeated because the input (a test
+   with no marker) cannot change a population.
+5. **The report lives in the branch, not in `master`'s working tree.** The
+   branch already tracks `.orchestra/reports/003-implement-1.md` (the
+   orchestrator committed round 1's copy into `346066e`), so an untracked
+   copy at `C:\Sythion\sythion\.orchestra\reports\003-implement-1.md` would
+   make a later merge of this branch fail with "untracked working tree file
+   would be overwritten by merge". The file is therefore updated in place,
+   in the branch, where round 1's copy is.
+6. **The `--check` run is not a proof that the suite is deterministic.** It
+   is a proof that the documents agree with a completed measurement of the
+   tree they describe. Six of this round's full-suite attempts died in three
+   different ways (four native crashes with `0xC0000005`, one test failure,
+   one collection error) and published no number.
+
+**Round 1 (kept):**
 
 1. **The workflow was never executed.** No CI run was triggered or
    observed; every statement about `ci.yml` is a reading of the merged
@@ -899,12 +1552,10 @@ what the merged `pytest.ini` claims; `network` (5) equals the
 9. **The `backend/.env` isolation fixture** (item 006) is described in
    `docs/TESTING.md` from the merged `conftest.py`; its behaviour was not
    re-verified by this item.
-10. **No file outside the branch was written** except this report (which
-    also exists at `C:\Sythion\sythion\.orchestra\reports\003-implement-1.md`,
-    the path the brief names) and the scratch files in
-    `C:\Users\orcha\AppData\Local\Temp\opencode\` (the sandbox Makefiles,
-    the crash program, the marker-population plugin and the scratch
-    scripts) - all outside the repository.
+10. **No file outside the branch was written** except this report and the
+    scratch files in `C:\Users\orcha\AppData\Local\Temp\opencode\` (the
+    sandbox Makefiles, the crash program, the marker-population plugin and
+    the scratch scripts) - all outside the repository.
 
 ## A note for the orchestrator (replacement text, not written to follow-ups.md)
 
@@ -929,3 +1580,27 @@ The following are the follow-ups this item would have written to
    push is not acceptable, and a CI-side `--check` would compare two
    different interpreters and produce a false "stale" - which is what exit
    code 4 exists for).
+
+**Round 2 adds these:**
+
+6. **`--check-collected` is not as cheap as the plan claims.** Run on its
+   own it re-measures the WHOLE suite first (the script needs a complete
+   measurement before it can compare) and only then does the
+   `--collect-only` pass - so the "about 100 seconds" detector costs a full
+   suite run unless it is given `--measured <previous.json>`. The cheap form
+   is `--measured ... --check-collected`, which is what a reviewer should
+   run; the standalone form is a full measurement. The script's behaviour is
+   correct (it never compares against an incomplete measurement), but the
+   plan's cost estimate for the mode is wrong, and the document in
+   `docs/TESTING.md` should say so.
+7. **The suite's flakiness is worse than "one run in three".** In this
+   round's runs on the final tree, six full-suite attempts died (four
+   native crashes, one test failure, one collection error) before three
+   runs completed - and the three that completed published identical
+   counts. Every failing attempt published no count, which is the point -
+   but a reviewer should budget for several attempts.
+8. **A derived number goes stale.** The plan amendment and `goal.md` said
+   1613 because the count was derived by arithmetic from item 006's
+   then-current test count; item 006's redo round moved it to 1614. Any
+   number that is derived rather than measured should be re-derived only by
+   re-measuring.

@@ -16,13 +16,16 @@ Read first:
 
 ## Current verified automated baseline
 
-Already verified in this workspace:
+The automated baseline is stated in exactly one place:
+[`docs/TESTING.md`](docs/TESTING.md) ("Current verified baseline").
 
-- Full backend suite: **692 passed, 32 skipped** (32 skipped = 27 power/network real-system tests + 3 volume system-audio tests + 2 symlink privilege tests)
-- Acceptance suite: **196 passed, 2 skipped**
+That number is a MEASUREMENT, not a figure typed into prose.
+`python scripts/measure_test_baseline.py` produces it, and
+`python scripts/measure_test_baseline.py --check` proves that this file and
+the other baseline documents still agree with it.
 
-The two skipped acceptance tests are the symbolic-link privilege skips in
-`backend/tests/acceptance/test_canonical_file_checks.py`.
+This guide deliberately does not repeat the counts: a second copy of a
+measured figure is a second thing that can go stale without anybody noticing.
 
 ## Runtime configuration before manual testing
 

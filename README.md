@@ -3,7 +3,7 @@
 > This repository is the **trusted local runtime core** of a larger
 > intelligence system. It is not the whole intelligence stack by itself.
 
-[![Backend tests](https://img.shields.io/badge/backend%20tests-683%20passed%20%2F%202%20skipped-green)]()
+[![Backend tests](https://img.shields.io/badge/backend%20tests-1569%20passed%20%2F%2045%20skipped-green)]()
 [![Boundary](https://img.shields.io/badge/boundary-runtime%20core-blue)]()
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F%2F11-lightgrey)]()
 
@@ -100,8 +100,17 @@ used as the current status baseline:
 
 ## Current verified baseline
 
-- Full backend suite: **692 passed, 32 skipped** (32 skipped = 27 power/network real-system tests + 3 volume system-audio tests + 2 symlink privilege tests)
-- Acceptance suite: **196 passed, 2 skipped**
+- Full backend suite: **1569 passed, 45 skipped** (1614 collected)
+- Acceptance suite: **191 passed, 2 skipped**
 
-The two skips are the known symlink-privilege skips in
+Measured on CPython 3.14.7 / Windows by
+`python scripts/measure_test_baseline.py` on 2026-10-20.
+CI pins Python 3.11.
+
+The two skipped acceptance tests are the known symlink-privilege skips in
 `backend/tests/acceptance/test_canonical_file_checks.py`.
+
+The block above is a measurement, not a typed number:
+`python scripts/measure_test_baseline.py --check` re-measures and fails if
+this document and the other baseline documents stop agreeing with the
+measurement.
