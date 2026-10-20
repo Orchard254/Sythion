@@ -2,16 +2,14 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master, main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   backend-tests:
     name: Backend tests
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: backend
     steps:
       - uses: actions/checkout@v4
 
@@ -21,18 +19,29 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Guard (test tooling install is pinned)
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: |
+          $bad = Get-Content .github/workflows/ci.yml | Where-Object { $_.Trim() -cmatch '^(pip install|python -m pip install)' -and $_ -cmatch 'pytest' -and $_ -cnotmatch '==' }
+          if ($bad) { Write-Error ("unpinned pytest install: " + ($bad -join ' | ')); exit 1 }
+
       - name: Install dependencies
+        working-directory: backend
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m pip install pytest pytest-asyncio
 
       - name: Run backend test suite
+        working-directory: backend
         # Provider-backed E2E (provider_e2e marker) is SKIPPED here: normal
         # CI never incurs provider cost and never needs credentials.
         run: python -m pytest tests -q
 
       - name: Import gate (packaged entrypoint compiles)
+        # Must run from the repository root: backend/api/routes.py imports
+        # backend.* absolutely, so the repo root must be on sys.path.
+        working-directory: ${{ github.workspace }}
         run: python -c "import backend.main; import backend.api.routes"
 
   provider-e2e:
@@ -59,7 +68,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m pip install pytest pytest-asyncio
 
       - name: Run provider-backed specialist E2E
         env:
@@ -91,6 +99,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Test (vitest)
+        run: npm test
 
   tauri-build:
     name: Tauri shell build (Windows)
