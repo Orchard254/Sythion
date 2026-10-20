@@ -23,10 +23,10 @@
       "domain": "none"
     },
     "003": {
-      "status": "verifying",
-      "owner": "verifier-003",
+      "status": "merged",
+      "owner": "committer-1",
       "branch": "orchestra/003-docs-baseline",
-      "mergeSha": null,
+      "mergeSha": "f0d980661f903e767d40d487f094d228311d808c",
       "round": 1,
       "verifyRounds": 0,
       "conflicts": 0,
@@ -137,8 +137,8 @@
       "since": null
     },
     "verifier": {
-      "state": "working",
-      "task": "003",
+      "state": "idle",
+      "task": null,
       "since": null
     },
     "committer": {
