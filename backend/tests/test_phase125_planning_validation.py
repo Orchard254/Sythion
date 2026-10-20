@@ -226,8 +226,15 @@ def test_shadow_quality_agreement_divergence(db):
     assert "expected_advantage" in q
     assert "details" in q
     # must store actual and shadow policy + supporting evidence
+    # The scenario is constructed to produce exactly one divergent shadow, so
+    # the details list must not be empty - otherwise the loop below would
+    # verify nothing at all.
+    assert q["details"], "shadow_quality_report returned no divergent detail rows"
     for d in q["details"]:
-        assert "actual_policy" in d and "shadow_policy" in d and "actual_outcome" in d or True
+        assert "actual_policy" in d and "shadow_policy" in d and "actual_outcome" in d, d
+        # a shadow comparison must never carry a claimed outcome (§15/§16)
+        assert d["actual_outcome"] is None, d
+        assert d["would_diverge"] is True, d
 
 
 def test_shadow_never_claims_success_without_evidence(db):

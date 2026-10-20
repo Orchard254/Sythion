@@ -525,9 +525,24 @@ class TestEventLedgerConcurrency:
                     seqs = [e["sequence_num"] for e in hist]
                     assert len(seqs) == len(set(seqs)), f"duplicate seq for {tid}"
                     assert sorted(seqs) == list(range(1, len(seqs)+1)), f"lost events for {tid}"
-                    # No cross contamination: each tid's events isolated
-                    tids_in_hist = set(tid for _ in hist)
-                    assert len(tids_in_hist) == 1 or True  # history per tid already isolated
+                    # No cross contamination: every event returned for this
+                    # task must be OWNED by this task. The ledger's event
+                    # projection carries no task id (backend/runtime/events.py
+                    # _to_dict), so re-read the owning rows by their primary
+                    # key and check their owner. This is the deterministic
+                    # property; the number of surviving events is not (the
+                    # concurrent-append race in DbEventLedger.append_event is
+                    # reported as a defect, not papered over here).
+                    assert hist, f"no events recorded for {tid}"
+                    event_ids = [e["id"] for e in hist]
+                    owner_rows = sess2.query(TaskEvent).filter(TaskEvent.id.in_(event_ids)).all()
+                    assert len(owner_rows) == len(event_ids), (
+                        f"events of {tid} could not all be resolved to their owning rows"
+                    )
+                    owner_task_ids = {row.task_id for row in owner_rows}
+                    assert owner_task_ids == {tid}, (
+                        f"cross contamination: events of {tid} are owned by {sorted(owner_task_ids)}"
+                    )
                 # Replay produces same history
                 for tid in (tid1, tid2):
                     h1 = DbEventLedger(sess2).event_history(tid)
@@ -727,7 +742,6 @@ class TestModelCallConcurrency:
         assert call_log.count("model-b") == 1
         assert call_log.count("model-c") == 1
         # One failure doesn't corrupt another
-        provider.chat.side_effect = [RuntimeError("fail"), fake_chat([{"role":"user","content":"x"}], model_id="model-b")]
         # Test via two gathers where one fails
         provider2 = MagicMock()
         async def maybe_fail(messages, **kwargs):
@@ -743,7 +757,12 @@ class TestModelCallConcurrency:
         r_ok = SpecialistReasoner(db=None, context_packet=pkt_ok, allowed_tools=[], budget={"steps":5, "model_calls":5}, model_provider=provider2, model_selector=sel_ok)
         r_fail = SpecialistReasoner(db=None, context_packet=pkt_fail, allowed_tools=[], budget={"steps":5, "model_calls":5}, model_provider=provider2, model_selector=sel_fail)
         ok_res, fail_res = await asyncio.gather(r_ok.analyze(), r_fail.analyze())
-        assert not fail_res.get("fallback") is False or True  # fallback handled
+        # A failing provider must produce the fallback artifact - never a fake
+        # success - and it must not corrupt the sibling call.
+        assert fail_res.get("fallback") is True, fail_res
+        assert fail_res.get("findings") == [], fail_res
+        assert fail_res.get("confidence") is None, fail_res
+        assert ok_res.get("fallback") is False, ok_res
         assert ok_res.get("findings")  # ok still succeeded
 
 # --------------------------------------------------------------------------
