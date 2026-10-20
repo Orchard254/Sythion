@@ -9,15 +9,42 @@ modules**. Branch: `orchestra/003-docs-baseline`.
 (`7fc7a4a`) at the end of the run:
 
 ```
-$ git log --oneline -3
+$ git log --oneline master..HEAD
+6d346f1 chore(orchestra): item 003 report - the final commit ids and the diff stat
+346066e chore(orchestra): the item 003 implementation report
 485a797 docs: state the measured test baseline and drop the deleted modules
-7fc7a4a chore(orchestra): correct the 003 mid-flight note - the implementer fixed the regex concurrently; re-verified --check exits 0
-e20a241 chore(orchestra): 003 mid-flight check - --check can never exit 0 (platform regex swallows the trailing ' by')
 ```
+
+(The top commit is this report's own last edit, so its hash necessarily
+changes with every edit to this file; the two substantive commits are
+`485a797` - the documents and the two scripts - and `346066e`, which adds
+this report.)
 
 The work happened in a worktree **outside** the repository
 (`C:\Users\orcha\AppData\Local\Temp\opencode\wt-003`), so the main checkout
 was never moved off `master`.
+
+**The diff against `master`** - exactly eleven files, and nothing else:
+
+```
+$ git diff --stat master...HEAD
+ .orchestra/reports/003-implement-1.md | 926 +++++++++++++++++++++++++++++++
+ README.md                             |  17 +-
+ TESTING_GUIDE.md                      |  13 +-
+ backend/services/README.md            |   7 +-
+ docs/CODEBASE_BOUNDARIES.md           |  14 +-
+ docs/OPERATIONS.md                    |  36 +--
+ docs/PROJECT_STATUS.md                |  19 +-
+ docs/ROADMAP.md                       |  15 +-
+ docs/TESTING.md                       | 172 +++++++++++++++--------------
+ scripts/check_doc_paths.py            | 486 +++++++++++++++++
+ scripts/measure_test_baseline.py      | 986 ++++++++++++++++++++++++++++++++++
+ 11 files changed, 2601 insertions(+), 90 deletions(-)
+```
+
+The branch merges into `master` without a conflict
+(`git merge-tree --write-tree master orchestra/003-docs-baseline` -> a tree,
+no conflict markers).
 
 **The files I wrote** (nothing else):
 
@@ -176,7 +203,7 @@ exit=3
 
 "On `master`" = the base commit this branch was cut from (`9770fb9`, before
 the item 002/006/007 merges); "on the branch" = the tip of
-`orchestra/003-docs-baseline` (`485a797`).
+`orchestra/003-docs-baseline` (the three commits listed above).
 
 **R1** - `git grep -nE "1564|1609|692|683|659|196" -- scripts/measure_test_baseline.py`
 
