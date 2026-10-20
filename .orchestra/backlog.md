@@ -66,7 +66,7 @@
 - Likely files: `scripts/measure_test_baseline.py`, `scripts/check_doc_paths.py`, `README.md`, `docs/TESTING.md`, `docs/PROJECT_STATUS.md`, `docs/ROADMAP.md`, `docs/OPERATIONS.md`, `docs/CODEBASE_BOUNDARIES.md`, `backend/services/README.md`
 - Sensitivity: none
 - Domain: none
-- Status: ready
+- Status: planned
 
 ### 008 Event ledger appends must not lose events under concurrency
 - Why: R-021 - a DURABILITY defect in production code, measured by implementer 004: `DbEventLedger.append_event` (`backend/runtime/events.py:41-73`) allocates the per-task sequence number by READ-THEN-WRITE (`:47-52` reads the committed maximum, `:64` computes `sequence = max(last.sequence_num if last else 0, pending_max) + 1`, `:72` adds the row), while `backend/core/db_manager.py:128-131` holds a UNIQUE index on `task_events (task_id, sequence_num)`. Two concurrent appends to one task compute the same number, the second commit raises `IntegrityError`, `threading` swallows the worker exception, and the suite still reports "1 passed" while up to 50% of the task's events are lost (8 rounds measured: `survived [10, 5]`, `[5, 5]`, `[10, 10]`, `[10, 5]`, ...). The event ledger is the repository's replay and audit substrate, and the tautology item 004 removed was hiding it. DEFERRED by this re-rank: the three remaining merge slots went to item 007 (active user-data destruction outside the repository), item 006 (the pipeline item 001 repaired goes RED on a clean checkout without it) and item 003 (Gate 4). R-021 remains a `[required]` follow-up (`.orchestra/follow-ups.md:24`), so the finding is not lost - and these criteria are written so a later run can execute them without re-deriving anything.
