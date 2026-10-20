@@ -26,7 +26,7 @@
 - Risk: low (workflow YAML plus one package.json script; no runtime code, no secrets, no payload or auth surface)
 - Likely files: `.github/workflows/ci.yml`, `frontend/package.json`
 - Sensitivity: infra
-- Status: accepted
+- Status: merged
 
 ### 002 Makefile test selections and pytest configuration stop claiming what they do not do
 - Why: R-003 and R-005 are one story and both are Gate 4 + Gate 8 failures. The Makefile's marker targets select nothing (`-m gui`, `-m network`, `-m acceptance` collect 0 of 1609 tests; `-m "not slow and not flaky and not integration and not gui and not network"` deselects exactly 1), and the repository has no pytest configuration file at all, so the suite runs with no `configfile:` and two markers that are applied to real tests (`concurrency`, `gated_soak`) are never declared. Every future agent that trusts `make test-fast` or `make test-gui` is wrong about what ran. This item deliberately does not edit `docs/TESTING.md`; item 003 owns that file and documents the final state.
