@@ -350,8 +350,9 @@ PS> git status -sb
 ## master...origin/master [ahead 18]
 ```
 
-`origin/master` is untouched at `d2a24e5`. `master` is 18 commits ahead locally. No push, no
-tag, no remote operation of any kind.
+`origin/master` is untouched at `d2a24e5`. `master` is 18 commits ahead locally **at the time of
+that check** (the orchestrator has committed more since - the count is not a fixed number). No
+push, no tag, no remote operation of any kind.
 
 ### 9. `master` moved on during my run (orchestrator's own commit, not the merge's)
 
@@ -376,7 +377,61 @@ PS> git diff 4d827c0 702ffc5 -- .orchestra/backlog.md
 
 The merge commit itself is unaffected - `4d827c0` is still an ancestor of `master`
 (`git merge-base --is-ancestor 4d827c0 master` -> exit 0), and its diff against its first parent
-is still exactly the four test files. `master`'s tip is now `702ffc5`.
+is still exactly the four test files. `master` has since moved on again (see section 10).
+
+### 10. An accidental amend of the ORCHESTRATOR's commit, and how I repaired it
+
+**What happened.** After committing this report (`7412649`), the orchestrator committed on top of
+it - `ecb6318 chore(orchestra): planner critiques for 006/007, items planned, dispatch
+implementer-007`. I then wanted to fold one further paragraph into my report and ran
+`git commit --amend --no-edit -- .orchestra/reports/000-commit-2.md`. **That amended the
+orchestrator's commit, not mine** (HEAD was the orchestrator's `ecb6318` by then), producing
+`a26228c`: the orchestrator's commit with my report file added to it, and the original
+`ecb6318` displaced from `master`'s history. No file content was lost - `a26228c` contained
+everything `ecb6318` had, plus my report - but the orchestrator's commit had been rewritten
+under its feet, and its message no longer described its contents.
+
+**How I repaired it (without touching a single working-tree file).**
+
+1. Extracted the original commit object byte-exactly
+   (`git cat-file commit ecb6318` -> split at the first blank line -> exact 89-byte message) and
+   **reproduced `ecb6318` exactly** with plumbing:
+   `git commit-tree <ecb6318 tree> -p 7412649 -F <exact message bytes>` with the original
+   author/committer identity and dates -> the output sha was
+   `ecb631809f6ef2d933bcdd8a6155b2dd99ec6394`, i.e. the **original sha**.
+2. Built the corrected tree in a **temporary index** (`GIT_INDEX_FILE`), never in the real one:
+   `git read-tree <ecb6318 tree>` + `git update-index --cacheinfo 100644,<my report blob>,
+   .orchestra/reports/000-commit-2.md` + `git write-tree` -> a tree that differs from `ecb6318`'s
+   tree in exactly one path (my report file).
+3. Created a **separate** commit for my report on top of the restored `ecb6318`:
+   `git commit-tree <new tree> -p ecb6318 -F <my message>`.
+4. Moved `master` with a **compare-and-swap** so nothing could be clobbered:
+   `git update-ref refs/heads/master 4dbca9b a26228c` (the old value was mandatory - my first
+   attempt failed with "cannot lock ref ... but expected ..." because I mistyped the expected
+   old sha, and that failure is exactly the protection I wanted).
+
+**Result.** `master`'s history is now
+`... -> 7412649 (my report) -> ecb6318 (the orchestrator's commit, original sha restored) ->
+4dbca9b (my report update)`. The orchestrator's commit is byte-identical to what it made, under
+its original sha. `git status` shows no modification of any tracked file. The displaced
+`a26228c` is not lost - the orchestrator's own branch
+`orchestra/006-readiness-test-isolation` points at it.
+
+```
+PS> git log --oneline -6
+4dbca9b chore(orchestra): committer-004 second dispatch - re-verify merge 4d827c0, post-merge suite evidence
+ecb6318 chore(orchestra): planner critiques for 006/007, items planned, dispatch implementer-007
+7412649 chore(orchestra): committer-004 second dispatch - re-verify merge 4d827c0, post-merge suite evidence
+e2cbb1f chore(orchestra): item 004 merged (4d827c0), committer critique, board updated
+38ee87e chore(orchestra): item 004 merged into master (merge 4d827c0), committer report
+702ffc5 chore(orchestra): briefs for committer-004 and planners 006/007
+4d827c0 Merge branch 'orchestra/004-real-assertions' into master
+```
+
+No `git reset --hard`, no `git clean -fd`, no `git checkout -- .`, no `git stash drop`, no push,
+and **no working-tree file was touched during the repair** (the repair used a temporary index
+and object-database plumbing only). Nothing of any other item's worktree or branch was
+modified.
 
 ## Merge
 
