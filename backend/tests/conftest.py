@@ -30,45 +30,61 @@ httpx.Client.__init__ = _compat_httpx_client_init
 
 # ---- pytest markers ----
 # The root pytest.ini is the single source of truth for the marker
-# vocabulary: which markers exist and what each one selects. The declarations
-# below are only a fallback, so the suite still runs - and still fails loudly
-# on an unknown marker - when it is run without that file.
+# vocabulary: the marker names, the description of what each marker selects,
+# and the tree the default (no-argument) invocation collects. The
+# descriptions live there and only there, so that a description cannot
+# drift away from the code it describes.
 #
-# `concurrency` and `gated_soak` are applied to real tests and used to be
-# undeclared, which produced one PytestUnknownMarkWarning per use.
-CANONICAL_MARKERS = {
-    "slow": "a slow test (deselect with '-m \"not slow\"')",
-    "flaky": "declared for future use; not currently applied to any test",
-    "integration": "declared for future use; not currently applied to any test",
-    "acceptance": "the acceptance sub-suite under backend/tests/acceptance/",
-    "gui": (
-        "requires a live interactive Windows desktop and the real UI "
-        "Automation stack (currently backend/tests/acceptance/test_gui_fixture.py)"
-    ),
-    "network": (
-        "requires an outbound network connection "
-        "(currently every provider_e2e test)"
-    ),
-    "process_kill": (
-        "real Windows process-kill integration tests "
-        "(run explicitly with SYTHION_RUN_PROCESS_KILL=1)"
-    ),
-    "provider_e2e": (
-        "real provider-backed specialist E2E tests "
-        "(run explicitly with SYTHION_RUN_PROVIDER_E2E=1 plus a configured "
-        "provider credential/model; skipped otherwise)"
-    ),
-    "concurrency": "tests that exercise the shared runtime under concurrent load",
-    "gated_soak": (
-        "long-running soak tests, gated behind an explicit environment flag"
-    ),
-}
+# The root pytest.ini is REQUIRED. A full-tree collection without it is
+# aborted by the selection-contract guard below (rule 5) before any test
+# runs, because the point of the guard is that the repository has exactly one
+# place where the selection contract is written down.
+#
+# The declarations below are a declaration-only fallback, and they are
+# exactly as much as they look:
+#   * they carry the marker NAMES only - the descriptions are not duplicated
+#     here, so there is no second copy to drift;
+#   * they take effect only once this conftest is loaded, i.e. once pytest
+#     collects something under backend/tests. That means:
+#       - a PARTIAL run inside backend/tests (one file, one directory) gets
+#         the marker vocabulary without pytest.ini, and therefore keeps its
+#         marker selections and its unknown-mark warnings correct;
+#       - `pytest --markers` does NOT show these markers when the test tree
+#         has not been collected, because --markers never loads this
+#         conftest;
+#       - a FULL-TREE collection without pytest.ini aborts with exit code 4
+#         (rule 5). The fallback does not, and cannot, make the suite
+#         runnable without the root configuration.
+CANONICAL_MARKERS = (
+    "slow",
+    "flaky",
+    "integration",
+    "acceptance",
+    "gui",
+    "network",
+    "process_kill",
+    "provider_e2e",
+    "concurrency",
+    "gated_soak",
+)
+
+# Modules that need a live interactive Windows desktop and the real UI
+# Automation stack. The `gui` marker means exactly that, so the two have to
+# agree in both directions:
+#   * a module listed here must carry `pytestmark = pytest.mark.gui`;
+#   * a module whose tests carry the `gui` marker must be listed here.
+# The guard checks both directions and names the module in the message, so
+# adding a second live-GUI module is a two-line, reviewable change - the
+# marker in the module, the entry here - instead of a suite-wide abort with
+# a misleading message.
+LIVE_GUI_MODULES = (
+    "acceptance/test_gui_fixture.py",
+)
 
 # Directory layout used by the marker classification rules and by the
 # selection-contract guard below.
 _TESTS_ROOT = Path(__file__).resolve().parent
 _ACCEPTANCE_DIR = _TESTS_ROOT / "acceptance"
-_GUI_MODULE = _ACCEPTANCE_DIR / "test_gui_fixture.py"
 _REPO_ROOT = _TESTS_ROOT.parent.parent
 
 # pytest's built-in marks are never listed in the `markers` ini option.
@@ -78,21 +94,40 @@ _BUILTIN_MARKS = frozenset(
 
 
 def _norm(path) -> str:
-    """Case- and separator-normalised absolute path, for comparisons."""
-    return os.path.normcase(os.path.abspath(str(path)))
+    """Case- and separator-normalised real path, for comparisons.
+
+    ``realpath`` on both sides of every comparison, so that a checkout
+    reached through a symlinked path cannot make two spellings of the same
+    file look like two different files (which would abort the suite with a
+    false violation).
+    """
+    key = str(path)
+    cached = _NORM_CACHE.get(key)
+    if cached is None:
+        cached = os.path.normcase(os.path.realpath(os.path.abspath(key)))
+        _NORM_CACHE[key] = cached
+    return cached
 
 
+_NORM_CACHE = {}
 _NORM_TESTS_ROOT = _norm(_TESTS_ROOT)
 _NORM_ACCEPTANCE_DIR = _norm(_ACCEPTANCE_DIR)
-_NORM_GUI_MODULE = _norm(_GUI_MODULE)
 _NORM_REPO_ROOT = _norm(_REPO_ROOT)
+
+
+def _rel(path: str) -> str:
+    """Repository-relative path (forward slashes), for messages."""
+    prefix = _NORM_REPO_ROOT + os.sep
+    if path.startswith(prefix):
+        return path[len(prefix):].replace(os.sep, "/")
+    return path
 
 
 def _declared_marker_names(config) -> set:
     """The marker names pytest currently knows about."""
     names = set()
     for line in config.getini("markers"):
-        # "name: description" -> "name"
+        # "name: description" or "name" -> "name"
         name = line.split(":")[0].split(" ")[0].strip()
         if name:
             names.add(name)
@@ -100,12 +135,13 @@ def _declared_marker_names(config) -> set:
 
 
 def pytest_configure(config):
-    """Declare the canonical markers the root configuration did not declare."""
+    """Declare the canonical marker names the root configuration did not."""
     already = _declared_marker_names(config)
     added = set()
-    for name, description in CANONICAL_MARKERS.items():
+    for name in CANONICAL_MARKERS:
         if name not in already:
-            config.addinivalue_line("markers", "{}: {}".format(name, description))
+            # Name only: the descriptions live in pytest.ini and only there.
+            config.addinivalue_line("markers", name)
             added.add(name)
     # Remember what came from this fallback, so the guard below can tell
     # "declared by the root configuration" from "declared here".
@@ -161,25 +197,51 @@ def _is_full_tree_collection(config) -> bool:
     return False
 
 
-def _compare_populations(marker: str, actual: set, expected: set) -> list:
-    """Describe how two marker populations differ."""
-    if actual == expected:
-        return []
+def _gui_population_violations(items) -> list:
+    """Check the ``gui`` marker against the live-GUI module registry.
+
+    Both directions are reported, and each message states what is actually
+    wrong:
+      * a module whose tests carry the ``gui`` marker but that is not
+        registered as a live-GUI module;
+      * a registered live-GUI module whose tests do not all carry the
+        marker;
+      * a registered live-GUI module from which no test was collected.
+    """
     violations = []
-    extra = sorted(actual - expected)
-    missing = sorted(expected - actual)
-    if extra:
-        violations.append(
-            "marker '{}' is applied to {} test(s) it does not describe, e.g. {}".format(
-                marker, len(extra), extra[0]
+    registered = {}
+    for relative in LIVE_GUI_MODULES:
+        registered[_norm(_TESTS_ROOT / relative)] = relative
+
+    by_file = {}
+    for item in items:
+        by_file.setdefault(_item_path(item), []).append(item)
+
+    for path, file_items in sorted(by_file.items()):
+        marked = [i for i in file_items if i.get_closest_marker("gui") is not None]
+        if marked and path not in registered:
+            violations.append(
+                "module '{}' has {} test(s) carrying the `gui` marker but is not "
+                "registered as a live-GUI module - add it to LIVE_GUI_MODULES "
+                "in backend/tests/conftest.py".format(_rel(path), len(marked))
             )
-        )
-    if missing:
-        violations.append(
-            "marker '{}' is missing from {} test(s) it must describe, e.g. {}".format(
-                marker, len(missing), missing[0]
+
+    for path, relative in sorted(registered.items()):
+        file_items = by_file.get(path)
+        if not file_items:
+            violations.append(
+                "module '{}' is registered as a live-GUI module but no test was "
+                "collected from it".format(relative)
             )
-        )
+            continue
+        unmarked = [i for i in file_items if i.get_closest_marker("gui") is None]
+        if unmarked:
+            violations.append(
+                "module '{}' is registered as a live-GUI module but {} of its {} "
+                "collected test(s) do not carry the `gui` marker, e.g. {}".format(
+                    relative, len(unmarked), len(file_items), unmarked[0].nodeid
+                )
+            )
     return violations
 
 
@@ -210,26 +272,48 @@ def _selection_contract_violations(config, items) -> list:
         i.nodeid for i in items
         if _item_path(i).startswith(_NORM_ACCEPTANCE_DIR + os.sep)
     }
-    violations.extend(_compare_populations("acceptance", acceptance, expected_acceptance))
+    extra = sorted(acceptance - expected_acceptance)
+    if extra:
+        violations.append(
+            "marker 'acceptance' is applied to {} test(s) outside "
+            "backend/tests/acceptance/, e.g. {}".format(len(extra), extra[0])
+        )
+    missing = sorted(expected_acceptance - acceptance)
+    if missing:
+        violations.append(
+            "marker 'acceptance' is missing from {} test(s) under "
+            "backend/tests/acceptance/, e.g. {}".format(len(missing), missing[0])
+        )
 
-    # 3. `gui` is exactly the live-desktop GUI module
-    gui = {i.nodeid for i in items if i.get_closest_marker("gui") is not None}
-    expected_gui = {i.nodeid for i in items if _item_path(i) == _NORM_GUI_MODULE}
-    violations.extend(_compare_populations("gui", gui, expected_gui))
+    # 3. `gui` is exactly the registered live-GUI modules
+    violations.extend(_gui_population_violations(items))
 
     # 4. `network` is exactly the provider_e2e tests
     network = {i.nodeid for i in items if i.get_closest_marker("network") is not None}
     expected_network = {
         i.nodeid for i in items if i.get_closest_marker("provider_e2e") is not None
     }
-    violations.extend(_compare_populations("network", network, expected_network))
+    extra = sorted(network - expected_network)
+    if extra:
+        violations.append(
+            "marker 'network' is applied to {} test(s) that are not provider_e2e "
+            "tests, e.g. {}".format(len(extra), extra[0])
+        )
+    missing = sorted(expected_network - network)
+    if missing:
+        violations.append(
+            "marker 'network' is missing from {} provider_e2e test(s), e.g. {}".format(
+                len(missing), missing[0]
+            )
+        )
 
-    # 5. the root configuration is the repository-root pytest.ini and declares
-    #    every canonical marker
+    # 5. the configuration in use is the repository-root pytest.ini and
+    #    declares every canonical marker
     inipath = config.inipath
     if inipath is None:
         violations.append(
-            "no pytest configuration file was used; expected pytest.ini at the repository root"
+            "no pytest configuration file was used; the repository-root pytest.ini "
+            "is required - it defines the marker vocabulary and the test tree"
         )
     elif _norm(Path(inipath).parent) != _NORM_REPO_ROOT:
         violations.append(
@@ -240,7 +324,7 @@ def _selection_contract_violations(config, items) -> list:
     missing = sorted(set(CANONICAL_MARKERS) - from_root)
     if missing:
         violations.append(
-            "the root configuration does not declare the marker(s): {}".format(
+            "the configuration in use does not declare the marker(s): {}".format(
                 ", ".join(missing)
             )
         )

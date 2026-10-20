@@ -40,7 +40,9 @@ from backend.api.schemas import (
 # This module needs a live interactive Windows desktop and the real UI
 # Automation stack, so it is the one module in the repository that carries
 # the `gui` marker. The marker restates the module docstring above; it adds
-# no new claim.
+# no new claim. A module that carries the `gui` marker must also be
+# registered in LIVE_GUI_MODULES in backend/tests/conftest.py - the
+# selection-contract guard checks that both directions agree.
 pytestmark = pytest.mark.gui
 
 FIXTURE_TITLE = "Sythion (Synth) GUI Fixture"

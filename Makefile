@@ -39,7 +39,8 @@ test-unit:
 	python -m pytest backend/tests -q -m "not acceptance"
 
 # GUI tests only: the tests that need a live interactive Windows desktop and
-# the real UI Automation stack (backend/tests/acceptance/test_gui_fixture.py).
+# the real UI Automation stack - the modules registered in LIVE_GUI_MODULES in
+# backend/tests/conftest.py (currently backend/tests/acceptance/test_gui_fixture.py).
 # `-rs` reports the skip reason when no interactive desktop is available
 # instead of silently reporting it as a pass.
 test-gui:
