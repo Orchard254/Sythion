@@ -27,6 +27,14 @@ LOCK_PATH = APP_DIR / "backend" / "requirements.lock.txt"
 PACKAGING_REQ_PATH = APP_DIR / "backend" / "requirements-packaging.txt"
 DOWNLOAD_DIR = APP_DIR / "build" / "staging" / "python-downloads"
 
+# The payload policy lives in one place so the staging step and the release
+# verification can never disagree about what may ship.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from verify_release_payload import (  # noqa: E402
+    payload_ignore_patterns,
+    prune_tree,
+)
+
 PYTHON_VERSION = "3.13.16"
 PYTHON_TAG = "3.13"
 GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
@@ -171,10 +179,18 @@ def stage_backend() -> None:
     # copy backend package
     src_backend = APP_DIR / "backend"
     dst_backend = BACKEND_DIR
-    shutil.copytree(src_backend, dst_backend, dirs_exist_ok=True)
-    # remove tests/cache to reduce? keep source? Remove pycache.
-    for p in dst_backend.rglob("__pycache__"):
-        shutil.rmtree(p, ignore_errors=True)
+    # The payload policy decides what may ship. The same module verifies the
+    # staged tree afterwards, so a prohibited artifact can neither be copied
+    # in nor survive a staging run.
+    shutil.copytree(
+        src_backend,
+        dst_backend,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns(*payload_ignore_patterns()),
+    )
+    removed = prune_tree(dst_backend)
+    if removed:
+        print(f"[stage] removed {len(removed)} prohibited artifact(s) from the staged backend")
     print(f"[stage] backend staged at {dst_backend}")
 
 

@@ -323,6 +323,40 @@ export const memoryService = {
   },
 };
 
+/* --- First-run setup ----------------------------------------------------- */
+
+export const setupService = {
+  readiness: async (): Promise<SetupReadiness> => {
+    const response = await apiClient.get('/setup/readiness');
+    return response.data;
+  },
+
+  testCredentials: async (value: string): Promise<{ valid: boolean; model_count: number; models: string[] }> => {
+    const response = await apiClient.post('/onboarding/credentials/test', { value });
+    return response.data;
+  },
+
+  setCredential: async (value: string): Promise<unknown> => {
+    const response = await apiClient.put('/secrets/ollama_api_key', { value });
+    return response.data;
+  },
+
+  inference: async (modelId?: string): Promise<{ success: boolean; model: string; response_preview: string }> => {
+    const response = await apiClient.post('/onboarding/inference', modelId ? { model_id: modelId } : {});
+    return response.data;
+  },
+
+  selectModel: async (modelId: string): Promise<{ selected_model: string; persisted: boolean }> => {
+    const response = await apiClient.post('/onboarding/models', { model_id: modelId });
+    return response.data;
+  },
+
+  applySafeSettings: async (): Promise<{ ok: boolean }> => {
+    const response = await apiClient.post('/setup/safe-settings');
+    return response.data;
+  },
+};
+
 /* --- Voice --------------------------------------------------------------- */
 
 export interface VoiceSegment {
@@ -447,6 +481,14 @@ function arrayBufferToBase64(buffer: Uint8Array): string {
     binary += String.fromCharCode(...buffer.subarray(i, i + chunkSize));
   }
   return btoa(binary);
+}
+
+export interface SetupReadiness {
+  full_ready: boolean;
+  text_first_available: boolean;
+  checks: Record<string, boolean>;
+  selected_model: string;
+  tts_voice: string;
 }
 
 export default apiClient;

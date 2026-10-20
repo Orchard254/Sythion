@@ -9,7 +9,7 @@
 //! The token is never placed on a command line (visible in process listings).
 
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -142,6 +142,43 @@ pub const HANDSHAKE_TIMEOUT_SECS: u64 = 90;
 const TOKEN_FILE_NAME: &str = "token.json";
 const HANDSHAKE_FILE_NAME: &str = "sidecar.json";
 
+/* Windows console suppression.
+ *
+ * The packaged shell is a GUI-subsystem process (`windows_subsystem =
+ * "windows"`), so it has no console of its own. The sidecar is a
+ * console-subsystem program: the bundled `python.exe` is a CUI executable.
+ *
+ * When a GUI-subsystem parent starts a console-subsystem child without
+ * saying otherwise, Windows allocates a NEW console for that child and shows
+ * it. That is the empty terminal window that appeared in front of the
+ * application on every packaged launch: it is created by this spawn, not by
+ * anything external.
+ *
+ * CREATE_NO_WINDOW runs the child with a console that is never displayed. It
+ * changes nothing else: the child's stdout and stderr are already redirected
+ * to log files, the handshake still goes through the file contract, and the
+ * job-object containment is unaffected.
+ */
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+/// The creation flags used for the sidecar process.
+#[cfg(windows)]
+fn sidecar_creation_flags() -> u32 {
+    // The two flags are mutually exclusive by contract: CREATE_NEW_CONSOLE
+    // would put a console window back on screen.
+    debug_assert_eq!(CREATE_NEW_CONSOLE & CREATE_NO_WINDOW, 0);
+    CREATE_NO_WINDOW
+}
+
+/// The creation flags used for the sidecar process.
+#[cfg(not(windows))]
+fn sidecar_creation_flags() -> u32 {
+    0
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct BridgeConfig {
     pub base_url: String,
@@ -154,16 +191,146 @@ struct HandshakePayload {
     token: String,
 }
 
-fn local_app_data_dir() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
+/* Profile directory contract.
+ *
+ * The shell and the Python sidecar must agree on ONE profile directory: the
+ * database, the profile lock, the handshake file, the token file and the logs
+ * all live there. A split profile is not cosmetic - the sidecar would write
+ * its handshake into one directory while the shell looked for it in another,
+ * the bridge would never resolve, and the application would sit on
+ * "Connecting to Sythion" until the handshake timeout expired.
+ *
+ * The rules:
+ *
+ *   1. `SYTHION_DATA_DIR` is the canonical explicit override.
+ *   2. `Sythion (Synth)_DATA_DIR` is still honoured, but ONLY when the
+ *      canonical variable is absent. It exists because the packaging and
+ *      launch scripts set it.
+ *   3. If BOTH are set and they name different directories, the shell refuses
+ *      to start. Silently picking one would hide a misconfiguration that
+ *      splits the profile.
+ *   4. With neither set, the established default is used:
+ *      `%LOCALAPPDATA%\Sythion (Synth)`.
+ *
+ * The directory is resolved ONCE, in the shell, and the resolved path is
+ * passed to the sidecar explicitly through `SYTHION_DATA_DIR`. The sidecar
+ * therefore never has to guess, and an inherited environment variable can
+ * never point it somewhere else.
+ */
+pub const DATA_DIR_ENV: &str = "SYTHION_DATA_DIR";
+pub const LEGACY_DATA_DIR_ENV: &str = "Sythion (Synth)_DATA_DIR";
+pub const DEFAULT_DATA_DIR_NAME: &str = "Sythion (Synth)";
+
+/// The default profile directory when no override is supplied.
+///
+/// On Windows this is `%LOCALAPPDATA%\Sythion (Synth)`, the location the
+/// backend uses for the same default.
+pub fn default_data_dir() -> PathBuf {
+    match std::env::var_os("LOCALAPPDATA") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir).join(DEFAULT_DATA_DIR_NAME),
+        _ => std::env::temp_dir().join("sythion-data"),
+    }
 }
 
+/// Normalize a profile directory: absolute, with `.` and `..` resolved and no
+/// trailing separator.
+///
+/// Purely lexical - the directory does not have to exist, and nothing is read
+/// from or written to the filesystem.
+pub fn normalize_data_dir(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+
+    let mut out = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                // `pop` is a no-op on a root, so `C:\..\x` stays `C:\x`.
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// A comparable key for a profile directory.
+///
+/// Windows paths are case-insensitive, so the comparison folds case there.
+pub fn data_dir_key(path: &Path) -> String {
+    let text = normalize_data_dir(path).to_string_lossy().replace('/', "\\");
+    if cfg!(windows) {
+        text.to_lowercase()
+    } else {
+        text
+    }
+}
+
+/// Resolve the profile directory from an explicit set of overrides.
+///
+/// `canonical` is `SYTHION_DATA_DIR`, `legacy` is `Sythion (Synth)_DATA_DIR`.
+/// Empty values count as absent. Returns an error when both are present and
+/// name different directories.
+pub fn resolve_data_dir_from(
+    canonical: Option<&std::ffi::OsStr>,
+    legacy: Option<&std::ffi::OsStr>,
+    default: &Path,
+) -> Result<PathBuf, String> {
+    let canonical = canonical
+        .map(|v| v.to_string_lossy().trim().to_string())
+        .filter(|v| !v.is_empty());
+    let legacy = legacy
+        .map(|v| v.to_string_lossy().trim().to_string())
+        .filter(|v| !v.is_empty());
+
+    match (canonical, legacy) {
+        (Some(c), Some(l)) => {
+            if data_dir_key(Path::new(&c)) == data_dir_key(Path::new(&l)) {
+                Ok(normalize_data_dir(Path::new(&c)))
+            } else {
+                Err(format!(
+                    "conflicting profile directories: {DATA_DIR_ENV} points at '{}' but {LEGACY_DATA_DIR_ENV} points at '{}'. \
+                     Set only {DATA_DIR_ENV}, or make both point at the same directory.",
+                    Path::new(&c).display(),
+                    Path::new(&l).display(),
+                ))
+            }
+        }
+        (Some(c), None) => Ok(normalize_data_dir(Path::new(&c))),
+        (None, Some(l)) => Ok(normalize_data_dir(Path::new(&l))),
+        (None, None) => Ok(normalize_data_dir(default)),
+    }
+}
+
+/// Resolve the profile directory from the environment.
+///
+/// This is the authority. A conflicting configuration is an error, and the
+/// caller is expected to refuse to start rather than pick a side.
+pub fn resolve_data_dir() -> Result<PathBuf, String> {
+    resolve_data_dir_from(
+        std::env::var_os(DATA_DIR_ENV).as_deref(),
+        std::env::var_os(LEGACY_DATA_DIR_ENV).as_deref(),
+        &default_data_dir(),
+    )
+}
+
+/// The profile directory, for code that only needs somewhere to write.
+///
+/// A conflicting configuration falls back to the canonical override so that
+/// diagnostics still have a destination. The application itself refuses to
+/// start in that state - see `resolve_data_dir`.
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("Sythion (Synth)_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| local_app_data_dir().join("Sythion (Synth)"))
+    match resolve_data_dir() {
+        Ok(dir) => dir,
+        Err(_) => match std::env::var_os(DATA_DIR_ENV) {
+            Some(value) if !value.is_empty() => normalize_data_dir(Path::new(&value)),
+            _ => default_data_dir(),
+        },
+    }
 }
 
 fn generate_token() -> String {
@@ -245,7 +412,6 @@ fn read_handshake() -> Option<HandshakePayload> {
     }
     Some(payload)
 }
-
 /// Translate the shell's build mode into the sidecar's development flag.
 ///
 /// The two must agree, because they decide *which origins the sidecar trusts*
@@ -275,8 +441,12 @@ fn development_mode_flag() -> &'static str {
     development_mode_flag_for(tauri::is_dev())
 }
 
-pub fn spawn_sidecar(app_handle: &tauri::AppHandle) -> Result<Child, String> {
-    let dir = data_dir();
+pub fn spawn_sidecar(app_handle: &tauri::AppHandle, dir: &Path) -> Result<Child, String> {
+    // The profile directory is resolved ONCE, by the caller, and handed to the
+    // sidecar explicitly. A conflicting configuration is fatal: starting with a
+    // split profile would leave the sidecar waiting for a handshake that lands
+    // in a directory nobody is watching.
+    let dir = dir.to_path_buf();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create data dir: {e}"))?;
 
     // Remove a stale handshake so a previous launch's file is never mistaken
@@ -303,7 +473,8 @@ pub fn spawn_sidecar(app_handle: &tauri::AppHandle) -> Result<Child, String> {
     let _ = std::fs::create_dir_all(&log_dir);
     let stdout_file = std::fs::File::create(log_dir.join("sidecar.out.log")).ok();
     let stderr_file = std::fs::File::create(log_dir.join("sidecar.err.log")).ok();
-    let child = Command::new(&python)
+    let mut command = Command::new(&python);
+    command
         .current_dir(&workdir)
         .arg("-m")
         .arg("uvicorn")
@@ -315,8 +486,25 @@ pub fn spawn_sidecar(app_handle: &tauri::AppHandle) -> Result<Child, String> {
         .env("SYTHION_HANDSHAKE_TOKEN_FILE", &token_file)
         .env("SYTHION_PORT", port.to_string())
         .env("SYTHION_DEVELOPMENT_MODE", development_mode_flag())
+        // The resolved profile directory is handed to the sidecar explicitly.
+        // The sidecar then has exactly one source of truth for the database,
+        // the profile lock, the handshake file and its own log file.
+        .env(DATA_DIR_ENV, &dir)
+        .env("SYTHION_LOG_DIR", &log_dir)
+        // The legacy variable is removed so the sidecar can never read a
+        // different directory than the one the shell resolved.
+        .env_remove(LEGACY_DATA_DIR_ENV)
         .stdout(stdout_file.map(Stdio::from).unwrap_or_else(Stdio::null))
-        .stderr(stderr_file.map(Stdio::from).unwrap_or_else(Stdio::null))
+        .stderr(stderr_file.map(Stdio::from).unwrap_or_else(Stdio::null));
+
+    // Keep the sidecar's console invisible. See `sidecar_creation_flags`.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(sidecar_creation_flags());
+    }
+
+    let child = command
         .spawn()
         .map_err(|e| format!("spawn sidecar ({python:?}): {e}"))?;
 
@@ -344,7 +532,9 @@ pub fn spawn_sidecar(app_handle: &tauri::AppHandle) -> Result<Child, String> {
         if assigned {
             *app_handle.state::<crate::AppState>().job.lock().unwrap() = Some(job as isize);
         } else {
-            eprintln!("[sythion] could not assign sidecar to job object; orphan protection unavailable");
+            crate::shell_log(
+                "[sythion] could not assign sidecar to job object; orphan protection unavailable",
+            );
             win_job::close(job);
         }
     }
@@ -374,18 +564,34 @@ pub fn spawn_watcher(app_handle: tauri::AppHandle) {
                 .map(|c| c.try_wait().ok().flatten().is_some())
                 .unwrap_or(false);
             if child_exited {
-                eprintln!("[sythion] sidecar exited before writing its handshake");
+                crate::shell_log("[sythion] sidecar exited before writing its handshake");
                 return;
             }
             std::thread::sleep(Duration::from_millis(500));
         }
-        eprintln!("[sythion] timed out waiting for the sidecar handshake");
+        crate::shell_log("[sythion] timed out waiting for the sidecar handshake");
     });
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{development_mode_flag, development_mode_flag_for};
+    use super::{
+        data_dir_key, development_mode_flag, development_mode_flag_for, normalize_data_dir,
+        resolve_data_dir_from, sidecar_creation_flags, DATA_DIR_ENV, DEFAULT_DATA_DIR_NAME,
+        LEGACY_DATA_DIR_ENV,
+    };
+    use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
+
+    fn resolve(canonical: Option<&str>, legacy: Option<&str>) -> Result<PathBuf, String> {
+        let default = PathBuf::from("C:\\Users\\test\\AppData\\Local")
+            .join(DEFAULT_DATA_DIR_NAME);
+        resolve_data_dir_from(
+            canonical.map(OsStr::new),
+            legacy.map(OsStr::new),
+            &default,
+        )
+    }
 
     /// A packaged shell serves `tauri://localhost`, which is trusted without
     /// development mode, so the flag must stay "false". Widening it here would
@@ -408,5 +614,128 @@ mod tests {
     #[test]
     fn the_flag_follows_the_url_the_webview_loads() {
         assert_eq!(development_mode_flag(), development_mode_flag_for(tauri::is_dev()));
+    }
+
+    /// The sidecar is a console-subsystem program started by a GUI-subsystem
+    /// parent. Without CREATE_NO_WINDOW Windows allocates a console for it and
+    /// shows it as an empty terminal window in front of the application.
+    #[test]
+    fn the_sidecar_never_shows_a_console_window() {
+        #[cfg(windows)]
+        assert_eq!(sidecar_creation_flags() & 0x0800_0000, 0x0800_0000);
+        #[cfg(not(windows))]
+        assert_eq!(sidecar_creation_flags(), 0);
+    }
+
+    /// CREATE_NEW_CONSOLE would undo CREATE_NO_WINDOW and put the console
+    /// back on screen, so the two must never be combined.
+    #[test]
+    fn the_sidecar_never_requests_a_new_console() {
+        #[cfg(windows)]
+        assert_eq!(sidecar_creation_flags() & 0x0000_0010, 0);
+        #[cfg(not(windows))]
+        assert_eq!(sidecar_creation_flags(), 0);
+    }
+
+    /* Profile directory contract.
+     *
+     * A split profile is not cosmetic: the sidecar would write its handshake
+     * into one directory while the shell looked for it in another, the bridge
+     * would never resolve and the application would hang on "Connecting to
+     * Sythion" until the handshake timeout expired.
+     */
+
+    /// The canonical variable alone decides the profile.
+    #[test]
+    fn the_canonical_variable_selects_the_profile() {
+        let dir = resolve(Some("C:\\profiles\\sythion"), None).expect("resolved");
+        assert_eq!(dir, PathBuf::from("C:\\profiles\\sythion"));
+    }
+
+    /// The legacy variable is still honoured when the canonical one is absent.
+    #[test]
+    fn the_legacy_variable_is_still_honoured() {
+        let dir = resolve(None, Some("C:\\profiles\\legacy")).expect("resolved");
+        assert_eq!(dir, PathBuf::from("C:\\profiles\\legacy"));
+    }
+
+    /// Both variables naming the same directory are not a conflict.
+    #[test]
+    fn matching_overrides_are_accepted() {
+        let dir = resolve(Some("C:\\profiles\\sythion"), Some("C:\\profiles\\sythion"))
+            .expect("resolved");
+        assert_eq!(dir, PathBuf::from("C:\\profiles\\sythion"));
+    }
+
+    /// The same directory written differently is still the same directory.
+    #[test]
+    fn equivalent_overrides_are_accepted() {
+        let dir = resolve(
+            Some("C:\\profiles\\sythion"),
+            Some("C:\\profiles\\sythion\\.\\"),
+        )
+        .expect("resolved");
+        assert_eq!(dir, PathBuf::from("C:\\profiles\\sythion"));
+    }
+
+    /// Two different directories are a misconfiguration that must not be
+    /// resolved silently.
+    #[test]
+    fn conflicting_overrides_are_rejected() {
+        let err = resolve(Some("C:\\profiles\\one"), Some("C:\\profiles\\two"))
+            .expect_err("conflicting overrides must fail");
+        assert!(err.contains(DATA_DIR_ENV), "diagnostic names the canonical variable: {err}");
+        assert!(err.contains(LEGACY_DATA_DIR_ENV), "diagnostic names the legacy variable: {err}");
+        assert!(err.contains("C:\\profiles\\one"));
+        assert!(err.contains("C:\\profiles\\two"));
+    }
+
+    /// With neither override the established default is used.
+    #[test]
+    fn the_default_is_used_without_overrides() {
+        let dir = resolve(None, None).expect("resolved");
+        assert!(dir.ends_with(DEFAULT_DATA_DIR_NAME));
+    }
+
+    /// An empty override counts as absent, not as "the current directory".
+    #[test]
+    fn empty_overrides_count_as_absent() {
+        let dir = resolve(Some(""), None).expect("resolved");
+        assert!(dir.ends_with(DEFAULT_DATA_DIR_NAME));
+        let dir = resolve(Some("   "), Some("")).expect("resolved");
+        assert!(dir.ends_with(DEFAULT_DATA_DIR_NAME));
+    }
+
+    /// The resolved directory is absolute, so the sidecar cannot interpret it
+    /// relative to its own working directory.
+    #[test]
+    fn the_resolved_directory_is_absolute() {
+        let dir = resolve(Some("relative\\profile"), None).expect("resolved");
+        assert!(dir.is_absolute(), "{dir:?} must be absolute");
+    }
+
+    /// Comparison folds case on Windows, where paths are case-insensitive.
+    #[test]
+    fn comparison_is_case_insensitive_on_windows() {
+        let a = Path::new("C:\\Profiles\\Sythion");
+        let b = Path::new("c:\\profiles\\sythion");
+        if cfg!(windows) {
+            assert_eq!(data_dir_key(a), data_dir_key(b));
+        } else {
+            assert_ne!(data_dir_key(a), data_dir_key(b));
+        }
+    }
+
+    /// Normalization collapses `.` and `..` without touching the filesystem.
+    #[test]
+    fn normalization_is_lexical() {
+        assert_eq!(
+            normalize_data_dir(Path::new("C:\\a\\b\\..\\c")),
+            PathBuf::from("C:\\a\\c")
+        );
+        assert_eq!(
+            normalize_data_dir(Path::new("C:\\a\\.\\b")),
+            PathBuf::from("C:\\a\\b")
+        );
     }
 }

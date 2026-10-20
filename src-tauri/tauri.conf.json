@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm --prefix ../frontend run dev",
     "devUrl": "http://localhost:3000",
-    "beforeBuildCommand": "npm --prefix ../frontend run build",
+    "beforeBuildCommand": "npm --prefix ../frontend run build && python ../scripts/verify_release_payload.py",
     "frontendDist": "../frontend/dist"
   },
   "app": {

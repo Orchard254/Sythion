@@ -67,28 +67,110 @@ struct HitTestState {
     dragging: AtomicBool,
     /// Last value actually pushed to the Win32 window, to avoid redundant churn.
     applied_ignore: AtomicBool,
+    /// True while a hit-test poller thread is running, so a second one is
+    /// never started for the same overlay.
+    poller_running: AtomicBool,
 }
 
-/// Diagnostics for native verification. Appended to the profile data dir, never
-/// to stdout (a release build is a GUI subsystem process with no console).
-fn hit_test_log(line: &str) {
+/// Append one line to a log file in the profile data dir.
+///
+/// A release build is a GUI-subsystem process: it has no console, so anything
+/// written to stderr is discarded. Every diagnostic therefore goes to a file
+/// next to the sidecar logs, where it survives the run and can be handed over
+/// when a startup problem has to be investigated.
+fn append_log(file_name: &str, line: &str) {
+    append_log_in(&sidecar::data_dir(), file_name, line);
+}
+
+/// Append one line to `<dir>/logs/<file_name>`.
+///
+/// Split out from `append_log` so the write can be exercised without
+/// touching the real profile directory.
+fn append_log_in(dir: &std::path::Path, file_name: &str, line: &str) {
     use std::io::Write;
     const MAX_BYTES: u64 = 512 * 1024;
-    let path = sidecar::data_dir().join("logs").join("companion-hit-test.log");
+    let path = dir.join("logs").join(file_name);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    // Boundary crossings are rate-limited by real cursor movement, but a user
-    // sweeping the pointer across the overlay can still produce a lot of lines.
     // Bound the file rather than let it grow without limit.
     if let Ok(meta) = std::fs::metadata(&path) {
         if meta.len() > MAX_BYTES {
             return;
         }
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = writeln!(f, "{line}");
     }
+}
+
+/// Shell diagnostics: the log file plus the console in a debug build.
+fn shell_log(line: &str) {
+    append_log("sythion-shell.log", line);
+    // A debug build has a console; keep the output there too.
+    #[cfg(debug_assertions)]
+    eprintln!("{line}");
+}
+
+/// The path of the shell log, used in user-facing error messages.
+fn shell_log_path() -> String {
+    sidecar::data_dir()
+        .join("logs")
+        .join("sythion-shell.log")
+        .display()
+        .to_string()
+}
+
+/// Diagnostics for native verification. Appended to the profile data dir, never
+/// to stdout (a release build is a GUI subsystem process with no console).
+fn hit_test_log(line: &str) {
+    append_log("companion-hit-test.log", line);
+}
+
+/// Report a startup failure to the user.
+///
+/// The packaged shell has no console, so a failure that is only written to
+/// stderr is invisible: the application would simply not appear. A native
+/// message box gives the user the reason and where the full log is.
+#[cfg(windows)]
+fn show_startup_error(message: &str) {
+    use std::ffi::c_void;
+    #[link(name = "user32")]
+    extern "system" {
+        fn MessageBoxW(
+            hwnd: *mut c_void,
+            text: *const u16,
+            caption: *const u16,
+            flags: u32,
+        ) -> i32;
+    }
+    const MB_OK: u32 = 0x0000_0000;
+    const MB_ICONERROR: u32 = 0x0000_0010;
+
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    let body = wide(message);
+    let caption = wide("Sythion (Synth) could not start");
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            body.as_ptr(),
+            caption.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+/// Report a startup failure to the user. Non-Windows builds log it only.
+#[cfg(not(windows))]
+fn show_startup_error(message: &str) {
+    shell_log(&format!("[sythion] startup error: {message}"));
 }
 
 #[tauri::command]
@@ -110,6 +192,17 @@ fn set_companion_hit_regions(
 }
 
 fn spawn_hit_test_poller(app: tauri::AppHandle) {
+    // Claim the poller slot. The overlay can be closed and reopened, and the
+    // poller has to be restartable without ending up with two of them racing
+    // over the same window style.
+    let claimed = app
+        .state::<HitTestState>()
+        .poller_running
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok();
+    if !claimed {
+        return;
+    }
     std::thread::spawn(move || {
         // ~25 Hz. GetCursorPos is a cheap call; the expensive path
         // (set_ignore_cursor_events -> Win32 style change) only runs on an
@@ -163,6 +256,9 @@ fn spawn_hit_test_poller(app: tauri::AppHandle) {
             std::thread::sleep(POLL);
         }
         hit_test_log("poller stopped");
+        app.state::<HitTestState>()
+            .poller_running
+            .store(false, Ordering::SeqCst);
     });
 }
 
@@ -201,20 +297,139 @@ fn register_stop_shortcut(app: &tauri::App) {
     let stop = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyX);
     match app.handle().global_shortcut().register(stop) {
         Ok(()) => {}
-        Err(e) => eprintln!("[sythion] could not register global stop shortcut: {e}"),
+        Err(e) => shell_log(&format!("[sythion] could not register global stop shortcut: {e}")),
     }
 }
 
+/* Main window placement.
+ *
+ * The Control Center used to be created at a fixed 1200x800 client area. On a
+ * 1366x768 display that is taller than the screen, so the window hung below
+ * the bottom edge of the work area with the first-run setup screen's
+ * scrollbar out of reach. The client area is now clamped to the work area -
+ * the desktop minus the taskbar - and the window is centred in it.
+ */
+const MAIN_WINDOW_PREFERRED_WIDTH: f64 = 1200.0;
+const MAIN_WINDOW_PREFERRED_HEIGHT: f64 = 800.0;
+const MAIN_WINDOW_MIN_WIDTH: f64 = 800.0;
+const MAIN_WINDOW_MIN_HEIGHT: f64 = 600.0;
+
+/// Fit a preferred client area into the available work area.
+///
+/// Pure arithmetic, kept apart from the Win32 queries so it can be tested
+/// without a window. `frame` is the non-client part of the window (the title
+/// bar and the sizing border) in the same unit as the other values.
+fn fit_client_size(
+    preferred: (f64, f64),
+    work_area: (f64, f64),
+    frame: (f64, f64),
+) -> (f64, f64) {
+    let available_w = (work_area.0 - frame.0).max(1.0);
+    let available_h = (work_area.1 - frame.1).max(1.0);
+    (preferred.0.min(available_w), preferred.1.min(available_h))
+}
+
+/// The work area of the primary display and the non-client frame of a standard
+/// window, both in PHYSICAL pixels.
+///
+/// `SystemParametersInfo(SPI_GETWORKAREA)` reports the desktop minus the
+/// taskbar and any app bars, which is the space a window can actually use.
+/// `GetSystemMetrics` reports the frame, so the client area can be sized so
+/// that the whole frame fits on the screen.
+#[cfg(windows)]
+fn screen_layout() -> Option<((i32, i32, u32, u32), (u32, u32))> {
+    use std::ffi::c_void;
+    #[link(name = "user32")]
+    extern "system" {
+        fn SystemParametersInfoW(
+            action: u32,
+            param: u32,
+            param_ptr: *mut c_void,
+            winini: u32,
+        ) -> i32;
+        fn GetSystemMetrics(index: i32) -> i32;
+    }
+    const SPI_GETWORKAREA: u32 = 0x0030;
+    const SM_CXSIZEFRAME: i32 = 32;
+    const SM_CYSIZEFRAME: i32 = 32;
+    const SM_CYCAPTION: i32 = 4;
+
+    #[repr(C)]
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    let mut rect = Rect {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    let ok = unsafe {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut rect as *mut Rect as *mut c_void, 0)
+    };
+    if ok == 0 {
+        return None;
+    }
+    let work_area = (
+        rect.left,
+        rect.top,
+        (rect.right - rect.left).max(0) as u32,
+        (rect.bottom - rect.top).max(0) as u32,
+    );
+    let frame_w = unsafe { GetSystemMetrics(SM_CXSIZEFRAME) }.max(0) as u32;
+    let frame_h = (unsafe { GetSystemMetrics(SM_CYSIZEFRAME) }
+        + unsafe { GetSystemMetrics(SM_CYCAPTION) })
+    .max(0) as u32;
+    Some((work_area, (frame_w, frame_h)))
+}
+
 fn create_main_window(app: &mut tauri::App) -> tauri::Result<()> {
-    let window = tauri::WebviewWindowBuilder::new(
+    let app_handle = app.handle().clone();
+    let scale = app_handle
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .unwrap_or(1.0);
+
+    let mut width = MAIN_WINDOW_PREFERRED_WIDTH;
+    let mut height = MAIN_WINDOW_PREFERRED_HEIGHT;
+    let mut position: Option<(f64, f64)> = None;
+
+    #[cfg(windows)]
+    if let Some(((wa_left, wa_top, wa_w, wa_h), (frame_w, frame_h))) = screen_layout() {
+        let work_area = (wa_w as f64 / scale, wa_h as f64 / scale);
+        let frame = (frame_w as f64 / scale, frame_h as f64 / scale);
+        let (fitted_w, fitted_h) = fit_client_size((width, height), work_area, frame);
+        width = fitted_w.max(MAIN_WINDOW_MIN_WIDTH.min(work_area.0));
+        height = fitted_h.max(MAIN_WINDOW_MIN_HEIGHT.min(work_area.1));
+        // Centre the whole frame horizontally, and start it at the top of the
+        // work area so nothing of it hides behind the taskbar.
+        let outer_w = width + frame.0;
+        position = Some((
+            wa_left as f64 / scale + (work_area.0 - outer_w).max(0.0) / 2.0,
+            wa_top as f64 / scale,
+        ));
+    }
+
+    let mut builder = tauri::WebviewWindowBuilder::new(
         app,
         "main",
         tauri::WebviewUrl::App("index.html".into()),
     )
     .title("Sythion (Synth)")
-    .inner_size(1200.0, 800.0)
-    .min_inner_size(800.0, 600.0)
-    .build()?;
+    .inner_size(width, height)
+    .min_inner_size(MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_MIN_HEIGHT);
+
+    if let Some((x, y)) = position {
+        builder = builder.position(x, y);
+    }
+
+    let window = builder.build()?;
     window.show()?;
     Ok(())
 }
@@ -242,6 +457,19 @@ fn create_main_window(app: &mut tauri::App) -> tauri::Result<()> {
  * The `?surface=companion` marker is how the frontend knows to render only the
  * Companion. It is read from `location.search`, so identifying the surface
  * requires no capability and no IPC.
+ *
+ * The overlay is created HIDDEN and revealed later.
+ *
+ * It is an always-on-top window with no taskbar button, so during the
+ * first-run setup it floated above the setup form and hid the screen the user
+ * still had to complete. Creating it hidden and showing it once the setup gate
+ * has been cleared fixes that without changing the overlay's design.
+ *
+ * The window is still created during `setup()` rather than on demand, because
+ * a webview window cannot be created from a command: the builder blocks until
+ * the event loop answers, and the event loop is the thread that would have to
+ * answer. Creating it up front and toggling its visibility is the only way to
+ * add a window to a running Tauri app on this platform.
  */
 fn create_companion_window(app: &mut tauri::App) -> tauri::Result<()> {
     const WIDTH: f64 = 360.0;
@@ -285,7 +513,10 @@ fn create_companion_window(app: &mut tauri::App) -> tauri::Result<()> {
     .skip_taskbar(true)
     .shadow(false)
     .focusable(true)
-    .focused(false);
+    .focused(false)
+    // Created hidden: the overlay is revealed by `set_companion_visible` once
+    // the first-run setup gate has been cleared.
+    .visible(false);
 
     if let Some((x, y)) = position {
         builder = builder.position(x, y);
@@ -301,7 +532,32 @@ fn create_companion_window(app: &mut tauri::App) -> tauri::Result<()> {
     if sz.width != target_w || sz.height != target_h {
         let _ = window.set_size(tauri::PhysicalSize::new(target_w, target_h));
     }
-    window.show()?;
+    // The window stays hidden until the Control Center asks for it.
+    Ok(())
+}
+
+/// Show or hide the Companion overlay.
+///
+/// The overlay is created hidden during startup so it cannot float above the
+/// first-run setup form. This command is how the Control Center reveals it
+/// once the setup gate has been cleared.
+///
+/// Showing and hiding an existing window is a message to the event loop, not a
+/// window creation, so it is safe to call from a command.
+#[tauri::command]
+fn set_companion_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+    let window = app
+        .get_webview_window("companion")
+        .ok_or_else(|| "the Companion overlay is not available".to_string())?;
+    if visible {
+        window.show().map_err(|e| format!("could not show the Companion overlay: {e}"))?;
+        shell_log("[sythion] Companion overlay shown");
+    } else {
+        window
+            .hide()
+            .map_err(|e| format!("could not hide the Companion overlay: {e}"))?;
+        shell_log("[sythion] Companion overlay hidden");
+    }
     Ok(())
 }
 
@@ -332,6 +588,35 @@ fn main() {
         }
     }
 
+    // Resolve the profile directory ONCE, before anything is built.
+    //
+    // Tauri turns a failing setup hook into a panic, and a release build is a
+    // GUI-subsystem process with no console: the panic would be invisible and
+    // the application would simply never appear. A conflicting override
+    // configuration is therefore rejected here, where the reason can still be
+    // shown to the user.
+    let profile_dir = match sidecar::resolve_data_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            // Persist the reason next to the profile the operator asked for.
+            let diag_dir = std::env::var_os(sidecar::DATA_DIR_ENV)
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(sidecar::default_data_dir);
+            append_log_in(
+                &diag_dir,
+                "sythion-shell.log",
+                &format!("[sythion] the application failed to start: {e}"),
+            );
+            show_startup_error(&format!(
+                "Sythion cannot use the requested profile directory.\n\n{e}\n\n\
+                 Set {canonical} to the profile directory and leave {legacy} unset.",
+                canonical = sidecar::DATA_DIR_ENV,
+                legacy = sidecar::LEGACY_DATA_DIR_ENV,
+            ));
+            return;
+        }
+    };
+
     let state = AppState {
         bridge: Mutex::new(None),
         child: Mutex::new(None),
@@ -345,31 +630,63 @@ fn main() {
         .manage(HitTestState::default())
         .invoke_handler(tauri::generate_handler![
             get_bridge_config,
-            set_companion_hit_regions
+            set_companion_hit_regions,
+            set_companion_visible
         ])
-        .setup(|app| {
-            register_stop_shortcut(app);
-            let app_handle = app.handle().clone();
-            match sidecar::spawn_sidecar(&app_handle) {
-                Ok(child) => {
-                    *app.state::<AppState>().child.lock().unwrap() = Some(child);
-                    sidecar::spawn_watcher(app_handle);
-                }
-                Err(e) => {
-                    eprintln!("[sythion] failed to launch the sidecar: {e}");
-                    return Err(e.into());
-                }
+        .setup(move |app| {
+            let started: Result<(), String> = (|| {
+                register_stop_shortcut(app);
+                let app_handle = app.handle().clone();
+                let child = sidecar::spawn_sidecar(&app_handle, &profile_dir).map_err(|e| {
+                    format!("the local runtime could not be started: {e}")
+                })?;
+                *app.state::<AppState>().child.lock().unwrap() = Some(child);
+                sidecar::spawn_watcher(app_handle);
+                create_main_window(app)
+                    .map_err(|e| format!("the main window could not be created: {e}"))?;
+                // The Companion overlay is created hidden. It is an always-on-top
+                // window with no taskbar button, and during the first-run setup it
+                // would float above the setup form and hide it. The Control Center
+                // reveals it through `set_companion_visible` once the setup gate
+                // has been cleared.
+                create_companion_window(app)
+                    .map_err(|e| format!("the Companion overlay could not be created: {e}"))?;
+                // Must come AFTER create_companion_window: the poller exits as soon
+                // as the overlay window is missing, so starting it earlier would make
+                // it terminate immediately and click-through would never engage.
+                spawn_hit_test_poller(app.handle().clone());
+                Ok(())
+            })();
+
+            if let Err(e) = started {
+                // A failing setup hook becomes a panic, which a GUI build cannot
+                // show. Report the reason and stop deliberately instead. The
+                // sidecar, if it was started, is reaped by the job object when
+                // this process exits.
+                shell_log(&format!("[sythion] the application failed to start: {e}"));
+                show_startup_error(&format!(
+                    "Sythion could not start.\n\n{e}\n\nA diagnostic log was written to:\n{}",
+                    shell_log_path()
+                ));
+                std::process::exit(1);
             }
-            create_main_window(app)?;
-            create_companion_window(app)?;
-            // Must come AFTER create_companion_window: the poller exits as soon
-            // as the overlay window is missing, so starting it earlier would make
-            // it terminate immediately and click-through would never engage.
-            spawn_hit_test_poller(app.handle().clone());
             Ok(())
         })
-        .build(tauri::generate_context!())
-        .expect("error while building Sythion (Synth) application");
+        .build(tauri::generate_context!());
+
+    let app = match app {
+        Ok(app) => app,
+        Err(e) => {
+            // A failed start used to panic silently: the packaged shell has no
+            // console, so the application simply never appeared. Report it.
+            shell_log(&format!("[sythion] the application failed to start: {e}"));
+            show_startup_error(&format!(
+                "Sythion could not start.\n\n{e}\n\nA diagnostic log was written to:\n{}",
+                shell_log_path()
+            ));
+            return;
+        }
+    };
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
@@ -382,4 +699,78 @@ fn main() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{append_log_in, fit_client_size};
+
+    /// A 1366x768 display with a 48px taskbar leaves a 1366x720 work area.
+    /// The preferred 1200x800 client area is taller than that, so it has to be
+    /// reduced or the window hangs below the bottom edge of the screen with the
+    /// setup screen's scrollbar out of reach.
+    #[test]
+    fn the_client_area_is_clamped_to_the_work_area() {
+        let (w, h) = fit_client_size((1200.0, 800.0), (1366.0, 720.0), (16.0, 31.0));
+        assert_eq!(w, 1200.0);
+        assert_eq!(h, 689.0);
+    }
+
+    /// On a roomy display the preferred size is kept as it is.
+    #[test]
+    fn a_large_display_keeps_the_preferred_size() {
+        let (w, h) = fit_client_size((1200.0, 800.0), (1920.0, 1040.0), (16.0, 31.0));
+        assert_eq!(w, 1200.0);
+        assert_eq!(h, 800.0);
+    }
+
+    /// A small display shrinks the client area in both directions.
+    #[test]
+    fn a_small_display_shrinks_both_axes() {
+        let (w, h) = fit_client_size((1200.0, 800.0), (1024.0, 600.0), (16.0, 31.0));
+        assert_eq!(w, 1008.0);
+        assert_eq!(h, 569.0);
+    }
+
+    /// The result must never be zero or negative, whatever the inputs are.
+    #[test]
+    fn the_client_area_never_collapses() {
+        let (w, h) = fit_client_size((1200.0, 800.0), (10.0, 10.0), (16.0, 31.0));
+        assert!(w >= 1.0);
+        assert!(h >= 1.0);
+    }
+
+    /// A release build has no console, so the shell's diagnostics have to
+    /// reach a file or they are lost the moment the process starts.
+    #[test]
+    fn shell_diagnostics_are_written_to_a_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "sythion-log-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        append_log_in(&dir, "sythion-shell.log", "[sythion] diagnostic line");
+        let path = dir.join("logs").join("sythion-shell.log");
+        let content = std::fs::read_to_string(&path).expect("diagnostics file");
+        assert!(content.contains("[sythion] diagnostic line"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A second line is appended, not overwritten: the log has to keep the
+    /// earlier entries.
+    #[test]
+    fn shell_diagnostics_are_appended() {
+        let dir = std::env::temp_dir().join(format!(
+            "sythion-log-append-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        append_log_in(&dir, "sythion-shell.log", "first");
+        append_log_in(&dir, "sythion-shell.log", "second");
+        let content = std::fs::read_to_string(dir.join("logs").join("sythion-shell.log"))
+            .expect("diagnostics file");
+        assert!(content.contains("first"));
+        assert!(content.contains("second"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

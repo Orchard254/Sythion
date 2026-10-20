@@ -197,6 +197,13 @@ button {
    App shell
    ========================================================================== */
 
+/* Two-row shell: a fixed topbar track and a flexible content track.
+   IMPORTANT: a layout that replaces the areas with a ONE-row template must
+   replace the row template as well. `grid-template-areas` does not reset the
+   row track list, so a single named area would land in the `--topbar-h`
+   track and the screen would be clipped to 60px with the rest of the
+   viewport blank. `lib/shellLayout.ts` produces that single-screen grid and
+   is covered by `lib/shellLayout.test.ts`. */
 .shell {
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr;

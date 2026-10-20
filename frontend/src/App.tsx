@@ -14,13 +14,18 @@ import { CompanionPreviewScreen } from './screens/CompanionPreview';
 import { CompanionSurface } from './components/CompanionSurface';
 import { GoalsScreen } from './screens/Goals';
 import { isCompanionSurface } from './lib/surface';
+import { shouldActivateCompanion } from './lib/companionActivation';
+import { singleScreenContentStyle, singleScreenShellStyle } from './lib/shellLayout';
+import { activateCompanion } from './services/companion';
 import { OperationsScreen } from './screens/Operations';
 import { SecurityScreen } from './screens/Security';
 import { SettingsScreen } from './screens/Settings';
+import { SetupScreen } from './screens/Setup';
 import { SystemScreen } from './screens/SystemIntegrations';
 import { useAppInit } from './hooks/useAppInit';
 import { useAppStore } from './store/appStore';
 import { assessRuntimeHealth } from './lib/runtimeHealth';
+import { setupService } from './services/api';
 import { useNavStore } from './store/navStore';
 import { routeById, type RouteId } from './lib/routes';
 import {
@@ -84,6 +89,32 @@ function AppContent() {
   const setDataMode = useAppStore((s) => s.setDataMode);
   const notify = useAppStore((s) => s.notify);
 
+  const [textFirstMode, setTextFirstMode] = useState(() => localStorage.getItem('sythion.textFirst') === '1');
+  const [setupNeeded, setSetupNeeded] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!isInitialized || !isConnected || textFirstMode) return;
+    let cancelled = false;
+    void setupService.readiness().then((r) => {
+      if (!cancelled) setSetupNeeded(!r.full_ready);
+    }).catch(() => { if (!cancelled) setSetupNeeded(true); });
+    return () => { cancelled = true; };
+  }, [isInitialized, isConnected, textFirstMode]);
+
+  /* Companion overlay coordination.
+   *
+   * The overlay is an always-on-top window with no taskbar button. It is
+   * created by the shell on request, and the request is withheld while the
+   * first-run setup gate is active - otherwise it floats above the setup form
+   * and hides the screen the user still has to complete.
+   *
+   * The decision is re-evaluated whenever the connection or the gate changes,
+   * so the overlay also comes back on its own once the backend is reachable
+   * again after a failed start. */
+  useEffect(() => {
+    if (!shouldActivateCompanion({ isConnected, setupNeeded, textFirstMode })) return;
+    void activateCompanion();
+  }, [isConnected, setupNeeded, textFirstMode]);
+
   const route = useNavStore((s) => s.route);
   const setRoute = useNavStore((s) => s.setRoute);
 
@@ -144,8 +175,8 @@ function AppContent() {
 
   if (!isInitialized) {
     return (
-      <div className="shell" style={{ gridTemplateColumns: '1fr', gridTemplateAreas: '"boot"' }}>
-        <div className="shell__main" style={{ gridArea: 'boot', placeItems: 'center' }}>
+      <div className="shell" style={singleScreenShellStyle()}>
+        <div className="shell__main" style={singleScreenContentStyle({ placeItems: 'center' })}>
           <div className="stack" style={{ alignItems: 'center', gap: 14, maxWidth: 340 }}>
             <SythionMark size={40} />
             <div style={{ textAlign: 'center' }}>
@@ -161,10 +192,40 @@ function AppContent() {
     );
   }
 
+  if (isInitialized && isConnected && !textFirstMode && setupNeeded === null) {
+    return (
+      <div className="shell" style={singleScreenShellStyle()}>
+        <div className="shell__main" style={singleScreenContentStyle({ placeItems: 'center' })}>
+          <div className="stack" style={{ alignItems: 'center', gap: 14, maxWidth: 340 }}>
+            <SythionMark size={40} />
+            <div style={{ textAlign: 'center' }}>
+              <div className="t-title">Checking setup</div>
+              <div className="t-muted">Verifying first-run readiness…</div>
+            </div>
+            <div className="bar bar--indeterminate" style={{ maxWidth: 200 }}>
+              <div className="bar__fill" />
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (setupNeeded && !textFirstMode) {
+    return (
+      <SetupScreen
+        onComplete={(tf) => {
+          if (tf) { localStorage.setItem('sythion.textFirst', '1'); setTextFirstMode(true); }
+          setSetupNeeded(false);
+        }}
+      />
+    );
+  }
+
   if (!isConnected && dataMode !== 'preview') {
     return (
-      <div className="shell" style={{ gridTemplateColumns: '1fr', gridTemplateAreas: '"boot"' }}>
-        <div className="shell__main" style={{ gridArea: 'boot', overflowY: 'auto', padding: 40 }}>
+      <div className="shell" style={singleScreenShellStyle()}>
+        <div className="shell__main" style={singleScreenContentStyle({ overflowY: 'auto', padding: 40 })}>
           <div className="stack" style={{ maxWidth: 560, margin: '0 auto' }}>
             <div className="row" style={{ gap: 12 }}>
               <SythionMark size={34} />

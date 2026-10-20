@@ -31,6 +31,8 @@ webrtcvad-wheels==2.0.14; sys_platform == 'win32'
 numpy>=1.24.0
 
 # Speech-to-Text
+vosk==0.3.45; sys_platform == 'win32'
+setuptools>=68; sys_platform == 'win32'
 
 # Text-to-Speech
 pyttsx3==2.98; sys_platform == 'win32'

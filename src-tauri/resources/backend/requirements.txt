@@ -31,6 +31,8 @@ webrtcvad-wheels==2.0.14; sys_platform == 'win32'
 numpy>=1.24.0
 
 # Speech-to-Text
+vosk==0.3.45; sys_platform == 'win32'
+setuptools>=68; sys_platform == 'win32'
 whispercpp==0.0.17; sys_platform == 'win32'
 openai-whisper>=20231117; sys_platform != 'win32'
 

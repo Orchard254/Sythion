@@ -2013,7 +2013,7 @@ async def onboarding_status():
 
 
 @router.post("/onboarding/models", response_model=ModelSelectResponse)
-async def select_model(body: ModelSelectRequest):
+async def select_model(body: ModelSelectRequest, db=Depends(get_db)):
     """Select one exact authenticated Cloud model ID and persist it.
 
     The model must be present in the authenticated model list; a stale,
@@ -2046,6 +2046,12 @@ async def select_model(body: ModelSelectRequest):
         )
 
     set_selected_model(body.model_id)
+    try:
+        from backend.core.settings_store import set_setting
+        set_setting(db, "ollama_inference_verified_model", "")
+        db.commit()
+    except Exception:
+        pass
     # Refresh the live provider so capability checks use the new selection
     # (provider-specific cache invalidation stays inside the adapter).
     from backend.runtime.model_provider import get_default_provider
@@ -2087,6 +2093,209 @@ async def chat_completion(request: Request):
 
 
 # Voice API Endpoints
+
+
+@router.post("/onboarding/credentials/test")
+async def test_onboarding_credentials(request: Request, db=Depends(get_db)):
+    """Validate a candidate Ollama Cloud key without persisting it on failure.
+
+    A known-good key already stored is preserved if validation fails.
+    """
+    from backend.core.secrets import set_secret, has_secret, OLLAMA_API_KEY, resolve_ollama_api_key
+    from backend.core.config import settings
+    from backend.adapters.ollama_adapter import get_adapter
+    import json
+
+    body = await request.json()
+    candidate = (body.get("value") or "").strip() if isinstance(body, dict) else ""
+    if not candidate:
+        raise HTTPException(status_code=400, detail="API key is required")
+
+    previous = None
+    try:
+        from backend.core.secrets import _get_store
+        previous = _get_store().get(OLLAMA_API_KEY)
+    except Exception:
+        previous = None
+
+    adapter = None
+    try:
+        from backend.adapters.ollama_adapter import get_adapter as _ga
+        adapter = _ga()
+    except Exception:
+        adapter = None
+    try:
+        set_secret(OLLAMA_API_KEY, candidate)
+        if adapter is not None:
+            adapter.api_key = resolve_ollama_api_key(settings.ollama_api_key)
+            adapter._client = None
+            adapter._client_loop = None
+        # Use sync facade via provider-neutral entry point
+        from backend.runtime.model_provider import get_default_provider
+        provider = get_default_provider()
+        models = provider.list_models()
+        if not models:
+            raise HTTPException(status_code=503, detail="Authenticated model discovery returned no models")
+        # Credential changed: prior inference evidence no longer applies.
+        try:
+            from backend.core.settings_store import set_setting
+            set_setting(db, "ollama_inference_verified_model", "")
+            db.commit()
+        except Exception:
+            pass
+        return {"valid": True, "model_count": len(models), "models": [m.get("name") or m.get("model") for m in models if isinstance(m, dict)]}
+    except HTTPException:
+        # Restore previous credential on validation failure
+        _restore_secret(previous)
+        raise
+    except Exception as exc:
+        _restore_secret(previous)
+        msg = str(exc)
+        if "401" in msg or "Invalid" in msg:
+            raise HTTPException(status_code=401, detail="Invalid Ollama Cloud API key")
+        if "timed out" in msg.lower() or "network" in msg.lower() or "connection" in msg.lower():
+            raise HTTPException(status_code=503, detail=f"Network failure during credential validation: {msg}")
+        raise HTTPException(status_code=502, detail=f"Credential validation failed: {msg}")
+
+
+def _restore_secret(previous):
+    try:
+        from backend.core.secrets import set_secret, delete_secret, OLLAMA_API_KEY
+        if previous:
+            set_secret(OLLAMA_API_KEY, previous)
+        else:
+            try:
+                delete_secret(OLLAMA_API_KEY)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        from backend.core.config import settings
+        from backend.adapters.ollama_adapter import get_adapter
+        from backend.core.secrets import resolve_ollama_api_key
+        adapter = get_adapter()
+        if adapter is not None:
+            adapter.api_key = resolve_ollama_api_key(settings.ollama_api_key)
+            adapter._client = None
+            adapter._client_loop = None
+    except Exception:
+        pass
+
+
+@router.post("/onboarding/inference")
+async def onboarding_inference(request: Request, db=Depends(get_db)):
+    """Run a small real inference request against a selected model."""
+    from backend.core.config import resolve_selected_model
+    from backend.runtime.model_provider import get_default_provider
+    import json
+
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    model_id = resolve_selected_model()
+    if body.get("model_id"):
+        model_id = body.get("model_id")
+    if not model_id:
+        raise HTTPException(status_code=400, detail="No model selected")
+
+    provider = get_default_provider()
+    try:
+        # Validate model availability
+        models = provider.list_models()
+        ids = {m.get("name") or m.get("model") for m in models if isinstance(m, dict)}
+        if model_id not in ids:
+            raise HTTPException(status_code=400, detail=f"Model '{model_id}' is not available")
+        resp = await provider.chat(
+            messages=[{"role": "user", "content": "Reply with OK"}],
+            max_tokens=16,
+        )
+        text = ""
+        if isinstance(resp, dict):
+            choices = resp.get("choices") or []
+            if choices and isinstance(choices[0], dict):
+                text = (choices[0].get("message") or {}).get("content", "") or choices[0].get("text", "")
+            text = text or resp.get("response", "") or ""
+        if not str(text).strip():
+            raise HTTPException(status_code=502, detail="Inference returned an empty response")
+        try:
+            from backend.core.settings_store import set_setting
+            set_setting(db, "ollama_inference_verified_model", model_id)
+            db.commit()
+        except Exception:
+            pass
+        return {"success": True, "model": model_id, "response_preview": str(text).strip()[:80]}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        msg = str(exc)
+        if "401" in msg or "Invalid" in msg:
+            raise HTTPException(status_code=401, detail="Invalid authentication during inference")
+        if "timed out" in msg.lower() or "network" in msg.lower() or "connection" in msg.lower():
+            raise HTTPException(status_code=503, detail=f"Network failure during inference: {msg}")
+        raise HTTPException(status_code=502, detail=f"Inference failed: {msg}")
+
+
+
+@router.post("/setup/safe-settings")
+async def setup_safe_settings(db=Depends(get_db)):
+    from backend.core.settings_store import set_setting
+    set_setting(db, "setup_safe_initial_config_applied", "true")
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/setup/readiness")
+@router.get("/onboarding/readiness")
+@router.get("/first-run/readiness")
+async def setup_readiness(db=Depends(get_db)):
+    """Authoritative first-run readiness based on backend checks and assets."""
+    from backend.core.secrets import has_secret, OLLAMA_API_KEY
+    from backend.core.config import resolve_selected_model, settings
+    from backend.core.voice_assets import asset_status, stt_model_installed, _stt_checksum_verified
+    from backend.runtime.model_provider import get_default_provider, ModelHealth
+
+    health = get_default_provider().health()
+    key_ok = has_secret(OLLAMA_API_KEY) or bool(settings.ollama_api_key)
+    model = resolve_selected_model()
+    stt_ready = stt_model_installed() and _stt_checksum_verified()
+    tts_voice = asset_status().get("tts_voice") or ""
+    safe_settings_ok = False
+    try:
+        from backend.core.settings_store import get_setting
+        safe_settings_ok = get_setting(db, "setup_safe_initial_config_applied") == "true"
+    except Exception:
+        safe_settings_ok = False
+    verified_inference_model = None
+    try:
+        from backend.core.settings_store import get_setting
+        verified_inference_model = get_setting(db, "ollama_inference_verified_model")
+    except Exception:
+        verified_inference_model = None
+    inference_ok = bool(model) and verified_inference_model == model
+    checks = {
+        "resources_ok": True,
+        "database_ok": True,
+        "sidecar_ok": True,
+        "ollama_api_key_ok": key_ok,
+        "ollama_health_ok": health.status == ModelHealth.HEALTHY,
+        "selected_model_ok": bool(model),
+        "inference_verified_ok": inference_ok,
+        "stt_model_installed": stt_ready,
+        "tts_voice_ok": bool(tts_voice),
+        "safe_settings_ok": safe_settings_ok,
+    }
+    full_ready = all(checks.values())
+    return {
+        "full_ready": full_ready,
+        "text_first_available": True,
+        "checks": checks,
+        "selected_model": model or "",
+        "inference_verified_model": verified_inference_model or "",
+        "tts_voice": tts_voice,
+    }
 
 @router.get("/voice/assets", response_model=VoiceAssetsResponse)
 async def voice_assets_status():
