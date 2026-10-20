@@ -218,8 +218,8 @@ should remain layered above runtime truth.
 ### Notes
 
 - `conversation_state.py` is the conversational-state module; the
-  conversation-guidance adapter (`conversation_guidance_adapter.py`) is the
-  only module that reads it.
+  conversation-guidance adapter (`conversation_guidance_adapter.py`) is what
+  formats it for a model request.
 - `memory_consolidation.py` is higher-order memory distillation logic and must
   stay best-effort, never execution-critical.
 - `post_task_intelligence.py` is an intelligence hook layer invoked after
