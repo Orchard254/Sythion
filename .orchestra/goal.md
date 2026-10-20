@@ -114,6 +114,34 @@ the sensitive-change gate passes.
 
 master
 
+## Run order and dependencies
+
+Fixed by the orchestrator. The order is not a preference: three of the
+dependencies are HARD, and each was found by running the thing rather than by
+reasoning about it.
+
+1. **001 (CI) and 004 (tautologies) in parallel** - independent. Both merged.
+2. **002 (test-selection truth)** before 003 - item 003's tables must describe
+   the merged `Makefile` / `pytest.ini` / `ci.yml`.
+3. **002 and 006 CONFLICT** at `backend/tests/conftest.py`'s last line.
+   Cause: master's file ends WITHOUT a trailing newline, so both branches
+   modify the same final line and then append their own block. The Committer
+   resolves it at merge time by keeping both blocks and adding the newline.
+   **The orchestrator originally asserted these hunks did not overlap and that
+   the merge would be clean. That was wrong, and the Reviewer of 006 caught
+   it by attempting the combination.** The corrected statement is in
+   `critiques.md`.
+4. **007 (credential vault) before any full-suite measurement.** Item 003's
+   measurement script runs the full backend suite, and until 007 lands that
+   includes the test that writes to and deletes the developer's REAL Windows
+   Credential Manager entry. Safe before 007 merges: `--collect-only` (no
+   test bodies execute), the D1/D2 sandbox Makefiles outside the repository,
+   and `check_doc_paths.py` (pure file reading).
+5. **006 adds 2 tests; 002 and 007 add 0.** So the merged tree collects
+   **1613** where `master` collects **1611**. Any measurement taken on a tree
+   without 006 is stale by exactly those two, and item 003's own `--check`
+   mode is designed to say so.
+
 ## Commands
 - \python -m pytest backend/tests -q\ (full backend suite, from the repository root)
 - \python -m pytest backend/tests/acceptance -q\ (acceptance sub-suite)
