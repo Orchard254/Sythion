@@ -12,14 +12,14 @@
       "domain": "infra"
     },
     "002": {
-      "status": "in-review",
-      "owner": "reviewer-002-r2",
+      "status": "verifying",
+      "owner": "verifier-002",
       "branch": "orchestra/002-test-selection-truth",
       "mergeSha": null,
       "round": 1,
       "verifyRounds": 0,
       "conflicts": 0,
-      "sensitivity": "none",
+      "sensitivity": "sensitive+external",
       "domain": "none"
     },
     "003": {
