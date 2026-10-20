@@ -182,8 +182,15 @@ def test_credential_manager_round_trip(monkeypatch):
         # be in the REAL vault. A MemoryStore, a mocked ``win32cred`` or a
         # write that never happened all fail here. Only target NAMES are
         # inspected - no credential blob is read.
+        #
+        # The enumeration is deliberately UNFILTERED and filtered here. The
+        # prefix-filtered form, ``CredEnumerate(prefix, 0)``, returns winerror
+        # 1168 on this machine even for credentials that demonstrably exist
+        # (it fails for every prefix tried), so it cannot tell "absent" from
+        # "broken enumerator". The unfiltered form really does see the entry,
+        # which is what makes an "absent" observation non-vacuous.
         try:
-            enumerated = win32cred.CredEnumerate(_TEST_TARGET_PREFIX, 0)
+            enumerated = win32cred.CredEnumerate(None, 0)
         except Exception as exc:  # pywintypes.error 1168 when nothing matches
             pytest.fail(
                 "the test-scoped credential was not found in the real Windows "
