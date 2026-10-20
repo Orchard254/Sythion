@@ -50,7 +50,10 @@ These modules define or enforce the local execution contract.
 - `backend/tools/app_tools.py`
 - `backend/tools/package_tools.py`
 - `backend/tools/gui_tools.py`
-- `backend/tools/web_tools.py`
+
+The web surface is not a tool module: it is the browser bridge
+(`backend/api/browser_bridge_routes.py` and
+`backend/services/browser_bridge_service.py`).
 
 ### Runtime orchestration and lifecycle
 
@@ -105,8 +108,6 @@ Why it is a bridge module:
 Current role:
 - recent conversation replay for the current session
 - conversation-state formatting
-- speech-act classification formatting
-- response-strategy formatting
 
 Classification:
 - intelligence-facing adapter layered above runtime truth, because it packages
@@ -211,15 +212,14 @@ These modules are appropriate for the broader intelligence direction, but they
 should remain layered above runtime truth.
 
 - `backend/services/conversation_state.py`
-- `backend/services/speech_act_classifier.py`
-- `backend/services/response_strategy.py`
 - `backend/services/memory_consolidation.py`
 - `backend/services/tool_authoring.py`
 
 ### Notes
 
-- `conversation_state.py`, `speech_act_classifier.py`, and
-  `response_strategy.py` are conversational guidance modules.
+- `conversation_state.py` is the conversational-state module; the
+  conversation-guidance adapter (`conversation_guidance_adapter.py`) is the
+  only module that reads it.
 - `memory_consolidation.py` is higher-order memory distillation logic and must
   stay best-effort, never execution-critical.
 - `post_task_intelligence.py` is an intelligence hook layer invoked after

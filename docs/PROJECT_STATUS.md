@@ -14,8 +14,8 @@ This repository currently provides:
 - cancellation, replay, retention, and recovery primitives;
 - voice and dashboard support within the local runtime boundary;
 - early intelligence-layer scaffolding such as conversation state,
-  response strategy, memory consolidation, a first durable
-  objective/plan work-state layer, and CLI-visible work-state inspection.
+  memory consolidation, a first durable objective/plan work-state layer,
+  and CLI-visible work-state inspection.
 
 ## Current architectural source of truth
 
@@ -36,13 +36,18 @@ Older reports such as `FINAL_STATUS.md`, `PHASE3_REPORT.md`, and
 
 ## Verified test baseline
 
-Most recently verified in this workspace:
+- Full backend suite: **1568 passed, 45 skipped** (1613 collected)
+- Acceptance suite: **191 passed, 2 skipped**
 
-- Full backend suite: **692 passed, 32 skipped**
-- Acceptance suite: **196 passed, 2 skipped**
+Measured on CPython 3.14.7 / Windows by
+`python scripts/measure_test_baseline.py` on 2026-10-20.
+CI pins Python 3.11.
 
-The two skipped backend/acceptance tests are the known symbolic-link privilege
-skips in `backend/tests/acceptance/test_canonical_file_checks.py`.
+The two skipped acceptance tests are the known symbolic-link privilege skips
+in `backend/tests/acceptance/test_canonical_file_checks.py`.
+
+`python scripts/measure_test_baseline.py --check` re-measures and fails if
+this document stops agreeing with the measurement.
 
 ## Release readiness
 
