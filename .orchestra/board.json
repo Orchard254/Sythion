@@ -12,10 +12,10 @@
       "domain": "infra"
     },
     "002": {
-      "status": "verifying",
+      "status": "merged",
       "owner": "verifier-002",
       "branch": "orchestra/002-test-selection-truth",
-      "mergeSha": null,
+      "mergeSha": "76e4f14",
       "round": 1,
       "verifyRounds": 0,
       "conflicts": 0,
@@ -137,8 +137,8 @@
       "since": null
     },
     "verifier": {
-      "state": "working",
-      "task": "002",
+      "state": "idle",
+      "task": null,
       "since": null
     },
     "committer": {
