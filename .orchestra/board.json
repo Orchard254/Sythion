@@ -23,8 +23,8 @@
       "domain": "none"
     },
     "003": {
-      "status": "ready",
-      "owner": null,
+      "status": "planned",
+      "owner": "implementer-003",
       "branch": null,
       "mergeSha": null,
       "round": 0,
