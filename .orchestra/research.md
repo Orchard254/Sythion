@@ -12,7 +12,7 @@
 - Files: `backend/tests/acceptance/test_secret_storage.py`, `backend/core/secrets.py`, `backend/tests/acceptance/conftest.py`, `docs/ARCHITECTURE.md`
 - Severity: high
 - Direction: Make the acceptance suite incapable of touching the production target: either write and delete under a test-only target name that the product never uses (a distinct suffix from `_CM_TARGET_PREFIX`), or back up and restore whatever is already stored under the real target instead of deleting it, or gate the real-vault round trip behind an explicit opt-in environment variable so a routine suite run never enters the vault at all - and add a guard that fails the suite if any acceptance test writes to a `Sythion (Synth)/` target. Whatever the shape, the operator action (whether any credential needs re-entering) is a human step and belongs in `follow-ups.md`, not in the code change.
-- Status: queued
+- Status: adopted -> 007
 
 ### R-021 `DbEventLedger.append_event` silently loses up to 50% of a task's concurrently-appended events
 - Source: local
@@ -21,7 +21,7 @@
 - Files: `backend/runtime/events.py`, `backend/core/db_manager.py`, `backend/tests/test_phase105_concurrency.py`
 - Severity: high
 - Direction: Allocate the sequence atomically rather than by read-then-write - either re-read and retry inside the write transaction when the unique index rejects the commit, or serialise appends per `task_id` (a per-task lock, or a database-assigned monotonic value) - and then add the test that asserts the **expected event count** under concurrent appends. The pair matters: the count assertion is deliberately absent today because it would make the suite intermittently red while the production race is unfixed, so the production fix must land first and the assertion second.
-- Status: queued
+- Status: adopted -> 008
 
 ### R-022 The `tauri-build` CI job's "Assert the shell binary was produced" step is a no-op
 - Source: local
@@ -35,7 +35,8 @@
 - Files: `.github/workflows/ci.yml`
 - Severity: med
 - Direction: Replace the bare cmdlet with an explicit failure - `if (-not (Test-Path "src-tauri/target/release/sythion.exe")) { throw "shell binary not produced" }` - so a missing binary fails the job instead of printing `False`; and sweep the rest of the workflow for the same shape (a step whose only command is a cmdlet that cannot fail), because the same silent-green pattern is the failure mode this repository is trying to eliminate.
-- Status: queued
+- Status: rejected
+- Rejected reason: Not built in this run, for two reasons that are independent of its merit. (1) It is already queued for the human as a [deferred] follow-up with the IDENTICAL fix shape (`.orchestra/follow-ups.md:20`), so filing an item would duplicate an assignment that already exists - the brief asks the scout not to do that. (2) No merge slot remains: the three slots went to item 007 (an effect outside the repository that destroys user data), item 006 (the pipeline item 001 just repaired goes RED on a clean checkout without it) and item 003 (Gate 4 - every documented baseline in the repository is wrong). The residual exposure is bounded: the `npx --prefix frontend tauri build --no-bundle` step itself fails the job when the build fails, so this assertion is a redundant net rather than the only gate - but it IS a silent-green pattern and the one-line fix (`if (-not (Test-Path "src-tauri/target/release/sythion.exe")) { throw "shell binary not produced" }`) belongs to whoever next touches `.github/workflows/ci.yml`, or to the human acting on the follow-up.
 
 ### R-023 The readiness and onboarding routes bypass the sanctioned key-resolution point
 - Source: local
@@ -44,7 +45,7 @@
 - Files: `backend/api/routes.py`, `backend/core/secrets.py`, `docs/ARCHITECTURE.md`
 - Severity: med
 - Direction: Replace both expressions with a single sanctioned call - `bool(resolve_ollama_api_key(settings.ollama_api_key))` - keeping the response bodies byte-identical, and add a test that asserts the readiness and onboarding answers are the same whether the key comes from the vault, from `SYTHION_OLLAMA_API_KEY`, or from `backend/.env`. Pair the change with R-024, which is the same area and the same class of mistake, and treat both as sensitive-change work.
-- Status: queued
+- Status: adopted -> 009
 
 ### R-024 A dead branch of the same shape as the removed tautologies, in production code
 - Source: local
@@ -65,7 +66,8 @@
 - Files: `backend/services/capabilities.py`, `backend/services/self_model.py`, `backend/tests/test_phase5_capabilities.py`, `backend/tests/test_phase975_capabilities.py`
 - Severity: med
 - Direction: Decide the intended predicate first - most plausibly the sanctioned `resolve_ollama_api_key(settings.ollama_api_key)` rather than the bare `has_secret`, so the development `.env`/env-var path is honoured consistently with R-023 - replace the dead branch with it, drop the import if it becomes unused, and add the test that the current code cannot express: `resolve_status(reasoning_model)` is `REQUIRES_CONFIGURATION` with no credential configured and `AVAILABLE` with one.
-- Status: queued
+- Status: rejected
+- Rejected reason: Not this run, and not because the defect is small - it is the same dead-branch shape item 004 just removed from the tests, but in production code. The blocker is that the INTENDED PREDICATE IS NOWHERE STATED in the repository, and the two candidate readings differ observably: `has_secret(...)` alone reads the vault only, so a developer configured through `backend/.env` or `SYTHION_OLLAMA_API_KEY` would be told to configure something they already configured. Choosing between "the vault decides" and "the sanctioned resolver decides" is a product decision this run cannot derive from the code, and the fix is coupled to R-023 (item 009, deferred), which lands in two protected files and needs the sensitive-change gate. No test covers the `reasoning_model` status today, so nothing in the repository pins the intended answer. Follow-up for the product owner: state the predicate, then fix R-023 and R-024 together - the order matters, because making the branch live as written (a literal `or True` -> `or False` swap) would be wrong for every `.env`-configured developer.
 
 ### R-019 The readiness test borrows the developer's gitignored `backend/.env`: a fresh clone and the CI runner fail it
 - Source: local
@@ -81,7 +83,7 @@
 - Files: `backend/tests/test_setup_readiness.py`, `backend/tests/conftest.py`, `backend/core/config.py`, `backend/api/routes.py`, `backend/core/secrets.py`, `backend/.env.example`, `.gitignore`, `docs/ARCHITECTURE.md`, `scripts/verify_release_payload.py`
 - Severity: high
 - Direction: Make the test pin the credential it asserts on, in the same shape as its own `_clear_local_env_key` helper - in the healthy case of `test_readiness_states`, `monkeypatch.setattr(core_config.settings, "ollama_api_key", "test-key")` - so the assertion no longer borrows the developer's working tree. Demonstrated fix shape, without editing any file: in the `.env`-free scratch tree, pinning `backend.core.config.settings.ollama_api_key` to a dummy before the run gives `8 passed, 600 warnings in 4.62s`. Extend the existing autouse isolation in `backend/tests/conftest.py` (`:50-57` already pins `SYTHION_AUTONOMY_LEVEL` and `memory_consolidation_enabled`) to neutralise the ambient `.env`-sourced `ollama_api_key`, `selected_model` and `file_roots` for the whole suite, so no future test can silently depend on a developer's `.env`; and route `backend/api/routes.py:2261` and `:2007` through `backend.core.secrets.resolve_ollama_api_key(...)` so the one sanctioned resolution point is the only reader - behaviour-preserving, and it gives the fix a single place to pin.
-- Status: queued
+- Status: adopted -> 006
 
 ### R-001 CI backend-tests "Import gate" step can never succeed as configured
 - Source: local

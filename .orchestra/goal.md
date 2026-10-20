@@ -115,14 +115,12 @@ the sensitive-change gate passes.
 master
 
 ## Commands
-
-- Build: `python -c "import backend.main"` (backend import gate, same as
-  `ci.yml`); frontend `cd frontend && npm run build`
-- Lint: `cd frontend && npm run lint` (eslint, `--max-warnings 0`); no Python
-  linter is configured in this repo
-- Test: `python -m pytest backend/tests -q` (from the repo root; CI runs the
-  equivalent `python -m pytest tests -q` from `backend/`)
-- Acceptance only: `python -m pytest backend/tests/acceptance -q`
+- \python -m pytest backend/tests -q\ (full backend suite, from the repository root)
+- \python -m pytest backend/tests/acceptance -q\ (acceptance sub-suite)
+- \cd frontend && npm run lint\ (eslint, --max-warnings 0)
+- \cd frontend && npm test\ (vitest run, 49 tests)
+- \cd frontend && npm run build\ (tsc + vite build)
+- \python -c "import backend.main; import backend.api.routes"\ (backend import gate, from the repository root)
 
 ## Budget for this run
 
