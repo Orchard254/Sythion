@@ -146,7 +146,7 @@
 - Likely files: `backend/tests/test_phase105_concurrency.py`, `backend/tests/test_phase1075_hardening.py`, `backend/tests/test_phase125_planning_validation.py`, `backend/tests/test_no_tautological_asserts.py`
 - Sensitivity: sensitive
 - Domain: none
-- Status: accepted
+- Status: merged
 
 ### 001 CI actually gates this repository
 - Why: goal.md's "release and operator readiness" and "verification before claims" (docs/QUALITY_GATES.md:34-44, :88-97) rest on a CI pipeline that has never gated this repository: R-002 (the workflow triggers on `main`; the only branch is `master`, so a push skips all four jobs) and R-001 (the `backend-tests` job runs its import gate from `backend/`, where `import backend.main` fails with `ModuleNotFoundError`, so the one gate that does exist is red for a reason unrelated to the code). R-014 (the 49-test vitest suite is never executed by CI) and R-015 (CI installs pytest unpinned on top of the pinned requirements, so the version exercised is never the declared one) are the same story: the pipeline does not test what the repository says it tests. One file, one branch, one reviewable change.
