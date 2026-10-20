@@ -1,400 +1,467 @@
 # Report: commit - 004 - attempt 1
 
-Item: **004 - Four tautological assertions replaced by the assertions they stood in for**.
-Role: committer. Version control only - I did not judge the work (Verifier: `VERDICT: FIXED`,
-Reviewer: `VERDICT: ACCEPT`).
+Item: **004 - Four tautological assertions replaced by the assertions they stood in for** (R-016).
+Role: committer. Base branch: `master`. Branch: `orchestra/004-real-assertions`.
+
+Preconditions met before any merge: review `004-r1.md` = `VERDICT: ACCEPT`, verification
+`004-v1.md` = `VERDICT: FIXED`.
+
+**Nothing was pushed. No deploy, publish, migration, secret rotation, workflow dispatch or
+GitHub-side action was performed.** The GitHub observation stays in `follow-ups.md` - it is the
+human's.
+
+## IMPORTANT - the merge already existed when this dispatch started
+
+The dispatch note said a previous attempt "was interrupted by a harness server restart before it
+produced anything. Nothing was merged." **That was not the state of the repository.** When this
+dispatch started, `master` already carried the rebase and the `--no-ff` merge commit
+(`4d827c0`, author date 20:08:46), and the branch had already been rebased
+(`05589b2` -> `9aa6359`) - both done by that earlier attempt. I did **not** create a second
+merge and I did **not** undo the existing one. I verified it exhaustively against the branch and
+against `master` (Evidence 1-4) and then completed the steps that were still missing.
+
+Consequence for the audit trail: the rebase and merge *commands* were not typed by me; they are
+evidenced by git's own reflog (Evidence 1), and their **results** are what I verified by
+execution and by reading the object database. Everything from "full suite on master" onwards
+(Evidence 5-8) I did myself, in this session.
+
+### This file supersedes an earlier committer report at the same path
+
+While this dispatch was running, the orchestrator committed `38ee87e chore(orchestra): item 004
+merged into master (merge 4d827c0), committer report`, which added **this very file**
+(`.orchestra/reports/000-commit-2.md`) with the earlier committer's text. That earlier text
+reports the same merge sha and the same clean rebase, and reports the post-merge suite **green
+on its first attempt** (`1566 passed, 45 skipped, 409004 warnings in 364.41 s, exit 0`).
+
+**The earlier text is preserved in git history** (`git show 38ee87e:.orchestra/reports/000-commit-2.md`)
+and in `.orchestra/log.md` (the `committer-004` line committed in the same commit). It was not
+deleted.
+
+What this file now contains is my own dispatch's evidence: an independent re-verification of the
+merge from the object database, a **fresh** post-merge suite run on `master` (two attempts -
+the first died with the pre-existing native access violation, the second was green), an
+independent AST re-scan of `master` for tautological asserts, and the worktree cleanup. Where
+the two reports differ, mine is the newer observation; where they agree (merge sha `4d827c0`,
+four files, no production module touched, branch kept at `9aa6359`) they corroborate each
+other.
 
 ## What I did
 
-Exactly these commands, in this order:
+All commands were run from `C:\Sythion\sythion` (the main tree) unless another directory is named.
 
 ```
-# 1. inspect
-git -C C:\Sythion\sythion status --short --branch
-git -C C:\Sythion\sythion worktree list
-git -C C:\Sythion\sythion branch -vv
-git -C C:\Sythion\sythion log --oneline -20
-git -C C:\Sythion\sythion log --oneline master..orchestra/004-real-assertions
-git -C C:\Sythion\sythion merge-base master orchestra/004-real-assertions
-git -C C:\Sythion\sythion show --stat --name-status 05589b2
+# 0. state on arrival
+git status ; git log --oneline -12 ; git branch -a --list "orchestra/*" ; git worktree list
 
-# 2. rebase the branch onto the CURRENT master (done inside the branch's own worktree,
-#    because the branch is checked out there)
-git -C "C:\Users\orcha\AppData\Local\Temp\opencode\wt-004" rebase master
+# 1. verify the existing rebase + merge (reflog, parents, trees, blobs)
+git reflog show orchestra/004-real-assertions -10
+git log --format="%H %P %s" -1 4d827c0
+git diff --name-status 4d827c0^1..4d827c0
+git diff --stat 4d827c0^1..4d827c0
+git diff 05589b2 9aa6359 --stat -- backend/tests/          # rebase changed no content
+git diff master orchestra/004-real-assertions --stat        # empty: branch fully in master
+foreach four files: git rev-parse HEAD:<f> vs git rev-parse HEAD^2:<f>
 
-# 3. merge locally into master with --no-ff
-git -C C:\Sythion\sythion merge --no-ff orchestra/004-real-assertions \
-    -m "Merge branch 'orchestra/004-real-assertions' into master"
+# 2. post-merge tautology check on master (independent AST scan, outside the repo)
+python C:\Users\orcha\AppData\Local\Temp\opencode\ast_scan_004.py C:\Sythion\sythion\backend\tests
+Select-String -Path "backend\tests\*.py" -Pattern 'or True'      # -> no matches
 
-# 4. post-merge full suite on master, from the MAIN tree (backend/.env present)
-cd C:\Sythion\sythion
-python -m pytest backend/tests -q          # -> 1566 passed, 45 skipped, exit 0
-python -m pytest backend/tests --collect-only -q   # -> 1611 tests collected
+# 3. full suite on master, from the MAIN tree (backend/.env present), run 1 and run 2
+python -m pytest backend/tests -q *> ...\suite004_run1.log
+python -m pytest backend/tests -q *> ...\suite004_run2.log
 
-# 5. worktree
-git -C C:\Sythion\sythion worktree remove "C:\Users\orcha\AppData\Local\Temp\opencode\wt-004"
+# 4. targeted re-run of the four affected/added files on master
+python -m pytest backend/tests/test_no_tautological_asserts.py backend/tests/test_phase105_concurrency.py backend/tests/test_phase1075_hardening.py backend/tests/test_phase125_planning_validation.py -q
 
-# 6. state files
-#    .orchestra/backlog.md item 004 `- Status:` -> merged  (see "Item status" below)
-#    .orchestra/log.md  -> one appended note (the Committer role's "a note in log.md")
-#    .orchestra/reports/000-commit-2.md -> this file
+# 5. backlog status line
+#    .orchestra/backlog.md item 004:  "- Status: accepted"  ->  "- Status: merged"
+
+# 6. cleanup
+git worktree remove "C:\Users\orcha\AppData\Local\Temp\opencode\wt-004"     # clean worktree, exit 0
 ```
 
-**No push, no remote command of any kind, no deploy, publish, migration, secret rotation or
-workflow dispatch.** `origin/master` was never contacted; `master` is 18 commits AHEAD of
-`origin/master`, entirely local.
+I did **not** run `git push`, did not touch `board.json`, did not delete the branch, did not
+dispatch or read any GitHub state, and did not run `make clean`,
+`scripts/stage_python_runtime.py`, a migration or `npx tauri build`.
 
 ## Evidence
 
-### Branch and base before the merge
+### 1. The branch was rebased onto the current master, and the merge is a true `--no-ff` merge
 
 ```
-$ git -C C:\Sythion\sythion rev-parse master
-c976d340aed7cb7c6540ee873cebd327bc75e428
-
-$ git -C C:\Sythion\sythion merge-base master orchestra/004-real-assertions
-da6c5c6efd6f2578e93ff6d06e50de98c4895e9b
-
-$ git -C C:\Sythion\sythion log --oneline master..orchestra/004-real-assertions
-05589b2 test: replace four tautological assertions with the assertions they stood in for
+PS> git reflog show orchestra/004-real-assertions -10
+9aa6359 orchestra/004-real-assertions@{0}: rebase (finish): refs/heads/orchestra/004-real-assertions onto c976d340aed7cb7c6540ee873cebd327bc75e428
+05589b2 orchestra/004-real-assertions@{1}: commit: test: replace four tautological assertions with the assertions they stood in for
+da6c5c6 orchestra/004-real-assertions@{2}: branch: Created from master
 ```
 
-The branch was one commit ahead of `da6c5c6`; `master` had moved on by 13 commits since
-(item 001's merge `7c478d1` plus the `.orchestra/` state commits).
-
-### What moved on master since the branch was cut (pre-rebase conflict assessment)
-
-```
-$ git -C C:\Sythion\sythion diff --name-only da6c5c6 master
-.github/workflows/ci.yml
-frontend/package.json
-.orchestra/backlog.md
-.orchestra/board.json
-.orchestra/briefs/...  (many)
-.orchestra/critiques.md
-.orchestra/follow-ups.md
-.orchestra/goal.md
-.orchestra/log.md
-.orchestra/reports/...  (many)
-.orchestra/research.md
-.orchestra/reviews/001-r1.md
-.orchestra/reviews/004-r1.md
-.orchestra/verifications/001-v1.md
-.orchestra/verifications/004-v1.md
-```
-
-Only two non-`.orchestra/` files moved: `.github/workflows/ci.yml` and `frontend/package.json`
-(item 001's two files). **None of them is touched by item 004**, whose diff is four files, all
-under `backend/tests/`:
+The branch was cut from `master` at `da6c5c6`, carried one commit (`05589b2`), and was rebased
+onto `c976d34` - which was `master`'s tip at that moment (`master` had moved on: item 001's merge
+`7c478d1` and the orchestrator's `.orchestra/`-only commits `2a9705e`, `4c583c5`, `c976d34`).
+The rebase **finished cleanly**: there is no `rebase (pick)`/`(abort)`/`(stop)` entry and no
+conflict marker in the reflog.
 
 ```
-$ git -C C:\Sythion\sythion show --stat --name-status 05589b2
-A  backend/tests/test_no_tautological_asserts.py
-M  backend/tests/test_phase105_concurrency.py
-M  backend/tests/test_phase1075_hardening.py
-M  backend/tests/test_phase125_planning_validation.py
+PS> git log --format="%H %P %s" -1 4d827c0
+4d827c0ee744c170bf81a74c4d75fc1aff6d5104 c976d340aed7cb7c6540ee873cebd327bc75e428 9aa6359aa8359286c094a09c5a001f8908edfec1 Merge branch 'orchestra/004-real-assertions' into master
 ```
 
-### Rebase - CLEAN, no conflicts
+Two parents -> a genuine merge commit (not a fast-forward). First parent = `master` at the time
+(`c976d34`), second parent = the rebased branch commit (`9aa6359`).
 
 ```
-$ git -C "C:\Users\orcha\AppData\Local\Temp\opencode\wt-004" rebase master
-Rebasing (1/1)
-Successfully rebased and updated refs/heads/orchestra/004-real-assertions.
-EXIT=0
-```
-
-(The `Python was not found` line interleaved in that output is the repository's own
-`.git/hooks/post-commit` memory auto-capture hook: it starts with `#!/usr/bin/env python3`,
-there is no `python3` on PATH on this machine (only the Microsoft Store stub), so the hook
-cannot run and prints that message. This is the pre-existing condition already recorded in
-`.orchestra/log.md`. It is harmless and it captured nothing.)
-
-One commit was replayed; nothing was dropped, skipped or manually resolved. The rebased tip
-carries exactly the same content as the original tip:
-
-```
-$ git -C C:\Sythion\sythion log --oneline -3 orchestra/004-real-assertions
+PS> git log --oneline -3
+4d827c0 Merge branch 'orchestra/004-real-assertions' into master
 9aa6359 test: replace four tautological assertions with the assertions they stood in for
-c976d34 chore(orchestra): conform state to skill CONTRACT v2 ...
-4c583c5 chore(orchestra): 001 committer report ...
-
-$ git -C C:\Sythion\sythion diff 05589b2 orchestra/004-real-assertions --stat -- backend/
-(no output - the backend/ tree is byte-identical before and after the rebase)
+c976d34 chore(orchestra): conform state to skill CONTRACT v2 (naming, critique fields, mergeSha, tier+domain), accept verifier-004, item 001 merged
 ```
 
-**Rebase result: 1 commit replayed, 0 conflicts, 0 files needing manual resolution.**
-
-### Merge - clean, `--no-ff`, two parents
+### 2. The rebase changed no content - the merged tree is byte-identical to the reviewed commit
 
 ```
-$ git -C C:\Sythion\sythion merge --no-ff orchestra/004-real-assertions \
-      -m "Merge branch 'orchestra/004-real-assertions' into master"
-Merge made by the 'ort' strategy.
+PS> git diff 05589b2 9aa6359 --stat -- backend/tests/
+(empty)
+```
+
+The rebase replayed the commit onto a new parent and touched **no line** of the four files. The
+merge therefore carries exactly the content the Reviewer and the Verifier read.
+
+### 3. The merge brought in exactly the four expected files and nothing else
+
+```
+PS> git diff --name-status 4d827c0^1..4d827c0
+A	backend/tests/test_no_tautological_asserts.py
+M	backend/tests/test_phase105_concurrency.py
+M	backend/tests/test_phase1075_hardening.py
+M	backend/tests/test_phase125_planning_validation.py
+
+PS> git diff --stat 4d827c0^1..4d827c0
  backend/tests/test_no_tautological_asserts.py      | 140 +++++++++++++++++++++
  backend/tests/test_phase105_concurrency.py         |  29 ++++-
  backend/tests/test_phase1075_hardening.py          |  15 ++-
  backend/tests/test_phase125_planning_validation.py |   9 +-
  4 files changed, 185 insertions(+), 8 deletions(-)
- create mode 100644 backend/tests/test_no_tautological_asserts.py
+```
+
+**No production module is touched.** Blobs on `master` are identical to the branch's:
+
+```
+PS> foreach ($f in @(...four files...)) { $a=(git rev-parse "HEAD:$f"); $b=(git rev-parse "HEAD^2:$f"); "$f same=$($a -eq $b)" }
+backend/tests/test_no_tautological_asserts.py      master=ca7959e6cfc601f26604c2ca5c883dc43c07f3be branch=ca7959e6cfc601f26604c2ca5c883dc43c07f3be same=True
+backend/tests/test_phase105_concurrency.py         master=d1ee68b54bc6c320ded83f22a9644ebee0c4eb2e branch=d1ee68b54bc6c320ded83f22a9644ebee0c4eb2e same=True
+backend/tests/test_phase1075_hardening.py          master=ecdc1a5cc4d7711d4b4af42b70240afbe48d6fbc branch=ecdc1a5cc4d7711d4b4af42b70240afbe48d6fbc same=True
+backend/tests/test_phase125_planning_validation.py master=06a1a815241eca666f72e407ea06917826cb8a17 branch=06a1a815241eca666f72e407ea06917826cb8a17 same=True
+```
+
+The branch is fully contained in `master`:
+
+```
+PS> git diff master orchestra/004-real-assertions --stat
+(empty)
+PS> git merge-base --is-ancestor 4d827c0 master ; $LASTEXITCODE   -> 0
+PS> git merge-base --is-ancestor 9aa6359 master ; $LASTEXITCODE   -> 0
+```
+
+Production code the item deliberately did not touch is byte-identical across the merge (D-1 is
+still live and still unfixed, as the item's scope requires):
+
+```
+backend/runtime/events.py              1909c277b205ab6093f65e4576ac3ea6be6dc5f5  (both sides)
+backend/tests/test_phase95_hardening.py efe1aa04c341070f49374e7b3ecff66ad5382176  (both sides)
+```
+
+### 4. The four replacements are on `master`, and the tautology is gone from `master`
+
+`git diff 4d827c0^1..4d827c0 -- backend/tests/` (read back from `master`) shows the four
+`or True` assertions replaced by the assertions they stood in for:
+
+* `test_phase105_concurrency.py` - per-thread history isolation: the tautology
+  `assert len(tids_in_hist) == 1 or True` is replaced by a **deterministic ownership re-read**
+  (`assert owner_task_ids == {tid}` after resolving the event ids back to their owning rows) plus
+  a non-vacuity assertion (`assert hist`).
+* `test_phase105_concurrency.py` - fallback handling: `assert not fail_res.get("fallback") is
+  False or True` is replaced by the **fallback contract**
+  (`fallback is True`, `findings == []`, `confidence is None`, and the sibling's
+  `fallback is False`).
+* `test_phase1075_hardening.py` - delegation attribution: `assert analysis.get("delegation_id") is
+  None or True` is replaced by an **explicit negative assertion** plus a guaranteed artifact shape
+  (`findings` is a list, `fallback` is a bool, `confidence` is `None` or a float).
+* `test_phase125_planning_validation.py` - shadow-policy shape: `assert "actual_policy" in d and
+  ... or True` is replaced by **key presence + non-vacuity + two negative assertions**
+  (`actual_outcome is None`, `would_diverge is True`).
+
+The dead `side_effect` assignment (the never-awaited `fake_chat` coroutine) is gone from
+`master` - it is absent from the diff above.
+
+Post-merge check on `master`, run from the main tree:
+
+```
+PS> Select-String -Path "backend\tests\*.py" -Pattern 'or True'
+(no output - 0 matches)
+```
+
+and an **independent** AST scan (my own implementation, written outside the repository at
+`%LOCALAPPDATA%\Temp\opencode\ast_scan_004.py`, so it cannot be fooled by the branch's own
+guard):
+
+```
+PS> python ast_scan_004.py C:\Sythion\sythion\backend\tests
+files scanned      : 114
+asserts counted    : 3901
+parse errors       : 0
+top-level 'or True': 0
+any-depth 'or True': 0
+```
+
+These are exactly the numbers the Verifier measured on the branch tree (114 files / 3901 asserts
+/ 0), so `master` now carries the verified content.
+
+### 5. Full suite on `master` after the merge - from the main tree
+
+Environment: cwd `C:\Sythion\sythion` (main tree, `backend/.env` present), CPython 3.14.7,
+pytest 8.4.2.
+
+```
+PS> Test-Path backend\.env
+True
+```
+
+**Run 1 - died natively, no pytest summary:**
+
+```
+PS> python -m pytest backend/tests -q
+... [ 58%]
+... [ 62%]
+python : Windows fatal exception: access violation
+Current thread 0x0000beb8 [Thread-137 (validate_in_thread)] (most recent call first):
+  File "...\sqlalchemy\orm\loading.py", line 231 in chunks
+  File "...\sqlalchemy\engine\result.py", line 1883 in _fetchone_impl
+  File "C:\Sythion\sythion\backend\agents\delegation.py", line 1358 in get_delegation
+  File "C:\Sythion\sythion\backend\agents\delegation.py", line 1374 in _require
+  File "C:\Sythion\sythion\backend\agents\delegation.py", line 394 in validate
+  File "C:\Sythion\sythion\backend\tests\test_phase95_hardening.py", line 68 in validate_in_thread
+Thread 0x0000c4b4 [Thread-136 (validate_in_thread)] (most recent call first):
+  ... sqlalchemy/engine/cursor.py ...
+Thread 0x00008a38 (most recent call first):
+  File "C:\Sythion\sythion\backend\tests\test_phase95_hardening.py", line 82 in test_two_callers_at_boundary_only_one_admits
+=== SUITE_EXIT=-1073741819 elapsed=180.9387632s ===
+```
+
+`-1073741819` = `0xC0000005`, a native access violation. This is the **pre-existing** crash class
+recorded in `goal.md` ("Fault B" - a native sqlite3 access violation that kills the interpreter
+with no pytest summary) and in `follow-ups.md` as the item-000 follow-up. The site is the **same
+frame** the Committer saw for item 001 (`test_phase95_hardening.py::validate_in_thread` ->
+`backend/agents/delegation.py:394/406` -> SQLAlchemy -> native sqlite3), and that file is
+**byte-identical** across this merge (`efe1aa04c341070f49374e7b3ecff66ad5382176` on both
+sides - Evidence 3). It cannot be caused by this merge, which touches no file that this trace
+passes through. Per the brief I re-ran the suite.
+
+**Run 2 - green:**
+
+```
+PS> python -m pytest backend/tests -q
+...
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1566 passed, 45 skipped, 409000 warnings in 471.39s (0:07:51)
+=== SUITE_EXIT=0 elapsed=484.6398093s ===
+```
+
+**Targeted re-run of the four affected/added files on `master`:**
+
+```
+PS> python -m pytest backend/tests/test_no_tautological_asserts.py backend/tests/test_phase105_concurrency.py backend/tests/test_phase1075_hardening.py backend/tests/test_phase125_planning_validation.py -q
+73 passed, 5 skipped, 7673 warnings in 22.14s
 EXIT=0
 ```
 
-**No merge conflict. Nothing to resolve.** The merge brought in exactly the four expected
-files, all under `backend/tests/`. No production module, no `conftest.py`, no `Makefile`,
-no pytest configuration, no dependency, no documentation.
+71 passed / 5 skipped for the three affected files (exactly the Verifier's number) plus the
+guard's 2 tests.
+
+### 6. Comparison with the pre-merge baseline
+
+| | baseline (pre-merge) | run 1 (post-merge) | run 2 (post-merge) |
+|---|---|---|---|
+| passed | 1566 | (no summary - native crash) | **1566** |
+| skipped | 45 | - | **45** |
+| collected | 1611 | - | **1611** (1566 + 45) |
+| exit | 0 | -1073741819 (`0xC0000005`) | **0** |
+| wall time | - | 181 s | 471 s (485 s incl. startup) |
+
+**Identical to the baseline.** The suite was run from the main tree, where the gitignored
+`backend/.env` exists, so the readiness test is satisfied - the clean-checkout failure
+(`test_setup_readiness.py::test_readiness_states`) that a fresh worktree or a CI runner shows
+does not appear here. That failure is pre-existing and is item 006's subject; it is **not** this
+merge's.
+
+The warning count (409,000) is **not** quoted as a baseline - `goal.md` records that it is not a
+stable number (407,733 / 406,252 / 407,719 across three runs of an unchanged tree).
+
+**No merge was reverted, because the suite did not fail.** Run 1's crash is the pre-existing
+non-determinism documented in the brief and in `follow-ups.md:23` (2 native crashes in 6 observed
+full-suite runs, of two different kinds); it is recorded above verbatim, together with the
+successful re-run.
+
+### 7. Cleanup - worktree removed, branch kept
+
+**Correction to the earlier committer's note:** that report says the worktree `wt-004` "had
+ALREADY been removed by the orchestrator session during the run" and that its
+`git worktree remove` returned "not a working tree" (exit 128). **In this dispatch the worktree
+was still registered and present on disk** - `git worktree list` showed
+`C:/Users/orcha/AppData/Local/Temp/opencode/wt-004 9aa6359 [orchestra/004-real-assertions]`,
+and the directory existed. I removed it cleanly myself:
 
 ```
-$ git -C C:\Sythion\sythion log -1 --format="%H %P" 4d827c0
-4d827c0ee744c170bf81a74c4d75fc1aff6d5104 c976d340aed7cb7c6540ee873cebd327bc75e428 9aa6359aa8359286c094a09c5a001f8908edfec1
-```
-
-Two parents: `c976d34` (master, the pre-merge tip) and `9aa6359` (the rebased branch tip).
-
-### The mechanical invariant still holds on master after the merge
-
-```
-$ git -C C:\Sythion\sythion grep -n "or True" -- backend/tests
-(no output)
-grep-exit=1        # 1 = no match
-
-$ git -C C:\Sythion\sythion ls-tree -r --name-only HEAD -- backend/tests/test_no_tautological_asserts.py
-backend/tests/test_no_tautological_asserts.py
-
-$ git -C C:\Sythion\sythion diff master orchestra/004-real-assertions --stat -- backend/
-(no output - master's backend/ tree is identical to the merged branch tip)
-```
-
-### Branch ref - KEPT, pointing at the commit that was merged
-
-```
-$ git -C C:\Sythion\sythion branch -vv
-* master                             702ffc5 [origin/master: ahead 18] ...
-  orchestra/001-ci-gates-repo        3ec2d46 ci: make the pipeline actually gate this repository
-+ orchestra/002-test-selection-truth 0f27d93 (C:/.../wt-002) test: make the pytest configuration and Makefile selections say what they do
-  orchestra/004-real-assertions      9aa6359 test: replace four tautological assertions with the assertions they stood in for
-
-$ git -C C:\Sythion\sythion merge-base --is-ancestor 9aa6359 master
-ancestor-exit=0     # the merged commit is an ancestor of master
-
-$ git -C C:\Sythion\sythion branch --contains 9aa6359
-* master
-  orchestra/004-real-assertions
-```
-
-**The branch was NOT deleted.** `orchestra/004-real-assertions` exists and points at
-`9aa6359`, which is the second parent of the merge - so the work is provably in `master`
-from the branch ref alone. `orchestra/002-test-selection-truth` and its worktree `wt-002`
-were left alone.
-
-### Worktree `wt-004`
-
-`wt-004` was clean both times I checked it (`git status --short` empty, only the branch
-line in `--branch` output) - once right after the rebase and once after the merge. When I
-went to remove it, it had **already been removed by the orchestrator session running
-concurrently** (which was also committing `.orchestra/` state - see "Concurrency" below), so
-my removal command reported that there was nothing to remove:
-
-```
-$ git -C C:\Sythion\sythion worktree remove "C:\Users\orcha\AppData\Local\Temp\opencode\wt-004"
-fatal: 'C:\Users\orcha\AppData\Local\Temp\opencode\wt-004' is not a working tree
-EXIT=128
-
-$ git -C C:\Sythion\sythion worktree list
-C:/Sythion/sythion                                702ffc5 [master]
-C:/Users/orcha/AppData/Local/Temp/opencode/wt-002 0f27d93 [orchestra/002-test-selection-truth]
-
-$ Test-Path "C:\Users\orcha\AppData\Local\Temp\opencode\wt-004"
+PS> git -C wt-004 status --short --untracked-files=all
+(empty - clean)
+PS> Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*wt-004*" }
+(only this reporting shell itself)
+PS> git worktree remove "C:\Users\orcha\AppData\Local\Temp\opencode\wt-004"
+WORKTREE_REMOVE_EXIT=0
+PS> Test-Path "C:\Users\orcha\AppData\Local\Temp\opencode\wt-004"
 False
+PS> git worktree list
+C:/Sythion/sythion                                4d827c0 [master]
+C:/Users/orcha/AppData/Local/Temp/opencode/wt-002 0f27d93 [orchestra/002-test-selection-truth]
 ```
 
-**No worktree is forced or half-removed; there is no stale `wt-004` metadata** (`git worktree
-list` shows only the main tree and `wt-002`). I did not delete the directory by hand and I did
-not run `git worktree prune --expire`. `wt-002` (item 002's) is untouched.
+The worktree was clean, so `git worktree remove` needed no `--force`; nothing was forced and
+nothing was deleted by hand.
 
-### Concurrency with the orchestrator session
-
-While my suite was running, the orchestrator session committed `702ffc5`
-("chore(orchestra): briefs for committer-004 and planners 006/007") **on top of my merge**,
-and that commit also set item 004's `backlog.md` status line to `merged`. Consequences:
-
-* `master`'s HEAD moved from `4d827c0` (my merge) to `702ffc5`. The merge commit is
-  unchanged and is still the second ancestor: `git diff 4d827c0 HEAD --stat` lists only
-  `.orchestra/backlog.md` and three `.orchestra/briefs/*.md` files - **the `backend/` tree
-  is identical**, so the suite I ran is the suite of the merge commit.
-* `backlog.md` item 004's `- Status:` line is already `merged` **because the orchestrator
-  set it**, not because I did. I verified the value in the committed tree and did **not**
-  make a redundant second edit. See "Item status" below.
-
-### State commit carrying this report
-
-Following item 001's precedent (its merge was followed by a separate `.orchestra/` state
-commit), this report and the `log.md` note were committed to `master` on top of the merge.
-That commit's own sha is deliberately **not** quoted here - it is the commit that carries
-this file, so quoting it would make the file stale on every amend. Read it with
-`git -C C:\Sythion\sythion log --oneline -3`. Its subject is:
+**The branch was NOT deleted** - `orchestra/004-real-assertions` still exists and points at the
+merged commit:
 
 ```
-chore(orchestra): item 004 merged into master (merge 4d827c0), committer report
+PS> git branch --list "orchestra/*" -v
+  orchestra/001-ci-gates-repo        3ec2d46 ci: make the pipeline actually gate this repository
++ orchestra/002-test-selection-truth 0f27d93 test: make the pytest configuration and Makefile selections say what they do
+  orchestra/004-real-assertions      9aa6359 test: replace four tautological assertions with the assertions they stood in for
 ```
 
-and it touches exactly two files: `.orchestra/reports/000-commit-2.md` (new) and
-`.orchestra/log.md` (one appended line).
+`orchestra/002-test-selection-truth` and its worktree `wt-002` were left untouched.
 
-(The `Python was not found` line emitted by that commit is the repository's
-`.git/hooks/post-commit` memory auto-capture hook again - see above. It failed harmlessly
-and captured nothing. The commit itself exited 0.)
-
-Final `master` history:
+### 8. Nothing was pushed
 
 ```
-<state commit>  chore(orchestra): item 004 merged into master (merge 4d827c0), committer report
-702ffc5        chore(orchestra): briefs for committer-004 and planners 006/007
-4d827c0        Merge branch 'orchestra/004-real-assertions' into master      <-- the merge
-9aa6359        test: replace four tautological assertions with the assertions they stood in for
-c976d34        chore(orchestra): conform state to skill CONTRACT v2 ...
+PS> git log --oneline -1 origin/master
+d2a24e5 Fix Sythion startup defects and clean the release payload
+PS> git rev-list --count origin/master..master
+18
+PS> git status -sb
+## master...origin/master [ahead 18]
 ```
 
-**The merge commit is `4d827c0`.** The commits above it are `.orchestra/`-only state
-commits; `git diff 4d827c0 HEAD --stat` shows no change outside `.orchestra/`.
+`origin/master` is untouched at `d2a24e5`. `master` is 18 commits ahead locally. No push, no
+tag, no remote operation of any kind.
+
+### 9. `master` moved on during my run (orchestrator's own commit, not the merge's)
+
+While the post-merge suite was running, the orchestrator committed
+`702ffc5 chore(orchestra): briefs for committer-004 and planners 006/007`. That commit is
+`.orchestra/`-state only, but **it swept in my `backlog.md` status-line edit** (because the
+orchestrator staged the whole working tree):
+
+```
+PS> git show --stat --format="%H %s" 702ffc5
+702ffc5c9a1747a104dabf05742a43ed775f06bf chore(orchestra): briefs for committer-004 and planners 006/007
+ .orchestra/backlog.md             |   2 +-
+ .orchestra/briefs/000-commit-2.md | 163 ++++++++++++++++++++++++++++++++++++
+ .orchestra/briefs/006-plan-1.md   | 172 ++++++++++++++++++++++++++++++++++++
+ .orchestra/briefs/007-plan-1.md   | 161 ++++++++++++++++++++++++++++++++++++
+ 4 files changed, 497 insertions(+), 1 deletion(-)
+
+PS> git diff 4d827c0 702ffc5 -- .orchestra/backlog.md
+- - Status: accepted
++ - Status: merged
+```
+
+The merge commit itself is unaffected - `4d827c0` is still an ancestor of `master`
+(`git merge-base --is-ancestor 4d827c0 master` -> exit 0), and its diff against its first parent
+is still exactly the four test files. `master`'s tip is now `702ffc5`.
 
 ## Merge
 
-- **Base branch:** `master` (pre-merge tip `c976d340aed7cb7c6540ee873cebd327bc75e428`)
-- **Branch merged:** `orchestra/004-real-assertions`
-  (original tip `05589b2`, based on `da6c5c6`; rebased tip `9aa6359`)
-- **Rebase result / conflicts:** **CLEAN.** `git rebase master` in the branch's own worktree
-  replayed 1 commit onto `c976d34` and reported "Successfully rebased"; 0 conflicts, 0
-  skipped commits, no manual resolution. The rebased tree's `backend/` is byte-identical to
-  the original tip's. The merge itself then also reported **no conflict**
-  ("Merge made by the 'ort' strategy").
+- **Base branch:** `master`
+- **Branch merged:** `orchestra/004-real-assertions` (rebased: `05589b2` -> `9aa6359`)
+- **Rebase result / conflicts:** clean, **no conflicts**; one commit replayed onto `c976d34`
+  (the then-current `master`); the four-file diff was byte-identical before and after the rebase
 - **Merge commit sha:** `4d827c0ee744c170bf81a74c4d75fc1aff6d5104`
-  (parents `c976d34` = master, `9aa6359` = branch)
-- **Files changed by the merge:** 4 files, 185 insertions(+), 8 deletions(-) - all under
-  `backend/tests/`:
+  (parents: `c976d34` = `master`, `9aa6359` = the rebased branch; `--no-ff`, two parents)
+- **Files changed by the merge** (`git diff --name-status 4d827c0^1..4d827c0`):
+  - `A backend/tests/test_no_tautological_asserts.py`
+  - `M backend/tests/test_phase105_concurrency.py`
+  - `M backend/tests/test_phase1075_hardening.py`
+  - `M backend/tests/test_phase125_planning_validation.py`
 
-  | status | file |
-  |---|---|
-  | A | `backend/tests/test_no_tautological_asserts.py` (140 lines, the guard) |
-  | M | `backend/tests/test_phase105_concurrency.py` |
-  | M | `backend/tests/test_phase1075_hardening.py` |
-  | M | `backend/tests/test_phase125_planning_validation.py` |
-
-  No production module, no configuration, no dependency, no documentation, no CI file.
-  `git grep -n "or True" -- backend/tests` on the merged master returns **no match**
-  (exit 1).
+  Nothing else. No production module, no configuration, no dependency, no `conftest.py`, no
+  pytest config.
 
 ## Suite on master after the merge
 
-- **Command:** `python -m pytest backend/tests -q`
-  (cwd `C:\Sythion\sythion`, the **main tree**, where the gitignored `backend/.env` exists;
-  log kept outside the repo at
-  `C:\Users\orcha\AppData\Local\Temp\opencode\postmerge-004-run1.log`)
-- **Result:** **GREEN on the first and only attempt.**
-
-  ```
-  1566 passed, 45 skipped, 409004 warnings in 364.41s (0:06:04)
-  ```
-
-  Process exit code **0**.
-
-  Collected count, same tree:
-  `python -m pytest backend/tests --collect-only -q` -> `1611 tests collected in 61.14s`.
+- **Command:** `python -m pytest backend/tests -q`, cwd `C:\Sythion\sythion` (main tree,
+  `backend/.env` present), CPython 3.14.7, pytest 8.4.2
+- **Result:** run 1 = native access violation `0xC0000005` (`SUITE_EXIT=-1073741819`, 181 s, no
+  summary - the **pre-existing** crash class, same frame as item 001's run 1);
+  run 2 = **1566 passed, 45 skipped, 409000 warnings in 471.39 s, `SUITE_EXIT=0`**
 - **Comparison with the pre-merge baseline (1566 passed / 45 skipped / 1611 collected):**
-
-  | | baseline | after the merge | delta |
-  |---|---|---|---|
-  | collected | 1611 | 1611 | 0 |
-  | passed | 1566 | 1566 | 0 |
-  | skipped | 45 | 45 | 0 |
-  | failed | 0 | 0 | 0 |
-  | exit | 0 | 0 | - |
-
-  **Identical.** No test was lost, renamed, deselected or re-marked, and no pre-existing test
-  changed outcome.
-
-- **No native crash occurred in my run.** The suite on this machine is known to die
-  intermittently in two ways (a burst of COM faults `0x80040155` that does not kill the
-  process, and a native sqlite3 access violation `0xC0000005` that does - 2 crashes in 6
-  observed full-suite runs before mine). **My run was green first time, so there was nothing
-  to re-run** and no second attempt to record. The known flakiness is untouched by this
-  merge and remains the pre-existing condition item 000's follow-up describes.
-- **The merge was NOT reverted**, because the suite passed. `git revert -m 1 4d827c0` was
-  not needed and was not run.
-- The warning count (409004) is **not** a baseline and is not quoted as one - per the
-  correction already in `.orchestra/log.md`, the warning count moves between runs of an
-  unchanged tree and must not be used as a signal.
+  **identical** (1566 + 45 = 1611 collected). **No merge was reverted, because the suite did not
+  fail.**
 
 ## Item status
 
-- **Item 004 status to record: `merged`.**
-  - `.orchestra/backlog.md` item 004 now reads `- Status: merged`. **This value was set by
-    the orchestrator's own commit `702ffc5`**, which I found already in the tree while my
-    suite was running; I verified it in the committed file and did **not** make a redundant
-    edit. The value is exactly what my brief asked for.
+- **Item 004 status to record: `merged`**
 - **Merge sha for the orchestrator to record as `items."004".mergeSha`:
   `4d827c0ee744c170bf81a74c4d75fc1aff6d5104`**
-- **Drift note for the orchestrator:** `.orchestra/board.json` still reads
-  `"004": { "status": "accepted", "mergeSha": null, ... }` (line 36-46). I did not touch
-  `board.json` - it is the orchestrator's file, and it must now be set to `status: "merged"`
-  and `mergeSha: "4d827c0ee744c170bf81a74c4d75fc1aff6d5104"` to match `backlog.md`.
-- **Second drift note:** the summary HTML comment at the top of `backlog.md` (lines 18-19)
-  still reads "item 001 is merged, items 002 and 004 are in flight, so THREE merge slots
-  remain". It is now stale for item 004. I left it alone because it is the scout's
-  historical re-rank rationale and item 001's merge left the equivalent line alone; the
-  orchestrator may want to refresh it.
-- I appended one line to `.orchestra/log.md` (the Committer role's "a note in `log.md`"),
-  describing the rebase, the merge sha, the suite result and the fact that nothing was
-  pushed. Nothing else in `.orchestra/` was edited.
+- `backlog.md`: item 004's `- Status:` line changed `accepted` -> `merged` (line 149). The edit
+  was made by me and is already committed - the orchestrator's `702ffc5` swept it in together with
+  its briefs (Evidence 9). The working tree contains no uncommitted change of mine.
+- **`board.json` was NOT touched** - it belongs to the orchestrator. `items."004".status` and
+  `items."004".mergeSha` are the orchestrator's to write.
+- `log.md` was NOT appended to - the brief scopes my writes to `backlog.md` and this report, and
+  `log.md` is orchestrator state. If the orchestrator wants a merge line there, it can add it.
 
 ## Not checked
 
-* **Nothing was pushed and no remote operation was performed at all.** `origin/master` was
-  never contacted; `master` is 18 commits ahead of it, entirely locally. I did not deploy,
-  publish, migrate, rotate a secret, run `make clean`, run
-  `scripts/stage_python_runtime.py`, or dispatch the GitHub workflow. **The GitHub
-  observation of the first (expected red) CI run stays with the human** - it is item 001's
-  `[required]` follow-up in `.orchestra/follow-ups.md`, and the two `[required]` follow-ups
-  for item 004 (D-1, and the `.env`-less clean checkout) are untouched.
-* **I did not judge the work.** The Verifier's mutation-testing table and per-test JUnit
-  comparison (`VERDICT: FIXED`) and the Reviewer's per-assertion analysis
-  (`VERDICT: ACCEPT`) were taken as given. I only re-checked the *mechanical* invariants
-  that are visible in git: the branch's diff is exactly four `backend/tests/` files, the
-  merged master has 0 occurrences of `or True` under `backend/tests/`, the guard file is
-  present, and master's `backend/` tree is identical to the merged branch tip.
-* **I did not run the frontend / vitest suite, the lint, the frontend build, the Tauri
-  build, the release payload, the installer or the acceptance sub-suite on its own.**
-* **I did not run CPython 3.11**, the version CI pins - it is not installed on this machine.
-  Every number in this report is CPython 3.14.7 / pytest 8.4.2 / Windows.
-* **I did not execute the provider-e2e gated path** (site 3,
-  `TestProviderE2EGated::test_two_reasoning_real_provider_isolated`). It skips without
-  `SYTHION_RUN_PROVIDER_E2E=1` and a healthy provider; that is item 004's `[deferred]`
-  follow-up and it needs credentials I do not have.
-* **I did not reproduce D-1** (the concurrent-append event loss in
-  `DbEventLedger.append_event`). It is item 004's `[required]` follow-up, still open, and
-  the merge neither fixes nor hides it.
-* **I did not run the guard's teeth probe** (a file with `assert ... or True` inside
-  `backend/tests/`) - the Verifier did that in a sandbox copy outside the repository, and
-  re-creating a probe file in the repository was not part of my brief.
-* **I did not investigate the native-crash root causes** - none occurred in my run, and they
-  are item 000's pre-existing follow-up.
-* **I did not re-verify the branch worktree's own suite numbers** - `wt-004` no longer
-  exists (removed by the orchestrator session during my run), so the Verifier's
-  `1 failed / 1565 passed` worktree figure could not be re-measured. The main-tree figure
-  above is the comparable one.
-* **I did not open, copy, enumerate or modify** `backend/.env`, `backend/sythion.db`,
-  `backend/test_voice.db` or `%LOCALAPPDATA%\Sythion (Synth)`.
-  **One thing the orchestrator must know:** the full-suite run my brief mandated *executes*
-  `backend/tests/acceptance/test_secret_storage.py::test_credential_manager_round_trip`,
-  which - per backlog item 007 (not yet built) - constructs the real `CredentialManagerStore`
-  and **writes and then deletes the product's own credential target
-  `Sythion (Synth)/ollama_api_key`**. That is item 007's subject and it is a consequence of
-  running the suite as instructed, not of the merge; I did not touch the vault myself and
-  did not enumerate it (that read-only enumeration is item 007's own acceptance step).
-* **I did not update `board.json`**, and I did not reconcile the `backlog.md` summary
-  comment - both are listed above as orchestrator follow-ups.
-* **CogniGraph:** the memory MCP namespace was **not connected** when this session started
-  (so `memory_stats` / `memory_query` could not be called at session start as
-  `AGENTS.md` requires); it became reachable mid-session and I then ran `memory_stats` and
-  `memory_query` against it. A `memory_checkpoint_task` for this merge is written at the end
-  of the session.
+- **I did not re-verify the substance of the item.** The mutation testing (that each replacement
+  assertion actually fails when the production behaviour it guards is broken), the guard's teeth,
+  the per-test JUnit-XML regression comparison and the acceptance-criteria table are the
+  Reviewer's and the Verifier's evidence (`004-r1.md`, `004-v1.md`), on content that is
+  byte-identical to what is now on `master` (Evidence 3). I confirmed the *presence and shape* of
+  the replacements on `master` (Evidence 4) and that the tautology is gone from `master` by an
+  independent AST scan, but I did **not** repeat the mutation experiments myself.
+- **I did not re-run the provider-gated test** (`test_phase1075_hardening.py::test_two_reasoning_real_provider_isolated`,
+  the site of the third replacement). It skips unless `SYTHION_RUN_PROVIDER_E2E=1` and a healthy
+  provider are present. It is queued as a deferred follow-up (`follow-ups.md:21`) and remains
+  unexercised.
+- **I did not re-characterise the suite's native non-determinism.** I observed one access
+  violation (run 1) at the frame item 001's Committer also saw; I did not attempt to reproduce it
+  in isolation and I did not investigate its root cause. The crash class is pre-existing and is
+  already the item-000 follow-up (`follow-ups.md:23`) - **this run adds one more observed instance
+  of it, at the same site**.
+- **I did not check the suite under the pinned CI toolchain** (pytest 7.4.4 / pytest-asyncio
+  0.23.3). Every number here is CPython 3.14.7 / pytest 8.4.2. The Verifier did check the pinned
+  toolchain on the identical content.
+- **I did not run the frontend suite** (`npm test` / `npm run lint` / `npm run build`). This
+  merge touches no frontend file.
+- **D-1 is still live and still unfixed** - `DbEventLedger.append_event`'s read-then-write
+  sequence allocation (`backend/runtime/events.py:64`) was deliberately left out of the item's
+  scope (tests only). I confirmed the file is byte-identical across the merge
+  (`1909c277b205ab6093f65e4576ac3ea6be6dc5f5`); I did **not** re-measure the event loss. It
+  remains queued as a required follow-up (`follow-ups.md:24`).
+- **No GitHub-side state was read or written**: no workflow run, no dispatch, no settings, no
+  secrets, no branch protection, no `vars.RUN_PROVIDER_E2E`. `origin/master` is still at
+  `d2a24e5`.
+- **No deploy, publish, install, migration, secret rotation or release payload work.**
+  `backend/.env`, `backend/sythion.db`, `backend/test_voice.db` and
+  `%LOCALAPPDATA%\Sythion (Synth)` were not opened, copied, reset or modified. No `make clean`,
+  no `scripts/stage_python_runtime.py`, no `npx tauri build`, no migrations, no `rm -rf`, no
+  `git reset --hard`, no `git clean -fd`, no `git checkout -- .`, no `git stash drop`, no
+  `git branch -d` on any branch.
+- **This report is committed on `master`** (a follow-up commit by this dispatch; find it with
+  `git log --oneline -3 -- .orchestra/reports/000-commit-2.md`). The `backlog.md` status line is
+  already committed - inside the orchestrator's own `702ffc5`, which swept it in. This report
+  **supersedes** the earlier committer's text at this path (preserved in `38ee87e`); see the
+  section at the top of this file.
+- **The rebase and the merge themselves were executed by the earlier, interrupted dispatch**, not
+  by me (see the note at the top). I verified their results from the object database and the
+  reflog; I did not re-run them, because re-running them would have produced a second merge
+  commit for the same item.
