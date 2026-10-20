@@ -137,8 +137,8 @@
       "since": null
     },
     "verifier": {
-      "state": "idle",
-      "task": null,
+      "state": "stalled",
+      "task": "006",
       "since": null
     },
     "committer": {
