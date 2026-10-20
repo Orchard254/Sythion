@@ -396,9 +396,8 @@
   ONE ITEM THE ORCHESTRATOR OWNS AND MUST NOW DO: the R-020 `[required]` follow-up in `follow-ups.md` describes the defect as open. With item 007 accepted, the orchestrator updates that entry to state that the fix has landed and what an operator should look for - namely that a run that dies mid-test can leave a stray `Sythion (Synth) [TEST]/` entry behind, and how to check for one read-only.
 
 
-## 2026-10-20 00:40 - orchestrator note - the 002/006/007 merge, resolved and PROVEN
-- brief: n/a - an orchestrator measurement, recorded so the Committer does not have to rediscover it
-- report: n/a
+## 2026-10-20 00:40 - orchestrator - 000 - ACCEPT
+- note: the 002/006/007 merge, resolved and PROVEN - a cycle-level orchestrator measurement, recorded so the Committer does not have to rediscover it
 - evidence: The orchestrator merged all three in-flight branches into a scratch worktree OUTSIDE the repository, resolved the one conflict, and verified the result. **This is the exact recipe the Committer should follow.**
   - **Merge order that works:** `007` first (it touches `backend/tests/acceptance/conftest.py` and `backend/tests/acceptance/test_secret_storage.py` and overlaps with NOTHING), then `002` (touches `Makefile`, `pytest.ini`, `backend/tests/conftest.py`, `backend/tests/acceptance/test_gui_fixture.py`), then `006` (touches `backend/tests/conftest.py` and `backend/tests/test_setup_readiness.py`). `007` and `002` merge cleanly in any order - their file sets are disjoint. **Only 002 and 006 conflict**, and only in the ROOT `backend/tests/conftest.py`.
   - **The conflict, and its exact cause:** `CONFLICT (content): Merge conflict in backend/tests/conftest.py`, at the file's LAST line. **master's `backend/tests/conftest.py` ends WITHOUT a trailing newline** (5517 bytes, `endswith("\n")` is False). Both branches' diffs show the same last-line change - `-    return "acceptance-control-token"` / `\ No newline at end of file` / `+    return "acceptance-control-token"` - and then each appends its own block after it. Git cannot order two appended blocks, so it emits a conflict whose OURS side is empty and whose THEIRS side is 006's appended block.
