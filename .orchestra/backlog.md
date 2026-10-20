@@ -26,7 +26,7 @@
 - Risk: low (workflow YAML plus one package.json script; no runtime code, no secrets, no payload or auth surface)
 - Likely files: `.github/workflows/ci.yml`, `frontend/package.json`
 - Sensitivity: infra
-- Status: planned
+- Status: building
 
 ### 002 Makefile test selections and pytest configuration stop claiming what they do not do
 - Why: R-003 and R-005 are one story and both are Gate 4 + Gate 8 failures. The Makefile's marker targets select nothing (`-m gui`, `-m network`, `-m acceptance` collect 0 of 1609 tests; `-m "not slow and not flaky and not integration and not gui and not network"` deselects exactly 1), and the repository has no pytest configuration file at all, so the suite runs with no `configfile:` and two markers that are applied to real tests (`concurrency`, `gated_soak`) are never declared. Every future agent that trusts `make test-fast` or `make test-gui` is wrong about what ran. This item deliberately does not edit `docs/TESTING.md`; item 003 owns that file and documents the final state.
@@ -41,7 +41,7 @@
 - Risk: med (correcting which tests a marker selects changes what `make test-fast` and `make test-unit` run; a wrong classification would silently narrow the suite)
 - Likely files: `Makefile`, `pytest.ini`, `backend/tests/conftest.py`, `backend/tests/**`
 - Sensitivity: none
-- Status: planned
+- Status: building
 
 ### 003 Documentation states the measured baseline and drops deleted modules
 - Why: R-004 and R-017 are both Gate 4 ("docs must reflect reality") and Gate 9 ("honest handling of debt"), and they edit the same documentation files, so they ship as one branch. R-004: every documented baseline in the repository is wrong - 692 passed / 32 skipped (README:103, docs/TESTING.md:30, docs/PROJECT_STATUS.md:41, docs/OPERATIONS.md:159), 683 (README badge :6), 659 (docs/ROADMAP.md:24), 196 acceptance (README:104, docs/TESTING.md:9, docs/PROJECT_STATUS.md:42, docs/ROADMAP.md:25, docs/OPERATIONS.md:160) - while 1609 tests are collected, and the quoted runtimes ("~55s", "~25s", "~10s") are off by roughly 10x. The badge and the prose of the same file contradict each other. R-017: `docs/CODEBASE_BOUNDARIES.md` (named by docs/QUALITY_GATES.md:50-53 as an authority doc), `backend/services/README.md`, `docs/ROADMAP.md:36` and `docs/PROJECT_STATUS.md:16-18` still list `backend/services/response_strategy.py` and `backend/services/speech_act_classifier.py`, both deleted by commit `db10f86`.
@@ -72,7 +72,7 @@
 - Risk: med (the tautologies were hiding the real outcome, so the correct assertion may expose a genuine defect in the concurrency/hardening code)
 - Likely files: `backend/tests/test_phase105_concurrency.py`, `backend/tests/test_phase1075_hardening.py`, `backend/tests/test_phase125_planning_validation.py`, `backend/tests/test_no_tautological_asserts.py`
 - Sensitivity: none
-- Status: planned
+- Status: building
 
 ### 005 Operator tooling resolves the endpoint from the handshake file
 - Why: R-012 and R-013 are one story about the operator release gate. The handshake contract says the sidecar binds 127.0.0.1 on an ephemeral port and publishes `{port, token}` in `sidecar.json` (`backend/core/handshake.py:8-13`), but `scripts/smoke_test.py:21` and the root `cli.py:26` hard-code `http://127.0.0.1:8000/api/v1` - so when port 8000 is occupied both tools talk to whatever else is listening there, carrying the control token with them - and `backend/cli.py:25-29` re-derives the handshake path instead of using `storage.handshake_path()`, so it cannot find a sidecar launched with a custom `SYTHION_DATA_DIR` (the packaged shell always sets one). `docs/OPERATIONS.md:108` documents the smoke test as a release gate, and `docs/acceptance-test-map.md` lists it as such.
