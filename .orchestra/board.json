@@ -67,7 +67,7 @@
       "domain": "none"
     },
     "007": {
-      "status": "verifying",
+      "status": "accepted",
       "owner": "verifier-007",
       "branch": "orchestra/007-no-real-vault-writes",
       "mergeSha": null,
@@ -137,7 +137,7 @@
       "since": null
     },
     "verifier": {
-      "state": "stalled",
+      "state": "verifying",
       "task": "006",
       "since": null
     },
