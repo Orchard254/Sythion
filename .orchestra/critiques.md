@@ -165,6 +165,41 @@
 - verdict: ACCEPT
 - reason: The four tautologies are replaced by assertions derived from the code, the scope was respected exactly (tests only), the guard was proven to have teeth, and a genuine production defect was found and REPORTED rather than quietly absorbed into the item - which is the behaviour the brief demanded. ACCEPTED; item 004 goes to the Reviewer. Two new candidates come out of this item and are queued for the next research pass: the concurrent-append event loss in `DbEventLedger.append_event`, and the dead branch in `backend/services/capabilities.py:219`.
 
+## 2026-10-20 20:20 - reviewer - 004 - ACCEPT
+- brief: briefs/004-review-1.md
+- report: reviews/004-r1.md (first line exactly `VERDICT: ACCEPT`)
+- evidence: The Reviewer answered the question that actually matters for this item - "are the new assertions real properties, or reshaped tautologies?" - by reading the production code behind each one, and it says the answer is real for all four:
+  - site 1: `_to_dict` carries no `task_id` (`events.py:82-88`), so re-reading the owning `TaskEvent` rows by primary key and asserting `owner_task_ids == {tid}` is the correct way to state the ownership property;
+  - site 2: the `_fallback_artifact` contract (`reasoner.py:298-308`);
+  - site 3: the shape both `_normalize` and `_fallback_artifact` guarantee, plus the explicit negative on `delegation_id`;
+  - site 4: the non-vacuous `details`, the three keys, `actual_outcome is None` and `would_diverge is True` (`planning_store.py:744-780`).
+  It checked DETERMINISM explicitly - site 1 pins ownership and never a count, which is the right call given `events.py:64` - and it confirmed D-1 was reported rather than absorbed.
+  On the guard it did the work that matters: it verified the teeth in a **sandbox copy outside the repository** (never writing into the worktree), checked seven legitimate assertion shapes for false positives, confirmed the 8 BOM files parse via `tokenize.open`, and confirmed the guard runs from the repo root and from `backend/` (the CI form).
+  It also proved criterion 6 **by set comparison rather than by counting**: master collects 1609 ids, the branch 1611, and the difference is exactly the two guard tests - no test deleted, renamed or re-marked.
+- coverage: All six criteria judged with evidence. It measured criterion 4 on both trees (master emits the `never awaited` RuntimeWarning, the branch emits none).
+- consistency: Agrees with the implementer and with the orchestrator's independent checks (`or True` -> 0, guard -> 2 passed, three files -> 71 passed / 5 skipped).
+- not checked: Stated honestly - it did not re-run the full suite (the Verifier's stage) and it did not execute the provider-gated site 3.
+- verdict: ACCEPT
+- reason: The review is evidence-led, it read the production code rather than the diff alone, and it verified the guard in a sandbox instead of polluting the branch. ACCEPTED; item 004 goes to the Verifier.
+  THE ORCHESTRATOR ADDED A PRECISION THE REPORT LEFT OPEN: the review says it did not execute the provider-gated site 3; the reason is structural, not incidental. The assertion at `test_phase1075_hardening.py:765` lives inside `TestProviderE2EGated::test_two_reasoning_real_provider_isolated` (`:727-731`), which is marked `@pytest.mark.provider_e2e` and calls `pytest.skip("gated provider_e2e not enabled")` unless `SYTHION_RUN_PROVIDER_E2E=1`, and additionally skips when the provider is not healthy. So **that assertion has never been executed by any run in this repository** - and neither was the tautology it replaced. The fix is still strictly correct (a real assertion that can fail, in a test that will run when the gate opens), but it is not execution-proven, and the reviewer is right to have flagged it under "Not checked". It is recorded as a follow-up: the provider-gated path remains unverified.
+  The Reviewer's own finding stands too: the detector misses NESTED `or True` (e.g. `assert (x or True) and y`) and a bare `assert True`, so the plan's claim that its AST rule "is a superset of the literal `... or True` text pattern" (plans/004.md:125) is FALSE as written. The IMPLEMENTATION is nevertheless correct against the acceptance criterion, which says "a top-level `or True`" - so the over-claim is in the plan, not in the code. The guard is a canary against the common case, not a proof.
+
+## 2026-10-20 20:35 - verifier - 001 - ACCEPT
+- brief: briefs/001-verify-1.md
+- report: verifications/001-v1.md (first line exactly `VERDICT: FIXED`)
+- evidence: The Verifier established the outcome BY EXECUTION rather than by re-reading the diff, which is what the stage is for. For each of the four ORIGINAL problems (R-001, R-002, R-014, R-015) it produced a master-fails / branch-passes pair:
+  - R-001: master -> exit 1 from `backend/` (`ModuleNotFoundError`); branch -> exit 0 from the declared root, with the step declaring `working-directory: ${{ github.workspace }}` and the job-level `defaults` gone; the command confirmed byte-identical.
+  - R-002: master -> `branches: [main]`, 0 `workflow_dispatch` trigger keys, and no `main` branch in existence; branch -> `branches: [master, main]`, 1 trigger key at `ci.yml:7`.
+  - R-014: master -> 0 vitest/npm-test steps and `npm test` reproduced hanging at "Waiting for file changes..." for 20 s; branch -> a real `Test (vitest)` step and `npm test` -> **5 files / 49 tests, exit 0**. The Verifier also re-ran `npm run lint` and `npm run build` (exit 0).
+  - R-015: master -> Rule P finds **2 offenders**; branch -> **0 offenders**; and a pinned venv yields `pytest 7.4.4` / `pytest-asyncio 0.23.3`, 105 passed / 5 skipped, 1609 collected.
+  It also closed the loop on the criterion-4 trap by executing the guard's `run:` block extracted verbatim from the merged YAML against BOTH files: **exit 0** on the merged file under both `ErrorActionPreference` settings, **exit 1** against master's file, naming both offenders.
+- coverage: All six criteria judged against reality with evidence, and the neighbouring checks are real: the `tauri-build` job is identical to master, the `provider-e2e` job differs ONLY by the deleted unpinned install (all seven protected lines byte-identical), the `frontend` job differs only by the added step, `package.json` parses, and the lockfile is in sync.
+- consistency: The Verifier ran the optional full suite and reported `1 failed, 1563 passed, 45 skipped`, then PROVED the single failure is the gitignored `backend/.env` (no key -> 1 failed / 7 passed; dummy key -> 8 passed) and that item 001 touches no Python file. It stated plainly that the repaired pipeline will be RED on its first real run for that pre-existing reason - i.e. it separated "the reported problems are gone" from "the pipeline is green", which is exactly the distinction the stage exists to make.
+- not checked: Six explicit limits - GitHub Actions was never run or dispatched, no `actionlint`, the guard was executed under PowerShell 5.1 (no `pwsh` 7 on this machine), the runner-side install on 3.11 (`whispercpp` source build) is unexercised, and no GitHub-side setting was read. It also left the worktree untouched (`HEAD` still `9ef7153`, `git status` empty).
+- verdict: ACCEPT
+- reason: The outcome is established by execution against each original problem, the trap the plan was redone for is closed with a positive proof, the neighbouring jobs are verified intact, and the pre-existing first-run red is reported and correctly separated from this item's verdict. ACCEPTED; item 001 is FIXED and goes to the Committer. The Verifier's queued items are recorded in `follow-ups.md`.
+
+
 
 
 
