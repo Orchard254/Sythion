@@ -465,3 +465,9 @@ is still exactly the four test files. `master`'s tip is now `702ffc5`.
   by me (see the note at the top). I verified their results from the object database and the
   reflog; I did not re-run them, because re-running them would have produced a second merge
   commit for the same item.
+- **No CogniGraph memory checkpoint was written.** The memory MCP server's tools were available at
+  the start of this session (`memory_stats`, `memory_query`, `memory_prepare_task` were called)
+  but disappeared from the tool catalog mid-session, so `memory_write_batch` /
+  `memory_checkpoint_task` could not be called. The durable facts about this merge (sha
+  `4d827c0`, the four-file diff, the suite result, the branch kept at `9aa6359`) therefore live
+  only in this report and in git.
