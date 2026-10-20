@@ -599,6 +599,8 @@
 
 **One finding the orchestrator notes for follow-up:** the guard's acceptance-only scope (Finding 5) is a real design boundary, not a defect in this item. It belongs in the backlog as a follow-up, not as a blocker. The root conftest is now available for the move. The orchestrator will record it in follow-ups.md at the appropriate time.
 
+- coverage: all six criteria of backlog item 007, plus the guard's scope boundary (Finding 5), the conftest additive-only change, the production-module byte-identity proof, the per-test outcome-set identity, and the native-crash and disk-pressure honesty notes.
 - self-directed: no
 - verdict: ACCEPT
 - reason: All six criteria met with independent, rigorous evidence. The Verifier built its own harness rather than re-running the Implementer's or Reviewer's, and the negative controls are the kind that can fail (and one did, on the first full-suite run, which was honestly recorded). The guard's scope boundary is a real follow-up but not a blocker. ACCEPTED for merge.
+
