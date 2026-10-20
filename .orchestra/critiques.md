@@ -432,7 +432,7 @@
   **THE ORCHESTRATOR TURNS FINDING 1 INTO WORK, because it is a real hole and the fix is one line.** The Reviewer is right that it is not reachable today - but the whole point of this item is that the suite must NEVER write to the product's credential, and the orchestrator has now MEASURED that Windows credential slots are case-insensitive while the guard's comparison is not. A guard that a future test defeats by changing the case of a string constant is not a guard against what it claims to prevent. Finding 2 (fail-open on an unreadable credential object) is the same shape of hole: the guard DELEGATES when it cannot determine the target. Both are dispatched to the implementer as a short hardening round, because they are small, mechanical, and they close the gap between what the guard claims and what it does. The other six findings are recorded as follow-ups, with the two that need a human or a later cycle (`docs/ARCHITECTURE.md:358` and `docs/ACCEPTANCE_TESTS.md:199` wording - item 003's file - and moving the guard to the root conftest, which is still contended by items 002 and 006) written into `follow-ups.md` by the orchestrator rather than left in a review file.
 
 
-## 2026-10-20 01:20 - implementer - 007 - ACCEPT (hardening round)
+## 2026-10-20 01:20 - implementer - 007 - ACCEPT
 - brief: briefs/007-implement-2.md
 - report: reports/007-implement-2.md
 - evidence: The orchestrator read the diff and then **verified the behaviour independently, by exercising the shipped guard rather than a copy of it.** The diff is one file - `backend/tests/acceptance/conftest.py`, 57 insertions and 5 deletions - and `test_secret_storage.py` is byte-identical to `4680e0b`, so the Reviewer's cited line numbers (`:177`, `:197`) stay valid.
