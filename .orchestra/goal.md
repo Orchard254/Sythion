@@ -86,7 +86,7 @@ intelligence layers are meant to sit *above* this runtime, never around it
 | 4 | Windows-only runtime: pywin32, UIA/MTA, winget and SAPI5 paths are intentional, not legacy to be deleted | `docs/ROADMAP.md` and `SYTHION_TODOS.md` Phase C/D describe them as the chosen platform | Check `backend/tools/gui_tools.py` and `backend/tools/package_tools.py` for Windows-only guards |
 | 5 | The live sidecar DB in `%LOCALAPPDATA%\Sythion (Synth)` and `backend/sythion.db` are real user data and must not be reset | `docs/ROADMAP.md`, `backend/core/storage.py`, and the guardrails in this skill | Inspect what a test command does before running it; tests must use temp DBs |
 | 6 | The single open TODO (clean-machine interactive acceptance run) genuinely needs a human | It requires an interactive Windows desktop session | `SYTHION_TODOS.md:111` and `docs/acceptance-test-map.md` |
-| 7 | The missing pytest config file is a real gap and not a deliberate choice | There is no `pytest.ini`/`pyproject.toml`/`setup.cfg` anywhere, yet the Makefile and CI select tests by marker (`-m "not slow and not flaky ..."`), and markers are undeclared | `python -m pytest backend/tests -q` prints `inifile: None` and `PytestUnknownMarkWarning` |
+| 7 | The missing pytest config file is a real gap and not a deliberate choice | There is no `pytest.ini`/`pyproject.toml`/`setup.cfg` anywhere, yet the Makefile and CI select tests by marker (`-m "not slow and not flaky ..."`), and the markers those targets depend on are applied to almost no test | `python -m pytest backend/tests -q` prints `inifile: None`; `backend/tests/conftest.py::pytest_configure` declares eight markers, but `gui`, `network`, `acceptance`, `flaky` and `integration` are applied to ZERO tests (see R-003) and `concurrency`/`gated_soak` are applied but never declared (see R-005) |
 
 ## Off-limits (never change without asking)
 
@@ -133,9 +133,21 @@ master
 - Baseline captured by the orchestrator at the start of this run is recorded in
   `log.md` and in `reports/research-001.md`. Any pre-existing failure is
   listed there so it is not blamed on later work.
-- `python -m pytest backend/tests -q` reports `inifile: None`: the repo has no
-  pytest configuration file, so markers such as `slow`, `flaky`, `integration`,
-  `gui`, `network`, `acceptance` and `provider_e2e` are undeclared.
+- The suite runs with **no pytest configuration file**: pytest 8.4.2's header
+  prints `rootdir: C:\Sythion\sythion` and **no `configfile:` line** (the
+  string "inifile: None" is pytest's *usage-error* wording, not its normal
+  header - corrected by the Scout, see `critiques.md`).
+  `backend/tests/conftest.py::pytest_configure` declares eight markers
+  (`slow`, `flaky`, `integration`, `acceptance`, `gui`, `network`,
+  `process_kill`, `provider_e2e`); the two that are applied but never declared
+  are `concurrency` and `gated_soak`. The markers the Makefile selects on are
+  applied to almost no test: `gui`, `network` and `acceptance` to zero (R-003).
+  pytest-asyncio currently reports `asyncio: mode=Mode.STRICT`.
+- The suite is NOT deterministic on this machine. One run aborted with
+  `Windows fatal exception: code 0x80040155` (a COM `CLASS_E_CLASSNOTAVAILABLE`
+  fault) inside the `sythion-uia-mta` worker thread
+  (`backend/tools/gui_tools.py`); an identical second run completed normally
+  with `1564 passed, 45 skipped, 1609 collected` (R-007).
 - The local interpreter is CPython **3.14.7**; CI pins **3.11**. Differences
   between the two are a plausible source of local-only failures and must not be
   reported as project defects without a check.
