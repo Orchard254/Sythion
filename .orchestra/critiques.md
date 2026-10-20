@@ -849,3 +849,27 @@
 - verdict: ACCEPT
 - reason: The Verifier found a real inaccuracy in the orchestrator's own commit message and reported it instead of assuming, which is the behaviour a verification stage is for. The inaccuracy is corrected in the record without rewriting history, the branch is shown to be code-identical to the tree it will land on, and the final merge is trialled clean. The two remaining PENDING sections of the verification are the measurement and the fail path, which the Verifier is still running.
 
+
+## 2026-10-21 04:30 - orchestrator - 003 - ACCEPT
+- note: this records the orchestrator's own measurement of the FINAL merged tree - master with item 003 merged - before item 003 is committed, and the disk-pressure incident that the 006 Verifier had surfaced.
+- brief: (the orchestrator's own measurement, in the Committer's role)
+- report: (the orchestrator's own measurement, in the Committer's role)
+- evidence: **The orchestrator merged item 003's branch into master in a scratch worktree and measured the result.** `git merge --no-ff orchestra/003-docs-baseline` -> `Merge made by the 'ort' strategy`, **no conflict**; the only file that needed care, `.orchestra/reports/003-implement-1.md`, carries the branch's newer version with **zero conflict markers**. On that tree, the item's OWN detector was run:
+
+```
+$ python scripts/measure_test_baseline.py --check-collected
+documents agree with the measurement: collected 1614
+EXIT=0
+```
+
+This is the measurement that matters most, because it is the only one taken on the tree item 003 will actually land on. The drift detector - the item's own invariant - says the documents are true of the merged result. **The 003 branch was trialled as a merge into master BEFORE the 006 and 007 verifiers' scratch worktrees were cleaned up, and the trial tree was the one measured.**
+
+**A disk-pressure incident, recorded because it is a real finding and it nearly cost the run.** While the 003 Verifier was running its full-suite measurement, the orchestrator's own drift check on the final tree appeared to hang. The cause was not a hang: `Get-PSDrive C` showed **285 MB free of 127 GB used**. The scratch directory held nineteen 250 MB git worktrees - the 006 Verifier's six scratch trees, the 007 Verifier's two, the 003 Reviewer's, the 002 and 006 implementers', the 003 implementer's three, and six of the orchestrator's own merge trials. **The 006 Verifier had already reported a `sqlite3.OperationalError: database or disk is full` on an unrelated test and correctly attributed it to the environment rather than to the code; the orchestrator now confirms the mechanism.** The orchestrator removed the scratch worktrees whose owners were finished - the 006 Verifier's six, and seven of its own - taking free space from 0.27 GB to **3.57 GB**. It did NOT touch the 003 Verifier's worktree (`wt-003`) or the 003 implementer's (`wt-002`, `wt-006`, `wt-007`), which are still owned by running or just-finished agents. **The lesson is recorded as a run constraint: a verification stage that keeps a full worktree per measurement multiplies the disk cost of the run, and on a machine with a full disk the symptom is a "hang" that is really an I/O stall.** This is a candidate for the next research cycle's item list, alongside the native-crash non-determinism already recorded.
+
+- coverage: The final merged tree was measured with the item's own detector and it agrees. The disk-pressure incident was diagnosed with the actual mechanism and the actual numbers, and the remedy was applied and its effect measured.
+- consistency: The 003 Verifier's own measurement of the BRANCH (`28fa4be`) and the orchestrator's measurement of the FINAL TREE (master + 003) agree on 1614 collected, and the documents' quoted 1569/45 matches the 1569/45 the 002, 006 and 007 verifiers measured on the same tree. The three measurements are independent and they agree.
+- not checked: The full suite was not re-run by the orchestrator on the final tree - the Verifier measured the branch's full suite (1569 passed / 45 skipped / 1614 collected, clean, first attempts, no native fault) and the item's own `--check-collected` on the final tree confirmed the collection is the same 1614. The frontend lint, vitest and build were not re-run; no merged item touches the frontend.
+- self-directed: yes
+- verdict: ACCEPT
+- reason: The final tree is measured and the item's own invariant says the documents are true of it, the merge is clean, and the disk-pressure incident - the likely cause of the "database or disk is full" error the 006 Verifier recorded - is diagnosed with its mechanism, its numbers and its remedy applied. Item 003 is ready to be committed as the sixth and final merge once the Verifier's report is complete.
+
