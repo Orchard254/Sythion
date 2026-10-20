@@ -130,7 +130,7 @@
 - Likely files: `Makefile`, `pytest.ini`, `backend/tests/conftest.py`, `backend/tests/**`
 - Sensitivity: none
 - Domain: none
-- Status: building
+- Status: needs-improvement
 
 ### 004 Four tautological assertions replaced by the assertions they stood in for
 - Why: R-016. Four assertions end in `or True`, so they are unconditionally true and can never fail, each inside a suite whose name promises exactly the property it does not check: per-thread history isolation (`backend/tests/test_phase105_concurrency.py:530`), fallback handling (`:746`), delegation attribution (`backend/tests/test_phase1075_hardening.py:765`) and shadow-policy shape (`backend/tests/test_phase125_planning_validation.py:230`). Gate 3 ("verification before claims") and Gate 8 ("testing baseline discipline") both fail while four suites advertise guarantees they do not check.
