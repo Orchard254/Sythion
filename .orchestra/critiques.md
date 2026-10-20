@@ -397,6 +397,8 @@
 
 
 ## 2026-10-20 00:40 - orchestrator - 000 - ACCEPT
+- brief: briefs/000-commit-2.md (the commit stage whose result this note records)
+- report: reports/000-commit-2.md
 - note: the 002/006/007 merge, resolved and PROVEN - a cycle-level orchestrator measurement, recorded so the Committer does not have to rediscover it
 - evidence: The orchestrator merged all three in-flight branches into a scratch worktree OUTSIDE the repository, resolved the one conflict, and verified the result. **This is the exact recipe the Committer should follow.**
   - **Merge order that works:** `007` first (it touches `backend/tests/acceptance/conftest.py` and `backend/tests/acceptance/test_secret_storage.py` and overlaps with NOTHING), then `002` (touches `Makefile`, `pytest.ini`, `backend/tests/conftest.py`, `backend/tests/acceptance/test_gui_fixture.py`), then `006` (touches `backend/tests/conftest.py` and `backend/tests/test_setup_readiness.py`). `007` and `002` merge cleanly in any order - their file sets are disjoint. **Only 002 and 006 conflict**, and only in the ROOT `backend/tests/conftest.py`.
