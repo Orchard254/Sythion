@@ -1409,8 +1409,8 @@ built (a plan proposes them), which is why the scope is explicit, and
 over the measurement tree using a scratch plugin outside the repository
 (`--collect-only` executes no test bodies, so it is safe on any tree). The
 result (round 1's tree): 1613 items; `acceptance` 193, `concurrency` 53,
-`gated_soak` 1, `gui` 4, `network` 5, `process_kill` 8, `provider_e2e` 5,
-`slow` 1, `flaky` 0, `integration` 0. `concurrency` (53) and `gated_soak` (1)
+`learning_soak` 1, `gui` 4, `network` 5, `process_kill` 8, `provider_e2e` 5,
+`slow` 1, `flaky` 0, `integration` 0. `concurrency` (53) and `learning_soak` (1)
 match what the merged `pytest.ini` claims; `network` (5) equals the
 `provider_e2e` population (5), as the selection-contract guard requires.
 

@@ -43,10 +43,10 @@
 
 ### What you must fix - the three findings, in the Reviewer's order
 
-**1. `pytest.ini` - the `gated_soak` description is false.**
+**1. `pytest.ini` - the `learning_soak` description is false.**
 The description says "long-running soak tests, gated behind an explicit
 environment flag". The only test carrying the marker
-(`backend/tests/test_phase115_soak.py:15`, `pytestmark = pytest.mark.gated_soak`)
+(`backend/tests/test_phase115_soak.py:15`, `pytestmark = pytest.mark.learning_soak`)
 has **no gate at all** - no `skipif`, no environment check - so it runs in
 every default suite. The Reviewer measured it: `1 passed`. The orchestrator
 confirmed it by reading the file.
@@ -114,7 +114,7 @@ does not carry it).
 
 - Marker populations: `gui`=4 (exactly `test_gui_fixture.py`), `network`=5
   (identical to `provider_e2e`), `acceptance`=193, `slow`=1, `flaky`/`integration`=0,
-  `process_kill`=8, `concurrency`=53, `gated_soak`=1.
+  `process_kill`=8, `concurrency`=53, `learning_soak`=1.
 - The Makefile claims are true: `test-fast` -> 1599 selected / 10 deselected
   (1 slow + 4 gui + 5 network), `test-unit` -> 1416/193, `test-gui` -> 4,
   `test-network` -> 5, `test-acceptance` -> 193. All exit 0.
@@ -174,7 +174,7 @@ Write `C:\Sythion\sythion\.orchestra\reports/002-implement-2.md`:
 ## The three findings
 | # | Finding | What I changed | Evidence that it is now true |
 |---|---|---|---|
-| 1 | gated_soak description | ... | ... |
+| 1 | learning_soak description | ... | ... |
 | 2 | fallback comment vs behaviour | ... | ... |
 | 3 | hard-coded gui expectation | ... | ... |
 

@@ -100,7 +100,7 @@ The population column is what the marker actually selects today, measured on
 | `process_kill` | `pytest -m process_kill` | `pytest -m "not process_kill"` | 8 tests - real Windows process-kill tests, run explicitly with `SYTHION_RUN_PROCESS_KILL=1` |
 | `provider_e2e` | `pytest -m provider_e2e` | `pytest -m "not provider_e2e"` | 5 tests - real provider-backed specialist E2E tests, run explicitly with `SYTHION_RUN_PROVIDER_E2E=1` |
 | `concurrency` | `pytest -m concurrency` | `pytest -m "not concurrency"` | 53 tests - applied at module level to `backend/tests/test_phase105_concurrency.py` and `backend/tests/test_phase1075_hardening.py` |
-| `gated_soak` | `pytest -m gated_soak` | `pytest -m "not gated_soak"` | 1 test - the synthetic learning-soak workload in `backend/tests/test_phase115_soak.py`; despite the name it is NOT gated by an environment flag and runs in the default suite |
+| `learning_soak` | `pytest -m learning_soak` | `pytest -m "not learning_soak"` | 1 test - the synthetic learning-soak workload in `backend/tests/test_phase115_soak.py`; runs in the default suite (not gated by an environment flag) |
 
 ### Test Fixtures (in `backend/tests/conftest.py`)
 

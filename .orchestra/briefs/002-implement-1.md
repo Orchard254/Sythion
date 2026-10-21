@@ -88,7 +88,7 @@ From the orchestrator's measured baseline (`reports/baseline-001.md`):
   `test_phase105_concurrency.py::TestFairnessSlotAllocation::test_long_running_fairness`).
 - Exactly **3** `PytestUnknownMarkWarning`s: `concurrency` at
   `test_phase105_concurrency.py:39`, `concurrency` at
-  `test_phase1075_hardening.py:35`, `gated_soak` at `test_phase115_soak.py:15`.
+  `test_phase1075_hardening.py:35`, `learning_soak` at `test_phase115_soak.py:15`.
 - `backend/tests/conftest.py:31-47` declares eight markers: `slow`, `flaky`,
   `integration`, `acceptance`, `gui`, `network`, `process_kill`,
   `provider_e2e`.

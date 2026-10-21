@@ -65,7 +65,7 @@ CANONICAL_MARKERS = (
     "process_kill",
     "provider_e2e",
     "concurrency",
-    "gated_soak",
+    "learning_soak",
 )
 
 # Modules that need a live interactive Windows desktop and the real UI

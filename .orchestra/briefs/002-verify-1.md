@@ -76,7 +76,7 @@ against `HEAD:pytest.ini`, and confirm `git status --short` is empty).
   - Marker populations: `gui`=4, `network`=5 (node-for-node identical to
     `provider_e2e`), `acceptance`=193 (node-for-node identical to the path
     selection), `slow`=1, `flaky`/`integration`=0, `process_kill`=8,
-    `concurrency`=53, `gated_soak`=1. Makefile selections: `test-fast`
+    `concurrency`=53, `learning_soak`=1. Makefile selections: `test-fast`
     1599/10, `test-unit` 1416/193, `test-gui` 4, `test-network` 5,
     `test-acceptance` 193, all exit 0. `asyncio: mode=Mode.STRICT`; no
     effective `filterwarnings` and no `addopts`; zero

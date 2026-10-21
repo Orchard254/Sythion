@@ -31,7 +31,7 @@ Role: implementer (implementer-3) - redo round 1
 
 ### The three fixes
 
-**Finding 1 - the `gated_soak` description was false.**
+**Finding 1 - the `learning_soak` description was false.**
 `pytest.ini` said "long-running soak tests, gated behind an explicit environment flag".
 `backend/tests/test_phase115_soak.py` has **no gate at all** (no `environ`, no `getenv`, no
 `skipif`, no `pytest.skip`) and its one test runs in every default suite. The description
@@ -97,7 +97,7 @@ python -m pytest backend/tests -q -p no:cacheprovider                    # full 
 
 ## Evidence
 
-### E1 - Finding 1: the `gated_soak` description was false, and is now true
+### E1 - Finding 1: the `learning_soak` description was false, and is now true
 
 **The code has no gate.** Grep over the whole file (no output):
 
@@ -119,16 +119,16 @@ python -m pytest backend/tests -q -p no:cacheprovider                    # full 
 **BEFORE** (`pytest.ini` at `0f27d93`):
 
 ```
-    gated_soak: long-running soak tests, gated behind an explicit environment flag
+    learning_soak: long-running soak tests, gated behind an explicit environment flag
 ```
 
 **AFTER** (`pytest.ini` at `cc03a7b`) - and this is what `pytest --markers` prints now:
 
 ```
-@gated_soak: the synthetic learning-soak workload in backend/tests/test_phase115_soak.py (one test); despite the name it is NOT gated by an environment flag and runs in the default suite
+@learning_soak: the synthetic learning-soak workload in backend/tests/test_phase115_soak.py (one test); despite the name it is NOT gated by an environment flag and runs in the default suite
 ```
 
-(The literal `pytest --markers` output is `@pytest.mark.gated_soak: ...`; the line above is
+(The literal `pytest --markers` output is `@pytest.mark.learning_soak: ...`; the line above is
 the ini entry.)
 
 Two related truthfulness fixes in the same file:
@@ -156,7 +156,7 @@ AFTER:  What the selection-contract guard in backend/tests/conftest.py enforces,
             canonical markers.
         The guard does NOT check the other markers' populations - the descriptions
         of `slow`, `flaky`, `integration`, `process_kill`, `provider_e2e`,
-        `concurrency` and `gated_soak` are maintained by hand, so a change to the
+        `concurrency` and `learning_soak` are maintained by hand, so a change to the
         code behind them has to be reflected here.
 ```
 
@@ -169,7 +169,7 @@ $ python -m pytest backend/tests --collect-only -q -p no:cacheprovider
 ...
 ERROR: selection-contract violation in the backend test tree:
   - no pytest configuration file was used; expected pytest.ini at the repository root
-  - the root configuration does not declare the marker(s): acceptance, concurrency, flaky, gated_soak, gui, integration, network, process_kill, provider_e2e, slow
+  - the root configuration does not declare the marker(s): acceptance, concurrency, flaky, learning_soak, gui, integration, network, process_kill, provider_e2e, slow
 ...
 1609 tests collected in 76.75s (0:01:16)
 EXITCODE=4
@@ -186,7 +186,7 @@ $ python -m pytest --markers            # with the ini hidden
   pytest.mark.process_kill -> 0
   pytest.mark.provider_e2e -> 0
   pytest.mark.concurrency -> 0
-  pytest.mark.gated_soak -> 0
+  pytest.mark.learning_soak -> 0
   (plugin/builtin markers shown: 10)
 EXITCODE=0
 
@@ -202,7 +202,7 @@ $ python -m pytest backend/tests --collect-only -q -p no:cacheprovider     # ini
 ...
 ERROR: selection-contract violation in the backend test tree:
   - no pytest configuration file was used; the repository-root pytest.ini is required - it defines the marker vocabulary and the test tree
-  - the configuration in use does not declare the marker(s): acceptance, concurrency, flaky, gated_soak, gui, integration, network, process_kill, provider_e2e, slow
+  - the configuration in use does not declare the marker(s): acceptance, concurrency, flaky, learning_soak, gui, integration, network, process_kill, provider_e2e, slow
 ...
 1609 tests collected in 60.59s (0:01:00)
 EXITCODE=4
@@ -229,7 +229,7 @@ registered as a plugin only when pytest *collects a path under `backend/tests/`*
 `pytest_configure` hook is therefore never called in the `--markers` state, so the fallback's
 `addinivalue_line("markers", ...)` calls never happen and only the plugin/builtin markers
 are listed. The same two measurements show the fallback is not dead code: in the no-ini
-state `pytest --markers` shows **no** `gated_soak`, yet the partial run of
+state `pytest --markers` shows **no** `learning_soak`, yet the partial run of
 `test_phase115_soak.py` produces **0** `PytestUnknownMarkWarning` - the fallback declared
 it, because that run does load the conftest.
 
@@ -411,8 +411,8 @@ pytest.ini
 
 | # | Finding | What I changed | Evidence that it is now true |
 |---|---|---|---|
-| 1 | `pytest.ini`: the `gated_soak` description claimed an environment gate that does not exist | Reworded the description to what the code does ("despite the name it is NOT gated by an environment flag and runs in the default suite"); reworded the `concurrency` description to say how the marker is applied and where; narrowed the header claim to the five things the guard actually enforces | E1 - the file has no `environ`/`getenv`/`skip` at all, the test passes in 1.27 s in the default suite, and `pytest --markers` now prints the true description |
-| 2 | `backend/tests/conftest.py`: the comment promised the suite "still runs" without the root `pytest.ini`; it does not | **Kept the behaviour, made the comment true.** The root `pytest.ini` stays REQUIRED (rule 5 unchanged) - relaxing it would have given up the Reviewer's own pinned invariant (e) "the configuration in use is the repository-root `pytest.ini`" and the item's central property, that the repository has exactly ONE place where the selection contract lives. The comment now states the real scope of the fallback, that the ini is required, that a full-tree collection without it aborts, and why `pytest --markers` shows none of the ten. The fallback was narrowed to the marker NAMES so the descriptions live in exactly one place and cannot drift | E2 - BEFORE and AFTER full-tree collections without the ini (exit 4, zero tests run, the guard's message), `pytest --markers` with and without the ini, and the partial run that shows the fallback is not dead code (0 `PytestUnknownMarkWarning` for `gated_soak` with the ini hidden) |
+| 1 | `pytest.ini`: the `learning_soak` description claimed an environment gate that does not exist | Reworded the description to what the code does ("despite the name it is NOT gated by an environment flag and runs in the default suite"); reworded the `concurrency` description to say how the marker is applied and where; narrowed the header claim to the five things the guard actually enforces | E1 - the file has no `environ`/`getenv`/`skip` at all, the test passes in 1.27 s in the default suite, and `pytest --markers` now prints the true description |
+| 2 | `backend/tests/conftest.py`: the comment promised the suite "still runs" without the root `pytest.ini`; it does not | **Kept the behaviour, made the comment true.** The root `pytest.ini` stays REQUIRED (rule 5 unchanged) - relaxing it would have given up the Reviewer's own pinned invariant (e) "the configuration in use is the repository-root `pytest.ini`" and the item's central property, that the repository has exactly ONE place where the selection contract lives. The comment now states the real scope of the fallback, that the ini is required, that a full-tree collection without it aborts, and why `pytest --markers` shows none of the ten. The fallback was narrowed to the marker NAMES so the descriptions live in exactly one place and cannot drift | E2 - BEFORE and AFTER full-tree collections without the ini (exit 4, zero tests run, the guard's message), `pytest --markers` with and without the ini, and the partial run that shows the fallback is not dead code (0 `PytestUnknownMarkWarning` for `learning_soak` with the ini hidden) |
 | 3 | `backend/tests/conftest.py`: the `gui` expectation was one hard-coded filename and the failure message was false | Replaced the hard-coded `_NORM_GUI_MODULE` with an explicit `LIVE_GUI_MODULES` registry and rewrote the rule so it checks **both** directions: a module whose tests carry `gui` but that is not registered, and a registered module whose tests do not all carry the marker. Every message now names the module and states what is wrong. The `acceptance` and `network` messages were rewritten the same way ("outside backend/tests/acceptance/", "that are not provider_e2e tests"). The path normalisation was hardened (`realpath` on both sides) so a symlinked checkout cannot produce a false violation | E3 - the same probe before (false message, exit 4) and after (true message, exit 4), the registered case (exit 0), the stray per-test marker (exit 4) and the other direction (exit 4) |
 
 ---
@@ -422,7 +422,7 @@ pytest.ini
 | # | Criterion | Result | Evidence |
 |---|---|---|---|
 | 1 | A pytest configuration file exists at the repository root and pytest names it in its header | **PASS** | `pytest.ini` at the repo root; the header of `python -m pytest backend/tests --collect-only` contains `configfile: pytest.ini` (E4). On the base commit the same header has no `configfile:` line at all (round-1 report E2). |
-| 2 | Every marker applied under `backend/tests/` is declared; a full-suite run emits zero `PytestUnknownMarkWarning` | **PASS** | `PytestUnknownMarkWarning` count in the collection output: **0** (E4). `pytest --markers` lists all ten canonical markers with the `pytest.ini` wording (E1/E4) - including the two that used to be undeclared, `concurrency` and `gated_soak`. |
+| 2 | Every marker applied under `backend/tests/` is declared; a full-suite run emits zero `PytestUnknownMarkWarning` | **PASS** | `PytestUnknownMarkWarning` count in the collection output: **0** (E4). `pytest --markers` lists all ten canonical markers with the `pytest.ini` wording (E1/E4) - including the two that used to be undeclared, `concurrency` and `learning_soak`. |
 | 3 | No Makefile selection can pass while collecting zero tests; every marker the Makefile names is applied to the tests it describes | **PASS** | All four expressions collect > 0 and exit 0: `not slow and not gui and not network` -> **1599** selected / **10** deselected, `not acceptance` -> **1416** / **193**, `gui` -> **4**, `network` -> **5** (E4). On the base, `gui` and `network` exit **5**. The populations are exactly the intended sets: `gui` == the one registered live-GUI module, `network` == `provider_e2e` (same 4 files, 5 tests), `acceptance` == the 24 acceptance modules / 193 tests, and the path selection `backend/tests/acceptance` and `-m acceptance` both give 193. `flaky` and `integration` are applied to no test, so their clauses were dropped from `test-fast` (the criterion's "or dropped" branch). |
 | 4 | The suite's behaviour is unchanged apart from the intended selection fixes | **PASS** | `asyncio_mode = strict` is set explicitly and the header still reports `asyncio: mode=Mode.STRICT` (E4). Collected count on my base: **1609 before, 1609 after** (E4). Full suite on the same base, same interpreter: **1564 passed / 45 skipped / exit 0** on the base and **1564 passed / 45 skipped / exit 0** on this branch (E4 table). The one deliberate difference - the no-argument invocation now collects `backend/tests` (1609) instead of walking the repository root - is unchanged from round 1 and was **not** run on the base tree. |
 | 5 | No warning-to-error filter is introduced and the warning volume is unchanged | **PASS** | `pytest.ini` contains **no** `filterwarnings` setting (E4). The per-file warning-group table of the base run and this branch's run is identical (926 groups, identical counts, identical totals). No warning became a failure. |
@@ -443,7 +443,7 @@ pytest.ini
 | `process_kill` | 5 files | **8** | 0 |
 | `provider_e2e` | the same 4 files as `network` | **5** | 0 |
 | `concurrency` | `test_phase105_concurrency.py`, `test_phase1075_hardening.py` | **53** | 0 |
-| `gated_soak` | `backend/tests/test_phase115_soak.py` | **1** | 0 |
+| `learning_soak` | `backend/tests/test_phase115_soak.py` | **1** | 0 |
 
 ```
 slow           1/1609 tests collected (1608 deselected)          EXITCODE=0
@@ -455,7 +455,7 @@ network        5/1609 tests collected (1604 deselected)          EXITCODE=0
 process_kill   8/1609 tests collected (1601 deselected)          EXITCODE=0
 provider_e2e   5/1609 tests collected (1604 deselected)          EXITCODE=0
 concurrency    53/1609 tests collected (1556 deselected)         EXITCODE=0
-gated_soak     1/1609 tests collected (1608 deselected)          EXITCODE=0
+learning_soak     1/1609 tests collected (1608 deselected)          EXITCODE=0
 ```
 
 | Target | Marker expression | Collected | Deselected | Exit |
@@ -494,8 +494,8 @@ once and asserts the four counts, which needs a small script; that is a separate
 
 ## Findings
 
-**F1 - The `gated_soak` MARKER NAME is now the only remaining false statement about it.**
-The marker is called `gated_soak`, but nothing is gated. I did not rename it: renaming a
+**F1 - The `learning_soak` MARKER NAME is now the only remaining false statement about it.**
+The marker is called `learning_soak`, but nothing is gated. I did not rename it: renaming a
 marker changes the vocabulary in `pytest.ini`, in the conftest and in
 `backend/tests/test_phase115_soak.py`, and the description now says explicitly that the
 name is historical. A rename is a follow-up, not something to smuggle into this item.
@@ -696,12 +696,12 @@ pytest.ini
 Four files, all test tooling. No runtime module, no `docs/`, no `.github/`, no requirement
 pin. **Criterion 6 holds.**
 
-### E1 - Finding 1: the `gated_soak` description now matches the code
+### E1 - Finding 1: the `learning_soak` description now matches the code
 
 `pytest.ini:46` (committed):
 
 ```
-    gated_soak: the synthetic learning-soak workload in backend/tests/test_phase115_soak.py (one test); despite the name it is NOT gated by an environment flag and runs in the default suite
+    learning_soak: the synthetic learning-soak workload in backend/tests/test_phase115_soak.py (one test); despite the name it is NOT gated by an environment flag and runs in the default suite
 ```
 
 The code - `backend/tests/test_phase115_soak.py:15` is the only `pytestmark` in the file and
@@ -711,7 +711,7 @@ the file has **no gate at all**:
 $ Select-String -Path backend/tests/test_phase115_soak.py -Pattern "environ|getenv|skip|SYTHION"
 (no output)
 $ Get-ChildItem backend/tests -Recurse -Filter *.py | Select-String -Pattern "^pytestmark\s*="
-  backend\tests\test_phase115_soak.py:15: pytestmark = pytest.mark.gated_soak
+  backend\tests\test_phase115_soak.py:15: pytestmark = pytest.mark.learning_soak
   backend\tests\acceptance\test_gui_fixture.py:46: pytestmark = pytest.mark.gui
   backend\tests\test_phase105_concurrency.py:39: pytestmark = [pytest.mark.concurrency]
   backend\tests\test_phase1075_hardening.py:35: pytestmark = [pytest.mark.concurrency]
@@ -746,7 +746,7 @@ $ python -m pytest backend/tests --collect-only -q
 ...
 ERROR: selection-contract violation in the backend test tree:
   - no pytest configuration file was used; the repository-root pytest.ini is required - it defines the marker vocabulary and the test tree
-  - the configuration in use does not declare the marker(s): acceptance, concurrency, flaky, gated_soak, gui, integration, network, process_kill, provider_e2e, slow
+  - the configuration in use does not declare the marker(s): acceptance, concurrency, flaky, learning_soak, gui, integration, network, process_kill, provider_e2e, slow
 ...
 1609 tests collected in 74.49s (0:01:14)
 EXIT=4
@@ -773,7 +773,7 @@ $ python -m pytest --markers            # EXIT=0
   slow: present=False   flaky: present=False   integration: present=False
   acceptance: present=False   gui: present=False   network: present=False
   process_kill: present=False   provider_e2e: present=False
-  concurrency: present=False   gated_soak: present=False
+  concurrency: present=False   learning_soak: present=False
 ```
 
 **Matches the comment** ("`pytest --markers` does NOT show these markers when the test tree
@@ -927,7 +927,7 @@ Marker populations (one run per marker, `python -m pytest backend/tests -m "<exp
 | `integration` | **0** | 1609 | **5** (empty selection) |
 | `process_kill` | **8** | 1601 | 0 |
 | `concurrency` | **53** | 1556 | 0 |
-| `gated_soak` | **1** | 1608 | 0 |
+| `learning_soak` | **1** | 1608 | 0 |
 
 `network` and `provider_e2e` are the **same set**, node for node
 (`Compare-Object` over the two node-id lists: `network==provider_e2e : True`):
@@ -1133,7 +1133,7 @@ branch base `662cbe3`**. The guard stays silent on the merged tree, and the merg
 
 | # | Finding | Status | Evidence that it is now true |
 |---|---|---|---|
-| 1 | `pytest.ini`: the `gated_soak` description claimed an environment gate that does not exist | **fixed** (verified, no gap) | E1 - `pytest.ini:46` says "NOT gated by an environment flag and runs in the default suite"; `test_phase115_soak.py` has no `environ`/`getenv`/`skip` at all, carries `pytestmark = pytest.mark.gated_soak` at `:15`, and the file runs `1 passed` |
+| 1 | `pytest.ini`: the `learning_soak` description claimed an environment gate that does not exist | **fixed** (verified, no gap) | E1 - `pytest.ini:46` says "NOT gated by an environment flag and runs in the default suite"; `test_phase115_soak.py` has no `environ`/`getenv`/`skip` at all, carries `pytestmark = pytest.mark.learning_soak` at `:15`, and the file runs `1 passed` |
 | 2 | `backend/tests/conftest.py`: the fallback comment promised the suite "still runs" without the root `pytest.ini`; it aborts with exit 4 | **fixed** (verified, no gap) | E2 - with the ini renamed away: full-tree collection **exit 4** with the guard's message (the comment says exactly that); `pytest --markers` lists **none** of the ten (the comment says exactly that); a partial run is **exit 0** and still declares the markers (0 `PytestUnknownMarkWarning` for the soak file). The file was restored and `git status` is empty |
 | 3 | `backend/tests/conftest.py`: the `gui` expectation was one hard-coded filename and the failure message was false | **fixed** (verified, no gap) | E3 - the round-1 conftest still produces the false message "marker 'gui' is applied to 1 test(s) it does not describe" (reproduced); the committed guard produces the true message "has 1 test(s) carrying the `gui` marker but is not registered as a live-GUI module - add it to LIVE_GUI_MODULES"; with the module **registered** the suite **does not abort** (exit 0, 1610 collected, `gui` = 5); the other direction fires with a true message too |
 
@@ -1144,7 +1144,7 @@ branch base `662cbe3`**. The guard stays silent on the merged tree, and the merg
 | # | Criterion | Result | Evidence |
 |---|---|---|---|
 | 1 | A pytest configuration file exists at the repository root and pytest names it in its header | **met** | `pytest.ini` at the repo root; the header contains `configfile: pytest.ini` (E4). On the base commit the header has no `configfile:` line at all (round-1 report E2) |
-| 2 | Every marker applied under `backend/tests/` is declared; a full-suite run emits zero `PytestUnknownMarkWarning` | **met** | `PytestUnknownMarkWarning` count **0** in the full-tree collection, in the full-suite run and in the partial runs (E4). All ten markers are declared in `pytest.ini:36-46`; the only markers applied in the tree are `asyncio`, `parametrize`, `skipif`, `skip`, `gui`, `slow`, `provider_e2e`, `process_kill`, `concurrency`, `gated_soak` (E1, E4) |
+| 2 | Every marker applied under `backend/tests/` is declared; a full-suite run emits zero `PytestUnknownMarkWarning` | **met** | `PytestUnknownMarkWarning` count **0** in the full-tree collection, in the full-suite run and in the partial runs (E4). All ten markers are declared in `pytest.ini:36-46`; the only markers applied in the tree are `asyncio`, `parametrize`, `skipif`, `skip`, `gui`, `slow`, `provider_e2e`, `process_kill`, `concurrency`, `learning_soak` (E1, E4) |
 | 3 | No Makefile selection can pass while collecting zero tests; every marker the Makefile names is applied to the tests it describes | **met** | All five selections collect > 0 and exit 0: `not slow and not gui and not network` -> **1599/10**, `not acceptance` -> **1416/193**, `gui` -> **4**, `network` -> **5**, the path -> **193** (E4). The 10 deselected are exactly 1 `slow` + 4 `gui` + 5 `network`; `network` == `provider_e2e` node for node; `acceptance` == the acceptance directory node for node. `flaky`/`integration` are applied to 0 tests and were dropped from `test-fast` (the criterion's "or dropped" branch) |
 | 4 | The suite's behaviour is unchanged apart from the intended selection fixes | **met, with the pre-existing item-006 failure recorded** | `asyncio_mode = strict` is set explicitly and the header reports `asyncio: mode=Mode.STRICT` (E4). Collected **1609** at the branch base, before and after the change (E4; round-1 report E4). The full suite on `cc03a7b`: **1563 passed / 45 skipped / 1 failed** (E5) - the one failure is the item-006 `backend/.env` defect, proven by the control run in the orchestrator's checkout (8 passed); the round-2 session measured **1564 passed / 45 skipped / exit 0** on the same commit with a non-secret stand-in key. The one deliberate difference - the no-argument invocation now collects `backend/tests` (1609) instead of walking the repository root - is unchanged and was measured (E4) |
 | 5 | No warning-to-error filter is introduced and the warning volume is unchanged | **met** | No `filterwarnings` setting and no `addopts` in effect anywhere (E4). The only `addopts` outside the comments is inside a vendored third-party `pyproject.toml` that pytest never reads. No warning became a failure; every collection run exited 0. **The warning total itself is not quoted as a claim** - it moved between runs of an unchanged tree (mine: 407709; the round-2 session's per-group comparison of base vs branch was identical), which is why the round-2 report compared per-group counts instead |
@@ -1163,7 +1163,7 @@ branch base `662cbe3`**. The guard stays silent on the merged tree, and the merg
 | `integration` | 0 | 1609 | 5 |
 | `process_kill` | 8 | 1601 | 0 |
 | `concurrency` | 53 | 1556 | 0 |
-| `gated_soak` | 1 | 1608 | 0 |
+| `learning_soak` | 1 | 1608 | 0 |
 | `make test-fast` | 1599 | 10 | 0 |
 | `make test-unit` | 1416 | 193 | 0 |
 | `make test-gui` | 4 | 1605 | 0 |

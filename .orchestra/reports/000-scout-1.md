@@ -61,9 +61,9 @@ Every claim in the backlog traces to one of these.
 - **R-005 (item 002)** - no `pytest.ini`, `pyproject.toml` or `setup.cfg` exists
   at the repo root (three `Get-ChildItem` checks, all empty). The pytest 8.4.2
   header has **no** `configfile:` line; pytest only prints that line when a
-  config file is found. `concurrency` and `gated_soak` are applied but not
+  config file is found. `concurrency` and `learning_soak` are applied but not
   declared (confirmed by the run output: `PytestUnknownMarkWarning` for
-  `gated_soak` at `backend/tests/test_phase115_soak.py:15`).
+  `learning_soak` at `backend/tests/test_phase115_soak.py:15`).
 - **R-004 (item 003)** - the stale numbers are real and widespread. A
   `Select-String` for `692|683|659` over `README.md` + `docs/**/*.md` returns:
   `README.md:6` (badge, 683), `README.md:103` (692), `docs/OPERATIONS.md:159`
