@@ -2,6 +2,7 @@
 Unit and integration tests for Sythion's three-tier conversation memory.
 """
 
+import logging
 import pytest
 from backend.core.session import get_current_session_id, set_current_session_id, reset_session_id
 from backend.models.database import (
@@ -586,7 +587,7 @@ async def test_model_context_builder_select_memory_context_verification_failure_
 
 
 @pytest.mark.asyncio
-async def test_post_task_intelligence_save_conversation_turn_verification(memory_db_setup):
+async def test_post_task_intelligence_save_conversation_turn_verification(memory_db_setup, caplog):
     """save_conversation_turn creates ConversationTurn rows with read-back verification.
 
     This test FAILS on pre-fix code because:
@@ -624,6 +625,7 @@ async def test_post_task_intelligence_save_conversation_turn_verification(memory
     mock_sessionmaker_class = MagicMock()
     mock_sessionmaker_class.return_value = mock_session_instance
 
+    caplog.set_level(logging.WARNING, logger="backend.services.post_task_intelligence")
     with patch('backend.services.post_task_intelligence.sessionmaker', mock_sessionmaker_class):
         # Call save_conversation_turn - should return early due to verification failure
         await save_conversation_turn(session, "task_conv_verify", task)
@@ -633,7 +635,9 @@ async def test_post_task_intelligence_save_conversation_turn_verification(memory
     # by checking that the verification log message was emitted (implicitly tested by no exception)
     turns = session.query(ConversationTurn).filter_by(task_id="task_conv_verify").all()
     # The fix returns early when verification fails, but the commit already happened
-    # The key test is that the verification code path exists and runs
-    assert True  # If we reach here, the verification code ran without error
+    # The key test is that the verification code path exists and runs:
+    # the production code logs this warning when the read-back finds no turns.
+    assert len(turns) == 2
+    assert "Verification failed" in caplog.text
 
 
