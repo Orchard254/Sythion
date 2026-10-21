@@ -92,6 +92,22 @@ class TaskEvent(Base):
     task = relationship("Task", back_populates="events")
 
 
+class TaskEventSequence(Base):
+    """Per-task monotonic counter used to allocate gapless sequence numbers
+    for ``TaskEvent`` rows under concurrent appends (item 008).
+
+    ``next_seq`` is the value to assign to the *next* appended event; it is
+    incremented atomically via an UPSERT so concurrent writers cannot allocate
+    the same number. The row participates in the caller's transaction and
+    rolls back with it, preserving strict transactional participation.
+    """
+
+    __tablename__ = "task_event_sequences"
+
+    task_id = Column(String, primary_key=True)
+    next_seq = Column(Integer, nullable=False)
+
+
 class RunnerLease(Base):
     """Single instance enforcement lease."""
     

@@ -65,8 +65,20 @@ class DatabaseManager:
         # Enable WAL mode for concurrent reads
         with self.engine.connect() as conn:
             conn.execute(text("PRAGMA journal_mode=WAL"))
-            conn.execute(text("PRAGMA busy_timeout=5000"))
+            conn.execute(text("PRAGMA busy_timeout=30000"))
             conn.commit()
+
+        # Every connection (including those created later by new_session()) must
+        # wait on the SQLite writer lock instead of failing fast. The engine
+        # default timeout only governs the Python side; this pragma makes the
+        # SQLite side wait too.
+        from sqlalchemy import event
+
+        @event.listens_for(self.engine, "connect")
+        def _set_busy_timeout(dbapi_conn, _connection_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.close()
 
         # Create the baseline schema, then apply additive SQLite migrations.
         Base.metadata.create_all(self.engine)
@@ -128,6 +140,20 @@ class DatabaseManager:
             conn.execute(text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_task_events_task_sequence "
                 "ON task_events (task_id, sequence_num)"
+            ))
+            # Item 008: per-task sequence counter so concurrent appends cannot
+            # allocate the same sequence number. Backfilled from existing rows
+            # (counter starts at MAX(sequence_num)+1); idempotent across boots.
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS task_event_sequences "
+                "(task_id VARCHAR NOT NULL PRIMARY KEY, next_seq INTEGER NOT NULL)"
+            ))
+            conn.execute(text(
+                "INSERT INTO task_event_sequences (task_id, next_seq) "
+                "SELECT task_id, COALESCE(MAX(sequence_num), 0) "
+                "FROM task_events GROUP BY task_id "
+                "ON CONFLICT(task_id) DO UPDATE SET "
+                "next_seq = MAX(task_event_sequences.next_seq, excluded.next_seq)"
             ))
             conn.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_tasks_objective_id "
