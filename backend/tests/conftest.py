@@ -184,6 +184,32 @@ def pytest_itemcollected(item):
 
 def _is_full_tree_collection(config) -> bool:
     """True when this invocation collected the whole backend/tests tree."""
+    # Exclusion signals: if any part of the tree is deliberately dropped
+    # from collection (--ignore / --ignore-glob / a conftest's collect_ignore
+    # or collect_ignore_glob), the suite actually collected is only a subset
+    # of backend/tests, so the selection-contract guard must NOT run on it.
+    # config.getoption raises ValueError for unregistered options, and the
+    # collect-ignore helpers may be absent on older pytest, so every probe
+    # is guarded.
+    try:
+        if config.getoption("ignore", default=None):
+            return False
+    except (ValueError, AttributeError, TypeError):
+        pass
+    try:
+        if config.getoption("ignore_glob", default=None):
+            return False
+    except (ValueError, AttributeError, TypeError):
+        pass
+    get_pathlist = getattr(config, "_getconftest_pathlist", None)
+    if callable(get_pathlist):
+        for ignore_name in ("collect_ignore", "collect_ignore_glob"):
+            try:
+                if get_pathlist(ignore_name, path=_TESTS_ROOT):
+                    return False
+            except Exception:
+                pass
+
     base = Path(str(config.invocation_params.dir))
     args = [str(a) for a in config.args]
     if not args:
