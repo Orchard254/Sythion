@@ -207,7 +207,7 @@ Exactly three `PytestUnknownMarkWarning` entries appear in the full-run output:
 ```
 backend/tests/test_phase105_concurrency.py:39:  Unknown pytest.mark.concurrency
 backend/tests/test_phase1075_hardening.py:35:    Unknown pytest.mark.concurrency
-backend/tests/test_phase115_soak.py:15:          Unknown pytest.mark.gated_soak
+backend/tests/test_phase115_soak.py:15:          Unknown pytest.mark.learning_soak
 ```
 
 ### E8 - The two acceptance skips
@@ -306,7 +306,7 @@ for this tree under any Python version - the Researcher's R-004 argument holds.
 | **R-004** - `docs/TESTING.md:39` claims the full suite takes "~55s" | **confirmed** | The line reads: `make test` \| `Full backend suite (~55s)`. Measured 436.42 s / 388.53 s -> the documented runtime is ~7-8x too small. |
 | **R-004** - the acceptance figure "196 passed, 2 skipped" is wrong | **confirmed** | `python -m pytest backend/tests/acceptance -q` -> `191 passed, 2 skipped` (two runs). The *skip* claim (2 symlink-privilege skips) is correct; the *count* is not. |
 | **R-005** - no `pytest.ini`/`pyproject.toml`/`setup.cfg`; pytest runs with `inifile: None` | **confirmed** | No such file exists in the repo (only vendored copies under `build/staging/whisper-src/`, which are not repo config). The pytest header prints `rootdir: C:\Sythion\sythion` and no `configfile:` line. |
-| **R-005** - the undeclared markers are exactly `concurrency` and `gated_soak` | **confirmed** | Exactly 3 `PytestUnknownMarkWarning` entries in the full-run output: `concurrency` at `test_phase105_concurrency.py:39`, `concurrency` at `test_phase1075_hardening.py:35`, `gated_soak` at `test_phase115_soak.py:15`. `conftest.py:31-47` declares the other eight. |
+| **R-005** - the undeclared markers are exactly `concurrency` and `learning_soak` | **confirmed** | Exactly 3 `PytestUnknownMarkWarning` entries in the full-run output: `concurrency` at `test_phase105_concurrency.py:39`, `concurrency` at `test_phase1075_hardening.py:35`, `learning_soak` at `test_phase115_soak.py:15`. `conftest.py:31-47` declares the other eight. |
 | **R-005 (and the orchestrator's own baseline note)** - "slow/flaky/integration/gui/network/acceptance/provider_e2e are undeclared markers" | **refuted** | All eight are declared in `backend/tests/conftest.py::pytest_configure` (`backend/tests/conftest.py:31-47`). The orchestrator's `goal.md` assumption 7 and `log.md` line 7 are wrong on this point; the Researcher's correction stands. |
 | **R-007** - the suite intermittently hard-crashes the interpreter inside the `sythion-uia-mta` COM/UIA worker thread | **confirmed** | The pre-existing orchestrator capture contains 294 faulthandler dumps, every one of them on the single thread `0x0000a128 [sythion-uia-mta]`, in `_UIADriver._find_window` (gui_tools.py:417/426) under `observe` (:403), with codes `0x80040155` (x277) and `0x8001010d` (x18) (E4). The Researcher's own capture shows the same fault class at `gui_tools.py:426`. |
 | **R-007** - "roughly one run in two dies with a native fault in the COM/UIA worker rather than reporting a test failure" | **partly confirmed, and the framing is wrong** | (a) The COM fault is *not* a single event: the captured run contains a burst of 294 faults at one point in the run, and the run **did not die** - it continued to 58% (E4). (b) The fault is **not confined to the COM/UIA worker**: my own run #2 died with a completely different native fault - `Windows fatal exception: access violation` (`0xC0000005`) - in the two `tfn` threads of `test_phase105_concurrency.py::TestBudgetAtomicity::test_concurrent_budget_does_not_exceed`, while the `sythion-uia-mta` thread was idle and healthy (E3). The orchestrator's `log.md:6` attributes the crash to `test_phase95_hardening.py::test_two_callers_at_boundary_only_one_admits`; that test contains no GUI code and appears nowhere in the capture, so that attribution is a misreading of a concurrent thread dump. |
@@ -443,7 +443,7 @@ and the brief describe is a *burst* of hundreds of faults in one run rather than
     Do not put it in a doc.
 11. **Marker arithmetic worth recording**: `gui`, `network` and `acceptance` are declared but applied to zero tests;
     `slow` is applied to exactly one (`test_phase105_concurrency.py::TestFairnessSlotAllocation::test_long_running_fairness`);
-    `concurrency` and `gated_soak` are applied but never declared (3 warnings);
+    `concurrency` and `learning_soak` are applied but never declared (3 warnings);
     `flaky`, `integration`, `process_kill` and `provider_e2e` are declared and applied elsewhere or not at all.
     `make test-unit` == the full suite; `make test-fast` == the full suite minus one test; `make test-gui` and
     `make test-network` == zero tests, exit 0.

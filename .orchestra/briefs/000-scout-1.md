@@ -73,7 +73,7 @@ Do not create branches, do not commit, do not touch any file outside
   identical second run completed normally.
 - R-005: the run baseline's original claim that seven markers were undeclared
   was WRONG; the Researcher corrected it. The genuinely undeclared markers are
-  `concurrency` and `gated_soak`.
+  `concurrency` and `learning_soak`.
 
 **Not yet independently confirmed** (a baseline agent is measuring these right
 now - treat as claims, not facts):

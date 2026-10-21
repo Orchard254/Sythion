@@ -44,7 +44,7 @@ master...orchestra/002-test-selection-truth`.
 
 ### The three findings the redo had to close
 
-1. **`pytest.ini`'s `gated_soak` description claimed a gate the test does not
+1. **`pytest.ini`'s `learning_soak` description claimed a gate the test does not
    have.** The redo rewords it to what the code does: "despite the name it is
    NOT gated by an environment flag and runs in the default suite", and also
    rewords the `concurrency` description to say how the marker is applied and
@@ -68,7 +68,7 @@ master...orchestra/002-test-selection-truth`.
   round-1 Reviewer's:
   - Marker populations: `gui`=4, `network`=5 (identical to `provider_e2e`),
     `acceptance`=193, `slow`=1, `flaky`/`integration`=0, `process_kill`=8,
-    `concurrency`=53, `gated_soak`=1.
+    `concurrency`=53, `learning_soak`=1.
   - Makefile selections: `test-fast` -> 1599 selected / 10 deselected,
     `test-unit` -> 1416/193, `test-gui` -> 4, `test-network` -> 5,
     `test-acceptance` -> 193. All exit 0.
@@ -184,7 +184,7 @@ base `662cbe3`**. The orchestrator has since established:
 ## The three findings
 | # | Finding | Closed? | Evidence that it is now true |
 |---|---|---|---|
-| 1 | gated_soak description | yes / no | ... |
+| 1 | learning_soak description | yes / no | ... |
 | 2 | fallback comment vs behaviour | yes / no | ... |
 | 3 | gui expectation | yes / no | ... |
 

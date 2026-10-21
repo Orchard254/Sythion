@@ -60,7 +60,7 @@ need one.
 | R-007: the suite intermittently hard-crashes the interpreter in the `sythion-uia-mta` COM/UIA worker thread | see the hard evidence below |
 | R-003: `-m gui`, `-m network`, `-m acceptance` each collect **0** of 1609 tests | `--collect-only` |
 | R-003: `make test-unit` == full suite; `make test-fast` deselects exactly 1 test | `--collect-only` with those marker expressions |
-| R-005: no `pytest.ini`/`pyproject.toml`/`setup.cfg` exists; `concurrency` and `gated_soak` are the two undeclared markers | `pytest` prints `inifile: None`; look for `PytestUnknownMarkWarning` |
+| R-005: no `pytest.ini`/`pyproject.toml`/`setup.cfg` exists; `concurrency` and `learning_soak` are the two undeclared markers | `pytest` prints `inifile: None`; look for `PytestUnknownMarkWarning` |
 
 **HARD EVIDENCE the Researcher did not have** (the orchestrator captured it from
 the killed run; the fatal-error header was lost from the Researcher's copy):

@@ -32,7 +32,7 @@ Role: implementer (implementer-3)
 2. **`backend/tests/conftest.py`.**
    - `pytest_configure` now declares the canonical markers **only if the root configuration has
      not already declared them** (the canonical set grows from eight to ten: `concurrency` and
-     `gated_soak` are added).
+     `learning_soak` are added).
    - `pytest_itemcollected` applies the two rule-based classifications: `acceptance` to every
      item under `backend/tests/acceptance/`, `network` to every item that already carries
      `provider_e2e`.
@@ -226,8 +226,8 @@ backend\tests\test_phase105_concurrency.py:39: PytestUnknownMarkWarning: Unknown
 backend\tests\test_phase1075_hardening.py:35: PytestUnknownMarkWarning: Unknown pytest.mark.concurrency - is this a typo? ...
     pytestmark = [pytest.mark.concurrency]
 
-backend\tests\test_phase115_soak.py:15: PytestUnknownMarkWarning: Unknown pytest.mark.gated_soak - is this a typo? ...
-    pytestmark = pytest.mark.gated_soak
+backend\tests\test_phase115_soak.py:15: PytestUnknownMarkWarning: Unknown pytest.mark.learning_soak - is this a typo? ...
+    pytestmark = pytest.mark.learning_soak
 ```
 
 ### E4 - The full suite, BEFORE and AFTER (same worktree, same base, back to back)
@@ -302,7 +302,7 @@ Count
 @pytest.mark.process_kill: real Windows process-kill integration tests (run explicitly with SYTHION_RUN_PROCESS_KILL=1)
 @pytest.mark.provider_e2e: real provider-backed specialist E2E tests (run explicitly with SYTHION_RUN_PROVIDER_E2E=1 plus a configured provider credential/model; skipped otherwise)
 @pytest.mark.concurrency: tests that exercise the shared runtime under concurrent load
-@pytest.mark.gated_soak: long-running soak tests, gated behind an explicit environment flag
+@pytest.mark.learning_soak: long-running soak tests, gated behind an explicit environment flag
 ```
 
 (plus `asyncio`, `anyio` and the pytest built-ins.)
@@ -525,7 +525,7 @@ untouched.
 | # | Criterion | Result | Evidence |
 |---|---|---|---|
 | 1 | A pytest configuration file exists at the repository root and pytest names it in its header | **PASS** | `pytest.ini` exists at the repo root; the header of `python -m pytest backend/tests --collect-only` contains `configfile: pytest.ini` (E5). On the base the same header has **no** `configfile:` line (E2). |
-| 2 | Every marker applied anywhere under `backend/tests/` is declared, and a full-suite run emits zero `PytestUnknownMarkWarning` | **PASS** | `concurrency` and `gated_soak` are now declared (plus the other eight, in `pytest.ini`); `pytest --markers` lists all ten (E5); the branch full-suite output contains **0** `PytestUnknownMarkWarning` (E3/E4/E5) where the base had 3. |
+| 2 | Every marker applied anywhere under `backend/tests/` is declared, and a full-suite run emits zero `PytestUnknownMarkWarning` | **PASS** | `concurrency` and `learning_soak` are now declared (plus the other eight, in `pytest.ini`); `pytest --markers` lists all ten (E5); the branch full-suite output contains **0** `PytestUnknownMarkWarning` (E3/E4/E5) where the base had 3. |
 | 3 | No Makefile selection can pass while collecting zero tests, and every marker the Makefile names is applied to the tests it describes | **PASS** | All four expressions collect > 0 and exit 0: `not slow and not gui and not network` -> 1599, `not acceptance` -> 1416, `gui` -> 4, `network` -> 5 (E6). On the base, `gui` and `network` exit **5** (E1). The populations are exactly the intended sets: `gui` == the one GUI module, `network` == `provider_e2e` (same 4 files, 5 tests each), `acceptance` == the 24 acceptance modules / 193 tests, and the path selection `backend/tests/acceptance` and `-m acceptance` both give 193 (E6, marker table). `flaky` and `integration` are applied to no test, so their clauses were dropped from the `test-fast` expression (the criterion's "or dropped" branch) - proven to be no-ops on the base (E1). |
 | 4 | The suite's behaviour is unchanged apart from the intended selection fixes | **PASS** | `asyncio_mode = strict` is set explicitly in `pytest.ini` and the header still reports `asyncio: mode=Mode.STRICT` (E2/E5). Collected count on my base: **1609 before, 1609 after** (E2/E5). Full suite on the same base, same interpreter, back to back: **1564 passed / 45 skipped / exit 0 before, 1564 passed / 45 skipped / exit 0 after** (E4). The one deliberate difference - the no-argument invocation now collects `backend/tests` (1609) instead of walking the repository root - is recorded in E12; it was **not** run on the base tree. |
 | 5 | No warning-to-error filter is introduced and the warning volume is unchanged | **PASS** | `pytest.ini` contains **no** `filterwarnings` setting at all (E13). The per-file warning-group table of the two full-suite runs is identical (926 groups, identical counts); the `PytestUnknownMarkWarning` count goes 3 -> 0; no warning became a failure (both runs exit 0 with the same 1564/45). The only delta is one fewer instance of a pre-existing non-deterministic thread-exception warning (E13). |
@@ -549,7 +549,7 @@ on the branch tip `0f27d93` (total collected on this branch: 1609).
 | `process_kill` | `pytest.ini` (canonical 10) | `backend/tests/test_phase105_concurrency.py`, `backend/tests/test_phase1075_hardening.py`, `backend/tests/test_phase9_process_kill.py`, `backend/tests/test_phase975_admission_recovery.py`, `backend/tests/test_process_crash_recovery.py` | **8** | 0 |
 | `provider_e2e` | `pytest.ini` (canonical 10) | the same 4 files as `network` | **5** | 0 |
 | `concurrency` | `pytest.ini` (canonical 10) - **newly declared** | `backend/tests/test_phase105_concurrency.py`, `backend/tests/test_phase1075_hardening.py` | **53** | 0 |
-| `gated_soak` | `pytest.ini` (canonical 10) - **newly declared** | `backend/tests/test_phase115_soak.py` | **1** | 0 |
+| `learning_soak` | `pytest.ini` (canonical 10) - **newly declared** | `backend/tests/test_phase115_soak.py` | **1** | 0 |
 
 `network` and `provider_e2e` have **identical** populations (same 4 files, same 5 tests) - that
 identity is what the guard's rule 4 enforces.

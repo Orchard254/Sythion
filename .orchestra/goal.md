@@ -86,7 +86,7 @@ intelligence layers are meant to sit *above* this runtime, never around it
 | 4 | Windows-only runtime: pywin32, UIA/MTA, winget and SAPI5 paths are intentional, not legacy to be deleted | `docs/ROADMAP.md` and `SYTHION_TODOS.md` Phase C/D describe them as the chosen platform | Check `backend/tools/gui_tools.py` and `backend/tools/package_tools.py` for Windows-only guards |
 | 5 | The live sidecar DB in `%LOCALAPPDATA%\Sythion (Synth)` and `backend/sythion.db` are real user data and must not be reset | `docs/ROADMAP.md`, `backend/core/storage.py`, and the guardrails in this skill | Inspect what a test command does before running it; tests must use temp DBs |
 | 6 | The single open TODO (clean-machine interactive acceptance run) genuinely needs a human | It requires an interactive Windows desktop session | `SYTHION_TODOS.md:111` and `docs/acceptance-test-map.md` |
-| 7 | The missing pytest config file is a real gap and not a deliberate choice | There is no `pytest.ini`/`pyproject.toml`/`setup.cfg` anywhere, yet the Makefile and CI select tests by marker (`-m "not slow and not flaky ..."`), and the markers those targets depend on are applied to almost no test | `python -m pytest backend/tests -q` prints `inifile: None`; `backend/tests/conftest.py::pytest_configure` declares eight markers, but `gui`, `network`, `acceptance`, `flaky` and `integration` are applied to ZERO tests (see R-003) and `concurrency`/`gated_soak` are applied but never declared (see R-005) |
+| 7 | The missing pytest config file is a real gap and not a deliberate choice | There is no `pytest.ini`/`pyproject.toml`/`setup.cfg` anywhere, yet the Makefile and CI select tests by marker (`-m "not slow and not flaky ..."`), and the markers those targets depend on are applied to almost no test | `python -m pytest backend/tests -q` prints `inifile: None`; `backend/tests/conftest.py::pytest_configure` declares eight markers, but `gui`, `network`, `acceptance`, `flaky` and `integration` are applied to ZERO tests (see R-003) and `concurrency`/`learning_soak` are applied but never declared (see R-005) |
 
 ## Off-limits (never change without asking)
 
@@ -174,7 +174,7 @@ raise is one item, not an open-ended extension.)
   `backend/tests/conftest.py::pytest_configure` declares eight markers
   (`slow`, `flaky`, `integration`, `acceptance`, `gui`, `network`,
   `process_kill`, `provider_e2e`); the two that are applied but never declared
-  are `concurrency` and `gated_soak`. The markers the Makefile selects on are
+  are `concurrency` and `learning_soak`. The markers the Makefile selects on are
   applied to almost no test: `gui`, `network` and `acceptance` to zero (R-003).
   pytest-asyncio currently reports `asyncio: mode=Mode.STRICT`.
 - The suite is NOT deterministic on this machine. Across six observed full-suite

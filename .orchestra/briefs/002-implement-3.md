@@ -53,7 +53,7 @@ commit nothing and write the report - that is a legitimate outcome.
 
 All three findings look addressed in the diff, and the fixes read as truthful
 rather than as workarounds:
-1. **`gated_soak`** now says "the synthetic learning-soak workload in
+1. **`learning_soak`** now says "the synthetic learning-soak workload in
    `backend/tests/test_phase115_soak.py` (one test); despite the name it is
    NOT gated by an environment flag and runs in the default suite" - which
    matches the code.
@@ -79,7 +79,7 @@ worktree verified clean afterwards.
 
 - Marker populations: `gui`=4, `network`=5 (identical to `provider_e2e`),
   `acceptance`=193, `slow`=1, `flaky`/`integration`=0, `process_kill`=8,
-  `concurrency`=53, `gated_soak`=1.
+  `concurrency`=53, `learning_soak`=1.
 - Makefile selections: `test-fast` -> 1599 selected / 10 deselected (1 slow +
   4 gui + 5 network), `test-unit` -> 1416/193, `test-gui` -> 4, `test-network`
   -> 5, `test-acceptance` -> 193. All exit 0.
@@ -144,7 +144,7 @@ Write `C:\Sythion\sythion\.orchestra\reports/002-implement-2.md`:
 ## The three findings
 | # | Finding | Status | Evidence that it is now true |
 |---|---|---|---|
-| 1 | gated_soak description | fixed / not fixed | ... |
+| 1 | learning_soak description | fixed / not fixed | ... |
 | 2 | fallback comment vs behaviour | ... | ... |
 | 3 | gui expectation | ... | ... |
 

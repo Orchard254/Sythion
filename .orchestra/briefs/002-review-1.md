@@ -88,7 +88,7 @@ branch (git will refuse). Do not commit or modify anything there.
 - Marker populations after the change: `slow`=1, `flaky`=0, `integration`=0,
   `acceptance`=193 (24 modules), `gui`=4 (`test_gui_fixture.py`),
   `network`=5 (the `provider_e2e` tests, same 4 files), `process_kill`=8,
-  `concurrency`=53, `gated_soak`=1.
+  `concurrency`=53, `learning_soak`=1.
 - The suite: `1564 passed / 45 skipped`, exit 0, before and after, same base,
   back to back; `1609 -> 1609` collected.
 

@@ -1,4 +1,4 @@
-"""Gated soak test — realistic synthetic workload for learning substrate."""
+"""Learning soak test — realistic synthetic workload for learning substrate."""
 
 import random
 from datetime import datetime, timedelta
@@ -12,7 +12,7 @@ from backend.learning.store import StrategyOutcomeStore
 from backend.learning.selector import StrategySelector
 from backend.learning.taxonomy import StrategyType, OutcomeClass
 
-pytestmark = pytest.mark.gated_soak
+pytestmark = pytest.mark.learning_soak
 
 
 def test_learning_soak_mixed_workload():
