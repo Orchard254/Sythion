@@ -2,7 +2,7 @@
 
 The immutable ``task_events`` table remains the single source of execution
 truth (docs/PROTECTED_RUNTIME_CONTRACT.md, "Audit"). This class is a narrow
-read/append façade over that table; it deliberately does NOT commit — appends
+read/append facade over that table; it deliberately does NOT commit; appends
 participate in the caller's state-transition transaction so event + state
 change stay atomic. Read methods are side-effect free.
 """
@@ -12,9 +12,26 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from backend.models.database import TaskEvent
+
+
+class EventSequenceAllocationError(RuntimeError):
+    """Raised when ``append_event`` cannot allocate a unique sequence number.
+
+    Subclass of :class:`RuntimeError` so thread targets can propagate it
+    without special-casing. Chained from the underlying exception.
+    """
+
+
+# Allocation is serialised by the SQLite writer lock held across the caller's
+# transaction. The first statement below acquires (or waits for) the write
+# lock; the subsequent SELECTs/UPDATE run on the same connection/transaction
+# so no other writer can interleave. Counter stores the last allocated
+# sequence number (0 = none allocated yet).
 
 
 def decode_event_data(raw: Any) -> Dict[str, Any]:
@@ -44,33 +61,76 @@ class DbEventLedger:
         event_type: str,
         event_data: Dict[str, Any],
     ) -> int:
-        last = (
-            self._session.query(TaskEvent)
-            .filter_by(task_id=task_id)
-            .order_by(TaskEvent.sequence_num.desc())
-            .first()
-        )
-        # Account for events appended earlier in THIS uncommitted transaction
-        # (sessions may run with autoflush=False): their rows are invisible
-        # to the query above but still occupy sequence numbers.
-        pending_max = max(
-            (
-                e.sequence_num
-                for e in self._session.new
-                if isinstance(e, TaskEvent) and e.task_id == task_id
-            ),
-            default=0,
-        )
-        sequence = max(last.sequence_num if last else 0, pending_max) + 1
+        # Allocate within the caller's transaction. The first DML (INSERT OR
+        # IGNORE) acquires the SQLite writer lock and subsequent statements
+        # on the same connection/transaction cannot be interleaved by another
+        # writer. Bounded retry covers only transient lock timing.
+        sequence: Optional[int] = None
+        last_exc: Optional[BaseException] = None
+        for attempt in range(8):
+            try:
+                # Seed the counter (last allocated = 0 when no rows yet); OR
+                # IGNORE makes this safe under contention.
+                self._session.execute(
+                    text(
+                        "INSERT OR IGNORE INTO task_event_sequences (task_id, next_seq) "
+                        "VALUES (:task_id, COALESCE("
+                        " (SELECT MAX(sequence_num) FROM task_events WHERE task_id = :task_id), 0))"
+                    ),
+                    {"task_id": task_id},
+                )
+                last_allocated = self._session.execute(
+                    text(
+                        "SELECT next_seq FROM task_event_sequences "
+                        "WHERE task_id = :task_id"
+                    ),
+                    {"task_id": task_id},
+                ).scalar_one()
+                table_max = self._session.execute(
+                    text(
+                        "SELECT COALESCE(MAX(sequence_num), 0) FROM task_events "
+                        "WHERE task_id = :task_id"
+                    ),
+                    {"task_id": task_id},
+                ).scalar() or 0
+                new_seq = max(int(last_allocated or 0), int(table_max or 0)) + 1
+                self._session.execute(
+                    text(
+                        "UPDATE task_event_sequences SET next_seq = :new_seq "
+                        "WHERE task_id = :task_id"
+                    ),
+                    {"task_id": task_id, "new_seq": new_seq},
+                )
+                sequence = new_seq
+                break
+            except (IntegrityError, OperationalError) as exc:
+                msg = str(exc).lower()
+                is_retryable = isinstance(exc, IntegrityError) or (
+                    "locked" in msg or "busy" in msg
+                )
+                try:
+                    self._session.rollback()
+                except Exception:
+                    pass
+                last_exc = exc
+                if not is_retryable or attempt == 7:
+                    raise EventSequenceAllocationError(
+                        f"failed to allocate sequence for task {task_id}"
+                    ) from exc
+        if sequence is None:  # pragma: no cover - defensive
+            raise EventSequenceAllocationError(
+                f"failed to allocate sequence for task {task_id}"
+            ) from last_exc
+
         event = TaskEvent(
             task_id=task_id,
             event_type=event_type,
             event_data=json.dumps(event_data),
-            sequence_num=sequence,
+            sequence_num=int(sequence),
             created_at=datetime_utcnow(),
         )
         self._session.add(event)
-        return sequence
+        return int(sequence)
 
     def _query(self, task_id: str):
         return (
