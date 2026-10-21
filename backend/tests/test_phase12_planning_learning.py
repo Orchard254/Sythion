@@ -362,8 +362,40 @@ def test_learned_planning_cannot_grant_capabilities(db):
 def test_learned_planning_cannot_change_runtime_permissions(db):
     # Planning selector has no pathway to alter runtime policy — assert no side effects on Goal state
     from backend.models.database import Objective
-    # No goal mutation via planning
-    assert True
+    # No goal mutation via planning - the comparison pins persisted state: an
+    # uncommitted mutation is discarded by db.expire_all() and is not detected.
+    goal = Objective(id="sec_perm_goal", title="runtime-permission invariant",
+                     status="active", priority=3)
+    db.add(goal)
+    db.commit()
+
+    def goal_state():
+        rows = db.query(Objective).all()
+        # a non-empty snapshot is required: an empty one would make the
+        # comparison below vacuously true
+        assert rows, "the seeded goal row is missing; the invariant would be vacuous"
+        return {
+            row.id: {c.name: getattr(row, c.name) for c in Objective.__table__.columns}
+            for row in rows
+        }
+
+    db.expire_all()
+    before = goal_state()
+
+    # Strong learned evidence for the most privileged strategy, then a selection.
+    store = PlanningOutcomeStore(db)
+    for i in range(10):
+        store.record(planning_strategy=PlanningStrategy.DELEGATED_PLAN.value,
+                     task_class="goal", goal_id="sec_perm_goal",
+                     outcome="SUCCESS_VERIFIED", verified_success=True,
+                     evidence_refs=["goal:sec_perm_goal"])
+    sel = PlanningPolicySelector(db)
+    sel.select(task_context={"task_class": "goal", "goal_id": "sec_perm_goal"},
+               hard_constraints=[{"strategy": "DELEGATED_PLAN", "violated": True,
+                                  "reason": "capability not granted"}])
+
+    db.expire_all()
+    assert goal_state() == before
 
 
 def test_learned_planning_cannot_bypass_verification(db):
