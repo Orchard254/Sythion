@@ -9,6 +9,12 @@ from backend.main import app
 from backend.models.database import Base, get_db
 from backend.core.secrets import set_secret_store_for_testing, MemoryStore, OLLAMA_API_KEY
 from backend.runtime.model_provider import ModelHealth
+# The isolation's OWN field list.  Importing it (instead of re-hardcoding the
+# three names here) means a field added to the isolation is covered here as
+# well.  pytest imports this conftest as ``backend.tests.conftest`` (both
+# ``backend/`` and ``backend/tests/`` carry ``__init__.py``), so this is the
+# SAME module object - no second instance, no second snapshot.
+from backend.tests.conftest import _LOCAL_ENV_FIELDS
 
 
 class _Provider:
@@ -325,7 +331,7 @@ def test_the_suite_does_not_inherit_the_local_env_file():
     import backend.core.config as core_config
 
     clean = core_config.Settings(_env_file=None)
-    for name in ("ollama_api_key", "selected_model", "file_roots"):
+    for name in _LOCAL_ENV_FIELDS:
         # Compare WITHOUT rendering the value. pytest renders BOTH operands of
         # ``assert a == b``, and one of those operands IS the developer's
         # credential, so such a failure would print the key into the terminal
