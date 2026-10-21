@@ -947,3 +947,41 @@ This is the measurement that matters most, because it is the only one taken on t
 - self-directed: no
 - verdict: ACCEPT
 - reason: The code is minimal, scoped, doesn't touch the canonical conftest contract, and retains the guard teeth.
+
+## 2026-10-21 12:00 - reviewer - 009 - ACCEPT
+- brief: briefs/009-implement-1.md (self-directed? no)
+- report: reports/009-implement-1.md + reviews/009-r1.md (ses_ea2b4c956ffe1ekXXa7NvoJZWC) + verifications/009-v1.md (ses_ea3d57a0fffeYSkZmBCEuxJU9o)
+- evidence: 26 lines added inside _is_full_tree_collection; second independent review + verification confirmed all six matrix cells exit 0 AND the guard teeth preserved (exit 4 on throwaway). classify.py says NORMAL; diff vs master restricted to conftest.py + .orchestra/report.
+- coverage: verifier re-ran all six matrix queries; teeth contrast on throwaway copy; no source change after verification (worktree clean per verifier); the pre-existing timing flakiness of test_two_callers_at_boundary is noted.
+- consistency: matches the 002 Verifier's original matrix in every observable line; per-claim agreement confirmed by both reviewers.
+- not checked: pytest 8.0 compat, addopts-based invocation path, renamed-directory variants.
+- self-directed: no
+- verdict: ACCEPT
+- reason: cleared at two independent stages with DIFFERENT review verbs (reviewer ACCEPT, verifier FIXED). Ready to merge.
+
+## 2026-10-21 12:00 - reviewer - 011 - ACCEPT
+- brief: briefs/011-implement-2.md (synthesized by orchestrator)
+- report: reports/011-implement-2.md (the round-2 commit 947950b added a correction section) and reviews/011-r2.md
+- evidence: The independent Reviewer-reverify (ses_ea2a21b3effeO08Nxr8nqZr1A0) verified the two IMPROVE findings were fixed at 947950b: gated_soak occurring outside .orchestra is ZERO times (the implementer report miscounted its own five references), and the commit scope is now 4 product + 26 bookkeeping with explanation. Code unchanged between b08b5d1 and 947950b under backend/tests/pytest.ini/docs/src-tauri. Tier NORMAL. Suite count 1614 unchanged.
+- coverage: review r2 closed both findings; verifier still to run after the round-2 commit is itself reviewed.
+- consistency: matches reviewer-r1's listed matrix (renamed population 1; suite green 1569/45).
+- not checked: full suite under pytest 8.0; impact on the acceptance snapshot's `@pytest.mark.gui` registry docstring count still says "1 module in repository".
+- self-directed: no
+- verdict: ACCEPT
+- reason: Correction round is a report-text tightening; the code quality is approved. Advance to independent verifier.
+
+## 2026-10-21 12:00 - reviewer - 008 - IMPROVE
+- note: round 1.
+- brief: 008 plan-1.md + 010-research-1.md
+- report: reports/008-implement-1.md + commit cb6516fa78a79ab44a4c01deb24273cd6005b030
+- evidence: The independent Reviewer (`ses_ea2a21b39ffebx63oRlMnu5qwc`) confirmed (a) fix mechanism matches the plan ATTEMPT, (b) classify says NORMAL not EXTERNAL, (c) suite 1615 vs 1614 (+new invariant test, additive), targeted 87 passed / 5 skipped in 104s, (d) invariant test runs, (e) two concurrency files pass in the subset (42). But three specific risks were raised:
+  * the multi-append rollback path is destructive if the transaction succeeds on the final retry but earlier pending rows are already in session-state;
+  * latest_sequence does not account for pending (pre-flush) rows;
+  * allocation is in Python, not SQL-side.
+  * Also: commit attributes the change to "cb6516fa". Validate before merge.
+- coverage: claimed invariant test present; non-regression subset measured.
+- consistency: staged concern in plan was honoured; drift-versus-base diff is the SQL changes.
+- not checked: full suite (reviewer used subset due to budget); a Hermetic 100x10 run of the invariant under 60s budget.
+- self-directed: no
+- verdict: IMPROVE
+- reason: At review time the invariant claim is not yet independently verified (reviewer ran targeting only). Round 2 implementer brief = tighten rollback safety and run the invariant test in-verifier time only; round 2 verification exists separately. See the pending verifier.
