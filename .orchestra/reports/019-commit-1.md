@@ -125,7 +125,7 @@ Every `wt-019*` tree was inspected **before** removal with
 
 **Not done (by design):**
 
-- **NOT PUSHED.** `git branch -r --contains 9bd499c` -> empty. `master` is **6 commits ahead of `origin/master`** (`df75bb6`, `9bd499c`, `7748449`, `b7ff0f7`, `61dea54`, `5d4b117`), entirely local.
+- **NOT PUSHED.** `git branch -r --contains 9bd499c` -> empty. `master` is **7 commits ahead of `origin/master`** (`42d6a03` the records commit, `df75bb6` the merge, `9bd499c`, `7748449`, `b7ff0f7`, `61dea54`, `5d4b117`), entirely local.
 - **No deploy, publish, migration, dispatch or secret rotation.** No production behaviour was exercised and no credential was read or written.
 - **No history was rewritten.** The rebase was performed on the item's own unpublished branch (its old tip `1304ec7` was never pushed), and only append-only edits were made to `board.json` / `backlog.md` / `log.md` / `critiques.md`.
 - **No follow-ups added for 019.**
@@ -152,3 +152,24 @@ Every `wt-019*` tree was inspected **before** removal with
 - `board.json` item 019 -> `merged` + `mergeSha`; `backlog.md` item 019 -> `merged`; `log.md` and `critiques.md` appended
 - Worktrees: `wt-019`, `wt-019-review`, `wt-019-review2`, `wt-019-review3`, `wt-019-verify` removed (all clean); `wt-019-base` was already gone; branch ref kept at `9bd499c`
 - **Item 019 is merged into `master` locally and is NOT pushed.**
+
+### The records commit
+
+The bookkeeping and this report are carried by one commit on top of the merge, matching the
+established pattern in this repository (`c855d72` for item 018, `0e14168` for item 017):
+
+```
+42d6a033bcc6a0f10ce763bdb1c597185ddd1414
+  chore(orchestra): record item 019 verification, merge (df75bb6) and committer report
+  6 files changed, 590 insertions(+), 4 deletions(-)
+   M .orchestra/backlog.md
+   M .orchestra/board.json
+   M .orchestra/critiques.md
+   M .orchestra/log.md
+   A .orchestra/reports/019-commit-1.md
+   A .orchestra/verifications/019-v1.md   (the Verifier's report, which was still untracked)
+```
+
+**Deliberately NOT staged in that commit** - these belong to a concurrent agent working on item 020
+and are reported above, not claimed: `src-tauri/src/sidecar.rs` (modified), `.orchestra/briefs/020-plan-1.md`
+and `.orchestra/plans/020.md` (untracked). They are left exactly as found in the working tree.
