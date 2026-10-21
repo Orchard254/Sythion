@@ -1008,6 +1008,39 @@ This is the measurement that matters most, because it is the only one taken on t
 - verdict: ACCEPT
 - reason: routes 008 for merge.
 
+## 2026-10-21 17:30 - researcher - 000 - ACCEPT
+- brief: briefs/000-research-4.md
+- report: reports/000-research-4.md
+- evidence: independently spot-checked the three candidate anchors: events.py:103-110 sets `_counter_table_checked = True` unconditionally after a non-savepoint-scoped `CREATE TABLE`; main.py:274-285 returns 500 for every Exception including the guard's AssertionError; test_no_tautological_asserts.py:53-62 only matches a top-level `ast.BoolOp(ast.Or)` and skips bare `True` and nested disjunctions. All match the report.
+- coverage: brief asked for up to 3 code-fixable candidates with id/source/evidence/files/severity + follow-up revisit. Report delivers R-025, R-026, R-027 plus resolved/still-tractable/human-external revisit, with limits section. Complete.
+- consistency: no duplicate of R-001..R-024; counts stated as post-merge 1621 (from brief, not re-measured - disclosed). Status lines align with follow-ups.md.
+- not checked: the presumed-fix diffusion for each candidate (left to planner); no full suite run; no execution of the suggested failure-mode tests.
+- self-directed: no
+- verdict: ACCEPT
+- reason: report holds up; three real, bounded, code-fixable candidates. Advance to scout to fold R-025/R-026/R-027 into the backlog.
+
+## 2026-10-21 18:00 - planner - 017 - ACCEPT
+- brief: briefs/017-plan-1.md
+- report: (none - plan file plans/017.md)
+- evidence: plan file exists at plans/017.md (8373 bytes) addressing lazy table creation defect.
+- coverage: all acceptance criteria restated; two named test variants; schema untouched; sensitivity sensitive/data.
+- consistency: aligns with R-025 evidence and item 008 merged code.
+- not checked: independent verification of the proposed transaction-resident check (Implementer/Verifier to confirm).
+- self-directed: no
+- verdict: ACCEPT
+- reason: plan is concrete and bounded; scope is events.py only + a new test file. Advance to implementer.
+
+## 2026-10-21 18:30 - implementer - 017 - ACCEPT
+- brief: briefs/017-implement-1.md
+- report: reports/017-implement-1.md
+- evidence: diff master..orchestra/017-counter-flag touches only backend/runtime/events.py (+17/-3) and the new test file (+145). Changed events.py replaces cached-flag gate with sqlite_master existence check + BEGIN IMMEDIATE; _counter_table_checked retained but no longer gating. New test file 145 lines. Reported 8 passed (new+invariant+concurrency), 4 consecutive clean repeats; base-tree failure reproduced (2 failed).
+- coverage: plan acceptance #1 (fails on base/passes after), #2 (both variants named), #3 (only the two files; no models/migrations/db_manager), #4 (signatures/_to_dict untouched - inferred from 17-line diff), #5 (10 consecutive runs not yet - only 4 shown).
+- consistency: commit sha 9b5b453 matches report; branch exists. Test count 8 reported.
+- not checked: 10 consecutive runs and fresh-DB variant-b induced-failure reproduction details were asserted by report text only; Verifier must confirm by name.
+- self-directed: no
+- verdict: ACCEPT
+- reason: report holds up; scope is exactly the plan's. Coverage #5 (10 runs) is slightly under-measured but the mechanism is sound. Advance to reviewer in its own worktree at 9b5b453.
+
 ## 2026-10-21 17:00 - committer - 000 - ACCEPT
 - brief: briefs/000-commit-6.md
 - report: (committer's own merge of 008)
@@ -1018,3 +1051,15 @@ This is the measurement that matters most, because it is the only one taken on t
 - self-directed: no
 - verdict: ACCEPT
 - reason: routes 008 as successfully merged, with the three review-r1 risks addressed and a clear invariant test.
+
+## 2026-10-21 22:20 - committer - 000 - ACCEPT
+- brief: briefs/017-commit-1.md
+- report: reports/017-commit-1.md
+- evidence: merge commit 29bb2433daf69fc0b2eddc2264366e92701140c0 (parents c856b6b = master, 9b5b453 = branch); diff master..branch = 2 files (backend/runtime/events.py +17/-3, backend/tests/test_event_ledger_counter_flag.py +145). Post-merge full suite on master: 1579 passed, 45 skipped in 341.68 s, PYTEST_EXIT:0 (raw: .orchestra/.tmp-suite-run1.txt) - identical to the Verifier's pre-merge measurement, delta 0/0. No native crash, no recovery needed.
+- coverage: board.json items.017 -> merged with mergeSha/branch/owner/round/verifyRounds; backlog.md item 017 -> merged; log.md entry appended; worktrees removed and pruned.
+- consistency: merge sha in board.json equals the git merge commit; the branch tip 9b5b453 is the second parent, so the work is provably in master; the branch was KEPT (items 001/004 convention).
+- not checked: CPython 3.11; the multi-gigabyte migration path; production-scale ledger.
+- self-directed: no
+- verdict: ACCEPT
+- reason: merge is clean, scoped exactly to the plan, and the post-merge suite is green at the pre-merge counts. Item 017 is merged.
+

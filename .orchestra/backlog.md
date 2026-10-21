@@ -1,166 +1,81 @@
 # Backlog
 
-<!-- Scout's ranked backlog for this run: one block per item.
-     Every block opens with a three-digit item heading followed by a title,
-     and carries the fields Why, Acceptance (a numbered list), Size, Risk,
-     Likely files, Sensitivity and Status - one field per line, spelled
-     exactly as in the run's item contract.
-     Every status change is mirrored into board.json (items.<id>.status);
-     board.json is authoritative and status.py reports any mismatch as drift.
-     The stage order is fixed and no stage is skipped:
+<!-- Scout's ranked backlog (cycle 3). One block per item the run can build next,
+     in value order, then the deferred references. Each proposed item's status is
+     mirrored in board.json (items.<id>.status). Stage order:
      proposed -> ready -> planned -> building -> in-review -> verifying ->
-     accepted -> merged.
-     ORDER: items that the run will build next come first, in value order;
-     then the items deferred by this re-rank, in value order; then the items
-     in flight; then the items already merged. A deferred item keeps its
-     acceptance criteria so a later run can execute it without re-deriving
-     anything.
-     This re-rank (scout-002): the run's budget is 6 merged items, item 001
-     is merged, items 002 and 004 are in flight, so THREE merge slots remain
-     and they are taken by items 007, 006 and 003. -->
+     accepted -> merged. -->
 
-### 007 The acceptance suite must never write to or delete the product's real credential
-- Why: R-020 - the most severe defect this run has found, and the only one whose effect is OUTSIDE the repository: `backend/tests/acceptance/test_secret_storage.py::test_credential_manager_round_trip` constructs the PRODUCTION `CredentialManagerStore()` (`:139`), writes `Sythion (Synth)/ollama_api_key` - the exact target `backend/core/secrets.py:29` and `:143-147` use for the product's own key - and then DELETES that same target in a `finally` (`:141-146`). It never requests the `memory_secret_store` fixture (`:27-33`), `win32cred` IS importable on this machine, and `_default_store()` (`backend/core/secrets.py:112-121`) returns the REAL vault, so every `python -m pytest backend/tests` run in this repository - including every full-suite run this session has made, and every verification run still to come - overwrites and deletes a developer's real Ollama credential. It contradicts `docs/ARCHITECTURE.md:358` ("A non-persistent in-memory backend is used for tests so the real vault is never touched"). A read-only enumeration shows the entry does not exist right now and the `backend/.env` fallback is intact, but whether it ever existed cannot be determined from the repository - which is exactly why the guard must not depend on the entry's presence. Built FIRST of the three active items because every remaining full-suite run of this run executes the defect.
+### 017 Event ledger counter-table flag must not stick after a rolled-back append
+- Why: R-025 - `DbEventLedger._counter_table_checked` (`backend/runtime/events.py:102-110`) is set to `True` unconditionally, before the allocation attempts, even though the unguarded `CREATE TABLE` runs in the caller's transaction. A caller that rolls back (the documented contract for `append_event` is "does NOT commit") takes the table creation with it, but the flag survives on the same `DbEventLedger`; the next append skips creation and `_ALLOCATION_SQL` then fails with `no such table: task_event_sequences`. The schema migration in `backend/core/db_manager.py:148-158` is the correct owner of this object; the code treats its existence as a one-time boolean. The same flag can also be left `True` after a failure inside the allocation loop.
 - Acceptance:
-  1. No test writes to or deletes the product's credential target. Proof recorded in the item report: a READ-ONLY enumeration of `Sythion (Synth)/ollama_api_key` (`win32cred.CredEnumerate('Sythion (Synth)/ollama_api_key', 0)`, reporting the match count and reading no blob) before and after `python -m pytest backend/tests/acceptance/test_secret_storage.py -q` reports the SAME match count, and the round-trip test's write and delete target a name that is not under the product prefix `Sythion (Synth)/`.
-  2. The real-vault round trip is still proven, not mocked away: the test still drives the REAL `win32cred` store (not a fake), writes and then deletes under a test-only target - a prefix distinct from `_CM_TARGET_PREFIX` (`backend/core/secrets.py:29`) - and `python -m pytest backend/tests/acceptance/test_secret_storage.py -q` exits 0 with 0 failures, with the test's own assertions still showing a write followed by a delete of the test-only target.
-  3. A committed guard fails the suite if a test writes to a product target: a check (e.g. `backend/tests/acceptance/test_no_product_target_writes.py`, or a guard in `backend/tests/acceptance/conftest.py`) fails when any test writes under a target starting with `Sythion (Synth)/`. It is demonstrated to have teeth: a deliberate probe write makes it fail (exit 1), and removing the probe makes it pass again (exit 0).
-  4. No production behaviour changes: `git diff --name-only` lists only files under `backend/tests/`; `backend/core/secrets.py` is NOT modified (the target prefix, the store selection, `set_secret`, `has_secret` and `resolve_ollama_api_key` are unchanged). The test reaches the test-only prefix by pinning the module attribute inside the test process, which is possible because `_cm_target()` (`backend/core/secrets.py:32-33`) reads `_CM_TARGET_PREFIX` at call time.
-  5. The operator action is a follow-up, not code: the orchestrator records in `.orchestra/follow-ups.md` that the operator should check - READ-ONLY - whether a credential under `Sythion (Synth)/ollama_api_key` needs re-entering, and the item's report states the enumeration result observed before the change.
-  6. The full suite still passes: `python -m pytest backend/tests -q` exits 0 with the same passed/skipped counts as the pre-change baseline (1564 passed, 45 skipped on CPython 3.14.7); no test is deleted, skipped or marked to make the suite green.
+  1. A regression test (new or in `backend/tests/test_event_ledger_sequence_invariant.py` / `backend/tests/test_runtime/test_event_ledger_concurrency.py`) fails before the fix and passes after it: on a fresh DB, force one rolled-back `append_event` on a ledger, then assert the next `append_event` on the *same* ledger succeeds and persists the event.
+  2. Two variants of the roll-back are covered: (a) a caller rollback after a successful `append_event` that is not committed, and (b) an `EventSequenceAllocationError` / failed allocation inside the savepoint loop. The test names which variant each sub-case exercises.
+  3. `git diff --name-only` lists no file under `backend/models/` or `backend/migrations/`; the `uq_task_events_task_sequence` unique index on `task_events (task_id, sequence_num)` keeps the same definition; `backend/core/db_manager.py:128-131` is unchanged.
+  4. The fix lives in `backend/runtime/events.py` only (plus its test). Creation is transactional and re-checkable: either always run idempotent `CREATE TABLE IF NOT EXISTS`, or move the flag to `False` on allocation failure. `append_event` and `event_history` keep their signatures and `_to_dict` (`:82-88`) keeps its keys/values.
+  5. The concurrency assertion `backend/tests/test_event_ledger_sequence_invariant.py` (or equivalent) still passes 10 consecutive runs, and the full suite keeps the pre-change passed/skipped counts (CPython 3.14.7).
 - Size: S
-- Risk: med (test-only, but a too-weak fix would silently stop proving the real Credential Manager round trip - the reason that acceptance test exists - while leaving the suite green)
-- Likely files: `backend/tests/acceptance/test_secret_storage.py`, `backend/tests/acceptance/conftest.py`, `backend/tests/acceptance/test_no_product_target_writes.py`
-- Sensitivity: sensitive
-- Domain: security
- - Status: merged
-
-### 006 The readiness test must not borrow the developer's gitignored `backend/.env`
-- Why: R-019 - and this is the item `goal.md` named when it raised the run's budget to 6 ("implementing item 001 exposed a pre-existing defect - `backend/.env` is gitignored, so `test_setup_readiness.py::test_readiness_states` FAILS in a clean checkout, and a GitHub Actions runner is a clean checkout ... it becomes its own item (006). Shipping a knowingly-red pipeline would defeat the purpose of item 001"). `backend/core/config.py:173-176` points pydantic-settings at `<repo>/backend/.env` and `:179` builds the settings singleton once at import, so the `.env` file and `SYTHION_OLLAMA_API_KEY` are ALTERNATIVES - the Researcher's 2x2 matrix proved that only the absence of BOTH fails the test - and exactly ONE test in the suite depends on it: `backend/tests/test_setup_readiness.py::test_readiness_states` (`:160` asserts `body["full_ready"] is True`), which pins nine of the ten readiness checks and leaves the tenth to ambient state because it never calls its siblings' isolation helper `_clear_local_env_key` (`:195-204`, used at `:215` and `:237`). This is a TEST-ISOLATION defect, not a product defect: the no-credential answer is the correct first-run answer and is asserted on purpose at `:207-227`, and a packaged install never has a `.env` at all (`scripts/verify_release_payload.py:53-59`). Without this item the pipeline item 001 just repaired goes RED on its first real run, for a reason that has nothing to do with item 001. BUILD ORDER: this item touches `backend/tests/conftest.py`, which item 002 also touches - build it AFTER item 002 merges.
-- Acceptance:
-  1. `backend/tests/test_setup_readiness.py::test_readiness_states` passes with NO `backend/.env` present and no `SYTHION_OLLAMA_API_KEY` in the environment. Proof recorded in the item report: a scratch copy of the tree OUTSIDE the repository, with `backend/.env` absent and every `SYTHION_*` variable cleared in the child process -> `python -m pytest backend/tests/test_setup_readiness.py -q` exits 0 with 0 failures (today: `1 failed, 7 passed`); the same file with the developer's `.env` present -> exits 0 with 0 failures.
-  2. The test pins the credential it asserts on instead of borrowing ambient state: the diff of `backend/tests/test_setup_readiness.py` shows `test_readiness_states` setting the key on the already-imported settings singleton in the shape of its own `_clear_local_env_key` helper (`:195-204`), i.e. `monkeypatch.setattr(core_config.settings, "ollama_api_key", "test-key")`, so no assertion in that test depends on the developer's working tree.
-  3. Suite-wide isolation: the autouse isolation in `backend/tests/conftest.py` neutralises the ambient `.env`-sourced values (`ollama_api_key`, `selected_model`, `file_roots`) for every test, so no future test can silently depend on a developer's `.env`. Proof recorded: the same `.env`-absent scratch copy produces the SAME pass/fail set as the copy with `.env` present for `backend/tests/test_setup_readiness.py`, `backend/tests/test_file_roots_grants.py`, `backend/tests/test_settings_store.py` and `backend/tests/test_settings_api.py` - 0 failures in both.
-  4. The product's behaviour is unchanged: `git diff --name-only` lists only files under `backend/tests/`; `backend/core/config.py` is NOT modified (the `env_file` setting and the import-time singleton stay as they are) and the product still reads `backend/.env` when it exists. The `backend/api/routes.py` change named in R-019's direction is explicitly OUT of scope for this item - it is item 009, deferred.
-  5. The full suite still passes: `python -m pytest backend/tests -q` exits 0 with the same passed/skipped counts as the pre-change baseline (1564 passed, 45 skipped on CPython 3.14.7); no test is deleted, skipped or marked to make the suite green.
-  6. The defect is recorded where the run can see it: the item's report states the before/after result of the scratch-copy run, and the orchestrator's existing item-001 follow-up entry (which tells the human to EXPECT the first run to be red for this reason) is updated to record that the reason is fixed.
-- Size: S
-- Risk: low (test-only; the proven fix shape is a monkeypatch on an existing singleton, and the product's behaviour is untouched)
-- Likely files: `backend/tests/test_setup_readiness.py`, `backend/tests/conftest.py`
-- Sensitivity: sensitive
-- Domain: none
- - Status: merged
-
-### 003 Documentation states the measured baseline and drops deleted modules
-- Why: R-004 and R-017 are both Gate 4 ("docs must reflect reality") and Gate 9 ("honest handling of debt"), and they edit the same documentation files, so they ship as one branch. R-004: every documented baseline in the repository is wrong - 692 passed / 32 skipped (README:103, docs/TESTING.md:30, docs/PROJECT_STATUS.md:41, docs/OPERATIONS.md:159), 683 (README badge :6), 659 (docs/ROADMAP.md:24), 196 acceptance (README:104, docs/TESTING.md:9, docs/PROJECT_STATUS.md:42, docs/ROADMAP.md:25, docs/OPERATIONS.md:160) - while 1609 tests are collected, and the quoted runtimes ("~55s", "~25s", "~10s") are off by roughly 10x. The badge and the prose of the same file contradict each other. R-017: `docs/CODEBASE_BOUNDARIES.md` (named by docs/QUALITY_GATES.md:50-53 as an authority doc), `backend/services/README.md`, `docs/ROADMAP.md:36` and `docs/PROJECT_STATUS.md:16-18` still list `backend/services/response_strategy.py` and `backend/services/speech_act_classifier.py`, both deleted by commit `db10f86`. Confirmed number set for the docs to quote (baseline report, two clean runs): full suite `1564 passed, 45 skipped`, `1609 collected`, wall time 389-436 s on CPython 3.14.7 / Windows; acceptance suite `191 passed, 2 skipped` (the documented 196 is refuted); CI pins Python 3.11. The WARNING COUNT MUST NOT BE QUOTED - it moved between three runs of an unchanged tree (407,733 / 406,252 / 407,719). Build after items 001 and 002 merge: criterion 7 checks these docs against the final `Makefile` and `.github/workflows/ci.yml`.
-- Acceptance:
-  1. `scripts/measure_test_baseline.py` exists and, run from the repository root, executes the backend suite and the acceptance suite and prints a machine-readable summary (JSON) containing at least: passed, skipped, collected, duration_seconds, python_version, platform. The script hard-codes no counts: `grep -E "1564|1609|692|683|659|196" scripts/measure_test_baseline.py` matches nothing.
-  2. The baseline quoted in `README.md` (badge and prose), `docs/TESTING.md`, `docs/PROJECT_STATUS.md`, `docs/ROADMAP.md` and `docs/OPERATIONS.md` equals the numbers printed by the last executed run of that script, and each of those documents states the interpreter and OS the numbers were measured on (and that CI pins Python 3.11).
-  3. The README badge and the README prose state the same numbers (today: badge "683 passed / 2 skipped" vs prose "692 passed, 32 skipped" in the same file).
-  4. The runtime estimates "~55s", "~25s" and "~10s" in `docs/TESTING.md` are replaced by measured values or explicitly labelled as machine-specific.
-  5. The unverified live claim "Currently 6/6 live" (docs/TESTING.md and docs/OPERATIONS.md) is removed or re-labelled as a manual check that no executed run in this repository produced.
-  6. `backend/services/response_strategy.py` and `backend/services/speech_act_classifier.py` appear in none of `docs/CODEBASE_BOUNDARIES.md`, `backend/services/README.md`, `docs/ROADMAP.md`, `docs/PROJECT_STATUS.md`, and a committed check script (e.g. `scripts/check_doc_paths.py`) that resolves every `backend/...` path mentioned in those four documents exits 0 and reports zero missing paths.
-  7. `docs/TESTING.md`'s "Common Test Commands" table, its "Pytest Markers" table and its "CI Pipeline" section describe the `Makefile` and `.github/workflows/ci.yml` as they exist in the merged tree. This item owns `docs/TESTING.md` and is merged after items 001 and 002 so those sections can be checked against the final files.
-- Size: M
-- Risk: low (documentation plus two small read-only scripts; no runtime behaviour, no payload, no auth surface)
-- Likely files: `scripts/measure_test_baseline.py`, `scripts/check_doc_paths.py`, `README.md`, `docs/TESTING.md`, `docs/PROJECT_STATUS.md`, `docs/ROADMAP.md`, `docs/OPERATIONS.md`, `docs/CODEBASE_BOUNDARIES.md`, `backend/services/README.md`
-- Sensitivity: sensitive
-- Domain: none
-- Status: merged
-
-### 008 Event ledger appends must not lose events under concurrency
-- Why: R-021 - a DURABILITY defect in production code, measured by implementer 004: `DbEventLedger.append_event` (`backend/runtime/events.py:41-73`) allocates the per-task sequence number by READ-THEN-WRITE (`:47-52` reads the committed maximum, `:64` computes `sequence = max(last.sequence_num if last else 0, pending_max) + 1`, `:72` adds the row), while `backend/core/db_manager.py:128-131` holds a UNIQUE index on `task_events (task_id, sequence_num)`. Two concurrent appends to one task compute the same number, the second commit raises `IntegrityError`, `threading` swallows the worker exception, and the suite still reports "1 passed" while up to 50% of the task's events are lost (8 rounds measured: `survived [10, 5]`, `[5, 5]`, `[10, 10]`, `[10, 5]`, ...). The event ledger is the repository's replay and audit substrate, and the tautology item 004 removed was hiding it. DEFERRED by this re-rank: the three remaining merge slots went to item 007 (active user-data destruction outside the repository), item 006 (the pipeline item 001 repaired goes RED on a clean checkout without it) and item 003 (Gate 4). R-021 remains a `[required]` follow-up (`.orchestra/follow-ups.md:24`), so the finding is not lost - and these criteria are written so a later run can execute them without re-deriving anything.
-- Acceptance:
-  1. A test exists that fails before the fix and passes after it: `backend/tests/test_phase105_concurrency.py::TestEventLedgerConcurrency::test_no_duplicate_sequence_and_no_cross_contamination` (or a new test in the same file) asserts that N concurrent appends to ONE task produce exactly N persisted `TaskEvent` rows, with `sequence_num` values that are unique, dense (exactly 1..N) and in ascending order, and that the worker threads' exceptions are PROPAGATED rather than swallowed by `threading`. The item's report records that test FAILING against the pre-fix `backend/runtime/events.py` and PASSING after the fix.
-  2. The measured loss rate is zero: the Researcher's measurement harness (8 rounds x 10 events x 2 tasks x 2 threads) reports `survived [10, 10]` in EVERY round (today: `[10, 5]` or `[5, 5]` in 4 of the 8 rounds), and the item's report includes that measurement.
-  3. No schema change: `git diff --name-only` lists no file under `backend/models/` or `backend/migrations/`; the unique index `uq_task_events_task_sequence` on `task_events (task_id, sequence_num)` still exists with the same definition, and `backend/core/db_manager.py:128-131` is unchanged.
-  4. The fix is a retry or a per-task serialisation inside `backend/runtime/events.py` and nothing else. If it cannot be made without changing the on-disk schema (for example a database-assigned monotonic sequence), the item STOPS and reports that fact instead of proceeding - that route is off-limits.
-  5. The ledger's public shape is unchanged: `append_event` and `event_history` keep their signatures, and `_to_dict` (`backend/runtime/events.py:82-88`) produces the same keys and values, so every existing consumer of the event stream keeps working.
-  6. The new assertion is not flaky: the concurrency test passes 10 consecutive runs (10 x `python -m pytest backend/tests/test_phase105_concurrency.py -q` -> 10/10 exit 0), and `python -m pytest backend/tests -q` exits 0 with the same passed/skipped counts as the pre-change baseline. No test is deleted, skipped or marked to make the suite green.
-- Size: M
-- Risk: med (the fix sits on the concurrency-critical write path of the audit ledger; a wrong retry turns a silent loss into a visible failure - the better outcome - but must not become an unbounded retry)
-- Likely files: `backend/runtime/events.py`, `backend/tests/test_phase105_concurrency.py`
+- Risk: med (the write path of the audit/replay ledger; a half-stuck flag turns a successful caller rollback into a hard "no such table" on the next call)
+- Likely files: `backend/runtime/events.py`, `backend/tests/test_event_ledger_sequence_invariant.py`, `backend/tests/test_runtime/test_event_ledger_concurrency.py`
 - Sensitivity: sensitive
 - Domain: data
-- Status: deferred
+- Status: merged (merge sha `29bb243`, branch `orchestra/017-counter-flag`, verifier FIXED)
 
-### 005 Operator tooling resolves the endpoint from the handshake file
-- Why: R-012 and R-013 are one story about the operator release gate. The handshake contract says the sidecar binds 127.0.0.1 on an ephemeral port and publishes `{port, token}` in `sidecar.json` (`backend/core/handshake.py:8-13`), but `scripts/smoke_test.py:21` and the root `cli.py:26` hard-code `http://127.0.0.1:8000/api/v1` - so when port 8000 is occupied both tools talk to whatever else is listening there, carrying the control token with them - and `backend/cli.py:25-29` re-derives the handshake path instead of using `storage.handshake_path()`, so it cannot find a sidecar launched with a custom `SYTHION_DATA_DIR` (the packaged shell always sets one). `docs/OPERATIONS.md:108` documents the smoke test as a release gate, and `docs/acceptance-test-map.md` lists it as such. DEFERRED by this re-rank (scout-002): the three remaining merge slots went to item 007 (an active effect outside the repository that destroys user data), item 006 (the pipeline item 001 just repaired goes RED on a clean checkout without it) and item 003 (Gate 4 - every documented baseline in the repository is wrong). This item's criteria are UNCHANGED and it is the first candidate for the next run; the defect is real and remains unfixed.
+### 018 The vault-write guard must not be swallowed by the FastAPI global exception handler
+- Why: R-026 - item 007's guard in `backend/tests/conftest.py:622-742` raises `ProductCredentialWriteAttempt` before any `win32cred` call, which is correct for code that calls `CredentialManagerStore` directly. But `backend/main.py:274-285`'s `@app.exception_handler(Exception)` turns any unhandled exception into a 500 (`JSONResponse(status_code=500, ...)`), so a test that drove a vault write through `backend.main.app` would see a 500 indistinguishable from any other failure - the write would still be blocked, but the test would not go red. No acceptance test uses `main.app` today (grep: no match), so the hole is latent; the conftest docstring already states the consequence.
 - Acceptance:
-  1. `scripts/smoke_test.py` and the root `cli.py` resolve their base URL from the handshake file (`sidecar.json` -> `port`) through `backend/core/storage.py::handshake_path()` (so `SYTHION_DATA_DIR` is honoured) and keep their control-token lookup pointed at the handshake/token files only. With a handshake file containing port 54321 they target `http://127.0.0.1:54321`; with no handshake file they exit with a message naming the path they looked at and never silently fall back to port 8000. An explicit `--url`/`--port` override remains available for the documented dev flow.
-  2. `backend/cli.py` resolves the same file through `storage.handshake_path()`; the duplicated `%LOCALAPPDATA%\Sythion (Synth)` derivation and its "intentionally duplicated" note are gone.
-  3. A committed test (e.g. `backend/tests/test_cli_endpoint_resolution.py`) asserts, under a temporary `SYTHION_DATA_DIR`, that the resolver used by `scripts/smoke_test.py` / `cli.py` and the one used by `backend/cli.py` resolve to the same path and the same base URL, and that the port comes from the handshake file. The test performs no network I/O and touches no real profile directory.
-  4. Invariant, no auth change: `git diff --name-only` lists no file under `backend/core/` (in particular `handshake.py`, `auth.py` and `profile_lock.py` are untouched), the control token is still read from the handshake/token files only - no new token source - and the `X-Control-Token` / `Origin` handling in the edited tools is unchanged.
-  5. `docs/OPERATIONS.md` states how the endpoint is resolved (handshake file) and keeps the explicit port override for the documented dev flow on port 8000. This item touches only the smoke-test section of that file; the "Current verified baseline" section belongs to item 003.
-  6. `python -m pytest backend/tests -q` exits 0 with the same passed/skipped counts as the pre-change baseline.
-- Size: M
-- Risk: med (operator tooling that carries the control token; the change must not alter what is authenticated or where the token comes from - pinned by criterion 4)
-- Likely files: `scripts/smoke_test.py`, `cli.py`, `backend/cli.py`, `backend/tests/test_cli_endpoint_resolution.py`, `docs/OPERATIONS.md`
-- Sensitivity: none
-- Domain: infra
-- Status: deferred
-
-### 009 Readiness and onboarding endpoints read the key only at the sanctioned resolution point
-- Why: R-023 - two PUBLIC endpoints read the credential directly instead of through the sanctioned resolver: `backend/api/routes.py:2261` (`setup_readiness`) and `:2007` (`onboarding_status`) both compute `has_secret(OLLAMA_API_KEY) or bool(settings.ollama_api_key)`, while `backend/core/secrets.py:174-175` ("callers must not read Settings.ollama_api_key directly") and `docs/ARCHITECTURE.md:357` ("only resolvable at the one sanctioned point") name `resolve_ollama_api_key` as the single resolution point; every other reader already uses it (`backend/core/config.py:211`, `backend/main.py:255`, `backend/adapters/ollama_adapter.py:58`/`:437`, `backend/api/routes.py:2130`/`:2179`). The two forms are EXACTLY equivalent today (`has_secret(X) or bool(env)` == `bool(resolve_ollama_api_key(env))`), so this is a contract/architecture defect, not a behavioural one - which is why it is deferred rather than built: the fix lands in `backend/core/secrets.py` and `backend/api/routes.py`, BOTH on `goal.md`'s off-limits list, so it needs the sensitive-change gate, and the run's remaining slots were worth more on defects with observable consequences. COUPLED to R-024 (the dead `or True` branch in `backend/services/capabilities.py:219`), which is rejected for this run because its intended predicate is nowhere stated in the repository; the two should be decided together. These criteria are written so a later run can execute them without re-deriving anything.
-- Acceptance:
-  1. `backend/api/routes.py:2261` and `:2007` no longer read `settings.ollama_api_key` directly; both call `backend/core/secrets.py::resolve_ollama_api_key(...)`, and no new call site is introduced that reads the key outside that resolver.
-  2. The response bodies are byte-identical before and after: a recorded before/after comparison of the `setup_readiness` and `onboarding_status` JSON responses for the same inputs shows no difference in any field name, value or type (the endpoints' response contracts are unchanged).
-  3. No new token source and no weakening of the secrets contract: `backend/core/secrets.py`'s store selection (`_default_store`, `:112-121`), `set_secret`, `has_secret` and `resolve_ollama_api_key` keep their current behaviour; the change adds no environment variable, no file and no new credential source; `git diff --name-only` lists no file under `backend/models/` or `backend/migrations/`.
-  4. A test asserts the three key sources agree: with the key present in the vault, in `SYTHION_OLLAMA_API_KEY`, and in `backend/.env` (each in isolation), the readiness and onboarding answers for the key check are identical, and with no key at all the answer is still "not configured". The test pins the sources itself and reads no credential value.
-  5. The sensitive-change gate is recorded: the item's report states the pinned invariant (the change is behaviour-preserving - the two expressions are exactly equivalent today) and names the protected files it touches (`backend/api/routes.py`, `backend/core/secrets.py`).
-  6. `docs/ARCHITECTURE.md:357` still matches the code after the change: the statement that the key is "only resolvable at the one sanctioned point" is now enforced by the test in criterion 4 rather than only asserted in prose.
+  1. A regression test constructs `TestClient(backend.main.app)`, triggers a product-prefixed (`Sythion (Synth)/...`) vault write, and asserts a distinct, documented outcome - not a generic 500 and not a silently-2xx response. It fails before the fix and passes after it.
+  2. The implementation chooses one documented shape and sticks to it: either `backend/main.py` re-raises / maps `ProductCredentialWriteAttempt` to a distinct status code, or the guard's exception type is made visible to the handler. `ProductCredentialWriteAttempt` is defined/recognised consistently between `backend/main.py` and `backend/tests/conftest.py`.
+  3. The handler keeps handling genuine unexpected exceptions as 500s; no other response contract changes. `backend/core/secrets.py`'s store selection, `set_secret`, `has_secret` and `resolve_ollama_api_key` keep their current behaviour.
+  4. `git diff --name-only` lists only `backend/main.py`, `backend/tests/conftest.py` and the new test file. No model, migration or schema file is touched. No product credential is written by any test.
+  5. The full suite keeps the pre-change passed/skipped counts.
 - Size: S
-- Risk: med (two protected files - the public API module and the secrets module - for a behaviour-preserving refactor; the risk is a subtly different answer at the boundary, which criterion 2 exists to catch)
-- Likely files: `backend/api/routes.py`, `backend/core/secrets.py`, `backend/tests/test_secrets_resolution.py`
+- Risk: med (operator-facing API surface and a safety guard; the change must keep "blocked" observable without weakening the 500 contract for real faults)
+- Likely files: `backend/main.py`, `backend/tests/conftest.py`, `backend/tests/test_vault_guard_exception_surfaces.py`
 - Sensitivity: sensitive
 - Domain: security
-- Status: deferred
+- Status: proposed
 
-### 002 Makefile test selections and pytest configuration stop claiming what they do not do
-- Why: R-003 and R-005 are one story and both are Gate 4 + Gate 8 failures. The Makefile's marker targets select nothing (`-m gui`, `-m network`, `-m acceptance` collect 0 of 1609 tests; `-m "not slow and not flaky and not integration and not gui and not network"` deselects exactly 1), and the repository has no pytest configuration file at all, so the suite runs with no `configfile:` and two markers that are applied to real tests (`concurrency`, `learning_soak`) are never declared. Every future agent that trusts `make test-fast` or `make test-gui` is wrong about what ran. This item deliberately does not edit `docs/TESTING.md`; item 003 owns that file and documents the final state.
+### 019 Tautology detector must also catch nested and bare `or True`
+- Why: R-027 - `backend/tests/test_no_tautological_asserts.py` only matches a top-level `ast.BoolOp(ast.Or)` containing `ast.Constant(True)`, so `assert (x or True) and y`, `assert not (x or True)`, `assert x or (y or True)` and `assert True` (all unconditionally true) defeat the guard that exists precisely to prevent them. The plan's claim that the AST rule is "a superset of the literal `... or True` text pattern" is false for those four shapes. The acceptance case for item 004 only asked for the top-level case, so item 004 stays green - but the guard is a canary, not a proof.
 - Acceptance:
-  1. A pytest configuration file exists at the repository root (`pytest.ini` or `pyproject.toml`), and the header of `python -m pytest backend/tests --collect-only` names it (a `configfile:` line pointing at the repo-root file). Today that header has no `configfile:` line at all.
-  2. Every marker applied anywhere under `backend/tests/` is declared, specifically `concurrency` and `learning_soak`, and a full-suite run emits zero `PytestUnknownMarkWarning` (today: 3 warnings, from `backend/tests/test_phase105_concurrency.py:39`, `backend/tests/test_phase1075_hardening.py:35`, `backend/tests/test_phase115_soak.py:15`).
-  3. No Makefile selection can pass while collecting zero tests: for every `-m` expression used in the `Makefile`, `python -m pytest backend/tests -m "<same expression>" --collect-only -q` reports a collected count greater than zero, or the target that uses it has been removed from the `Makefile`. A marker applied to zero tests is either applied to the tests it describes or dropped from the Makefile's expressions.
-  4. The suite's behaviour is unchanged apart from the intended selection fixes: `asyncio_mode` is set explicitly to `strict` (the mode the header reports today), the number of collected tests is identical before and after the change (1609 on CPython 3.14.7 at the time of the change), and `python -m pytest backend/tests -q` exits 0 with the same passed/skipped counts as the pre-change baseline.
-  5. No warning-to-error filter is introduced: there is no `filterwarnings = error::DeprecationWarning` (or any new `error` filter) in the new configuration, and the suite's warning count does not increase and does not turn into failures. The `datetime.utcnow()` deprecation flood is explicitly out of scope for this item.
-  6. `git diff --name-only` lists only `Makefile`, the new root pytest configuration file, `backend/tests/conftest.py` and test files whose marker classification was corrected; no file under `backend/` outside `backend/tests/` is touched.
-- Size: M
-- Risk: med (correcting which tests a marker selects changes what `make test-fast` and `make test-unit` run; a wrong classification would silently narrow the suite)
-- Likely files: `Makefile`, `pytest.ini`, `backend/tests/conftest.py`, `backend/tests/**`
+  1. `_is_tautology` recurses through `ast.And`, `ast.UnaryOp(ast.Not)` and grouping so a literal `True` at any guard position is flagged, and a bare `ast.Constant(True)` assert is flagged. The four new shapes from R-027 each cause the detector to fail when present.
+  2. The detector's self-test (its tooth-check) gains one probe per new shape, and removing any one probe's tautology makes that probe pass while re-introducing it fails again.
+  3. The detector's docstring no longer claims to catch patterns it does not catch; the claim matches the implementation.
+  4. No false positives on the existing legitimate assertion shapes (verified by running the detector over the whole `backend/tests/` tree; exit 0).
+  5. No production file is touched; `git diff --name-only` lists only `backend/tests/test_no_tautological_asserts.py` (and that file alone, since no other test file changes).
+- Size: S
+- Risk: low (test-only guard; a too-strict rule would make the suite red on legitimate code, which criterion 4's full-tree run catches)
+- Likely files: `backend/tests/test_no_tautological_asserts.py`
 - Sensitivity: none
 - Domain: none
-- Status: merged
+- Status: proposed
 
-### 004 Four tautological assertions replaced by the assertions they stood in for
-- Why: R-016. Four assertions end in `or True`, so they are unconditionally true and can never fail, each inside a suite whose name promises exactly the property it does not check: per-thread history isolation (`backend/tests/test_phase105_concurrency.py:530`), fallback handling (`:746`), delegation attribution (`backend/tests/test_phase1075_hardening.py:765`) and shadow-policy shape (`backend/tests/test_phase125_planning_validation.py:230`). Gate 3 ("verification before claims") and Gate 8 ("testing baseline discipline") both fail while four suites advertise guarantees they do not check.
+### 020 The `.env` isolation must be measured, not assumed, and cover the process environment
+- Why: code-tractable follow-up from item 006. The 006 verifier measured that (a) with the autouse isolation deleted, the readiness file is still green in a tree that has no `.env` - so "deleted isolation goes red on CI" is false - and (b) `SYTHION_OLLAMA_API_KEY` exported in the child process is NOT neutralised, because the clean snapshot uses `Settings(_env_file=None)` which still reads the process environment. The verification-written follow-ups (unverified isolation, isolation covers the file but not the environment) name the exact measurement that is missing.
 - Acceptance:
-  1. `grep -rn "or True" backend/tests` matches nothing; each of the four sites listed above is replaced by the concrete assertion it stood in for, or the property is re-stated as an explicit negative assertion.
-  2. The three affected files still pass: `python -m pytest backend/tests/test_phase105_concurrency.py backend/tests/test_phase1075_hardening.py backend/tests/test_phase125_planning_validation.py -q` exits 0.
-  3. If a real assertion fails, the outcome is a fix in the production code or a defect reported in the item's report - a failing real assertion is never resolved by restoring `or True` (criterion 1 makes that detectable).
-  4. The dead `side_effect` assignment in `backend/tests/test_phase105_concurrency.py` (the never-awaited `fake_chat` coroutine) is removed, and the run no longer emits `RuntimeWarning: coroutine 'TestModelCallConcurrency.test_provider_calls_isolated.<locals>.fake_chat' was never awaited`.
-  5. A committed guard prevents re-introduction: a check (e.g. `backend/tests/test_no_tautological_asserts.py`, or a script under `scripts/`) fails when an `assert` statement under `backend/tests/` contains a top-level `or True`; it runs as part of the suite and exits 0 today.
-  6. `python -m pytest backend/tests -q` exits 0 with the same passed/skipped counts as the pre-change baseline - no test is deleted, skipped or marked to make the suite green.
-- Size: S
-- Risk: med (the tautologies were hiding the real outcome, so the correct assertion may expose a genuine defect in the concurrency/hardening code)
-- Likely files: `backend/tests/test_phase105_concurrency.py`, `backend/tests/test_phase1075_hardening.py`, `backend/tests/test_phase125_planning_validation.py`, `backend/tests/test_no_tautological_asserts.py`
-- Sensitivity: sensitive
-- Domain: none
-- Status: merged
-
-### 001 CI actually gates this repository
-- Why: goal.md's "release and operator readiness" and "verification before claims" (docs/QUALITY_GATES.md:34-44, :88-97) rest on a CI pipeline that has never gated this repository: R-002 (the workflow triggers on `main`; the only branch is `master`, so a push skips all four jobs) and R-001 (the `backend-tests` job runs its import gate from `backend/`, where `import backend.main` fails with `ModuleNotFoundError`, so the one gate that does exist is red for a reason unrelated to the code). R-014 (the 49-test vitest suite is never executed by CI) and R-015 (CI installs pytest unpinned on top of the pinned requirements, so the version exercised is never the declared one) are the same story: the pipeline does not test what the repository says it tests. One file, one branch, one reviewable change.
-- Acceptance:
-  1. `.github/workflows/ci.yml` declares `on.push.branches` containing `master` (verified branch set: `git branch -a` -> `master`, `remotes/origin/master`; there is no `main`), and the workflow can also be started by hand (`workflow_dispatch`).
-  2. The import-gate step's exact command, executed from the working directory that step declares, exits 0. Proof recorded in the item report: the command as written in `ci.yml` run locally with its declared `working-directory` -> exit code 0 (today `cd backend && python -c "import backend.main; import backend.api.routes"` -> exit 1, `ModuleNotFoundError: No module named 'backend'`).
-  3. The `frontend` job contains a step that runs the vitest suite in non-watch mode, and `frontend/package.json` maps a non-interactive script to it (`vitest run`, with `vitest` watch kept under a separate `test:watch` script). Proof recorded: `cd frontend && npm test` exits 0 and reports 5 test files / 49 tests passed (the same count the suite reports today).
-  4. No `pip install` line in `.github/workflows/ci.yml` installs `pytest` or `pytest-asyncio` without a version constraint, and the version CI installs is the one pinned in `backend/requirements.txt` (`pytest==7.4.4`, `pytest-asyncio==0.23.3`).
-  5. `git diff --name-only` for this item lists only `.github/workflows/ci.yml` and `frontend/package.json` - no runtime module, documentation file or release-payload file is touched.
-  6. The orchestrator records in `.orchestra/follow-ups.md` that the repaired workflow must be observed on GitHub after the merge; running it is outside the repository and is never performed here.
+  1. A new test spawns a pytest subprocess against a scratch copy of the tree with a generated `backend/.env` containing a sentinel `SYTHION_OLLAMA_API_KEY`, and asserts the autouse isolation neutralises it (the readiness file stays green with the same pass/fail set as the `.env`-absent tree); removing the isolation makes that subprocess run fail. The test performs no network I/O and touches no real profile directory.
+  2. Scope decision recorded in the item report and enforced by code: either the isolation also clears `SYTHION_OLLAMA_API_KEY` and the other `SYTHION_*` variables from the process environment before snapshotting (preferred - makes the conftest docstring's "can never introduce a credential" claim true), or the docstring is corrected to state the file-only scope with the precise caveat. The chosen branch has a test asserting it.
+  3. The `file_roots` swap documented in the 006 verifier's follow-up is captured in one conftest comment: with ambient `file_roots` set the approved roots change (not just their count).
+  4. `_LOCAL_ENV_FIELDS` (or its replacement) is imported by the isolation test instead of being re-hardcoded, so a field added later is covered.
+  5. Product behaviour is unchanged: `git diff --name-only` lists only files under `backend/tests/` (and an optional helper under `scripts/` if the nested run needs one). No `backend/core/` file is touched.
+  6. The full suite keeps the pre-change passed/skipped counts; no test is deleted, skipped or marked.
 - Size: M
-- Risk: low (workflow YAML plus one package.json script; no runtime code, no secrets, no payload or auth surface)
-- Likely files: `.github/workflows/ci.yml`, `frontend/package.json`
-- Sensitivity: external
-- Domain: infra
-- Status: merged
+- Risk: low (test-only; the risk is a flaky subprocess-based check, addressed by a temp directory and a fixed timeout)
+- Likely files: `backend/tests/conftest.py`, `backend/tests/test_env_isolation.py`, `backend/tests/test_setup_readiness.py`
+- Sensitivity: none
+- Domain: none
+- Status: proposed
 
+## Deferred (referenced, not re-listed)
+
+- Board items already deferred and unresolved, referenced instead of re-listed: `005` (operator endpoint resolution, external/infra), `008` (concurrent append event loss in `DbEventLedger.append_event`, data), `009` (readiness/onboarding endpoints read the key directly, security - sensitive-change gate).
+- Human/external follow-ups stay in `follow-ups.md` and are NOT code items: the provider-gated credentialed run, the native-crash twin (Fault A in `gui_tools.py`, Fault B in `coordination.py:1127`), the clean-machine interactive acceptance run, runner-side and release-payload work (vosk lock drift, 253 MB tracked runtime, installer pytest stack, dead `voice_service.py`), the credential-vault rotation note after item 007, and the tauri-build no-op assert (operator/CI-owned).
+- Code-tractable follow-ups evaluated this cycle but deliberately not promoted: `BOM-safe load` in `scripts/measure_test_baseline.py` (`utf-8-sig`, one line); the duplicated pytest config / second registry copy / hand-maintained "53 tests" count; the vendored `src-tauri/resources/backend/services/README.md` stale module list (release payload); stale `C:\Ai\sythion` paths in `cli.py:543` and `scripts/smoke_test.py:212` plus the root ad-hoc scripts (already rejected as R-018, too low-value); the admission cross-process test (`test_admission_concurrency_process.py:114`, `assert ... <= 2`) - pre-existing master failure whose root cause needs reproduction first; and the soak docstring one-liner. All remain recorded in `follow-ups.md`; they are deferred because each is either external/release-owned, gated on a human run, or needs a reproduction step that does not fit a bounded item this cycle.
+
+## New backlog top order
+
+1. `017` - event ledger counter-table flag (R-025) - med, S
+2. `018` - vault-write guard visible through the FastAPI handler (R-026) - med, S
+3. `019` - tautology detector nested/bare `or True` (R-027) - low, S
+4. `020` - `.env` isolation measured plus process-env coverage (item 006 follow-ups) - low, M

@@ -1,373 +1,258 @@
-# Report: research - 001 - attempt 1
+# Research pass - cycle 4 (post-merge, fresh pass)
 
-> Follow-up pass on the cycle-1 research. One new candidate, **R-019**, added at the
-> top of `.orchestra/research.md`. R-001..R-018 were **not** renumbered, reordered,
-> edited or deleted - the Scout's `Status:` lines in them are untouched (verified: 19
-> `### R-NNN` blocks, 19 of each field, and the adopt/reject status values are intact).
+**Role:** research (read-only)
+**Brief:** `.orchestra/briefs/000-research-4.md`
+**Report:** `.orchestra/reports/000-research-4.md` (this file - the only file written)
+**Scope:** fresh scan of the merged post-`007`/`008`/`009`/`011`/`012`/`013`/`015`/`016`
+tree. Cross-referenced against `research.md` (R-001..R-024) and the open
+follow-ups in `follow-ups.md`; no candidate below duplicates an existing
+R-id. The follow-up cycle landed fixes in the event ledger (008), the test
+isolator and vault guard (006/007), and operator endpoint resolution (015);
+the three new candidates below are debts those or earlier changes leave
+behind, all code-fixable.
 
-## What I did
+Baseline for this pass was taken as read from the brief and the merged tree
+(1621 collected post-merge); **no full suite was re-run**, and no source file
+was edited.
 
-### Read
+## Sources cross-referenced
 
-- `.orchestra/briefs/001-research-1.md`, `.orchestra/goal.md`, `.orchestra/critiques.md`
-  (the `2026-10-20 19:10 - implementer - 001 - ACCEPT` and `2026-10-20 18:05 - baseline - 000 - ACCEPT`
-  blocks), `.orchestra/reports/001-implement-1.md`, `.orchestra/research.md` (my own file).
-- `backend/tests/test_setup_readiness.py` (whole file), `backend/core/config.py`,
-  `backend/core/secrets.py`, `backend/api/routes.py` (the readiness and onboarding
-  endpoints), `backend/tests/conftest.py`, `backend/tools/file_tools.py` (root handling),
-  `backend/core/settings_store.py` (root resolution), `backend/adapters/ollama_adapter.py`.
-- `frontend/src/lib/setupReadiness.ts`, `docs/ARCHITECTURE.md` (the secret-storage
-  section), `backend/.env.example`, `.gitignore`.
-- `backend/tests/acceptance/test_secret_storage.py` (found during the sweep - see Finding 4).
+- `research.md` - R-001..R-024 (status: adopted / rejected, with assigned
+  item ids), so none of R-025..R-027 restate a queued candidate.
+- `follow-ups.md` - open operator/human items; each is re-evaluated below.
+- `critiques.md` - the 008 round-1 reviewer risks (multi-append rollback,
+  `latest_sequence` pending rows, allocation-in-Python) and the 008 round-2
+  close-out, plus the 004/006/007 follow-up notes.
+- `backend/runtime/events.py` - newly refactored (item 008, sha `d2eb448`).
+- `backend/tests/conftest.py` - process-env isolation and relocated vault
+  guard (items 006/007).
+- `backend/cli.py`, `cli.py`, `scripts/smoke_test.py` - operator endpoint
+  resolution (item 015).
 
-### Method
+## New candidates
 
-The brief's question was *mechanism*, not *correlation*: which input makes the test
-pass, where is it read, what else is sensitive, and is it a test-isolation defect or
-a product defect. So I used a **scratch environment outside the repository** and never
-touched a tracked file, `backend/.env`, or the git index.
+### R-025 - `DbEventLedger._counter_table_checked` sticks after a rolled-back `CREATE TABLE`
 
-1. **A scratch copy of the tree** at
-   `C:\Users\orcha\AppData\Local\Temp\opencode\envprobe` - `backend/` (minus
-   `__pycache__`, `*.db`, **`.env`**), `scripts/`, `src-tauri/` (minus `target` and
-   `python-runtime`) and the root `cli.py`. Verified after the copy:
-   `Test-Path <scratch>/backend/.env` -> **False**; `backend/.env.example` -> True;
-   no `.db` files copied. `1609 tests collected` - identical to the main tree.
-2. **A child-process environment runner**
-   (`C:\Users\orcha\AppData\Local\Temp\opencode\run_env.py`) that clears every
-   `SYTHION_*` variable in the child process and then optionally sets one. Nothing
-   outside the child process is changed.
-3. **A 2x2 matrix** over {`backend/.env` present / absent} x {env var set / unset}.
-4. **A mechanism probe** (`probe_mechanism.py`) that prints only booleans, lengths and
-   file paths - **never a credential value**.
-5. **A fix-shape probe** (`probe_fixshape.py`) that pins the credential on the
-   already-imported settings singleton, to show the proposed fix actually works.
-6. **A scope sweep**: grep of `backend/tests/**` for `os.environ` / `os.getenv`, and a
-   full-suite run of the `.env`-free scratch tree.
-7. **A full-suite run of the `.env`-free scratch tree**, plus a second one with a
-   dummy key, to isolate the two variables.
+- Source: local (item 008 regression)
+- Source detail:
+  - `backend/runtime/events.py:102-110` (lazy counter-table creation + the flag)
+  - `backend/runtime/events.py:78-167` (`append_event`, including the savepoint
+    loop that consumes it)
+  - `backend/core/db_manager.py:148-158` (the schema-time migration/backfill
+    that is the *other* way this table gets created)
+- Evidence:
+  `append_event` creates the counter table with a statement that is **not**
+  wrapped in the savepoint:
 
-### Files I wrote
+  ```python
+  # backend/runtime/events.py:103-110
+  if not self._counter_table_checked:
+      self._session.execute(
+          text(
+              "CREATE TABLE IF NOT EXISTS task_event_sequences "
+              "(task_id VARCHAR NOT NULL PRIMARY KEY, next_seq INTEGER NOT NULL)"
+          )
+      )
+      self._counter_table_checked = True
+  ```
 
-- `C:\Sythion\sythion\.orchestra\research.md` - the R-019 block, inserted at the top.
-- `C:\Sythion\sythion\.orchestra\reports\research-002.md` - this file.
+  The flag is then set unconditionally, before the allocation attempts. The
+  statement participates in the *caller's* transaction, so a caller that
+  rolls back (the documented contract for `append_event` is "does NOT commit";
+  `backend/runtime/events.py:4-7`) takes the table creation with it. On the
+  next call on the **same** `DbEventLedger` instance, `_counter_table_checked`
+  is still `True`, so the table is never re-created, and the upsert in
+  `_ALLOCATION_SQL` fails with `no such table: task_event_sequences`. The guard
+  is also not savepoint-scoped: a failure inside the allocation loop can leave
+  the flag `True` while nothing has committed. The counter is a *schema object*,
+  but the code treats its existence as a one-time, session-local boolean
+  instead of as part of the transactional state the schema migration in
+  `db_manager.py:148-158` already establishes elsewhere.
+- Files touched (a fix): `backend/runtime/events.py` (and a regression test in
+  `backend/tests/test_event_ledger_sequence_invariant.py` or
+  `backend/tests/test_runtime/test_event_ledger_concurrency.py`).
+- Severity: **med**
+- Code-fixable: **yes**
+- Direction (not done here):
+  make creation transactional and re-checkable - either drop the cached flag
+  and always run `CREATE TABLE IF NOT EXISTS` (cheap, idempotent, and already
+  safe under contention on SQLite), or move the flag to `False` on
+  `EventSequenceAllocationError` and gate it on successful return. Add the
+  missing failure-mode test: create a ledger on a fresh DB, force one rolled
+  back `append_event`, then assert the next append on the same ledger succeeds.
 
-Nothing else in the repository was created, edited, moved or deleted. No branch, no
-commit, no push, no `make clean`, no `scripts/stage_python_runtime.py`, no
-`npx tauri build`, no migration, no database reset.
+### R-026 - the vault-write guard's exception is swallowed by the global app handler, so a future HTTP-driven write never goes red
 
-## Evidence
+- Source: local (carry-over of the 007 follow-up; now worth an item because the
+  guard has landed in the root `conftest` and the hole is fixed-distance away)
+- Source detail:
+  - `backend/main.py:274-285` (`global_exception_handler`, registered as
+    `@app.exception_handler(Exception)`)
+  - `backend/tests/conftest.py:652-742` (the relocated `_forbid_product_credential_writes`
+    guard and `ProductCredentialWriteAttempt`)
+- Evidence:
+  - The relocated guard raises `ProductCredentialWriteAttempt(AssertionError)`
+    *before* the real `win32cred` call, which is exactly right for a unit test
+    that calls `CredentialManagerStore` directly.
+  - `backend/main.py:274-285` turns any unhandled exception into a 500 response
+    (`JSONResponse(status_code=500, ...)`). The conftest docstring already
+    states the consequence
+    (`backend/tests/conftest.py:683-687`: "A future test that drove a vault
+    write through `backend.main.app` would get a 500 response instead of this
+    exception - the write would still be blocked, but the test would not go
+    red"). No acceptance test drives a write through `main.app` today
+    (`grep -rn "main.app\|backend.main.app" backend/tests` -> no match), so
+    today's 1621-test tree is safe. The exposure is *latent*: the moment such a
+    test is added, the guard silently stops being a check and becomes a
+    circuit-breaker whose success is indistinguishable from a 500.
+- Files touched (a fix): `backend/main.py` and `backend/tests/conftest.py`
+  (define/recognise the violation as something that is neither a 500-producing
+  crash nor a normal `HTTPException`), or the documented constraint converted
+  into an enforced assertion.
+- Severity: **low-med**
+- Code-fixable: **yes**
+- Direction (not done here):
+  either make the handler re-raise / return a distinct non-2xx outcome for
+  `ProductCredentialWriteAttempt` (and assert that exact outcome in a test), or
+  harden the conftest comment into a `pytest.skip`-style precondition that
+  fails if `main.app` is ever used for a secrets write. Either way, add a
+  regression test that constructs `TestClient(app)` and asserts the guard
+  surfaces (not 500) when a product-prefixed target is written.
 
-### E1 - The 2x2 matrix: `.env` and the environment variable are alternatives
+### R-027 - the tautology detector's AST rule is narrower than its own `grep` claim
 
-Command shape (from the repository root, and from the scratch root):
-`python <temp>/run_env.py <unset|set> backend/tests/test_setup_readiness.py`.
+- Source: local (item 004 critique; follow-up note already queued)
+- Source detail:
+  - `backend/tests/test_no_tautological_asserts.py:3-16` and `:53-62`
+    (detection rules: `ast.BoolOp` with `ast.Or` and a `True` constant)
+  - `backend/tests/test_no_tautological_asserts.py:121-122` (the self-test that
+    pins the detector has teeth)
+  - `.orchestra/critiques.md` (004 review) - the over-claim recorded there.
+- Evidence:
+  As written, the detector matches an `assert` whose *top-level* test is `Or`
+  containing the literal `True`. It does **not** match any of the following
+  (each is still unconditionally true and would pass the suite today):
 
-| # | Tree | `SYTHION_OLLAMA_API_KEY` env var | Output |
-|---|---|---|---|
-| A | main tree (`backend/.env` present) | unset | `8 passed, 600 warnings in 4.00s` |
-| B | main tree (`backend/.env` present) | dummy | `8 passed, 600 warnings in 4.12s` |
-| C | scratch tree (**no** `backend/.env`) | unset | `1 failed, 7 passed, 597 warnings in 5.11s` |
-| D | scratch tree (**no** `backend/.env`) | dummy | `8 passed, 600 warnings in 4.10s` |
+  - `assert (x or True) and y`
+  - `assert not (x or True)`
+  - `assert x or (y or True)`
+  - `assert True`
 
-The failure in C is exactly:
+  The implementation even documents this gap
+  (`backend/tests/test_no_tautological_asserts.py:121-122` quotes the detector
+  as needing the "top-level disjunction", i.e. NOT nested) and the 004 review
+  (`critiques.md`) explicitly records that the plan's claim that the AST rule
+  is "a superset of the literal `... or True` text pattern" is **false** for
+  those three shapes. The acceptance criterion only asks for the top-level
+  case, so `item 004` stays green - but the guard exists precisely so no
+  `assert ... or True` can ever be re-introduced, and these four shapes
+  defeat it.
+- Files touched (a fix): `backend/tests/test_no_tautological_asserts.py`.
+- Severity: **low**
+- Code-fixable: **yes**
+- Direction (not done here):
+  extend `_is_tautology` to recur through `ast.And` / `ast.UnaryOp(ast.Not)` /
+  grouping `ast.Expr` and to flag a bare `ast.Constant(True)` at any guard
+  position, then broaden the detector's self-test (the tooth-check at `:113+`)
+  with one probe per new shape. Also update the guard's docstring comment so
+  the claim it makes matches what it actually checks.
 
-```
-backend/tests/test_setup_readiness.py:160: AssertionError
->       assert body["full_ready"] is True
-E       assert False is True
-```
+## Revisiting the open follow-ups
 
-So: **either input alone makes the test pass**; only the complete absence of both
-fails it. The `.env` file and the environment variable are two routes to the same
-setting, not two independent requirements.
+Summary of the items currently open in `follow-ups.md`. Splits are
+"code-fixable" vs "human/external" per the brief's requirement; each entry
+is tagged whether it is **resolved by the merged follow-up cycle**, **still
+code-tractable**, or **human/external**.
 
-### E2 - Where the input is read, exactly
+### Resolved by the follow-up cycle (no action left)
 
-`backend/core/config.py:173-176`:
+- `(006) process env` - F2 closed by commit `ba69cc2`: the isolator now
+  clears every `SYTHION_*` variable and snapshots with the env file disabled
+  (`conftest.py:500-619`). SCRIPT evidence: `_clean_settings_snapshot()`.
+- `(007) vault guard relocation` - closed by `bac7308`: the guard is now in
+  the *root* `backend/tests/conftest.py` (`:622-742`), not just the acceptance
+  conftest; measured universal across the 1621-test tree.
+- `(002) --ignore` false positive - closed by commit `8077ba5`: `_is_full_tree_collection`
+  returns `False` on `--ignore`/`--ignore-glob`/`collect_ignore`
+  (`conftest.py:190-228`).
+- `(006) F8 file_roots docs` - closed by `7f67147` / `cfa639c`.
+- `(006) F4 soak docstring` - closed by `a56e0f2` (verified `startswith("Gated")`
+  is now absent).
+- `(003) F6 stale pytest-report.xml` - closed by `a56e0f2`.
+- `(003) F3 --check-collected cost wording` - closed by `05c03f7`.
 
-```python
-model_config = {
-    "env_prefix": "SYTHION_",
-    "env_file": os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"),
-}
-```
+### Still code-tractable (could become a future item without a human hand)
 
-`backend/core/config.py:179`: `settings = Settings()` - the singleton is built **once,
-at import time**.
+- `(001) tauri-build no-op assert` - **sweep commit**, one line
+  (`if (-not (Test-Path "...")) { throw "..." }`). Code-only, but blocked by
+  CI/release ownership today.
+- `(002) F5/F7` - the duplicated pytest config in
+  `build/staging/.../pyproject.toml`, the hand-maintained "53 tests" count and
+  the second registry copy in `test_gui_fixture.py` (`conftest.py:85-87`,
+  `LIVE_GUI_MODULES`). Tractable as hygiene; low severity.
+- `(003) vendored README` still lists the deleted `response_strategy.py` /
+  `speech_act_classifier.py`
+  (`src-tauri/resources/backend/services/README.md`) - a one-line doc edit,
+  technically inside the release payload, so file-touched but shippable as docs.
+- `(003) F7 BOM-safe load` in `measure_test_baseline.py` - `utf-8-sig` one
+  liner.
+- `(004) nested/bare `or True`` - *this is R-027*.
+- `(004) provider-gated assertion never executed` - *gated, not code* except
+  that a small hostile test in the harness could exercise it; human credentialed run still required.
+- `(006) F1 unverified isolation` - a nested pytest run against a generated
+  `.env` would turn the isolation into a measured check; code-tractable.
+- `(007) main.app swallows the guard's exception` - *this is R-026*.
+- `(000) `C:\Ai\sythion`` stale paths in `cli.py:543` and
+  `scripts/smoke_test.py:212` and the 13 root ad-hoc scripts - code, but the
+  test-path residue was already rejected as too low-value (R-018 rejected).
+- `(006) admission cross-process test` - `test_admission_concurrency_process.py:114`
+  (`assert 3 <= 2`), pre-existing master failure. Code-level and tractable,
+  but its root cause is concurrency timing, not isolation; needs reproduction
+  before a fix.
 
-The probe (`probe_mechanism.py`, outside the repository; it prints no value, only
-booleans, lengths and paths):
+### Human / external (unchanged in status; not code items)
 
-```
---- MAIN TREE, no env var ---
-backend.core.config.Settings.model_config : {... 'env_prefix': 'SYTHION_',
-  'env_file': 'C:\\Sythion\\sythion\\backend\\.env' ...}
-settings.ollama_api_key is non-empty      : True
-settings.ollama_api_key length            : 57
-Settings(_env_file=None).ollama_api_key non-empty: False      <-- the value came from the .env
+- `(001)` GitHub first real run, runner-side `pip install` on Python 3.11
+  (`whispercpp` source build), `RUN_PROVIDER_E2E` state verification - live.
+- `(001)` optional `main` rename and workflow hardening nits.
+- `(001) tauri no-op assert` is code text but operator-action-owned; listed
+  as deferred on purpose (`.github/workflows/ci.yml`).
+- `(004)` provider-gated credentialed run.
+- `(000)` non-deterministic native crashes (Fault A `0x80040155` in
+  `gui_tools.py`, Fault B `0xC0000005` sqlite3 atomicity in `coordination.py:1127`)
+  - native, smallest reproducer is the *full* suite; not tractable from a
+  single-test loop (see `goal.md` baseline notes).
+- `(000)` scratch-worktree disk exhaustion during verification runs - tooling,
+  not code.
+- `vosk` lock drift, installer shipping the pytest stack, 611-line dead
+  `voice_service.py` and the 253 MB tracked runtime - release/distribution,
+  off-limits (`scripts/stage_python_runtime.py` `rmtree`s the committed runtime),
+  stays with the release owner.
+- Secret-rotation / vault state after item 007.
 
---- MAIN TREE, dummy env var ---
-settings.ollama_api_key is non-empty      : True
-settings.ollama_api_key length            : 20                  <-- len("dummy-not-a-real-key")
-effective value == env var (env wins)   : True                 <-- the env var OVERRIDES the .env
-Settings(_env_file=None).ollama_api_key non-empty: True
+## Limits of this pass
 
---- SCRATCH COPY (no .env), no env var ---
-env_file: '...\\envprobe\\backend\\.env'
-settings.ollama_api_key is non-empty      : False
-settings.ollama_api_key length            : 0
-```
+- No full suite was run; no collect-only run was performed. Counts above come
+  from the brief's post-merge figure (1621 collected).
+- No CI was executed and no Tauri shell was built; the live smoke-test path
+  was read, not run.
+- No web/advisory sources; no CVE claims.
+- `src-tauri/resources/backend/cli.py` was compared to `backend/cli.py` via the
+  existing endpoint-resolution test but was not executed standalone.
+- The three new candidates are proposed from static reading of the merged
+  tree; each carries an "Add the missing failure-mode test" instruction, and
+  none is filed as an item by this report - the board decision is the Scout's.
 
-Three facts fall out: the value is read from the dotenv file when there is no env var;
-the **environment variable wins** over the file; and the file is read **once, at
-import** - a later env-var change has no effect (verified separately: setting
-`SYTHION_OLLAMA_API_KEY` after `import backend.core.config` leaves
-`settings.ollama_api_key` empty). That last fact matters for the fix: the test cannot
-be repaired by setting an environment variable at runtime; it must pin the attribute.
+## Conclusion
 
-The consumer, `backend/api/routes.py:2250-2298` (`setup_readiness`):
+Three new code-fixable candidates are proposed: **R-025** (event-ledger counter
+table flag surviving a rolled-back transaction), **R-026** (vault guard's
+exception disappearing inside the FastAPI global handler), and **R-027**
+(tautology detector missing nested / bare `or True` and bare `assert True`).
+Each has a concrete, bounded fix and a named missing test. The follow-up
+cycle resolved seven more of the deferred items than were open a cycle ago;
+the ones that remain open and code-tractable are listed above, and the rest
+stay with the human / release owner.
 
-```
-backend/api/routes.py:2261:     key_ok = has_secret(OLLAMA_API_KEY) or bool(settings.ollama_api_key)
-backend/api/routes.py:2282:         "ollama_api_key_ok": key_ok,
-backend/api/routes.py:2290:     full_ready = all(checks.values())
-```
-
-The same expression appears at `backend/api/routes.py:2007` (`onboarding_status`).
-
-### E3 - The test's own defect: nine of the ten readiness checks are pinned, the tenth is borrowed
-
-`test_readiness_states` (`backend/tests/test_setup_readiness.py:144-177`) builds a
-fully healthy world for its "healthy" case:
-
-| readiness check | source in the test | pinned? |
-|---|---|---|
-| `ollama_health_ok` | fake provider, `healthy=True` (`:147`) | yes |
-| `selected_model_ok` | `monkeypatch.setattr(core_config, "resolve_selected_model", lambda: selected)` (`:49`, `:148`) | yes |
-| `inference_verified_ok` | a real inference posted (`:151`) -> `ollama_inference_verified_model` persisted | yes |
-| `safe_settings_ok` | `/setup/safe-settings` posted (`:152`) | yes |
-| `stt_model_installed` | `monkeypatch.setattr(va, "stt_model_installed", ...)` (`:154`) | yes |
-| `tts_voice_ok` | `monkeypatch.setattr(va, "asset_status", ...)` (`:156`) | yes |
-| `resources_ok`, `database_ok`, `sidecar_ok` | hard-coded `True` in the route (`routes.py:2279-2281`) | yes |
-| **`ollama_api_key_ok`** | **nothing in the test** | **NO** |
-
-`has_secret(OLLAMA_API_KEY)` is False in the test - the secret store is a fresh empty
-`MemoryStore()` (`test_setup_readiness.py:63`, `:145`) - so `key_ok` depends entirely on
-`settings.ollama_api_key`, i.e. on the developer's `backend/.env`.
-
-The file already contains the correct pattern, and the two sibling tests use it:
-`_clear_local_env_key` (`:195-204`) does
-`monkeypatch.setattr(core_config.settings, "ollama_api_key", "")` and is called by
-`test_a_clean_installation_without_credentials_is_not_ready` (`:215`) and
-`test_the_supported_credential_flow_makes_the_key_configured` (`:237`). Only
-`test_readiness_states` - the one test that asserts the POSITIVE state - omits it.
-
-### E4 - Scope: the rest of the suite is not `.env`-sensitive
-
-**Environment variables read directly by tests.** A grep of `backend/tests/**` for
-`os.environ|os.getenv` returns only `SYTHION_RUN_PROCESS_KILL`,
-`SYTHION_RUN_PROVIDER_E2E` and `TEMP` - none of which is in `backend/.env`.
-
-**The other two `.env` keys.**
-- `SYTHION_SELECTED_MODEL` -> `settings.selected_model` -> `resolve_selected_model()`.
-  The readiness test pins that function (`test_setup_readiness.py:49`).
-- `SYTHION_FILE_ROOTS` -> `settings.file_roots` -> the approved file roots
-  (`backend/tools/file_tools.py:181`, `backend/core/settings_store.py:83`). The
-  developer's `.env` carries **3** entries here (count only; the paths were not
-  printed). Every test that depends on roots pins them: `test_file_roots_grants.py:30`,
-  `:59`, `:105`; `test_settings_store.py:101-130`; `test_settings_api.py:60`;
-  `test_phase105_concurrency.py:644`; `test_phase1075_hardening.py:268`;
-  `test_tools.py:284`; `test_file_search.py:24`; and the acceptance tests patch
-  `file_tools._approved_roots`.
-
-**Full-suite runs in the `.env`-free scratch tree.**
-
-- Scratch tree, no env var: `2 failed, 1562 passed, 45 skipped, 407713 warnings in 809.00s`.
-  The two failures: `test_setup_readiness.py::test_readiness_states` (this defect) and
-  `test_admission_concurrency_process.py::TestAdmissionCrossProcess::test_concurrent_admission_across_processes`
-  (`assert not p1.is_alive() and not p2.is_alive(), "child hung"` at
-  `test_admission_concurrency_process.py:102`).
-- The admission failure is **not** `.env`-sensitive, on four independent grounds:
-  1. the test imports `settings` at `test_admission_concurrency_process.py:14` and
-     **never uses it** - no credential, no provider, no model;
-  2. it fails identically in the scratch tree **with** a dummy
-     `SYTHION_OLLAMA_API_KEY` present;
-  3. it passes 3/3 in the scratch tree and 3/3 in the main tree when it is not
-     competing with a second pytest process for the machine - it is a load-induced
-     multiprocessing-barrier flake (30 s `join`), unrelated to the credential;
-  4. in a third full-suite run of the scratch tree **with** a dummy key, its only
-     failure before the run died was the admission test again - the `F` at 13%
-     maps to collection index 215, `backend/tests/test_admission_concurrency_process.py::TestAdmissionCrossProcess::test_concurrent_admission_across_processes`
-     (position computed from the 72-character progress rows and the collected
-     order) - while **the readiness test passed**.
-- The baseline the orchestrator and the baseline agent measured is
-  `1564 passed, 45 skipped, 1609 collected`. The `.env`-free scratch tree gives
-  `1562 passed + 2 failed = 1564`, i.e. **exactly one test differs because of the
-  missing `.env`**, and the second failure is a flake.
-
-**The third run then died with the known native fault.** Exit code `-1073741819`
-(`0xC0000005`, access violation):
-
-```
-Current thread 0x0000d4b0 [Thread-137 (validate_in_thread)] (most recent call first):
-  File "...\sqlalchemy\orm\query.py", line 2823 in first
-  File "...\envprobe\backend\agents\delegation.py", line 1358 in get_delegation
-  File "...\envprobe\backend\agents\delegation.py", line 1374 in _require
-  File "...\envprobe\backend\agents\delegation.py", line 394 in validate
-  File "...\envprobe\backend\tests\test_phase95_hardening.py", line 68 in validate_in_thread
-```
-
-That is the same fault **class** the baseline agent characterised as "Fault B" under
-R-007 - a native sqlite3 access violation under concurrency - in a third test file
-(their observation was `test_phase105_concurrency.py::TestBudgetAtomicity::test_concurrent_budget_does_not_exceed`
--> `backend/agents/coordination.py:1127 atomic_commit_spent`). It corroborates R-007
-and widens its blast radius; it is **not** a credential issue, and it is why the third
-run could not produce a complete summary line.
-
-### E5 - The fix shape works
-
-In the `.env`-free scratch tree, pinning the credential on the already-imported
-settings singleton (no file edited - `probe_fixshape.py`):
-
-```
-=== SCRATCH (no .env, no env var) + settings.ollama_api_key pinned -> fix shape ===
-8 passed, 600 warnings in 4.62s
-```
-
-### E6 - Test-isolation defect or product defect? The evidence says test-isolation
-
-The readiness chain is layered, and `ollama_api_key_ok` is only a **presence** check:
-
-- `inference_verified_ok` requires the persisted `ollama_inference_verified_model` to
-  equal the selected model (`routes.py:2271-2277`), and that setting is written
-  **only after a successful, non-empty inference** (`routes.py:2221-2226`).
-- `ollama_health_ok` requires the provider's own health.
-- The dashboard is stricter than the backend: `canClaimFullReady`
-  (`frontend/src/lib/setupReadiness.ts:27-48`) requires all ten backend checks **plus**
-  two voice-verification flags.
-
-So `full_ready` cannot be reached from an unverified credential; the `.env` only
-satisfies one of ten presence/health/verification checks. And the no-credential
-behaviour - not ready, `ollama_api_key_ok: false` - is the **correct** first-run
-answer, asserted on purpose by `test_setup_readiness.py:207-227`. A packaged install
-never sees this input at all: the release payload policy forbids a `.env` in the
-payload (`scripts/verify_release_payload.py:53-59`, `PROHIBITED_ENV_FILES` /
-`ALLOWED_ENV_FILES`).
-
-The one product-side observation that survives is a **stated-contract violation**,
-which is the proximate cause of the sensitivity: `backend/api/routes.py:2261` and
-`:2007` read `settings.ollama_api_key` **directly** rather than through
-`backend.core.secrets.resolve_ollama_api_key(...)`, which
-`backend/core/secrets.py:174-175` ("This is the single resolution point for the key;
-callers must not read Settings.ollama_api_key directly") and
-`docs/ARCHITECTURE.md:357` ("only resolvable at the one sanctioned point
-(`resolve_ollama_api_key`)") both name as the one sanctioned resolution point.
-Behaviourally the two are equivalent - `has_secret(X) or bool(env)` is exactly
-`bool(resolve_ollama_api_key(env))` - so this is an access/contract defect, not a
-behavioural one.
-
-## Findings
-
-1. **The mechanism is the pydantic-settings dotenv source, not a secret-store lookup.**
-   `backend/core/config.py:173-176` points `Settings` at `<repo>/backend/.env` with
-   `env_prefix="SYTHION_"`, and `:179` builds the singleton at import. The env var
-   `SYTHION_OLLAMA_API_KEY` overrides the file; either alone satisfies the check; the
-   file is read once, at import.
-
-2. **The failing test is `test_setup_readiness.py::test_readiness_states`, and it is
-   the only test in the suite whose outcome depends on a developer's `backend/.env`.**
-   Its two sibling tests already call the isolation helper `_clear_local_env_key`;
-   it alone asserts a positive readiness state without pinning the credential.
-
-3. **It is a TEST-ISOLATION defect.** The product cannot report readiness from an
-   unverified credential: the readiness chain requires a persisted, successful
-   inference, provider health, a selected model, and (in the dashboard) two further
-   voice flags. The no-credential behaviour is the correct first-run answer and is
-   asserted on purpose elsewhere in the same file. A packaged install never has a
-   `.env` to begin with.
-
-4. **A narrow, separately-fixable product-code observation (contract, not behaviour):**
-   `backend/api/routes.py:2261` and `:2007` bypass `secrets.resolve_ollama_api_key`,
-   the point `backend/core/secrets.py:174-175` and `docs/ARCHITECTURE.md:357` name as
-   the only sanctioned resolution point. Behaviour-preserving to fix, and it puts the
-   dependency in one place.
-
-5. **Adjacent finding, NOT this candidate - for the next research cycle.** While
-   sweeping for other ambient-state dependencies I found that
-   `backend/tests/acceptance/test_secret_storage.py::test_credential_manager_round_trip`
-   writes to and then **deletes the developer's real Windows Credential Manager
-   entry**: `store = secrets_module.CredentialManagerStore()` (`:139`),
-   `store.set(SECRET_NAME, "sk-roundtrip-zz")` (`:140`, target
-   `Sythion (Synth)/ollama_api_key`, `backend/core/secrets.py:32-34`),
-   `store.delete(SECRET_NAME)` (`:146`). It does not request the
-   `memory_secret_store` fixture, and `win32cred` **is** importable on this machine
-   (`importlib.util.find_spec('win32cred') is not None` -> True), so
-   `_default_store()` (`backend/core/secrets.py:112-121`) returns the real vault
-   whenever the store has been reset to `None`. This contradicts
-   `docs/ARCHITECTURE.md:358` ("A non-persistent in-memory backend is used for tests
-   so the real vault is never touched"). **I did not execute that test against the
-   real vault deliberately, and I am not making it a candidate here - this pass was
-   scoped to one candidate.** It is a distinct defect from R-019 (different ambient
-   source: the OS credential vault, not a gitignored file) and should be researched
-   on its own.
-
-6. **The CI consequence is concrete and immediate.** Item 001 repaired the workflow
-   so that a push to `master` actually starts the pipeline. The `backend-tests` job
-   does a clean checkout, so it has no `backend/.env` - and `test_setup_readiness.py`
-   will fail there for exactly the reason reproduced above. The pipeline goes red on
-   its first real run for a reason that has nothing to do with the pipeline.
-
-7. **R-007 is corroborated again, in a third test file.** The third scratch-tree run
-   died with `Windows fatal exception: access violation` (`0xC0000005`) in native
-   sqlite3, reached from `backend/tests/test_phase95_hardening.py:68 validate_in_thread`
-   -> `backend/agents/delegation.py:394 validate` -> `:1374 _require` -> `:1358
-   get_delegation`. The baseline agent's "Fault B" was the same class of native
-   sqlite3 access violation under concurrency, in
-   `test_phase105_concurrency.py::TestBudgetAtomicity::test_concurrent_budget_does_not_exceed`.
-   Two observers, three test files, one fault class - R-007's blast radius is wider
-   than the single test its own report named. I am not filing a candidate for it
-   (this pass was scoped to one candidate); it strengthens the existing R-007.
-
-## Not checked
-
-- **I did not execute the failing test against the real Windows Credential Manager.**
-  I read `backend/tests/acceptance/test_secret_storage.py` and checked that
-  `win32cred` is importable, but I did not call `CredentialManagerStore.get()` or
-  `has_secret()` outside the `MemoryStore`, so I never read the developer's stored
-  credential. Finding 5's *write/delete* path is established from the source, not
-  executed in isolation. The full-suite runs I did perform (in the scratch tree and,
-  in cycle 1, in the main tree) did execute that test as part of the suite - I am
-  flagging that rather than hiding it.
-- **I did not run the GitHub Actions workflow, and I did not create a git worktree.**
-  The "fresh checkout" condition was emulated with a file copy outside the repository
-  rather than with `git worktree add`, so the working tree and the git index were
-  never touched. The consequence: I cannot say that a real `actions/checkout` of
-  `master` reproduces the failure byte for byte - only that a checkout without
-  `backend/.env` does, which is the same condition.
-- **I did not verify the outcome on Python 3.11** (CI's pinned version). Every number
-  here is from CPython 3.14.7 on Windows.
-- **I did not re-run the full suite in the main tree in this pass.** The
-  `1564 passed / 45 skipped / 1609 collected` figure I compare against is the
-  orchestrator's and the baseline agent's, not a fresh sample from this pass; my own
-  fresh samples are the scratch-tree runs (two completed, one died with the native
-  access violation described in E4).
-- **I did not check whether the GitHub-side environment carries
-  `SYTHION_OLLAMA_API_KEY`.** The `provider-e2e` job injects
-  `secrets.OLLAMA_API_KEY` into that one job's environment
-  (`.github/workflows/ci.yml:65-70`), so that job's runner would have the credential
-  and would pass - but the `backend-tests` job has no such injection, which is the
-  job that runs the failing test. I could not read the GitHub repository settings
-  from inside the checkout.
-- **I did not audit the whole suite for every kind of ambient-state dependence.**
-  I swept for `os.environ`/`os.getenv` in tests, for the three `.env` keys, and for
-  `settings.ollama_api_key` / `selected_model` / `file_roots` reads, and I ran the
-  full suite in a `.env`-free tree. I did not sweep for every other ambient source
-  (the real credential vault, the `%LOCALAPPDATA%` profile directory, `TEMP`).
-- **I did not decide the fix or make any change.** The candidate carries a *direction*
-  only; `backend/tests/test_setup_readiness.py`, `backend/tests/conftest.py`,
-  `backend/api/routes.py` and `backend/core/config.py` are untouched by this pass.
-- **I did not check whether `backend/.env` is present in the other developers' trees
-  or in CI, only that it is gitignored.** `git check-ignore -v backend/.env` and
-  `git ls-files -- backend/.env` establish the ignore rule and the absence from the
-  index; nothing more.
+No file other than this report was created or modified. No branch, commit, or
+push was made.

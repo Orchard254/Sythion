@@ -98,6 +98,50 @@
       "conflicts": 0,
       "sensitivity": "sensitive",
       "domain": "security"
+    },
+    "017": {
+      "status": "merged",
+      "owner": "committer-1",
+      "branch": "orchestra/017-counter-flag",
+      "mergeSha": "29bb2433daf69fc0b2eddc2264366e92701140c0",
+      "round": 1,
+      "verifyRounds": 1,
+      "conflicts": 0,
+      "sensitivity": "sensitive",
+      "domain": "data"
+    },
+    "018": {
+      "status": "proposed",
+      "owner": null,
+      "branch": null,
+      "mergeSha": null,
+      "round": 0,
+      "verifyRounds": 0,
+      "conflicts": 0,
+      "sensitivity": "sensitive",
+      "domain": "security"
+    },
+    "019": {
+      "status": "proposed",
+      "owner": null,
+      "branch": null,
+      "mergeSha": null,
+      "round": 0,
+      "verifyRounds": 0,
+      "conflicts": 0,
+      "sensitivity": "none",
+      "domain": "none"
+    },
+    "020": {
+      "status": "proposed",
+      "owner": null,
+      "branch": null,
+      "mergeSha": null,
+      "round": 0,
+      "verifyRounds": 0,
+      "conflicts": 0,
+      "sensitivity": "none",
+      "domain": "none"
     }
   },
   "roles": {
