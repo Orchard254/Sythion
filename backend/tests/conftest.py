@@ -689,13 +689,13 @@ def _forbid_product_credential_writes(request, monkeypatch):
       is REJECTED, never delegated to the real vault.
 
     Known constraint: ``backend/main.py`` installs a global
-    ``@app.exception_handler(Exception)``. A test that drives a vault write
-    through ``backend.main.app`` gets a 409 ``VAULT_WRITE_BLOCKED`` response
-    for it, because this exception declares the vault-write-violation marker
-    (``sythion_vault_write_violation``) that the handler looks for - the
-    blocked write is documented instead of looking like an unrelated crash.
-    The exception itself still propagates out of the request, so such a test
-    still goes red instead of passing silently.
+    ``@app.exception_handler(Exception)``. A test that drives a **blocked**
+    vault write through ``backend/main.py.app`` sees one of two outcomes,
+    depending on the client: a default ``TestClient`` raises this exception
+    out of the request, so the test goes red; a client built with
+    ``raise_server_exceptions=False`` - or a real HTTP client - receives the
+    409 ``VAULT_WRITE_BLOCKED`` response and the exception does **not**
+    propagate, so such a test must assert on the status to stay meaningful.
     """
     try:
         import win32cred

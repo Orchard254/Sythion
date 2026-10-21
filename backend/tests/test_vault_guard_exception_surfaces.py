@@ -24,8 +24,9 @@ asserted, so the test cannot pass vacuously:
   blocked);
 * a read-only fingerprint of the REAL product credential (presence plus a
   SHA-256 of the blob, never the blob itself) is identical before and after;
-* the sentinel mode below makes the real Windows Credential Manager
-  completely unreachable for the run.
+* in sentinel mode (``SYTHION_VAULT_SENTINEL=1``) the real Windows
+  Credential Manager is completely unreachable for the run - that proof is
+  opt-in, because the acceptance round trip legitimately needs the real API.
 
 Sentinel mode
 -------------
