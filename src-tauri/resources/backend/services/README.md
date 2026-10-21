@@ -52,8 +52,6 @@ These services support the broader intelligence direction without owning the
 runtime truth contract:
 
 - `conversation_state.py`
-- `speech_act_classifier.py`
-- `response_strategy.py`
 - `memory_consolidation.py`
 - `post_task_intelligence.py`
 - `tool_authoring.py`
