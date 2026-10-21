@@ -153,7 +153,15 @@ class _CancelledError(Exception):
 
 
 def _approved_roots() -> List[Path]:
-    """Return the configured file roots, or safe defaults when unset.
+    """Return the approved file roots for the current configuration.
+
+    An empty ``file_roots`` value (``[]`` / unset) does NOT mean "no file
+    access": it activates the safe fallback of the user's home directory plus
+    the process working directory (below), and the repository ``backend``
+    directory is NOT approved in that state. A non-empty ``file_roots`` approves
+    exactly those roots with the repository ``backend`` directory always
+    appended, so clearing ``file_roots`` SWAPS the approved set instead of
+    removing access.
 
     Roots are merged from two sources: `SYTHION_FILE_ROOTS` in the environment
     (boot defaults for this device) and `file_roots` granted at runtime through
@@ -194,16 +202,20 @@ def _approved_roots() -> List[Path]:
                 "Unexpected error resolving DB file roots: %s", exc, exc_info=True
             )
             db_roots = []
-    # Only use DB roots if they are non-empty (i.e., actual grants exist)
+    # Only use DB roots if they are non-empty (i.e. actual configured grants
+    # exist). An empty result here leaves env roots in place, or triggers the
+    # home + cwd fallback; it never means "no file access".
     if db_roots:
         roots = db_roots
     if roots:
-        # Always include the repo root (backend directory) alongside configured roots.
+        # Non-empty configured roots: always include the repo root (backend
+        # directory) alongside them.
         repo_root = Path(__file__).resolve().parent.parent
         if str(repo_root) not in roots:
             roots.append(str(repo_root))
         return [Path(r).expanduser().resolve() for r in roots]
-    # Fallback: home + cwd (safe user-local defaults, no repo root)
+    # Fallback only: empty configured roots approve home + cwd (safe user-local
+    # defaults, no repo root). This is NOT "no file access" -- see docstring.
     return [Path.home().resolve(), Path.cwd().resolve()]
 
 
