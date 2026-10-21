@@ -26,6 +26,7 @@ import { useAppInit } from './hooks/useAppInit';
 import { useAppStore } from './store/appStore';
 import { assessRuntimeHealth } from './lib/runtimeHealth';
 import { setupService } from './services/api';
+import { canStartChat } from './lib/setupReadiness';
 import { useNavStore } from './store/navStore';
 import { routeById, type RouteId } from './lib/routes';
 import {
@@ -89,16 +90,16 @@ function AppContent() {
   const setDataMode = useAppStore((s) => s.setDataMode);
   const notify = useAppStore((s) => s.notify);
 
-  const [textFirstMode, setTextFirstMode] = useState(() => localStorage.getItem('sythion.textFirst') === '1');
   const [setupNeeded, setSetupNeeded] = useState<boolean | null>(null);
   useEffect(() => {
-    if (!isInitialized || !isConnected || textFirstMode) return;
+    if (!isInitialized || !isConnected) return;
+    setSetupNeeded(null);
     let cancelled = false;
     void setupService.readiness().then((r) => {
-      if (!cancelled) setSetupNeeded(!r.full_ready);
+      if (!cancelled) setSetupNeeded(!canStartChat(r));
     }).catch(() => { if (!cancelled) setSetupNeeded(true); });
     return () => { cancelled = true; };
-  }, [isInitialized, isConnected, textFirstMode]);
+  }, [isInitialized, isConnected]);
 
   /* Companion overlay coordination.
    *
@@ -111,9 +112,9 @@ function AppContent() {
    * so the overlay also comes back on its own once the backend is reachable
    * again after a failed start. */
   useEffect(() => {
-    if (!shouldActivateCompanion({ isConnected, setupNeeded, textFirstMode })) return;
+    if (!shouldActivateCompanion({ isConnected, setupNeeded, textFirstMode: false })) return;
     void activateCompanion();
-  }, [isConnected, setupNeeded, textFirstMode]);
+  }, [isConnected, setupNeeded]);
 
   const route = useNavStore((s) => s.route);
   const setRoute = useNavStore((s) => s.setRoute);
@@ -192,7 +193,7 @@ function AppContent() {
     );
   }
 
-  if (isInitialized && isConnected && !textFirstMode && setupNeeded === null) {
+  if (isInitialized && isConnected && setupNeeded === null) {
     return (
       <div className="shell" style={singleScreenShellStyle()}>
         <div className="shell__main" style={singleScreenContentStyle({ placeItems: 'center' })}>
@@ -211,11 +212,12 @@ function AppContent() {
     );
   }
 
-  if (setupNeeded && !textFirstMode) {
+  if (isConnected && setupNeeded) {
     return (
       <SetupScreen
         onComplete={(tf) => {
-          if (tf) { localStorage.setItem('sythion.textFirst', '1'); setTextFirstMode(true); }
+          localStorage.setItem('sythion.textFirst', tf ? '1' : '0');
+          setRoute('assistant');
           setSetupNeeded(false);
         }}
       />

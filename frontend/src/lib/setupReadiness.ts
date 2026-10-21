@@ -47,8 +47,19 @@ export function canClaimFullReady(
   );
 }
 
+/** Text chat requires real model evidence, independently of optional audio. */
+export function canUseModel(readiness: SetupReadinessLike | null): boolean {
+  const c = readiness?.checks;
+  return Boolean(c?.resources_ok && c.database_ok && c.sidecar_ok &&
+    c.ollama_api_key_ok && c.ollama_health_ok && c.selected_model_ok && c.inference_verified_ok);
+}
+
+export function canStartChat(readiness: SetupReadinessLike | null): boolean {
+  return canUseModel(readiness) && readiness?.checks?.safe_settings_ok === true;
+}
+
 export function shouldOpenSetup(readiness: SetupReadinessLike | null, textFirst: boolean): boolean {
-  if (textFirst) return false;
-  if (readiness === null) return true;
-  return !canClaimFullReady(readiness, false, false) || !readiness.full_ready;
+  // Retained for compatibility; a preference is never readiness evidence.
+  void textFirst;
+  return !canStartChat(readiness);
 }

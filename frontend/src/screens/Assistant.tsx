@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { voiceService } from '../services/api';
+import { conversationTasks, nextSpokenReply } from '../lib/firstConversation';
 import { Icon } from '../components/icons';
 import { TaskDetailDrawer } from '../components/TaskDetailDrawer';
 import { AssistantStatusIndicator } from '../components/AssistantStatus';
@@ -46,6 +49,13 @@ export function AssistantScreen() {
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  const queryClient = useQueryClient();
+  const [replyMode, setReplyMode] = useState<'text' | 'voice'>(() => localStorage.getItem('sythion.replyMode') === 'voice' ? 'voice' : 'text');
+  const [playbackTaskId, setPlaybackTaskId] = useState<string | null>(null);
+  const playbackBusy = useRef(false);
+  const submittedIds = useRef(new Set<string>());
+  const narratedIds = useRef(new Set<string>());
+  const [captureBusy, setCaptureBusy] = useState(false);
   const tasks = useTasks();
   const tools = useTools();
   const agent = useAgent();
@@ -54,7 +64,6 @@ export function AssistantScreen() {
 
   const transcriptDraft = useAppStore((s) => s.transcriptDraft);
   const setTranscriptDraft = useAppStore((s) => s.setTranscriptDraft);
-  const isVoiceEnabled = useAppStore((s) => s.isVoiceEnabled);
   const setVoiceEnabled = useAppStore((s) => s.setVoiceEnabled);
   const isListening = useAppStore((s) => s.isListening);
   const isSpeaking = useAppStore((s) => s.isVoiceSpeaking);
@@ -63,7 +72,7 @@ export function AssistantScreen() {
   const notify = useAppStore((s) => s.notify);
   const dataMode = useAppStore((s) => s.dataMode);
 
-  const { toggleListening } = useVoiceCapture();
+  const { startCapture, stopCapture } = useVoiceCapture();
 
   const allTasks = useMemo(() => tasks.data ?? [], [tasks.data]);
 
@@ -93,11 +102,7 @@ export function AssistantScreen() {
   // anything waiting on the owner is pinned above instead.
   const thread = useMemo(
     () =>
-      allTasks
-        .filter((t) => Boolean(t.final_result || t.terminal_reason))
-        .filter((t) => !pinnedIds.has(t.id))
-        .slice()
-        .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()),
+      conversationTasks(allTasks, pinnedIds),
     [allTasks, pinnedIds]
   );
 
@@ -112,27 +117,51 @@ export function AssistantScreen() {
   }, [thread.length, awaitingTasks.length, transcriptDraft]);
 
   const onToggleVoice = useCallback(async () => {
+    if (captureBusy) return;
     setVoiceError(null);
-    if (isVoiceEnabled) {
-      setVoiceEnabled(false);
-      return;
-    }
-    if (!actions.live) {
-      setVoiceEnabled(true);
-      notify({
-        tone: 'warn',
-        title: 'Voice input needs a backend',
-        body: 'Microphone capture is routed to the local speech service. Start Sythion to enable it.',
-      });
-      return;
-    }
-    setVoiceEnabled(true);
+    setCaptureBusy(true);
     try {
-      await toggleListening();
+      if (isListening) {
+        await stopCapture();
+        setVoiceEnabled(false);
+      } else {
+        if (!actions.live) throw new Error('Connect Sythion before using the microphone.');
+        setVoiceEnabled(true);
+        await startCapture();
+      }
     } catch (err) {
-      setVoiceError(err instanceof Error ? err.message : 'Microphone unavailable');
+      setVoiceEnabled(false);
+      setVoiceError(err instanceof Error ? err.message : 'Microphone unavailable. You can still type.');
+    } finally {
+      setCaptureBusy(false);
     }
-  }, [actions.live, isVoiceEnabled, notify, setVoiceEnabled, toggleListening]);
+  }, [actions.live, captureBusy, isListening, setVoiceEnabled, startCapture, stopCapture]);
+
+  const playReply = useCallback(async (task: Task) => {
+    if (playbackBusy.current || !task.final_result || !actions.live) return;
+    playbackBusy.current = true;
+    setPlaybackTaskId(task.id);
+    setVoiceError(null);
+    try {
+      // The local playback endpoint accepts at most 1,000 characters.
+      const result = await voiceService.speak(task.final_result.slice(0, 1000));
+      if (!result.success) throw new Error('Spoken playback is unavailable. Your reply is still shown below.');
+    } catch (err) {
+      setVoiceError(err instanceof Error ? err.message : 'Playback failed. Read the reply below or try Listen again.');
+    } finally {
+      playbackBusy.current = false;
+      setPlaybackTaskId(null);
+    }
+  }, [actions.live]);
+
+  useEffect(() => {
+    if (replyMode !== 'voice' || playbackTaskId || isListening || captureBusy || document.visibilityState !== 'visible') return;
+    const task = nextSpokenReply(allTasks, submittedIds.current, narratedIds.current);
+    if (!task) return;
+    // Mark before playback so polling and failures never repeat audio.
+    narratedIds.current.add(task.id);
+    void playReply(task);
+  }, [allTasks, replyMode, playbackTaskId, isListening, captureBusy, playReply]);
 
   const sttReady = voiceSttAvailable ?? assets.data?.stt_installed ?? false;
   const authorization = deriveAuthorization(agent.data);
@@ -153,6 +182,15 @@ export function AssistantScreen() {
           <AssistantStatusIndicator status={status} />
           <span className="spacer" />
           {dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+          <label className="row" style={{ gap: 6 }}>
+            <span className="t-muted">Replies</span>
+            <select aria-label="Synth reply mode" className="input" style={{ width: 'auto' }} value={replyMode} onChange={(e) => {
+              const mode = e.target.value === 'voice' ? 'voice' : 'text';
+              setReplyMode(mode); localStorage.setItem('sythion.replyMode', mode);
+            }}>
+              <option value="text">Text</option><option value="voice">Voice + text</option>
+            </select>
+          </label>
           <Segmented
             value={pane}
             onChange={setPane}
@@ -224,32 +262,40 @@ export function AssistantScreen() {
                     description={
                       dataMode === 'preview'
                         ? 'This is a demonstration thread. Start a backend to hold a real conversation.'
-                        : undefined
+                        : 'Hello, I’m Synth. Type a message below, or use the microphone, review your words, then send.'
                     }
                   />
                 ) : (
-                  thread.map((t) => <Exchange key={t.id} task={t} onOpen={() => setSelected(t)} />)
+                  thread.map((t) => <Exchange key={t.id} task={t} onOpen={() => setSelected(t)} onSpeak={() => void playReply(t)} playbackBusy={playbackTaskId !== null} />)
                 )}
               </div>
 
               <div className="composer-foot composer-foot--assistant">
+                {voiceError && <p role="alert" className="t-danger">{voiceError}</p>}
+                {playbackTaskId && <p role="status">Requesting spoken playback… The full reply stays in the conversation.</p>}
+                {thread.length === 0 && dataMode === 'live' && <Button variant="subtle" onClick={() => setTranscriptDraft('Hello Synth, what can you help me with?')}>Try a first message</Button>}
                 <AssistantComposer
                   value={transcriptDraft}
                   onChange={setTranscriptDraft}
-                  submitting={submitting}
+                  submitting={submitting || captureBusy}
                   status={status}
                   blocked={status.state === 'offline'}
                   voiceActive={status.state === 'listening' || status.state === 'speaking'}
-                  voiceBlocked={voiceBlocked}
+                  voiceBlocked={voiceBlocked || voiceUnavailable || captureBusy}
                   voiceNotice={voiceUnavailable ? 'Speech-to-text is not installed on this machine' : null}
                   autonomyLabel={humanize(agent.data?.state ?? 'unknown')}
                   authorizationLabel={authorizationLabel}
                   authorizationTone={authorization.known ? authorization.tone : 'unknown'}
                   onToggleVoice={() => void onToggleVoice()}
                   onSubmit={async (text) => {
+                    if (submitting || isListening || captureBusy) return;
                     setSubmitting(true);
+                    setVoiceError(null);
                     try {
-                      await actions.createTask(text);
+                      const task = await actions.createTask(text);
+                      submittedIds.current.add(task.id);
+                      await queryClient.cancelQueries({ queryKey: ['tasks'] });
+                      queryClient.setQueryData<Task[]>(['tasks'], (old = []) => [task, ...old.filter((t) => t.id !== task.id)]);
                       setTranscriptDraft('');
                       tasks.refetch();
                       notify({
@@ -402,12 +448,12 @@ function AssistantComposer({
     el.style.height = `${Math.min(el.scrollHeight, 168)}px`;
   }, [value]);
 
-  const canSend = value.trim().length > 0 && !blocked && !submitting;
+  const canSend = value.trim().length > 0 && !blocked && !submitting && !voiceActive;
 
   const placeholder = blocked
     ? 'Preview mode — nothing here runs'
     : voiceActive
-      ? 'Listening…'
+      ? 'Listening… stop the microphone to review and send'
       : 'Message Sythion';
 
   return (
@@ -444,6 +490,7 @@ function AssistantComposer({
                     ? 'Stop listening'
                     : 'Start voice input'
             }
+            disabled={voiceBlocked}
             onClick={onToggleVoice}
           >
             <Icon name="microphone" size={17} />
@@ -599,7 +646,7 @@ const PHASE_LABEL: Record<string, string> = {
   cancelled: 'Cancelled',
 };
 
-function Exchange({ task, onOpen }: { task: Task; onOpen: () => void }) {
+function Exchange({ task, onOpen, onSpeak, playbackBusy }: { task: Task; onOpen: () => void; onSpeak: () => void; playbackBusy: boolean }) {
   const [open, setOpen] = useState(false);
 
   // Events are only fetched when the user asks for them. The previous screen
@@ -638,6 +685,9 @@ function Exchange({ task, onOpen }: { task: Task; onOpen: () => void }) {
               </div>
             )
           )}
+
+          {!task.final_result && !failed && <div className="msg__bubble" role="status">{task.state === 'cancelled' ? 'This message was cancelled.' : 'Synth is working on your message…'}</div>}
+          {task.final_result && <Button size="sm" variant="subtle" disabled={playbackBusy} onClick={onSpeak}>Listen{task.final_result.length > 1000 ? ' to the first part' : ''}</Button>}
 
           {/* Compact execution summary. Timestamps and traces live behind the
               disclosure or in the drawer. */}
