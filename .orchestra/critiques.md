@@ -937,3 +937,13 @@ This is the measurement that matters most, because it is the only one taken on t
 - verdict: ACCEPT
 - reason: Six of six budgeted items are merged, each with its own branch, its own review, its own independent verification, and its own merge SHA recorded in the board and provable from git. The final tree passes the detector the last item installed. The budget is met exactly and the run stops here.
 
+## 2026-10-21 10:00 - reviewer - 009 - ACCEPT
+- brief: briefs/009-implement-1.md
+- report: reports/009-implement-1.md (26 lines inside _is_full_tree_collection, single-caller, no other source file touched)
+- evidence: Independent review (ses_ea2b4c956ffe1ekXXa7NvoJZWC) confirmed every claim: diff vs master is exactly the guarded predicate, classify.py tier NORMAL, the six matrix commands exit 0, and the contrast cell (removing the gui marker from a registered module, with no flags) still aborts with exit 4. VERDICT: ACCEPT.
+- coverage: brief asked for the 4-column matrix plus a contrast cell; all 6 cells were re-measured on a fresh worktree, all exit 0.
+- consistency: matches the original 002 F1 finding in follow-ups.md point-for-point; the reviewer (and report) reuse the 002 Verifier's exact matrix language.
+- not checked: --deselect + partial-collection under a renamed directory layout; pytest 8.0 compatibility; collect_ignore_glob round-trip.
+- self-directed: no
+- verdict: ACCEPT
+- reason: The code is minimal, scoped, doesn't touch the canonical conftest contract, and retains the guard teeth.
