@@ -111,12 +111,12 @@
       "domain": "data"
     },
     "018": {
-      "status": "proposed",
-      "owner": null,
-      "branch": null,
-      "mergeSha": null,
-      "round": 0,
-      "verifyRounds": 0,
+      "status": "merged",
+      "owner": "committer-1",
+      "branch": "orchestra/018-vault-guard-surface",
+      "mergeSha": "25a9c029d80fad353e2dae1b892e57fbe2814fd2",
+      "round": 2,
+      "verifyRounds": 1,
       "conflicts": 0,
       "sensitivity": "sensitive",
       "domain": "security"

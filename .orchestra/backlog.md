@@ -34,7 +34,7 @@
 - Likely files: `backend/main.py`, `backend/tests/conftest.py`, `backend/tests/test_vault_guard_exception_surfaces.py`
 - Sensitivity: sensitive
 - Domain: security
-- Status: proposed
+- Status: merged (merge sha `25a9c02`, branch `orchestra/018-vault-guard-surface`, verifier FIXED)
 
 ### 019 Tautology detector must also catch nested and bare `or True`
 - Why: R-027 - `backend/tests/test_no_tautological_asserts.py` only matches a top-level `ast.BoolOp(ast.Or)` containing `ast.Constant(True)`, so `assert (x or True) and y`, `assert not (x or True)`, `assert x or (y or True)` and `assert True` (all unconditionally true) defeat the guard that exists precisely to prevent them. The plan's claim that the AST rule is "a superset of the literal `... or True` text pattern" is false for those four shapes. The acceptance case for item 004 only asked for the top-level case, so item 004 stays green - but the guard is a canary, not a proof.
