@@ -99,15 +99,26 @@ class DbEventLedger:
         sequence: Optional[int] = None
         last_exc: Optional[BaseException] = None
 
-        # Lazy idempotent table creation (in-memory / non-migrated DBs).
-        if not self._counter_table_checked:
+        # Ensure an outer transaction is active so DDL/DML participate in the
+        # caller-like rollback instead of auto-committing under legacy sqlite3
+        # transaction mode (Python 3.11+). No-op when already in a transaction.
+        if not self._session.in_transaction():
+            self._session.execute(text("BEGIN IMMEDIATE"))
+
+        # Transaction-resident existence check (item 017).
+        _table_present = self._session.execute(
+            text(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'task_event_sequences'"
+            )
+        ).scalar()
+        if not _table_present:
             self._session.execute(
                 text(
                     "CREATE TABLE IF NOT EXISTS task_event_sequences "
                     "(task_id VARCHAR NOT NULL PRIMARY KEY, next_seq INTEGER NOT NULL)"
                 )
             )
-            self._counter_table_checked = True
 
         for attempt in range(ALLOCATION_ATTEMPTS):
             pending_max = max(
