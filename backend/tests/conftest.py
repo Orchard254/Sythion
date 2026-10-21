@@ -502,6 +502,13 @@ def acceptance_control_token():
 # supply. This block is the single place where the suite stops inheriting a
 # local working tree. To extend the isolation, add the field name to
 # ``_LOCAL_ENV_FIELDS`` - the snapshot and the fixture below pick it up.
+#
+# Note: ``file_roots`` is included above, but an empty value (``[]``) is NOT
+# "no file access". ``backend/tools/file_tools.py::_approved_roots()``
+# treats ``[]`` as "unset" and approves the user's home directory plus the
+# process working directory (dropping the repository ``backend`` directory that
+# a non-empty list always adds). The fixture swaps approved directories; it
+# never makes the suite file-access-free.
 _LOCAL_ENV_FIELDS = ("ollama_api_key", "selected_model", "file_roots")
 
 try:
@@ -555,6 +562,13 @@ def _isolate_local_env_settings(monkeypatch, request):
     into another test. Only CLEAN values are ever assigned - in a clean
     checkout ``""``, ``""`` and ``[]`` - so this fixture can never introduce a
     credential into the test process.
+
+    Note: ``[]`` for ``file_roots`` is NOT "no file access" --
+    ``backend/tools/file_tools.py::_approved_roots()`` falls back to the
+    user's home directory plus the current working directory in that case (and
+    drops the repository ``backend`` directory a non-empty list always adds).
+    The isolation swaps approved directories; it is not file-access-free.
+    See item 006, finding F8.
     """
     if request.node.get_closest_marker("provider_e2e") is not None:
         # Deliberate carve-out: the two provider-e2e modules gate themselves
