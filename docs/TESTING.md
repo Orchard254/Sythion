@@ -62,8 +62,8 @@ python scripts/measure_test_baseline.py --check-collected # cheap drift check
 `--check` re-measures and compares every baseline document against the
 result; `--check-collected` re-measures only the collected count (a
 `--collect-only` pass), which is the number that moves whenever a test is
-added or removed.
-
+added or removed. The standalone form runs the full measurement first; the
+cheap form is `--measured <json> --check-collected` (67 s measured).
 ### Common Test Commands
 
 Every target below exists in the repository `Makefile`. The runtime column is
