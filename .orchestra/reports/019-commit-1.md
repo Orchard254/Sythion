@@ -18,7 +18,7 @@
 | **Suite on master** | **1583 passed, 45 skipped**, 427229 warnings in **502.26 s (0:08:22)**, exit **0** |
 | Recovery | **none needed** - green on the FIRST attempt, no native fault |
 | Collected (merged master) | **1628 tests collected** in 115.50 s |
-| Pushed? | **NO** - `git branch -r --contains 9bd499c` is empty; master is 6 commits ahead of `origin/master`, entirely local |
+| Pushed? | **NO** - `git branch -r --contains 9bd499c` is empty; master is 9 commits ahead of `origin/master`, entirely local |
 | Worktrees removed | `wt-019`, `wt-019-review`, `wt-019-review2`, `wt-019-review3`, `wt-019-verify` (all clean) |
 | Worktrees already gone | `wt-019-base` (removed by the Verifier; absent from disk and from `.git/worktrees`) |
 
@@ -125,7 +125,7 @@ Every `wt-019*` tree was inspected **before** removal with
 
 **Not done (by design):**
 
-- **NOT PUSHED.** `git branch -r --contains 9bd499c` -> empty. `master` is **7 commits ahead of `origin/master`** (`42d6a03` the records commit, `df75bb6` the merge, `9bd499c`, `7748449`, `b7ff0f7`, `61dea54`, `5d4b117`), entirely local.
+- **NOT PUSHED.** `git branch -r --contains 9bd499c` -> empty. `master` is **9 commits ahead of `origin/master`** (three `.orchestra` records commits on top of the merge `df75bb6`, then `9bd499c`, `7748449`, `b7ff0f7`, `61dea54`, `5d4b117`), entirely local.
 - **No deploy, publish, migration, dispatch or secret rotation.** No production behaviour was exercised and no credential was read or written.
 - **No history was rewritten.** The rebase was performed on the item's own unpublished branch (its old tip `1304ec7` was never pushed), and only append-only edits were made to `board.json` / `backlog.md` / `log.md` / `critiques.md`.
 - **No follow-ups added for 019.**
@@ -169,6 +169,10 @@ established pattern in this repository (`c855d72` for item 018, `0e14168` for it
    A .orchestra/reports/019-commit-1.md
    A .orchestra/verifications/019-v1.md   (the Verifier's report, which was still untracked)
 ```
+
+Two further, tiny `.orchestra`-only commits amend this report so that the file is self-consistent
+with the tree it describes (the records-commit shas and the exact local-ahead count). They touch
+nothing outside `.orchestra/`.
 
 **Deliberately NOT staged in that commit** - these belong to a concurrent agent working on item 020
 and are reported above, not claimed: `src-tauri/src/sidecar.rs` (modified), `.orchestra/briefs/020-plan-1.md`
