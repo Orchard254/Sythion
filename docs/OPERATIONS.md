@@ -210,3 +210,55 @@ Update this runbook when:
 - the recommended validation flow changes.
 
 Keep it operational and concise.
+
+
+## First launch through the first reply
+
+The packaged Windows installer and sidecar startup are unchanged. On launch,
+the frontend asks the authenticated local backend for readiness, including on
+machines with an older saved text-first preference. Missing credentials,
+model inference evidence, or safe settings return the user to setup.
+
+1. **Connect Synth:** validate and securely save an Ollama Cloud key, discover
+   exact authenticated model IDs, select one, and run the inference test.
+   The validation endpoint already saves the key; the frontend must not write
+   it a second time and invalidate the test evidence.
+2. **Choose how to talk:** select text or voice-plus-text replies. Guarded
+   autonomy and 90-day retention are applied before this screen. Spoken
+   replies require a successful local speaker test. Microphone/STT installation
+   and permission are optional, including when spoken replies are selected.
+3. **Start chatting:** recheck readiness and open the Assistant conversation.
+   The starter prompt fills an editable draft; it does not submit automatically.
+   The durable task response immediately appears in the thread while work runs.
+4. **First reply:** the task's final result stays visible as text. Voice mode
+   narrates a newly submitted completed result once per mounted conversation.
+   Listen allows an explicit replay; playback failure keeps the answer visible.
+   Playback is limited to the first 1,000 characters, matching the local API.
+5. **Voice input:** click the microphone, speak, stop, review the editable
+   transcript, then send. Session end preserves the last flushed segment.
+   Permission failures surface to the user. Nothing sends automatically.
+
+Reply preference is non-secret frontend metadata (`sythion.replyMode`). It
+never substitutes for backend readiness, and it does not grant microphone
+permission or change backend authorization. Historical replies are not read
+aloud automatically when a conversation is reopened. Failed sends keep drafts.
+
+Frontend regression checks: `npm --prefix frontend run test`,
+`npm --prefix frontend run build`, and `npm --prefix frontend run lint`.
+Component tests use mocked local/model services; they do not certify an
+installed Windows runtime, real cloud inference, or physical audio devices.
+
+Before release, on a clean Windows profile:
+
+- install and launch the packaged app; check the connection failure/retry path;
+- complete setup with a real key/model, then send the starter message and check
+  that the pending request and real answer appear;
+- try voice-plus-text, check the speaker test and first spoken reply;
+- allow and deny microphone access, confirm the final words survive Stop,
+  then review/send the transcript;
+- verify hidden-window capture cleanup and no automatic replay on reopening;
+- disconnect the network during send and verify the draft is preserved;
+- restart in text mode without STT and verify chat remains available; invalidate
+  model evidence and verify the saved preference cannot bypass setup.
+
+These device/installer gates remain manual until executed on Windows.

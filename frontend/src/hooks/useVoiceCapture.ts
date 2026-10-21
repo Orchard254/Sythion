@@ -45,6 +45,8 @@ export function useVoiceCapture() {
   const sessionIdRef = useRef<string | null>(null);
   const frameBufferRef = useRef<Uint8Array>(new Uint8Array(0));
   const stoppedRef = useRef(false);
+  const startingRef = useRef(false);
+  const pendingFramesRef = useRef(new Set<Promise<void>>());
   const isListeningRef = useRef(false);
 
   useEffect(() => {
@@ -85,7 +87,13 @@ export function useVoiceCapture() {
     }
     if (sessionId) {
       try {
-        await voiceService.endSession(sessionId);
+        // Finish posted frames before flushing the last utterance.
+        await Promise.allSettled([...pendingFramesRef.current]);
+        const result = await voiceService.endSession(sessionId);
+        for (const segment of result.segments ?? []) {
+          if (segment.text) appendTranscriptSegment(segment.segment_id, segment.text);
+          if (segment.stop_detected) setStopDetected(true);
+        }
       } catch {
         // session may already be gone
       }
@@ -95,7 +103,7 @@ export function useVoiceCapture() {
     setRecording(false);
     setVoiceSpeaking(false);
     frameBufferRef.current = new Uint8Array(0);
-  }, [setListening, setRecording, setVoiceSpeaking]);
+  }, [appendTranscriptSegment, setListening, setRecording, setVoiceSpeaking]);
 
   const flushFrames = useCallback(() => {
     const sessionId = sessionIdRef.current;
@@ -106,7 +114,7 @@ export function useVoiceCapture() {
     while (buffer.length - offset >= FRAME_BYTES) {
       const frame = buffer.slice(offset, offset + FRAME_BYTES);
       offset += FRAME_BYTES;
-      voiceService
+      const pending = voiceService
         .sendAudioFrame(sessionId, frame)
         .then((result) => {
           if (result.stt_available) {
@@ -128,15 +136,18 @@ export function useVoiceCapture() {
         .catch(() => {
           // A single dropped frame must not break the session.
         });
+      pendingFramesRef.current.add(pending);
+      void pending.finally(() => pendingFramesRef.current.delete(pending));
     }
     frameBufferRef.current = buffer.slice(offset);
   }, [appendTranscriptSegment, setVoiceSpeaking, setVoiceSttAvailable]);
 
   const startCapture = useCallback(async () => {
     // Capture only while visible and voice mode is on.
-    if (!isVoiceEnabled || isListeningRef.current) return;
+    if (!useAppStore.getState().isVoiceEnabled || isListeningRef.current || startingRef.current) return;
     if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-    if (!navigator.mediaDevices?.getUserMedia) return;
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone access is unavailable on this device. You can type your message instead.');
+    startingRef.current = true;
 
     stoppedRef.current = false;
     setStopDetected(false);
@@ -152,6 +163,10 @@ export function useVoiceCapture() {
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
       streamRef.current = stream;
+      if (stoppedRef.current || !useAppStore.getState().isVoiceEnabled || document.visibilityState !== 'visible') {
+        await stopCapture();
+        return;
+      }
 
       // Surface permission loss / device revocation by stopping capture.
       stream.getTracks().forEach((track) => {
@@ -192,8 +207,10 @@ export function useVoiceCapture() {
       // Permission denied or no device: keep the dashboard usable, no capture.
       await stopCapture();
       throw error;
+    } finally {
+      startingRef.current = false;
     }
-  }, [flushFrames, isVoiceEnabled, setListening, setRecording, setVoiceSpeaking, setVoiceSttAvailable, stopCapture]);
+  }, [flushFrames, setListening, setRecording, setVoiceSpeaking, setVoiceSttAvailable, stopCapture]);
 
   // Stop on minimize/close/lock (document hidden) or window blur.
   useEffect(() => {
@@ -239,11 +256,7 @@ export function useVoiceCapture() {
     if (isListeningRef.current) {
       await stopCapture();
     } else {
-      try {
-        await startCapture();
-      } catch {
-        // Surface via store error state handled by the caller.
-      }
+      await startCapture();
     }
   }, [startCapture, stopCapture]);
 
@@ -260,3 +273,4 @@ export function useVoiceCapture() {
     resetTranscriptDraft,
   };
 }
+

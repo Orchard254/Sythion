@@ -398,8 +398,9 @@ export const voiceService = {
     return response.data;
   },
 
-  endSession: async (sessionId: string): Promise<void> => {
-    await apiClient.post(`/voice/${sessionId}/end`);
+  endSession: async (sessionId: string): Promise<{ segments: VoiceSegment[] }> => {
+    const response = await apiClient.post(`/voice/${sessionId}/end`);
+    return response.data;
   },
 
   speak: async (text: string): Promise<{ success: boolean }> => {
