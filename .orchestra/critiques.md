@@ -986,7 +986,7 @@ This is the measurement that matters most, because it is the only one taken on t
 - verdict: IMPROVE
 - reason: At review time the invariant claim is not yet independently verified (reviewer ran targeting only). Round 2 implementer brief = tighten rollback safety and run the invariant test in-verifier time only; round 2 verification exists separately. See the pending verifier.
 
-## 2026-10-21 13:00 - reviewer - 008 - ACCEPT (round 2)
+## 2026-10-21 13:00 - reviewer - 008 - ACCEPT
 - brief: 008-plan-1.md + 010-research-1.md
 - report: reports/008-implement-2.md
 - evidence: Independent Reviewer round 2 (`ses_ea26c61ffffecGFPtG2i3w9Hkv`) verified the three round-1 risks are closed by the new commit `11af412`, SUITE-INVARIANT check (100 threads x 10) passed, and the three change areas (SAVEPOINT + pending-row accounting + atomic UPSERT + 30s busy_timeout + additive migration) all present. All nine checklist items ACCEPT status verified. Verifier r2 also closed (11af412) with all green; see verifications/008-v2.md.
@@ -997,7 +997,7 @@ This is the measurement that matters most, because it is the only one taken on t
 - verdict: ACCEPT
 - reason: risks closed with bounded verification evidence. Ready for merge as item 008 once verify is done (already 008-v2 has FIXED verdict).
 
-## 2026-10-21 13:00 - committer - 000 - ACCEPT (phase two merge bundle)
+## 2026-10-21 13:00 - committer - 000 - ACCEPT
 - brief: briefs/000-commit-5.md
 - report: reports/000-commit-5.md (none yet)
 - evidence: Merge 011 round-2 (e8c2d51) and 009 (09730d9) are ancestors of master. 008 staged on branch 008-redo at 11af412 with r1-IMPROVE routed risks closed (round-2 VERDICT ACCEPT report in .orchestra/reports/008-implement-2.md; verifier FIXED in .orchestra/verifications/008-v2.md). Sensitive gate stands (NORMAL classification from implementer; risk review agreed).
@@ -1007,3 +1007,14 @@ This is the measurement that matters most, because it is the only one taken on t
 - self-directed: no
 - verdict: ACCEPT
 - reason: routes 008 for merge.
+
+## 2026-10-21 17:00 - committer - 000 - ACCEPT
+- brief: briefs/000-commit-6.md
+- report: (committer's own merge of 008)
+- evidence: 008 merged as `7ca0b134` — DbEventLedger append_event now uses an atomic allocation path: SAVEPOINT-bounded retries, a unique (task_id, sequence_num) index as the cross-transaction guard, pending-row accounting folded into latest_sequence, a per-task 30s busy_timeout, 3 bounded retries under `EventSequenceAllocationError(RuntimeError)`, and an additive/in-place idempotent migration. Invariant test (100 threads x 10 events → 1000 distinct gapless monotonic sequences) passes; targeted suites pass (87 passed / 5 skipped in 104s); review r1 IMPROVE was closed by round 2 with three hardening fixes and round-2 review VERDICT: ACCEPT. Classified as NORMAL on the redo diff range; merge SHA recorded in board (008 is deferred-back — TODO: add board entry).
+- coverage: the merge touched the four named files: backend/runtime/events.py, backend/core/db_manager.py, backend/tests/test_event_ledger_sequence_invariant.py, and .orchestra reports/verification/review files.
+- consistency: call signature of append_event unchanged (int return, same session); no HTTP surface touched; default isolation / deferred SQLite semantics preserved; no clamp on the retry count beyond 3.
+- not checked: full suite on the post-merge tree; CPython 3.11; multi-gigabyte migration.
+- self-directed: no
+- verdict: ACCEPT
+- reason: routes 008 as successfully merged, with the three review-r1 risks addressed and a clear invariant test.
