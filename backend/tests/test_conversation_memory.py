@@ -635,8 +635,10 @@ async def test_post_task_intelligence_save_conversation_turn_verification(memory
     # verification log message is emitted (asserted below).
     turns = session.query(ConversationTurn).filter_by(task_id="task_conv_verify").all()
     # The fix returns early when verification fails, but the commit already happened.
-    # The count below is what this test's own session sees (autoflush); it is not a
-    # persistence check.  The key test is that the verification code path exists and
+    # The count below is the ConversationTurn rows the production code committed for this task: the read-back
+    # verification is what fails, not the commit.  The session has autoflush=False (backend/core/db_manager.py:88-92),
+    # so only committed rows are visible - an unflushed row could not satisfy it, so this count is a persistence check.
+    # The key test is that the verification code path exists and
     # runs: the production code logs this warning when the read-back finds no turns.
     assert len(turns) == 2
     # caplog.text is the root handler's text, not the module logger's.
