@@ -1,7 +1,7 @@
 """
 Sythion (Synth) end-to-end smoke test.
 
-Hits a running backend at http://127.0.0.1:8000 and verifies the full
+Hits a running backend and verifies the full
 task lifecycle: create -> run -> complete with a non-empty final_result.
 
 Usage:
@@ -18,8 +18,116 @@ import time
 import urllib.error
 import urllib.request
 
-BASE_URL = "http://127.0.0.1:8000/api/v1"
+BASE_URL = None
+
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+try:
+    from backend.core import storage as _storage
+except Exception:  # pragma: no cover - standalone fallback
+    _storage = None
+
+
+def _manual_data_dir():
+    canonical = os.environ.get("SYTHION_DATA_DIR", "").strip()
+    legacy = os.environ.get("Sythion (Synth)_DATA_DIR", "").strip()
+    if canonical and legacy:
+        if os.path.normcase(os.path.normpath(os.path.abspath(canonical))) != os.path.normcase(
+            os.path.normpath(os.path.abspath(legacy))
+        ):
+            raise ValueError("conflicting profile directories")
+        return os.path.normpath(os.path.abspath(canonical))
+    if canonical:
+        return os.path.normpath(os.path.abspath(canonical))
+    if legacy:
+        return os.path.normpath(os.path.abspath(legacy))
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+        return os.path.normpath(os.path.abspath(os.path.join(local, "Sythion (Synth)")))
+    import tempfile
+
+    return os.path.normpath(os.path.abspath(os.path.join(tempfile.gettempdir(), "sythion-data")))
+
+
+def resolve_handshake_path():
+    if _storage is not None:
+        try:
+            return _storage.handshake_path()
+        except Exception:
+            pass
+    return os.path.join(_manual_data_dir(), "sidecar.json")
+
+
+resolve_sidecar_path = resolve_handshake_path
+handshake_path = resolve_handshake_path
+
+
+def _read_sidecar(url=None, port=None):
+    if url:
+        path = resolve_handshake_path()
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"sidecar.json not found at {path}")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or not data.get("token"):
+            raise ValueError(f"sidecar.json invalid at {path}")
+        return data.get("token"), str(url), path
+
+    path = resolve_handshake_path()
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"sidecar.json not found at {path}")
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or not data.get("token"):
+        raise ValueError(f"sidecar.json invalid at {path}")
+
+    resolved_port = data.get("port") if port is None else port
+    if isinstance(resolved_port, str):
+        try:
+            resolved_port = int(resolved_port)
+        except ValueError:
+            resolved_port = None
+    if not isinstance(resolved_port, int):
+        raise ValueError(f"sidecar.json missing/invalid port at {path}")
+
+    return data.get("token"), f"http://127.0.0.1:{resolved_port}", path
+
+
+def resolve_base_url(url=None, port=None, host="127.0.0.1", **kwargs):
+    if url is None:
+        url = kwargs.get("url", kwargs.get("base_url", kwargs.get("endpoint")))
+    if port is None:
+        port = kwargs.get("port")
+    if url:
+        return str(url)
+    if port is not None:
+        return f"http://{host}:{port}"
+    token, base_url, path = _read_sidecar(None, port)
+    return base_url
+
+
+resolve_url = resolve_base_url
+resolve_endpoint = resolve_base_url
+
+
+def get_base_url(url=None, port=None, host="127.0.0.1", **kwargs):
+    global BASE_URL
+    if url is None and port is None and "port" not in kwargs and BASE_URL is not None:
+        return BASE_URL
+    resolved = resolve_base_url(url=url, port=port, host=host, **kwargs)
+    api_url = resolved + "/api/v1"
+    BASE_URL = api_url
+    return api_url
+
+
 TERMINAL_STATES = {"completed", "failed", "cancelled", "interrupted"}
+
+try:
+    if BASE_URL is None:
+        BASE_URL = get_base_url()
+except Exception:
+    BASE_URL = None
 POLL_INTERVAL = 2.0
 TIMEOUT_SECONDS = 120
 
@@ -55,7 +163,7 @@ def load_control_token():
 
 
 def api(path, method="GET", data=None, timeout=30):
-    url = BASE_URL + path
+    url = get_base_url() + path
     req = urllib.request.Request(url, method=method)
     token = load_control_token()
     if token:
@@ -89,14 +197,18 @@ def main():
                         help="skip the live-model task round trip")
     parser.add_argument("--all", action="store_true",
                         help="also run the system_time tool check")
+    parser.add_argument("--url", default=None, help="explicit backend base URL")
+    parser.add_argument("--port", type=int, default=None, help="explicit backend port")
     args = parser.parse_args()
+
+    get_base_url(args.url, args.port)
 
     results = []
 
     try:
         health = api("/health")
     except Exception as e:
-        print(f"[FAIL] backend unreachable at {BASE_URL}: {e}")
+        print(f"[FAIL] backend unreachable at {get_base_url()}: {e}")
         print("Start it with: cd C:\\Ai\\sythion && start_sythion.cmd")
         return FAIL
 

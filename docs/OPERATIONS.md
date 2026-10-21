@@ -102,10 +102,19 @@ python scripts/launch_sidecar.py --port 8010 --dev --no-open
 
 ## Live smoke testing
 
-With a sidecar already running:
+With a sidecar already running (its handshake file supplies the port):
 
 ```bash
 python scripts/smoke_test.py --all
+```
+
+The smoke test and root CLI resolve the backend URL from `%SYTHION_DATA_DIR%/sidecar.json`
+(or `%LOCALAPPDATA%\Sythion (Synth)\sidecar.json` by default). Override with `--url` or
+`--port` when needed:
+
+```bash
+python scripts/smoke_test.py --url http://127.0.0.1:8010/api/v1
+python scripts/smoke_test.py --port 8010
 ```
 
 Other options:
@@ -132,7 +141,9 @@ The smoke test looks for the control token in this order:
 3. legacy `Sythion (Synth)_CONTROL_TOKEN` env var for older local workflows;
 4. legacy `~/.sythion/control_token`.
 
-The launcher writes the token file for the current dev/runtime session.
+The backend port is read separately from the handshake file
+(`sidecar.json`), not hardcoded. The launcher writes the token and handshake
+files for the current dev/runtime session.
 
 ## Windows/shell note for this workspace
 
