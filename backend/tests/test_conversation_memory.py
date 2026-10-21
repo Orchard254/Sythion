@@ -631,13 +631,15 @@ async def test_post_task_intelligence_save_conversation_turn_verification(memory
         await save_conversation_turn(session, "task_conv_verify", task)
 
     # Fix behavior: returns early (verification caught the failure)
-    # The turns may have been committed before verification, so we just verify the code path ran
-    # by checking that the verification log message was emitted (implicitly tested by no exception)
+    # The turns may have been committed before verification, so we check that the
+    # verification log message is emitted (asserted below).
     turns = session.query(ConversationTurn).filter_by(task_id="task_conv_verify").all()
-    # The fix returns early when verification fails, but the commit already happened
-    # The key test is that the verification code path exists and runs:
-    # the production code logs this warning when the read-back finds no turns.
+    # The fix returns early when verification fails, but the commit already happened.
+    # The count below is what this test's own session sees (autoflush); it is not a
+    # persistence check.  The key test is that the verification code path exists and
+    # runs: the production code logs this warning when the read-back finds no turns.
     assert len(turns) == 2
+    # caplog.text is the root handler's text, not the module logger's.
     assert "Verification failed" in caplog.text
 
 

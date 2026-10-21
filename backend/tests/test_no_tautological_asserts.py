@@ -2,10 +2,11 @@
 
 An ``assert`` whose test carries the boolean literal ``True`` in a *boolean
 position* is degenerate: the literal decides that position instead of the
-code under test, so the assertion verifies nothing while the suite that
-contains it advertises exactly the property it does not check.  This module
-scans every ``*.py`` file under ``backend/tests`` (including
-``backend/tests/acceptance/``) and fails if such an assertion exists.
+code under test, so the assertion does not check the property its shape
+suggests while the suite that contains it advertises exactly the property
+it does not check.  This module scans every ``*.py`` file under
+``backend/tests`` (including ``backend/tests/acceptance/``) and fails if
+such an assertion exists.
 
 Detection rule, exactly:
 
@@ -114,6 +115,9 @@ def _source(template):
     ``{not}`` and ``{assert}``; they are filled from the parts tuple so that
     no single line of this file spells a forbidden sequence.
     """
+    # zip() truncates silently, so a length guard keeps the parts tuple and the
+    # placeholder map in step.
+    assert len(_TAUTOLOGY_PARTS) == 5, "parts tuple and placeholder map must stay in step"
     parts = dict(zip(("or", "true", "and", "not", "assert"), _TAUTOLOGY_PARTS))
     return template.format(**parts)
 
@@ -143,7 +147,8 @@ def test_no_assert_statement_disjoins_with_the_literal_true():
     assert not violations, (
         "assert statements under backend/tests must not carry the boolean "
         "literal True in a boolean position (an operand of a conjunction or "
-        "a disjunction, or the operand of a negation):\n"
+        "a disjunction, or the operand of a negation, or the assertion's own "
+        "test):\n"
         + "\n".join(violations)
     )
 

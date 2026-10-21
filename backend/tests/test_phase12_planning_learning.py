@@ -362,7 +362,8 @@ def test_learned_planning_cannot_grant_capabilities(db):
 def test_learned_planning_cannot_change_runtime_permissions(db):
     # Planning selector has no pathway to alter runtime policy — assert no side effects on Goal state
     from backend.models.database import Objective
-    # No goal mutation via planning
+    # No goal mutation via planning - the comparison pins persisted state: an
+    # uncommitted mutation is discarded by db.expire_all() and is not detected.
     goal = Objective(id="sec_perm_goal", title="runtime-permission invariant",
                      status="active", priority=3)
     db.add(goal)
