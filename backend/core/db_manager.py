@@ -142,8 +142,9 @@ class DatabaseManager:
                 "ON task_events (task_id, sequence_num)"
             ))
             # Item 008: per-task sequence counter so concurrent appends cannot
-            # allocate the same sequence number. Backfilled from existing rows
-            # (counter starts at MAX(sequence_num)+1); idempotent across boots.
+            # allocate the same sequence number. Counter stores the last
+            # allocated sequence (0 = none allocated yet). Backfilled from
+            # existing rows; idempotent across boots and restarts.
             conn.execute(text(
                 "CREATE TABLE IF NOT EXISTS task_event_sequences "
                 "(task_id VARCHAR NOT NULL PRIMARY KEY, next_seq INTEGER NOT NULL)"
