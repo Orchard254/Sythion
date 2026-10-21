@@ -513,10 +513,18 @@ except ImportError:  # pragma: no cover - the standalone ``backend/`` layout
 def _clean_settings_snapshot():
     """The values ``_LOCAL_ENV_FIELDS`` have in a CLEAN checkout.
 
-    Built with the env FILE disabled (``Settings(_env_file=None)``), so the
-    developer's ``backend/.env`` is never read to obtain these values: the
-    result is the process environment's ``SYTHION_*`` value when that variable
-    is exported, otherwise the field default.
+    Built with the env FILE disabled (``Settings(_env_file=None)``) AND with
+    the process environment's ``SYTHION_*`` variables temporarily removed, so
+    neither a developer's gitignored ``backend/.env`` nor an exported
+    ``SYTHION_OLLAMA_API_KEY`` (or any other ``SYTHION_*`` value) can leak
+    into the "clean" snapshot.  The result is always the field default for
+    these three fields, regardless of the caller's working tree.
+
+    Neutralising the process environment here is only the *snapshot* half of
+    the contract: the per-test fixture below also clears the same variables
+    from ``os.environ`` for every non-``provider_e2e`` test, so code that
+    reads them directly (and any fresh ``Settings()`` instance constructed
+    inside a test) observes the clean values too.
 
     A list value is copied out of ``clean``, so the snapshot does not alias
     ``clean``'s own list. That copy is NOT on its own enough to protect the
@@ -526,12 +534,23 @@ def _clean_settings_snapshot():
     ``settings.file_roots`` IN PLACE (``.append(...)``) from corrupting the
     snapshot the NEXT test is isolated from.
     """
-    clean = Settings(_env_file=None)
-    snapshot = {}
-    for name in _LOCAL_ENV_FIELDS:
-        value = getattr(clean, name)
-        snapshot[name] = list(value) if isinstance(value, list) else value
-    return snapshot
+    # Temporarily remove every ``SYTHION_*`` process variable so pydantic-settings
+    # cannot read them while building the clean snapshot.  They are restored
+    # afterwards (see ``finally``), so the process environment seen by the rest
+    # of the session - and by the ``provider_e2e`` carve-out - is unchanged.
+    removed = {}
+    for key in list(os.environ):
+        if key.upper().startswith("SYTHION_"):
+            removed[key] = os.environ.pop(key)
+    try:
+        clean = Settings(_env_file=None)
+        snapshot = {}
+        for name in _LOCAL_ENV_FIELDS:
+            value = getattr(clean, name)
+            snapshot[name] = list(value) if isinstance(value, list) else value
+        return snapshot
+    finally:
+        os.environ.update(removed)
 
 
 _CLEAN_SETTINGS = _clean_settings_snapshot()
@@ -563,8 +582,20 @@ def _isolate_local_env_settings(monkeypatch, request):
         # key here would make that gate pass (it would see the developer's
         # key) and then fail the live provider call with no credential. That
         # run is explicitly opt-in (``SYTHION_RUN_PROVIDER_E2E=1``) and needs a
-        # real credential, so those modules keep the ambient value.
+        # real credential, so those modules keep the ambient value (including
+        # the process environment).
         return
+    # Neutralise the PROCESS ENVIRONMENT too, not just the settings singleton.
+    # ``os.environ`` is the other half of the leak: pydantic-settings re-reads
+    # ``SYTHION_*`` vars whenever a fresh ``Settings()`` is constructed inside
+    # a test, and production code that calls ``os.environ``/``os.getenv``
+    # directly would otherwise still see the caller's ambient values.  Clear
+    # every ``SYTHION_*`` variable for the duration of this test; monkeypatch
+    # restores them at teardown.  ``provider_e2e`` tests are carved out above
+    # and keep the ambient environment.
+    for key in list(os.environ):
+        if key.upper().startswith("SYTHION_"):
+            monkeypatch.delenv(key, raising=False)
     for name, value in _CLEAN_SETTINGS.items():
         # A FRESH copy per test. The snapshot is shared by the whole session,
         # so handing out the snapshot's own list would let a test that mutates
