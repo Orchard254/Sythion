@@ -971,7 +971,7 @@ This is the measurement that matters most, because it is the only one taken on t
 - reason: Correction round is a report-text tightening; the code quality is approved. Advance to independent verifier.
 
 ## 2026-10-21 12:00 - reviewer - 008 - IMPROVE
-- note: round 1.
+- note: round 1 (improve verdict, with three listed risks).
 - brief: 008 plan-1.md + 010-research-1.md
 - report: reports/008-implement-1.md + commit cb6516fa78a79ab44a4c01deb24273cd6005b030
 - evidence: The independent Reviewer (`ses_ea2a21b39ffebx63oRlMnu5qwc`) confirmed (a) fix mechanism matches the plan ATTEMPT, (b) classify says NORMAL not EXTERNAL, (c) suite 1615 vs 1614 (+new invariant test, additive), targeted 87 passed / 5 skipped in 104s, (d) invariant test runs, (e) two concurrency files pass in the subset (42). But three specific risks were raised:
@@ -985,3 +985,25 @@ This is the measurement that matters most, because it is the only one taken on t
 - self-directed: no
 - verdict: IMPROVE
 - reason: At review time the invariant claim is not yet independently verified (reviewer ran targeting only). Round 2 implementer brief = tighten rollback safety and run the invariant test in-verifier time only; round 2 verification exists separately. See the pending verifier.
+
+## 2026-10-21 13:00 - reviewer - 008 - ACCEPT (round 2)
+- brief: 008-plan-1.md + 010-research-1.md
+- report: reports/008-implement-2.md
+- evidence: Independent Reviewer round 2 (`ses_ea26c61ffffecGFPtG2i3w9Hkv`) verified the three round-1 risks are closed by the new commit `11af412`, SUITE-INVARIANT check (100 threads x 10) passed, and the three change areas (SAVEPOINT + pending-row accounting + atomic UPSERT + 30s busy_timeout + additive migration) all present. All nine checklist items ACCEPT status verified. Verifier r2 also closed (11af412) with all green; see verifications/008-v2.md.
+- coverage: complete — all three risks adjudicated, migration idempotence measured, extern API untouched, 88 call sites compile, 0 non-regression.
+- consistency: r2 commit sits on top of r1 commit; report SHA updated; tests pass by both focused and full-run subset measures.
+- not checked: full-suite run on 3.14 against a clean in-memory database cluster; production migration of a terabyte-ish ledger.
+- self-directed: no
+- verdict: ACCEPT
+- reason: risks closed with bounded verification evidence. Ready for merge as item 008 once verify is done (already 008-v2 has FIXED verdict).
+
+## 2026-10-21 13:00 - committer - 000 - ACCEPT (phase two merge bundle)
+- brief: briefs/000-commit-5.md
+- report: reports/000-commit-5.md (none yet)
+- evidence: Merge 011 round-2 (e8c2d51) and 009 (09730d9) are ancestors of master. 008 staged on branch 008-redo at 11af412 with r1-IMPROVE routed risks closed (round-2 VERDICT ACCEPT report in .orchestra/reports/008-implement-2.md; verifier FIXED in .orchestra/verifications/008-v2.md). Sensitive gate stands (NORMAL classification from implementer; risk review agreed).
+- coverage: three 008 round-2 risk statements adjudicated PUBLICALLY; invariant under 100x10, worker exception propagation, migration safe.
+- consistency: 008-v2 verifier exits FIXED; reviewer round 1 + implementer round 2 agree.
+- not checked: full-suite (subset only); production-scale migration of terabyte-ish ledger.
+- self-directed: no
+- verdict: ACCEPT
+- reason: routes 008 for merge.
