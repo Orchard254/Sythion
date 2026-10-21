@@ -122,12 +122,12 @@
       "domain": "security"
     },
     "019": {
-      "status": "proposed",
-      "owner": null,
-      "branch": null,
+      "status": "verifying",
+      "owner": "verifier-019",
+      "branch": "orchestra/019-tautology-detector",
       "mergeSha": null,
-      "round": 0,
-      "verifyRounds": 0,
+      "round": 3,
+      "verifyRounds": 1,
       "conflicts": 0,
       "sensitivity": "none",
       "domain": "none"
