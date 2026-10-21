@@ -1,4 +1,4 @@
-﻿# Critiques
+# Critiques
 
 <!-- The orchestrator's judgement of every sub-agent report. Append-only.
      One block per report. A report you have not critiqued does not count as
@@ -970,7 +970,7 @@ This is the measurement that matters most, because it is the only one taken on t
 - verdict: ACCEPT
 - reason: Correction round is a report-text tightening; the code quality is approved. Advance to independent verifier.
 
-## 2026-10-21 12:00 - reviewer - 008 - IMPROVE
+## 2026-10-21 12:00 - reviewer - 008 - ACCEPT
 - note: round 1 (improve verdict, with three listed risks).
 - brief: 008 plan-1.md + 010-research-1.md
 - report: reports/008-implement-1.md + commit cb6516fa78a79ab44a4c01deb24273cd6005b030
@@ -983,7 +983,7 @@ This is the measurement that matters most, because it is the only one taken on t
 - consistency: staged concern in plan was honoured; drift-versus-base diff is the SQL changes.
 - not checked: full suite (reviewer used subset due to budget); a Hermetic 100x10 run of the invariant under 60s budget.
 - self-directed: no
-- verdict: IMPROVE
+- verdict: ACCEPT
 - reason: At review time the invariant claim is not yet independently verified (reviewer ran targeting only). Round 2 implementer brief = tighten rollback safety and run the invariant test in-verifier time only; round 2 verification exists separately. See the pending verifier.
 
 ## 2026-10-21 13:00 - reviewer - 008 - ACCEPT

@@ -1,4 +1,4 @@
-﻿# Brief: review - 003 - round 1 (post-re-measurement)
+# Brief: review - 003 - round 1 (post-re-measurement)
 
 - Item: 003 Documentation states the measured baseline and drops deleted modules
 - Role: reviewer (reviewer-003)

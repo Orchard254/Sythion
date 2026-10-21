@@ -1,4 +1,4 @@
-﻿# Backlog
+# Backlog
 
 <!-- Scout's ranked backlog for this run: one block per item.
      Every block opens with a three-digit item heading followed by a title,

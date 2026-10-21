@@ -1,4 +1,4 @@
-﻿# Log
+# Log
 
 2026-10-20 orchestrator run start: project root `C:\Sythion\sythion` (git repo, branch `master`, base branch `master`). Orchestrator state created at `.orchestra/` and committed as `2d6fe8d`.
 2026-10-20 goal derived: `goal.md` written from README.md, docs/ROADMAP.md, docs/QUALITY_GATES.md, Makefile, .github/workflows/ci.yml, dependency manifests, git history, CogniGraph memory (1134 facts). No user input sought.
