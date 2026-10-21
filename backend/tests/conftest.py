@@ -658,6 +658,14 @@ class ProductCredentialWriteAttempt(AssertionError):
     as a failure.
     """
 
+    # Vault-write-violation marker contract. The consumer side is
+    # ``backend/main.py``'s ``VAULT_WRITE_VIOLATION_ATTR`` (the global
+    # exception handler answers an exception carrying this attribute with a
+    # documented 409 ``VAULT_WRITE_BLOCKED`` instead of a generic 500).
+    # Declared at CLASS level, so no construction path can forget it, and
+    # neither side imports the other.
+    sythion_vault_write_violation = True
+
 
 @pytest.fixture(autouse=True)
 def _forbid_product_credential_writes(request, monkeypatch):
@@ -681,10 +689,13 @@ def _forbid_product_credential_writes(request, monkeypatch):
       is REJECTED, never delegated to the real vault.
 
     Known constraint: ``backend/main.py`` installs a global
-    ``@app.exception_handler(Exception)``. A future test that drove
-    a vault write through ``backend.main.app`` would get a 500 response
-    instead of this exception - the write would still be blocked, but the
-    test would not go red. No test uses ``main.app`` today.
+    ``@app.exception_handler(Exception)``. A test that drives a vault write
+    through ``backend.main.app`` gets a 409 ``VAULT_WRITE_BLOCKED`` response
+    for it, because this exception declares the vault-write-violation marker
+    (``sythion_vault_write_violation``) that the handler looks for - the
+    blocked write is documented instead of looking like an unrelated crash.
+    The exception itself still propagates out of the request, so such a test
+    still goes red instead of passing silently.
     """
     try:
         import win32cred
