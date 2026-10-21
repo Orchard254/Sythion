@@ -122,10 +122,10 @@
       "domain": "security"
     },
     "019": {
-      "status": "verifying",
-      "owner": "verifier-019",
+      "status": "merged",
+      "owner": "committer-019",
       "branch": "orchestra/019-tautology-detector",
-      "mergeSha": null,
+      "mergeSha": "df75bb6a43ba5230427dc12e1ae3606d4d3ee992",
       "round": 3,
       "verifyRounds": 1,
       "conflicts": 0,

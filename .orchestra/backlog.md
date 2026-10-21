@@ -49,7 +49,7 @@
 - Likely files: `backend/tests/test_no_tautological_asserts.py`
 - Sensitivity: none
 - Domain: none
-- Status: proposed
+- Status: merged (merge sha `df75bb6`, branch `orchestra/019-tautology-detector`, verifier FIXED)
 
 ### 020 The `.env` isolation must be measured, not assumed, and cover the process environment
 - Why: code-tractable follow-up from item 006. The 006 verifier measured that (a) with the autouse isolation deleted, the readiness file is still green in a tree that has no `.env` - so "deleted isolation goes red on CI" is false - and (b) `SYTHION_OLLAMA_API_KEY` exported in the child process is NOT neutralised, because the clean snapshot uses `Settings(_env_file=None)` which still reads the process environment. The verification-written follow-ups (unverified isolation, isolation covers the file but not the environment) name the exact measurement that is missing.
