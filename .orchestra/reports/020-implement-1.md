@@ -113,9 +113,40 @@ it adds no skip to the suite.
 printing the count; re-running it produced the clean `1628 tests collected`
 above. A machine hiccup, not a code effect.)
 
-### E4 - the full suite
+### E4 - the full suite (run in the BACKGROUND, polled to completion)
 
-See "E4 - full suite" below.
+**Run 1 (branch) - died NATIVELY.** The pytest process was killed by the OS
+with a native access violation at ~61% of the run; there is no pytest summary
+line, because the interpreter died:
+
+```
+$ python -m pytest backend/tests -q
+.......................................................ss............... [  4%]
+...
+........................................................................ [ 61%]
+python : Windows fatal exception: access violation
+...
+Current thread 0x00006b44 [Thread-243 (validate_in_thread)] (most recent call first):
+  File "...\sqlalchemy\orm\loading.py", line 231 in chunks
+  File "...\sqlalchemy\engine\result.py", line 1883 in _fetchone_impl
+  ...
+  File "...\backend\tests\test_phase95_hardening.py", line 82 in test_two_callers_at_boundary_only_one_admits
+```
+
+Wall time: 421.3 s (the process died at ~61%).
+
+**Run 2 (branch, the re-run) - PASSED.**
+
+```
+$ python -m pytest backend/tests -q
+...
+1584 passed, 45 skipped, 428553 warnings in 713.84s (0:11:53)
+```
+
+Wall time: 727.4 s. `1584 + 45 = 1629` = exactly the collected count of the
+branch, with **no failure and no error**.
+
+**Baseline (master, no change) - see E4b.**
 
 ### E5 - the NEGATIVE CONTROL, level (a): inside the check (automated, every run)
 
