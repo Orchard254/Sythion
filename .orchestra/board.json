@@ -133,23 +133,23 @@
       "domain": "none"
     },
     "020": {
-      "status": "proposed",
-      "owner": null,
-      "branch": null,
+      "status": "implementing",
+      "owner": "implementer-020",
+      "branch": "orchestra/020-env-isolation",
       "mergeSha": null,
-      "round": 0,
+      "round": 2,
       "verifyRounds": 0,
       "conflicts": 0,
-      "sensitivity": "none",
+      "sensitivity": "sensitive",
       "domain": "none"
     },
     "021": {
-      "status": "proposed",
-      "owner": null,
-      "branch": null,
+      "status": "implementing",
+      "owner": "implementer-021",
+      "branch": "orchestra/021-onboarding-inference-shape",
       "mergeSha": null,
-      "round": 0,
-      "verifyRounds": 0,
+      "round": 2,
+      "verifyRounds": 1,
       "conflicts": 0,
       "sensitivity": "sensitive",
       "domain": "api"
@@ -172,14 +172,14 @@
       "since": null
     },
     "implementer-1": {
-      "state": "idle",
-      "task": null,
-      "since": null
+      "state": "working",
+      "task": "021 round 2 - pin the numeric-response behaviour change + fix the header snapshot assertion (test-only)",
+      "since": "2026-10-22"
     },
     "implementer-2": {
-      "state": "idle",
-      "task": null,
-      "since": null
+      "state": "working",
+      "task": "020 round 2 - fence the real legacy-migration target (F1) and order the sentinel-leak check before raw output (F2) (test-only)",
+      "since": "2026-10-22"
     },
     "implementer-3": {
       "state": "idle",

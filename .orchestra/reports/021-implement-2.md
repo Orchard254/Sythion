@@ -122,7 +122,71 @@ post-rejection headers **by value** against that copy.
 ## 3. The full diff of this round
 
 ```
-PLACEHOLDER_FULL_DIFF
+diff --git a/backend/tests/test_onboarding_inference_response_shape.py b/backend/tests/test_onboarding_inference_response_shape.py
+index aabc756..db99318 100644
+--- a/backend/tests/test_onboarding_inference_response_shape.py
++++ b/backend/tests/test_onboarding_inference_response_shape.py
+@@ -241,6 +241,28 @@ def test_the_endpoint_still_reports_502_for_an_unrecognised_shape(monkeypatch):
+     assert res.json()["detail"] == "Inference returned an empty response"
+
+
++def test_the_endpoint_reports_502_for_a_numeric_provider_answer(monkeypatch):
++    """A number is not the model's text, so the gate answers 502.
++
++    DELIBERATE change from the pre-fix parser: the old inline parse let any
++    truthy value through, so a provider body of ``{"response": 7}`` answered
++    **200** with a ``response_preview`` of ``"7"``.  The parser's rule - a
++    candidate is taken only if its value is a ``str`` - rejects a number, so
++    the same body is an empty response now.  Pinned here so the narrowing is
++    a recorded decision and not a drift nobody noticed.
++    """
++    for body in (
++        {"response": 7},
++        {"message": {"content": 7}},
++        {"choices": [{"message": {"content": 7}}]},
++    ):
++        res = _post_inference(monkeypatch, body)
++        assert res.status_code == 502
++        assert res.status_code != 200
++        assert res.status_code != 500
++        assert res.json()["detail"] == "Inference returned an empty response"
++
++
+ def test_the_endpoint_contract_is_unchanged(monkeypatch):
+     """The wire contract of the gate is exactly what it was."""
+     res = _post_inference(monkeypatch, NATIVE_BODY, model_id=None, selected=None)
+diff --git a/frontend/src/services/api.test.ts b/frontend/src/services/api.test.ts
+index b0c4b29..b1a30a3 100644
+--- a/frontend/src/services/api.test.ts
++++ b/frontend/src/services/api.test.ts
+@@ -145,10 +145,13 @@ describe('the axios response interceptor', () => {
+
+   it('does not change the request side', async () => {
+     const seen: InternalAxiosRequestConfig[] = [];
+-    const headerKeys: string[][] = [];
++    const headersBefore: Array<Record<string, unknown>> = [];
+     const adapter: AxiosAdapter = (config) => {
+       seen.push(config);
+-      headerKeys.push(Object.keys(config.headers));
++      // A COPY of the headers as they are on the wire, taken BEFORE the
++      // response interceptor runs.  Comparing against the same object's own
++      // keys could never see a header VALUE mutated by the response side.
++      headersBefore.push({ ...config.headers });
+       return Promise.reject(
+         new AxiosError(
+           'Request failed with status code 502',
+@@ -172,8 +175,9 @@ describe('the axios response interceptor', () => {
+     expect(seen).toHaveLength(1);
+     // The request interceptor still ran: the control token is on the way out.
+     expect(seen[0].headers['X-Control-Token']).toBe(CONTROL_TOKEN);
+-    // The response interceptor changed nothing on the request.
+-    expect(Object.keys(seen[0].headers)).toEqual(headerKeys[0]);
++    // The response interceptor changed nothing on the request: same headers,
++    // same values, as they were when the request went out.
++    expect({ ...seen[0].headers }).toEqual(headersBefore[0]);
+   });
+
+   it('never puts the control token in the message', async () => {
 ```
 
 ---
@@ -186,8 +250,37 @@ adds exactly **one** collected test (`+14` over the plan's `+13`).
 ### 4.5 The full backend suite
 
 ```
-PLACEHOLDER_FULL_SUITE
+$ python -m pytest backend/tests -q
+...
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1597 passed, 45 skipped, 432033 warnings in 465.50s (0:07:45)
+
+(exit code 0)
 ```
+
+**1597 passed, 45 skipped, 0 failed** (exit 0). The run completed normally on
+the first attempt - it did **not** die natively, so no re-run was needed.
+
+Against the round-1 numbers measured on the same branch tip `a1e2e5a` by the
+round-1 review (**1641 collected / 1596 passed / 45 skipped**):
+
+| measure | `a1e2e5a` (round 1) | `15a2bbe` (round 2) | delta |
+|---|---|---|---|
+| collected | 1641 | **1642** | **+1** |
+| passed | 1596 | **1597** | **+1** |
+| skipped | 45 | **45** | 0 |
+| failed | 0 | **0** | 0 |
+
+The plan's planned `+13` backend delta is therefore now **`+14`**, and the
+skipped population is unchanged.
+
+**On the two known pre-existing problems on this machine:** neither occurred
+in this run. The `test_phase975_admission_multiproc.py` contention flakes did
+**not** fire (that file's tests passed), and there was **no** `0xC0000005`
+native crash in `test_phase95_hardening.py`. Nothing in this round can be
+attributed to either of them, and nothing needs to be: the round adds one
+Python test and repairs one TypeScript assertion, and the suite was already
+green here.
 
 ### 4.6 Extra (not required, but run because the change touches both a Python
 and a TypeScript test file)
@@ -265,7 +358,8 @@ was blind to a value mutation.
 
 ```
 $ git diff --name-status a1e2e5a..HEAD
-PLACEHOLDER_ROUND2_NAMES
+M	backend/tests/test_onboarding_inference_response_shape.py
+M	frontend/src/services/api.test.ts
 ```
 
 * The round's delta touches **only the two test files**.
@@ -285,10 +379,35 @@ M	frontend/src/services/api.ts
 * The literal `git diff --name-only master..HEAD` view also lists
   `.orchestra/` bookkeeping entries. That is **not** a scope violation and it
   is **pre-existing**: `master` advanced past the branch's merge base with
-  `chore(orchestra)` commits, so the two-dot view shows the reverse of
+  `chore(orchestrator)` commits, so the two-dot view shows the reverse of
   master's own records (exactly the situation the round-1 review measured and
-  recorded). The branch itself touches **no** `.orchestra/` file:
-  `git diff f8cce86..HEAD -- .orchestra` is **empty**.
+  recorded). Measured at the time of writing:
+
+```
+$ git diff --name-only master..HEAD
+.orchestra/briefs/020-implement-2.md
+.orchestra/briefs/020-review-1.md
+.orchestra/briefs/021-implement-2.md
+.orchestra/briefs/021-review-1.md
+.orchestra/briefs/021-verify-1.md
+.orchestra/critiques.md
+.orchestra/follow-ups.md
+.orchestra/reports/020-implement-1.md
+.orchestra/reports/021-implement-1.md
+.orchestra/reviews/020-r1.md
+.orchestra/reviews/021-r1.md
+.orchestra/verifications/021-v1.md
+backend/api/routes.py
+backend/tests/test_onboarding_inference_response_shape.py
+frontend/src/services/api.test.ts
+frontend/src/services/api.ts
+```
+
+  The **source** part of that list is still exactly the item's four files, and
+  the branch itself touches **no** `.orchestra/` file:
+  `git diff f8cce86..HEAD -- .orchestra` is **empty** (measured, no output).
+  `git diff --name-status f8cce86..HEAD` is the authoritative view of the
+  item's delta and it lists the four files and nothing else.
 * No test was weakened, no test id was changed, no dependency was added, no
   lock file moved.
 
@@ -304,7 +423,15 @@ M	frontend/src/services/api.ts
   `test_phase975_admission_multiproc.py` contention flakes and the
   intermittent native `0xC0000005` crash in `test_phase95_hardening.py`,
   reproducible on pre-change master) are **not** attributable to this change -
-  this round adds one Python test and repairs one TypeScript assertion.
+  this round adds one Python test and repairs one TypeScript assertion. In
+  this run **neither** of them fired: the full suite completed with exit 0 and
+  zero failures on the first attempt (see §4.5).
+* Two temporary probe artefacts were used and **deleted**:
+  `frontend/src/services/f2probe.test.ts` (the negative control of §5.2, run
+  inside the worktree and then removed) and
+  `C:\Users\orcha\AppData\Local\Temp\opencode\probe_021_r2.py` (the
+  old-vs-new parse probe of §5.1, outside the repository). The worktree is
+  clean: `git status --short` is empty after the commit.
 * Not pushed. `master` untouched. The report lives at
   `C:\Sythion\sythion\.orchestra\reports\021-implement-2.md` (main checkout,
   master), not on the branch - the branch's file set stays at the four files.
