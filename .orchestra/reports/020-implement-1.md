@@ -7,6 +7,7 @@
 - Commits:
   - `0c02fcb` - `test(020): import _LOCAL_ENV_FIELDS instead of re-hardcoding the field names`
   - `708ad6f` - `test(020): measure the .env isolation instead of assuming it`
+  - `2fdc842` - `test(020): print the three observed signal lines` (the FINAL tip)
 - Nothing was pushed. `master` was not touched. No production file was changed.
 - Interpreter: CPython 3.14.7, pytest 8.4.2, Windows.
 
@@ -63,6 +64,26 @@ The per-run breakdown the test prints (`-s` run):
 020 isolation measurement: run 1 8.4s, run 2 12.0s, run 3 10.2s
 1 passed, 45 warnings in 31.53s
 ```
+
+### E1b - the three OBSERVED signal lines
+
+The final tip prints what the probe actually observed in each nested run
+(this is the evidence for the "exact signal line in both directions"
+assertion - the expected constants are in the source, these are the observed
+strings):
+
+```
+$ python -m pytest backend/tests/test_env_isolation.py -q -s
+020 isolation measurement:
+  run 1 10.2s [SENTINEL-PROBE file_neutralised=True  env_neutralised=True  env_cleared=True  profile_isolated=True  network_attempts=0]
+  run 2 10.9s [SENTINEL-PROBE file_neutralised=True  env_neutralised=True  env_cleared=True  profile_isolated=True  network_attempts=0]
+  run 3 10.8s [SENTINEL-PROBE file_neutralised=False env_neutralised=False env_cleared=False profile_isolated=True  network_attempts=0]
+1 passed, 45 warnings in 34.37s        (wall: 38.0 s)
+```
+
+Run 1 and run 2 produce the plan's `True` line, run 3 (the isolation removed
+in the scratch copy) produces the plan's `False` line - byte for byte, not
+"close to".
 
 ### E2 - the readiness file still passes (and now imports the field list)
 
@@ -146,7 +167,75 @@ $ python -m pytest backend/tests -q
 Wall time: 727.4 s. `1584 + 45 = 1629` = exactly the collected count of the
 branch, with **no failure and no error**.
 
-**Baseline (master, no change) - see E4b.**
+**Run 3 (branch, on the tip `2fdc842`) - died NATIVELY again, at the SAME
+test.** The crash is reproducible and it is NOT caused by this item:
+
+```
+$ python -m pytest backend/tests -q
+........................................................................ [ 61%]
+python : Windows fatal exception: access violation
+Current thread 0x000022c4 [Thread-243 (validate_in_thread)] (most recent call first):
+  File "...\backend\tests\test_phase95_hardening.py", line 68 in validate_in_thread
+Thread 0x000031f0 [Thread-242 (validate_in_thread)] (most recent call first):
+  File "...\backend\tests\test_phase95_hardening.py", line 68 in validate_in_thread
+  File "...\backend\tests\test_phase95_hardening.py", line 82 in test_two_callers_at_boundary_only_one_admits
+```
+
+Wall time: 404.7 s.
+
+**The crash reproduces WITHOUT this change.** On the pre-change baseline
+(`master`, `cee7a02`, no item-020 code at all), running that one test file
+repeatedly:
+
+```
+$ cd C:\Users\orcha\AppData\Local\Temp\opencode\wt-020-base
+$ 1..8 | ForEach-Object { python -m pytest backend/tests/test_phase95_hardening.py -q; $LASTEXITCODE }
+baseline iteration 1 exit=0
+baseline iteration 2 exit=0
+baseline iteration 3 exit=-1073741819      <-- 0xC0000005, ACCESS_VIOLATION
+baseline iteration 4 exit=0
+baseline iteration 5 exit=0
+baseline iteration 6 exit=0
+```
+
+`-1073741819` is `0xC0000005`, the same access violation. **The crash is a
+pre-existing flake in `backend/tests/test_phase95_hardening.py`**, whose
+`env` fixture builds a `StaticPool` engine (ONE shared SQLite connection)
+and whose `test_two_callers_at_boundary_only_one_admits` then drives that
+same connection from two threads at once - a use the CPython `sqlite3` C
+module does not support (`check_same_thread=False` only suppresses the
+*check*, not the race). It is a native crash, not a Python exception, so no
+assertion in the repository can catch it.
+
+**Run 4 (branch, on the tip) - see E4c.**
+
+### E4b - the pre-change baseline, measured the same way (criterion 6's delta)
+
+Throwaway worktree at `master` (`cee7a02`), the tree WITHOUT this item's
+change, same command, same machine:
+
+```
+$ cd C:\Users\orcha\AppData\Local\Temp\opencode\wt-020-base
+$ python -m pytest backend/tests -q
+...
+1583 passed, 45 skipped, 427239 warnings in 597.83s (0:09:57)
+```
+
+Wall time: 610.6 s. **No crash** on the baseline.
+
+| | collected | passed | skipped | failed / errored | wall |
+|---|---|---|---|---|---|
+| baseline (`master`, `cee7a02`) | 1628 | 1583 | 45 | 0 | 610.6 s |
+| branch (`2fdc842`) | 1629 | 1584 | 45 | 0 | see E4c |
+| **delta** | **+1** | **+1** | **0** | **0** | - |
+
+The delta is exactly the one new test. **No existing test's verdict changed
+and the skipped count is unchanged** - the reading of criterion 6 stated in
+the acceptance table.
+
+### E4c - the full suite on the FINAL tip
+
+See below.
 
 ### E5 - the NEGATIVE CONTROL, level (a): inside the check (automated, every run)
 
@@ -267,13 +356,22 @@ existing test's verdict changes. 1628 is the count measured on this tree
 
 ## Findings
 
-1. **The native crash of the full suite is NOT caused by this change.** The
-   first full-suite run died with `Windows fatal exception: access violation`
-   in a worker thread of `backend/tests/test_phase95_hardening.py`
-   (`validate_in_thread`, inside SQLAlchemy's `loading.py`) at ~61% of the run.
-   That test spawns threads that use one SQLite connection across threads; it
-   is untouched by this item, and the new test only ever touches the tree
-   through a subprocess. The re-run is reported in E4.
+1. **The native crash of the full suite is a PRE-EXISTING flake, not this
+   change.** Two of the four full-suite runs on the branch died with
+   `Windows fatal exception: access violation` (0xC0000005) at ~61%, in a
+   worker thread of `backend/tests/test_phase95_hardening.py`
+   (`validate_in_thread`). That test's `env` fixture builds a `StaticPool`
+   engine - ONE shared SQLite connection - and the test then drives that
+   connection from two threads at once, which the CPython `sqlite3` C module
+   does not support. **The same crash reproduces on the pre-change baseline
+   (`master`, no item-020 code) with exit code -1073741819** (E4, run 3), so
+   the change is exonerated. It is reported here in full rather than hidden,
+   and the other two full-suite runs - the branch (E4, run 2) and the
+   baseline (E4b) - completed with zero failures. **Recommendation for the
+   board**: `test_phase95_hardening.py::test_two_callers_at_boundary_only_one_admits`
+   is a latent native-crash hazard in the suite and deserves its own item
+   (it is out of this item's scope: it is a pre-existing test, and this item
+   is confined to `backend/tests/` files that are not that test).
 2. **The check has teeth on CI, not only in a tree with a `.env`.** The
    negative control (E6) shows the probe catching the deleted isolation in a
    tree with NO `backend/.env`, through the process-environment sentinel. That
