@@ -176,8 +176,11 @@ describe('the axios response interceptor', () => {
     // The request interceptor still ran: the control token is on the way out.
     expect(seen[0].headers['X-Control-Token']).toBe(CONTROL_TOKEN);
     // The response interceptor changed nothing on the request: same headers,
-    // same values, as they were when the request went out.
-    expect({ ...seen[0].headers }).toEqual(headersBefore[0]);
+    // same values, as they were when the request went out.  ``toStrictEqual``
+    // (not ``toEqual``) also pins the KEYS: ``toEqual`` ignores an
+    // undefined-valued property, so a header added with an undefined value
+    // would slip past it.
+    expect({ ...seen[0].headers }).toStrictEqual(headersBefore[0]);
   });
 
   it('never puts the control token in the message', async () => {
