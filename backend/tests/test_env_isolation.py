@@ -343,13 +343,18 @@ def _assert_no_sentinel_leaked(run, label):
             )
 
 
+def _read_signal(run):
+    """The probe's signal line, read from the file it wrote."""
+    with open(str(run.signal_path), "r", encoding="utf-8") as handle:
+        return handle.read().strip()
+
+
 def _assert_the_signal(run, expected, label):
     """The probe's signal line must be exactly the expected string."""
     assert run.signal_path.exists(), (
         "%s: the probe did not write its signal file" % label
     )
-    with open(str(run.signal_path), "r", encoding="utf-8") as handle:
-        signal = handle.read().strip()
+    signal = _read_signal(run)
     assert signal == expected, (
         "%s: the probe's signal line is not the expected one (expected %r)"
         % (label, expected)
@@ -471,8 +476,16 @@ def test_the_local_env_isolation_is_measured_not_assumed():
         _assert_no_network_attempt(run3, "run 3")
 
         print(
-            "020 isolation measurement: run 1 %.1fs, run 2 %.1fs, run 3 %.1fs"
-            % (run1.elapsed, run2.elapsed, run3.elapsed)
+            "020 isolation measurement: run 1 %.1fs [%s] | run 2 %.1fs [%s] | "
+            "run 3 %.1fs [%s]"
+            % (
+                run1.elapsed,
+                _read_signal(run1),
+                run2.elapsed,
+                _read_signal(run2),
+                run3.elapsed,
+                _read_signal(run3),
+            )
         )
     finally:
         removal_error = _remove_scratch_tree(scratch)
