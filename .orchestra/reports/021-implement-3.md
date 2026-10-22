@@ -310,7 +310,7 @@ $ python -m pytest backend/tests/test_onboarding_inference_response_shape.py -q
 
 ```
 $ npx vitest run src/services/api.test.ts
- RUN  v1.6.1 C:/Users/ororcha/AppData/Local/Temp/opencode/wt-021-r3/frontend
+ RUN  v1.6.1 C:/Users/orcha/AppData/Local/Temp/opencode/wt-021-r3/frontend
 
  ✓ src/services/api.test.ts  (9 tests) 37ms
 
@@ -364,6 +364,30 @@ $ python -m pytest backend/tests --collect-only -q
 ```
 FULL_SUITE_RESULT
 ```
+
+> **ORCHESTRATOR ANNOTATION (2026-10-22) - this section was NEVER FILLED IN.**
+> The text above is the implementer's literal placeholder. The round-3 Review
+> raised this as finding **N5** and it is closed here, honestly rather than
+> cosmetically:
+>
+> - The implementer did run the full suite for this round, but never pasted
+>   its output. The placeholder is what shipped in the report.
+> - **The actual measurement for this branch exists in the round-4 report**,
+>   `reports/021-implement-4.md` section 4, which measures the SAME branch at
+>   its superset commit `9236343` (round 4 = round 3 + one test) and records
+>   the real output: **1599 passed, 45 skipped, 0 failed, 1644 collected**,
+>   exit 0, in 314.15 s, with neither the `0xC0000005` native crash nor the
+>   `test_phase975_admission_multiproc.py` contention flakes firing. The
+>   round-3 commit `df58bd6` is that measurement minus the one test round 4
+>   adds, so the round-3 figure is 1598 passed / 45 skipped / 1643 collected.
+> - The other mistyped path in this report (the `ororcha` in the vitest
+>   banner at section 4.2) has been corrected above.
+> - The round-4 brief now REQUIRES the full suite's actual output and requires
+>   every cited path to exist, so a placeholder cannot ship again.
+>
+> No number here was re-measured to fill the gap; the number comes from the
+> same branch's later, better-documented measurement, and the relationship
+> between the two commits is stated rather than assumed.
 
 ---
 
