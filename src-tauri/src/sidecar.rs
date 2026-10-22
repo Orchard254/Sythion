@@ -360,10 +360,29 @@ fn write_token_file(dir: &PathBuf, token: &str) -> PathBuf {
     path
 }
 
+fn python_override_workdir(cwd: &Path) -> Result<PathBuf, String> {
+    if cwd.join("backend").join("main.py").is_file() {
+        return Ok(cwd.to_path_buf());
+    }
+    // `tauri dev` starts Cargo in src-tauri, not the invoking terminal's cwd.
+    if cwd.file_name().and_then(|name| name.to_str()) == Some("src-tauri") {
+        if let Some(root) = cwd.parent() {
+            if root.join("backend").join("main.py").is_file() {
+                return Ok(root.to_path_buf());
+            }
+        }
+    }
+    Err(format!(
+        "Python override cannot locate backend/main.py from {}; launch from the source checkout",
+        cwd.display()
+    ))
+}
+
 fn resolve_python(app_handle: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
     if let Ok(exe) = std::env::var("Sythion (Synth)_PYTHON") {
         if !exe.is_empty() {
-            return Ok((PathBuf::from(exe), std::env::current_dir().unwrap_or_default()));
+            let cwd = std::env::current_dir().map_err(|e| format!("resolve working directory: {e}"))?;
+            return Ok((PathBuf::from(exe), python_override_workdir(&cwd)?));
         }
     }
     if let Ok(dir) = std::env::var("Sythion (Synth)_SIDECAR_DIR") {
@@ -577,7 +596,7 @@ pub fn spawn_watcher(app_handle: tauri::AppHandle) {
 mod tests {
     use super::{
         data_dir_key, development_mode_flag, development_mode_flag_for, normalize_data_dir,
-        resolve_data_dir_from, sidecar_creation_flags, DATA_DIR_ENV, DEFAULT_DATA_DIR_NAME,
+        python_override_workdir, resolve_data_dir_from, sidecar_creation_flags, DATA_DIR_ENV, DEFAULT_DATA_DIR_NAME,
         LEGACY_DATA_DIR_ENV,
     };
     use std::ffi::OsStr;
@@ -644,6 +663,27 @@ mod tests {
      * would never resolve and the application would hang on "Connecting to
      * Sythion" until the handshake timeout expired.
      */
+
+    #[test]
+    fn python_override_resolves_source_from_cargo_directory() {
+        let cargo_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert_eq!(
+            python_override_workdir(cargo_dir).expect("source root"),
+            cargo_dir.parent().unwrap()
+        );
+    }
+
+    #[test]
+    fn python_override_preserves_source_root() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        assert_eq!(python_override_workdir(root).expect("source root"), root);
+    }
+
+    #[test]
+    fn python_override_rejects_directory_without_backend() {
+        let unrelated = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        assert!(python_override_workdir(&unrelated).unwrap_err().contains("backend/main.py"));
+    }
 
     /// The canonical variable alone decides the profile.
     #[test]
