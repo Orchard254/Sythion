@@ -259,6 +259,31 @@
 - Status: rejected
 - Rejected reason: Not this run. The thirteen scripts are executed by no documented command, so they add no release-confidence signal, and the cases they reproduce are already covered under `backend/tests/`. The only real defect is the hard-coded `C:\Ai\sythion` path, and the cheapest honest fix - resolve the repo root from `__file__`, the way `backend/tools/executor.py` now does - is a hygiene change that does not justify a branch in a five-item budget. Follow-up: make the path relative, or move the scripts under `backend/tests/` and delete the root copies.
 
+### R-028 The onboarding inference gate parses the wrong provider response shape, so a successful model call is reported as "empty response" (502)
+- Source: local (reported by the user as "Request failed with status code 502" when clicking "Test selected model" during first-time setup; reproduced by the orchestrator against the live Ollama Cloud API)
+- Source detail:
+  - `backend/api/routes.py:2186-2238` (`POST /onboarding/inference`) - the response parser at `:2215-2220`
+  - `backend/adapters/ollama_adapter.py:319-348` (`OllamaCloudAdapter.chat`) - the call that produces the response
+  - `backend/core/config.py:28` (`ollama_cloud_base_url = "https://ollama.com"`)
+  - the correct pattern already used elsewhere: `backend/agents/reasoner.py:310-318`, `backend/cognitive/reasoning.py:187`, `backend/adapters/ollama_adapter.py:219`
+  - `frontend/src/screens/Setup.tsx:63-69` (the button), `frontend/src/services/api.ts:73-79` (no response interceptor - the reason the failure was opaque)
+- Evidence: the orchestrator reproduced the user's failure against the LIVE Ollama Cloud API with the user's own saved credential (vault read-only; the key was sent only to https://ollama.com and never printed). `GET /api/tags` -> HTTP 200 with 23 models (so the key is valid and the network path works). `POST /api/chat` with the application's exact payload (`{"model":"minimax-m3.1-flash","messages":[{"role":"user","content":"Reply with OK"}],"max_tokens":16,"num_ctx":131072,"stream":false}`) -> **HTTP 200** with the body `{"model":"minimax-m3.1-flash","message":{"role":"assistant","content":"OK"},"done":true,"done_reason":"stop","eval_count":2}`. The application's own parser applied to that body yields `''` (it reads only `choices[0].message.content` / `choices[0].text` / `response`, never `message.content`), so `routes.py:2222` raises `HTTPException(502, "Inference returned an empty response")`. Re-running the same call without the top-level `num_ctx` and with `num_ctx` under `options` returned 200 with the same `message.content` shape, so the payload is not the cause - only the parsing is. The identical call with `model="beam"` also returned 200 and `message.content`.
+- Files: `backend/api/routes.py`, `backend/tests/test_onboarding_inference_response_shape.py` (new), optionally `frontend/src/services/api.ts` (see R-029)
+- Severity: **high** - this is the FIRST-RUN GATE. The model works, the key works, the account is fine, and the app still refuses to complete setup. Every user of a fresh install hits it, and the message shown is a bare "Request failed with status code 502" that names no cause.
+- Direction: parse the native Ollama `/api/chat` shape FIRST (`response["message"]["content"]`), then fall back to the OpenAI-compatible `choices[0]...` shape and the legacy `response` shape - exactly the order `backend/agents/reasoner.py:310-318` already uses. The endpoint's own response contract (`{"success": true, "model": ..., "response_preview": ...}`) does not change; only the internal parsing does. Pin it with a test that feeds the three real response shapes (native, OpenAI-compatible, legacy) and asserts the parsed text, plus one that asserts the route no longer 502s on the native shape.
+- Status: adopted -> 021
+
+### R-029 The frontend discards the backend's error detail, so every API failure reaches the user as axios's generic "Request failed with status code NNN"
+- Source: local (found while diagnosing R-028 - it is the reason the R-028 failure was undiagnosable from the UI)
+- Source detail:
+  - `frontend/src/services/api.ts:73-79` - a REQUEST interceptor only; there is no response interceptor anywhere in the file
+  - `frontend/src/screens/Setup.tsx:46-51` (`run()`), which surfaces `e instanceof Error ? e.message : ...` - axios's generic message - and never reads `e.response.data.detail`
+  - `backend/api/routes.py:2250-2298` (readiness), `:2098-2158` (credential test), `:2186-2238` (inference) - all of which put a human-readable cause in the `detail` field of an `HTTPException`
+- Evidence: the backend already produces a precise, human-readable cause for every one of these failures - "Inference returned an empty response" (`routes.py:2222`), "Network failure during inference: {msg}" (`:2237`), "Invalid Ollama Cloud API key" (`:2155`), "Model 'X' is not available" (`:2210`). FastAPI serialises those into the JSON body as `{"detail": ...}`. The frontend has no response interceptor, so `error.message` is axios's constructed `"Request failed with status code 502"` and `error.response.data.detail` is never read. Measured consequence: the user was shown "Request failed with status code 502" for a failure whose actual cause ("Inference returned an empty response") was already in the response body, and it took a live-API probe to find it.
+- Files: `frontend/src/services/api.ts`, `frontend/src/screens/Setup.tsx` (only if it must read the new field), `frontend/src/services/api.test.ts` (new or existing)
+- Severity: med - it does not cause the failure, but it converts every future backend failure into an unactionable message, and it demonstrably slowed the diagnosis of R-028 to a live-API reproduction.
+- Direction: add a response interceptor that prefers the backend's `detail` (and the API's own `error` slug where present) over axios's generic message, falling back to the generic message when there is no body. Keep the request interceptor and the control-token logic untouched. The change must be behaviour-preserving for successful requests and must not change the request side in any way.
+- Status: adopted -> 021
 ## Sources checked
 
 Local, in the repository `C:\Sythion\sythion` (branch `master`, HEAD `d2a24e5`):
