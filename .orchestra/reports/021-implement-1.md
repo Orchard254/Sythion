@@ -577,3 +577,40 @@ on every request).
   `.github/workflows/ci.yml` - unchanged.
 * `.orchestra/board.json`, `backlog.md`, `log.md`, `critiques.md` - not the
   implementer's to touch.
+
+---
+
+## ORCHESTRATOR CORRECTION (2026-10-22) - one statement in this report is WRONG
+
+The limitation numbered 1 in the "Undetermined / not checked" section above -
+"**CI runs no vitest step.** The `frontend` job in `.github/workflows/ci.yml`
+is `npm ci` + `npm run lint` + `npm run build` (R-014). The new frontend test
+therefore gates **locally only**; it will gate CI once R-014 lands." - is
+**FALSE**, and it was false when it was written.
+
+**The fact:** the `frontend` CI job runs FOUR steps. `.github/workflows/ci.yml:80-104`
+is `npm ci` (95), `npm run lint` (98), `npm run build` (101) and
+`Test (vitest)` -> `npm test` (103-104). The vitest step was added by **item 001**
+(commit `3ec2d46`, "ci: make the pipeline actually gate this repository"), which
+is the very item that adopted R-014. `frontend/package.json` maps
+`"test": "vitest run"` with `"test:watch": "vitest"`, so the command is
+non-interactive and does not hang a runner. The repository's own
+`docs/TESTING.md:126` already calls `npm test` "the CI frontend step" and
+`docs/TESTING.md:170` names the vitest step - the docs were already correct
+when this report was written.
+
+**Why the report got it wrong:** the brief (`briefs/021-implement-1.md`) and the
+plan (`plans/021.md` open question 4) both asserted the false claim, because
+the orchestrator read the RESEARCH RECORD for R-014 in `research.md` - whose
+body is written in the present tense and describes the state BEFORE item 001 -
+and never checked `ci.yml` itself. The error was the orchestrator's, not the
+implementer's; an implementer that had read `ci.yml:103-104` would not have
+written it.
+
+**Consequence for the item:** the 9 new frontend tests **DO gate CI** once this
+item merges. That is strictly BETTER coverage than this report claims. No
+verdict, count or measurement in this report is affected - the claim sat in a
+limitations list, and the verifier's independent re-measurement did not depend
+on it. `research.md` now carries a `RESOLVED by item 001` marker on R-014 and
+a header note explaining the `Status:` convention, so the claim is not
+propagated again.

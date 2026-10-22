@@ -91,8 +91,13 @@ backend never sends.
   changed, every command's output, the base-reproduction failure, the measured
   baseline vs post-change counts, the parser order as implemented, the
   interceptor's behaviour table as implemented, and what was NOT checked
-  (including: CI runs no vitest step, so the frontend test gates locally only;
-  the packaged Tauri shell path was not exercised).
+  (including: the packaged Tauri shell path was not exercised).
+  **CORRECTION 2026-10-22:** an earlier version of this brief told the
+  implementer to report "CI runs no vitest step, so the frontend test gates
+  locally only". **That was false** - the `frontend` CI job runs
+  `npm test` -> vitest at `.github/workflows/ci.yml:103-104` (added by item
+  001, commit `3ec2d46`). The frontend test DOES gate CI. Do not report the
+  opposite; check `ci.yml` before asserting anything about CI.
 
 ## Constraints
 
