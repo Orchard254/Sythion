@@ -473,7 +473,8 @@ FAILED backend/tests/test_env_isolation.py::test_the_local_env_isolation_is_meas
 ```
 
 The throwaway worktree was removed afterwards (`git worktree remove --force`),
-so it no longer exists.
+so `C:\Users\orcha\AppData\Local\Temp\opencode\wt-020-r4-negctl` no longer
+exists.
 
 ### 6. THE FULL SUITE (background, polled to completion)
 
