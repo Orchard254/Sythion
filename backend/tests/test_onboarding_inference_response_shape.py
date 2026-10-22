@@ -201,9 +201,13 @@ def test_a_malformed_body_does_not_raise():
 # --- the candidate rule ------------------------------------------------------
 
 # The parser's rule, over the whole enumerable domain of candidate values: a
-# candidate is taken only if its value is a ``str``.  These are the parser's
-# FOUR branches, in the parser's own order (the ``_extract_inference_text``
-# helper in backend/api/routes.py):
+# candidate is taken only if its value is a ``str`` that is NOT BLANK.  The
+# rule has TWO halves and BOTH of them are pinned in this file:
+#   1. the value must be a ``str``                 -> the non-str candidates
+#   2. the value must be non-blank after ``strip()`` -> the blank-str
+#      candidates (a ``str`` of only whitespace)
+# These are the parser's FOUR branches, in the parser's own order (the
+# ``_extract_inference_text`` helper in backend/api/routes.py):
 #   1. native Ollama /api/chat      -> response["message"]["content"]
 #   2. OpenAI-compatible chat       -> response["choices"][0]["message"]["content"]
 #   3. OpenAI-compatible legacy     -> response["choices"][0]["text"]
@@ -222,14 +226,31 @@ _CANDIDATE_BRANCHES = (
 # None of them is the model's text, so the rule rejects every one of them.
 _NON_STR_CANDIDATES = (7, 7.5, True, {"a": 1}, [1, 2])
 
+# The BLANK str candidates: a ``str`` whose content is only whitespace.  They
+# ARE strings, so they satisfy the first half of the rule, but they carry no
+# text, so the second half rejects them: the parser strips them, sees
+# nothing, and a blank candidate does not even mask a real answer that a
+# LATER branch carries (the parser takes the first candidate that yields a
+# NON-BLANK string).
+_BLANK_STR_CANDIDATES = ("   ", "\n\t ")
+
+# A str candidate with whitespace AROUND it.  It is the model's text, so it
+# IS taken - but TRIMMED: the parser returns ``value.strip()``, so the
+# expected value is ``"OK"`` and not ``"  OK  "``.
+_PADDED_STR_CANDIDATE = "  OK  "
+
 
 def _candidate_cases():
     """Every case the candidate rule is pinned over.
 
     Five non-str candidate types in each of the four branches - 20 cases that
-    must yield ``''`` - plus the four POSITIVE cases, a ``str`` candidate in
-    each branch, that must still be returned.  The positive cases are what
-    stops the rule from being satisfied by a helper that always answers ``''``.
+    must yield ``''`` - plus TWO blank str candidates per branch - 8 more
+    cases that must yield ``''`` - plus the four POSITIVE cases, a ``str``
+    candidate in each branch, that must still be returned, and the four
+    PADDED cases, a ``str`` candidate with whitespace around it, that must
+    be returned TRIMMED (``"  OK  "`` -> ``"OK"``).  The positive cases are
+    what stops the rule from being satisfied by a helper that always answers
+    ``''``.
     """
     cases = []
     for branch, build in _CANDIDATE_BRANCHES:
@@ -241,7 +262,22 @@ def _candidate_cases():
                     "",
                 )
             )
+        for candidate in _BLANK_STR_CANDIDATES:
+            cases.append(
+                (
+                    "%s / blank str %r" % (branch, candidate),
+                    build(candidate),
+                    "",
+                )
+            )
         cases.append(("%s / str" % branch, build("OK"), "OK"))
+        cases.append(
+            (
+                "%s / padded str %r" % (branch, _PADDED_STR_CANDIDATE),
+                build(_PADDED_STR_CANDIDATE),
+                "OK",
+            )
+        )
     return cases
 
 
@@ -266,6 +302,14 @@ def test_a_candidate_is_taken_only_if_its_value_is_a_str(case):
     ``_candidate`` to accept a float, a bool, a dict or a list - or that
     accepted an int in the fourth branch - would have passed the whole suite
     while the narrowing silently widened.
+
+    The rule has a SECOND half as well, and this matrix pins it too: the
+    value must be non-blank after ``strip()``.  A ``str`` of only whitespace
+    (``"   "``, ``"\\n\\t "``) carries no text, so it must yield ``''`` in
+    EVERY branch - and a ``str`` with whitespace AROUND it (``"  OK  "``) IS
+    the model's text and must be returned TRIMMED (``"OK"``).  Both halves
+    live in this ONE matrix on purpose: the rule is a single logical property
+    and the count contract is one collected test.
 
     The helper is imported INSIDE the test function, exactly as ``_parse``
     above does, so that a tree on which the helper does not exist yet fails
@@ -350,6 +394,68 @@ def test_the_endpoint_reports_502_for_a_numeric_provider_answer(monkeypatch):
         assert res.status_code != 200
         assert res.status_code != 500
         assert res.json()["detail"] == "Inference returned an empty response"
+
+
+def test_the_endpoint_reports_502_for_a_whitespace_only_provider_answer(monkeypatch):
+    """Whitespace is not the model's text, so the gate answers 502.
+
+    The parser's candidate rule has TWO halves: the value must be a ``str``
+    AND it must be non-blank after ``strip()``.  The first half is pinned by
+    ``test_a_candidate_is_taken_only_if_its_value_is_a_str`` (helper level)
+    and by ``test_the_endpoint_reports_502_for_a_numeric_provider_answer``
+    (endpoint level); this test pins the SECOND half at the endpoint level.
+
+    A candidate that is a ``str`` of only whitespace carries no text, so the
+    gate must answer 502 with the same detail as every other empty answer -
+    never 200 and never 500.  The bodies below cover ALL FOUR branches of
+    the parser: the native ``/api/chat`` shape, the OpenAI-compatible chat
+    shape, the OpenAI-compatible legacy completions shape and the legacy
+    ``/api/generate`` shape.
+
+    Whitespace AROUND a real answer is not an empty answer: a padded
+    candidate IS the model's text and the gate reports it TRIMMED - a body of
+    ``{"response": "  OK  "}`` answers 200 with a ``response_preview`` of
+    ``"OK"``, not ``"  OK  "`` and not a 502.
+
+    And a blank candidate must not MASK a real answer that a later branch
+    carries: the parser takes the first candidate that yields a NON-BLANK
+    string, so a blank native content falls through to the next branch
+    instead of swallowing the answer.
+    """
+    for body in (
+        {"message": {"content": "   "}},
+        {"message": {"content": "\n\t "}},
+        {"choices": [{"message": {"content": "   "}}]},
+        {"choices": [{"message": {"content": "\n\t "}}]},
+        {"choices": [{"text": "   "}]},
+        {"choices": [{"text": "\n\t "}]},
+        {"response": "   "},
+        {"response": "\n\t "},
+    ):
+        res = _post_inference(monkeypatch, body)
+        assert res.status_code == 502
+        assert res.status_code != 200
+        assert res.status_code != 500
+        assert res.json()["detail"] == "Inference returned an empty response"
+
+    # A padded answer IS the model's text, and it is reported TRIMMED.
+    res = _post_inference(monkeypatch, {"response": "  OK  "})
+    assert res.status_code == 200
+    assert res.json()["response_preview"] == "OK"
+
+    # A blank candidate must not mask a real answer from a LATER branch.
+    res = _post_inference(
+        monkeypatch, {"message": {"content": "   "}, "response": "OK"}
+    )
+    assert res.status_code == 200
+    assert res.json()["response_preview"] == "OK"
+
+    res = _post_inference(
+        monkeypatch,
+        {"choices": [{"message": {"content": "   "}, "text": "OK"}]},
+    )
+    assert res.status_code == 200
+    assert res.json()["response_preview"] == "OK"
 
 
 def test_the_endpoint_contract_is_unchanged(monkeypatch):
