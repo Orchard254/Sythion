@@ -136,13 +136,13 @@
                               "status":  "merged",
                               "owner":  "committer-020",
                               "branch":  "orchestra/020-env-isolation",
-                              "mergeSha":  "af4b1f1",
+                              "mergeSha":  "552cfe5",
                               "round":  4,
                               "verifyRounds":  2,
                               "conflicts":  0,
                               "sensitivity":  "sensitive",
                               "domain":  "none",
-                              "note":  "merged as af4b1f1 (rounds 1-2). A test-only follow-up (rounds 3-4, the legacy profile-dir override scrub on branch orchestra/020-r3-probe-scrub) is verified FIXED and awaits its review before a second merge."
+                              "note":  "merged twice: af4b1f1 (rounds 1-2, the isolation check) then 552cfe5 (rounds 3-4, the legacy profile-dir override scrub). 552cfe5 is master\u0027s product state for this item."
                           },
                   "021":  {
                               "status":  "merged",
@@ -189,19 +189,19 @@
                                         "since":  null
                                     },
                   "reviewer":  {
-                                   "state":  "working",
-                                   "task":  "020 round 4 - review the combined r3+r4 delta on orchestra/020-r3-probe-scrub (tip bc87121)",
-                                   "since":  "2026-10-22"
+                                   "state":  "idle",
+                                   "task":  null,
+                                   "since":  null
                                },
                   "verifier":  {
-                                   "state":  "working",
-                                   "task":  "020 round 4 verification COMPLETE - VERDICT FIXED at bc87121; the review is the remaining gate",
-                                   "since":  "2026-10-22"
+                                   "state":  "idle",
+                                   "task":  null,
+                                   "since":  null
                                },
                   "committer":  {
-                                    "state":  "working",
-                                    "task":  "merge 020 rounds 3+4 once the review returns ACCEPT",
-                                    "since":  "2026-10-22"
+                                    "state":  "idle",
+                                    "task":  null,
+                                    "since":  null
                                 },
                   "librarian":  {
                                     "state":  "idle",
