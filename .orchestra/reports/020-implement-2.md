@@ -256,7 +256,9 @@ The new F1 proof test still passes there (`1 passed`) - it does not depend on th
 isolation, because it builds its own explicitly-shaped environment.
 
 The throwaway worktree was deleted afterwards (`git worktree remove --force`); the directory
-no longer exists.
+no longer exists. (The round-1 leftovers `wt-020-base`, `wt-020-negctl` and `wt-020-review`
+were left alone - they are not this round's, and `wt-020-base` was used above as the
+pre-change crash reference.)
 
 ### 5.5 The F1 proof
 
@@ -375,11 +377,78 @@ $ python -m pytest backend/tests/test_no_tautological_asserts.py -q
 
 ### 5.8 The full backend suite
 
+Run in the BACKGROUND and polled to completion, twice, on `e558991`:
+
+**Run 1** - aborted by the known intermittent native crash at ~61% of the tree:
+
 ```
 $ python -m pytest backend/tests -q
+.......................................................ss............... [  4%]
+........................................................................ [  8%]
+........................................................................ [ 13%]
+........................................................................ [ 17%]
+........................................................................ [ 22%]
+........................................................................ [ 26%]
+........................................................................ [ 30%]
+........................................................................ [ 35%]
+........................................................................ [ 39%]
+.....ss................s........ss........................s............. [ 44%]
+........................................................................ [ 48%]
+........................................................................ [ 53%]
+........................................................................ [ 57%]
+........................................................................ [ 61%]
+python : Windows fatal exception: access violation
+...
+Current thread 0x00008b70 [Thread-251 (validate_in_thread)] (most recent call first):
+  File "...\sqlalchemy\orm\loading.py", line 231 in chunks
+  ...
+  File "...\backend\agents\delegation.py", line 1358 in get_delegation
+  File "...\backend\agents\delegation.py", line 1374 in _require
+  File "...\backend\agents\delegation.py", line 394 in validate
+  File "...\backend\tests\test_phase95_hardening.py", line 68 in validate_in_thread
+FULL SUITE WALL: 226.9s
 ```
 
-<!--SUITE-->
+**Run 2** - completed, everything green:
+
+```
+$ python -m pytest backend/tests -q
+1585 passed, 45 skipped, 428689 warnings in 347.80s (0:05:47)
+FULL SUITE (run 2) WALL: 357.1s
+```
+
+`1585 + 45 = 1630` = the collected count. Round 1's tip measured `1584 passed, 45 skipped`
+over `1629` collected; the delta is exactly the one new F1 proof test.
+
+**The two known pre-existing problems, as they actually showed up:**
+
+* **`test_phase975_admission_multiproc.py` (contention flakes)** - did not flake in either of
+  my suite runs, and it is green in isolation on this tree:
+
+  ```
+  $ python -m pytest backend/tests/test_phase975_admission_multiproc.py -q
+  4 passed, 250 warnings in 13.91s
+  ```
+
+* **the native crash `0xC0000005` in `test_phase95_hardening.py`** - hit my run 1 at ~61% and
+  did not occur in run 2. **It is pre-existing**: it reproduces on the PRE-CHANGE base
+  (`wt-020-base` @ `cee7a02`, i.e. before any of item 020's work), with the identical stack:
+
+  ```
+  $ cd wt-020-base   # git log --oneline -1 -> cee7a02
+  $ python -m pytest backend/tests/test_phase95_hardening.py -q
+  python : Windows fatal exception: access violation
+    File "...\backend\agents\delegation.py", line 1358 in get_delegation
+    File "...\backend\agents\delegation.py", line 1374 in _require
+    File "...\backend\agents\delegation.py", line 394 in validate
+    File "...\backend\tests\test_phase95_hardening.py", line 68 in validate_in_thread
+  ```
+
+  The crashing frames are in `backend/agents/delegation.py` (production code) driven by a
+  thread `backend/tests/test_phase95_hardening.py` starts - **neither file is in this
+  item's diff**, and this round adds no production code at all. Neither known problem is
+  attributed to this change.
+
 
 ---
 
@@ -407,7 +476,8 @@ $ python -m pytest backend/tests -q
 Only `backend/tests/test_env_isolation.py` changed in this round (the other two files are
 unchanged since round 1).
 
-```diffdiff --git a/backend/tests/test_env_isolation.py b/backend/tests/test_env_isolation.py
+```diff
+diff --git a/backend/tests/test_env_isolation.py b/backend/tests/test_env_isolation.py
 index ac079b5..7d1c9c6 100644
 --- a/backend/tests/test_env_isolation.py
 +++ b/backend/tests/test_env_isolation.py
