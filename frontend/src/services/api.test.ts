@@ -145,10 +145,13 @@ describe('the axios response interceptor', () => {
 
   it('does not change the request side', async () => {
     const seen: InternalAxiosRequestConfig[] = [];
-    const headerKeys: string[][] = [];
+    const headersBefore: Array<Record<string, unknown>> = [];
     const adapter: AxiosAdapter = (config) => {
       seen.push(config);
-      headerKeys.push(Object.keys(config.headers));
+      // A COPY of the headers as they are on the wire, taken BEFORE the
+      // response interceptor runs.  Comparing against the same object's own
+      // keys could never see a header VALUE mutated by the response side.
+      headersBefore.push({ ...config.headers });
       return Promise.reject(
         new AxiosError(
           'Request failed with status code 502',
@@ -172,8 +175,9 @@ describe('the axios response interceptor', () => {
     expect(seen).toHaveLength(1);
     // The request interceptor still ran: the control token is on the way out.
     expect(seen[0].headers['X-Control-Token']).toBe(CONTROL_TOKEN);
-    // The response interceptor changed nothing on the request.
-    expect(Object.keys(seen[0].headers)).toEqual(headerKeys[0]);
+    // The response interceptor changed nothing on the request: same headers,
+    // same values, as they were when the request went out.
+    expect({ ...seen[0].headers }).toEqual(headersBefore[0]);
   });
 
   it('never puts the control token in the message', async () => {

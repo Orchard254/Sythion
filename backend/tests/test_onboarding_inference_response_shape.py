@@ -241,6 +241,28 @@ def test_the_endpoint_still_reports_502_for_an_unrecognised_shape(monkeypatch):
     assert res.json()["detail"] == "Inference returned an empty response"
 
 
+def test_the_endpoint_reports_502_for_a_numeric_provider_answer(monkeypatch):
+    """A number is not the model's text, so the gate answers 502.
+
+    DELIBERATE change from the pre-fix parser: the old inline parse let any
+    truthy value through, so a provider body of ``{"response": 7}`` answered
+    **200** with a ``response_preview`` of ``"7"``.  The parser's rule - a
+    candidate is taken only if its value is a ``str`` - rejects a number, so
+    the same body is an empty response now.  Pinned here so the narrowing is
+    a recorded decision and not a drift nobody noticed.
+    """
+    for body in (
+        {"response": 7},
+        {"message": {"content": 7}},
+        {"choices": [{"message": {"content": 7}}]},
+    ):
+        res = _post_inference(monkeypatch, body)
+        assert res.status_code == 502
+        assert res.status_code != 200
+        assert res.status_code != 500
+        assert res.json()["detail"] == "Inference returned an empty response"
+
+
 def test_the_endpoint_contract_is_unchanged(monkeypatch):
     """The wire contract of the gate is exactly what it was."""
     res = _post_inference(monkeypatch, NATIVE_BODY, model_id=None, selected=None)
