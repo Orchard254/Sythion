@@ -1,210 +1,212 @@
-{
-  "items": {
-    "001": {
-      "status": "merged",
-      "owner": "committer-1",
-      "branch": "orchestra/001-ci-gates-repo",
-      "mergeSha": "7c478d1",
-      "round": 0,
-      "verifyRounds": 0,
-      "conflicts": 0,
-      "sensitivity": "external",
-      "domain": "infra"
-    },
-    "002": {
-      "status": "merged",
-      "owner": "verifier-002",
-      "branch": "orchestra/002-test-selection-truth",
-      "mergeSha": "76e4f14",
-      "round": 1,
-      "verifyRounds": 0,
-      "conflicts": 0,
-      "sensitivity": "sensitive+external",
-      "domain": "none"
-    },
-    "003": {
-      "status": "merged",
-      "owner": "committer-1",
-      "branch": "orchestra/003-docs-baseline",
-      "mergeSha": "f0d980661f903e767d40d487f094d228311d808c",
-      "round": 1,
-      "verifyRounds": 0,
-      "conflicts": 0,
-      "sensitivity": "sensitive",
-      "domain": "none"
-    },
-    "004": {
-      "status": "merged",
-      "owner": "committer-2",
-      "branch": "orchestra/004-real-assertions",
-      "mergeSha": "4d827c0ee744c170bf81a74c4d75fc1aff6d5104",
-      "round": 0,
-      "verifyRounds": 0,
-      "conflicts": 0,
-      "sensitivity": "sensitive",
-      "domain": "none"
-    },
-    "005": {
-      "status": "deferred",
-      "owner": null,
-      "branch": null,
-      "mergeSha": null,
-      "round": 0,
-      "verifyRounds": 0,
-      "conflicts": 0,
-      "sensitivity": "none",
-      "domain": "infra"
-    },
-    "006": {
-      "status": "merged",
-      "owner": "verifier-006",
-      "branch": "orchestra/006-readiness-test-isolation",
-      "mergeSha": "82a3aa7988c9b97a171964f515b71782bfb2ae63",
-      "round": 1,
-      "verifyRounds": 0,
-      "conflicts": 0,
-      "sensitivity": "sensitive",
-      "domain": "none"
-    },
-    "007": {
-      "status": "merged",
-      "owner": "verifier-007",
-      "branch": "orchestra/007-no-real-vault-writes",
-      "mergeSha": "6424dd489239ce7d70107fa49b96ccaaf79d974b",
-      "round": 1,
-      "verifyRounds": 0,
-      "conflicts": 0,
-      "sensitivity": "sensitive",
-      "domain": "security"
-    },
-    "008": {
-      "status": "deferred",
-      "owner": null,
-      "branch": null,
-      "mergeSha": null,
-      "round": 0,
-      "verifyRounds": 0,
-      "conflicts": 0,
-      "sensitivity": "sensitive",
-      "domain": "data"
-    },
-    "009": {
-      "status": "deferred",
-      "owner": null,
-      "branch": null,
-      "mergeSha": null,
-      "round": 0,
-      "verifyRounds": 0,
-      "conflicts": 0,
-      "sensitivity": "sensitive",
-      "domain": "security"
-    },
-    "017": {
-      "status": "merged",
-      "owner": "committer-1",
-      "branch": "orchestra/017-counter-flag",
-      "mergeSha": "29bb2433daf69fc0b2eddc2264366e92701140c0",
-      "round": 1,
-      "verifyRounds": 1,
-      "conflicts": 0,
-      "sensitivity": "sensitive",
-      "domain": "data"
-    },
-    "018": {
-      "status": "merged",
-      "owner": "committer-1",
-      "branch": "orchestra/018-vault-guard-surface",
-      "mergeSha": "25a9c029d80fad353e2dae1b892e57fbe2814fd2",
-      "round": 2,
-      "verifyRounds": 1,
-      "conflicts": 0,
-      "sensitivity": "sensitive",
-      "domain": "security"
-    },
-    "019": {
-      "status": "merged",
-      "owner": "committer-019",
-      "branch": "orchestra/019-tautology-detector",
-      "mergeSha": "df75bb6a43ba5230427dc12e1ae3606d4d3ee992",
-      "round": 3,
-      "verifyRounds": 1,
-      "conflicts": 0,
-      "sensitivity": "none",
-      "domain": "none"
-    },
-    "020": {
-      "status": "merged",
-      "owner": "committer-020",
-      "branch": "orchestra/020-env-isolation",
-      "mergeSha": "af4b1f1",
-      "round": 2,
-      "verifyRounds": 1,
-      "conflicts": 0,
-      "sensitivity": "sensitive",
-      "domain": "none"
-    },
-    "021": {
-      "status": "merged",
-      "owner": "committer-021",
-      "branch": "orchestra/021-onboarding-inference-shape",
-      "mergeSha": "0e2702d",
-      "round": 2,
-      "verifyRounds": 2,
-      "conflicts": 0,
-      "sensitivity": "sensitive",
-      "domain": "api"
-    }
-  },
-  "roles": {
-    "researcher": {
-      "state": "idle",
-      "task": null,
-      "since": null
-    },
-    "scout": {
-      "state": "idle",
-      "task": null,
-      "since": null
-    },
-    "planner": {
-      "state": "idle",
-      "task": null,
-      "since": null
-    },
-    "implementer-1": {
-      "state": "working",
-      "task": "021 round 2 - pin the numeric-response behaviour change + fix the header snapshot assertion (test-only)",
-      "since": "2026-10-22"
-    },
-    "implementer-2": {
-      "state": "working",
-      "task": "020 round 2 - fence the real legacy-migration target (F1) and order the sentinel-leak check before raw output (F2) (test-only)",
-      "since": "2026-10-22"
-    },
-    "implementer-3": {
-      "state": "idle",
-      "task": null,
-      "since": null
-    },
-    "reviewer": {
-      "state": "idle",
-      "task": null,
-      "since": null
-    },
-    "verifier": {
-      "state": "idle",
-      "task": null,
-      "since": null
-    },
-    "committer": {
-      "state": "idle",
-      "task": null,
-      "since": null
-    },
-    "librarian": {
-      "state": "idle",
-      "task": null,
-      "since": null
-    }
-  }
+﻿{
+    "items":  {
+                  "001":  {
+                              "status":  "merged",
+                              "owner":  "committer-1",
+                              "branch":  "orchestra/001-ci-gates-repo",
+                              "mergeSha":  "7c478d1",
+                              "round":  0,
+                              "verifyRounds":  0,
+                              "conflicts":  0,
+                              "sensitivity":  "external",
+                              "domain":  "infra"
+                          },
+                  "002":  {
+                              "status":  "merged",
+                              "owner":  "verifier-002",
+                              "branch":  "orchestra/002-test-selection-truth",
+                              "mergeSha":  "76e4f14",
+                              "round":  1,
+                              "verifyRounds":  0,
+                              "conflicts":  0,
+                              "sensitivity":  "sensitive+external",
+                              "domain":  "none"
+                          },
+                  "003":  {
+                              "status":  "merged",
+                              "owner":  "committer-1",
+                              "branch":  "orchestra/003-docs-baseline",
+                              "mergeSha":  "f0d980661f903e767d40d487f094d228311d808c",
+                              "round":  1,
+                              "verifyRounds":  0,
+                              "conflicts":  0,
+                              "sensitivity":  "sensitive",
+                              "domain":  "none"
+                          },
+                  "004":  {
+                              "status":  "merged",
+                              "owner":  "committer-2",
+                              "branch":  "orchestra/004-real-assertions",
+                              "mergeSha":  "4d827c0ee744c170bf81a74c4d75fc1aff6d5104",
+                              "round":  0,
+                              "verifyRounds":  0,
+                              "conflicts":  0,
+                              "sensitivity":  "sensitive",
+                              "domain":  "none"
+                          },
+                  "005":  {
+                              "status":  "deferred",
+                              "owner":  null,
+                              "branch":  null,
+                              "mergeSha":  null,
+                              "round":  0,
+                              "verifyRounds":  0,
+                              "conflicts":  0,
+                              "sensitivity":  "none",
+                              "domain":  "infra"
+                          },
+                  "006":  {
+                              "status":  "merged",
+                              "owner":  "verifier-006",
+                              "branch":  "orchestra/006-readiness-test-isolation",
+                              "mergeSha":  "82a3aa7988c9b97a171964f515b71782bfb2ae63",
+                              "round":  1,
+                              "verifyRounds":  0,
+                              "conflicts":  0,
+                              "sensitivity":  "sensitive",
+                              "domain":  "none"
+                          },
+                  "007":  {
+                              "status":  "merged",
+                              "owner":  "verifier-007",
+                              "branch":  "orchestra/007-no-real-vault-writes",
+                              "mergeSha":  "6424dd489239ce7d70107fa49b96ccaaf79d974b",
+                              "round":  1,
+                              "verifyRounds":  0,
+                              "conflicts":  0,
+                              "sensitivity":  "sensitive",
+                              "domain":  "security"
+                          },
+                  "008":  {
+                              "status":  "deferred",
+                              "owner":  null,
+                              "branch":  null,
+                              "mergeSha":  null,
+                              "round":  0,
+                              "verifyRounds":  0,
+                              "conflicts":  0,
+                              "sensitivity":  "sensitive",
+                              "domain":  "data"
+                          },
+                  "009":  {
+                              "status":  "deferred",
+                              "owner":  null,
+                              "branch":  null,
+                              "mergeSha":  null,
+                              "round":  0,
+                              "verifyRounds":  0,
+                              "conflicts":  0,
+                              "sensitivity":  "sensitive",
+                              "domain":  "security"
+                          },
+                  "017":  {
+                              "status":  "merged",
+                              "owner":  "committer-1",
+                              "branch":  "orchestra/017-counter-flag",
+                              "mergeSha":  "29bb2433daf69fc0b2eddc2264366e92701140c0",
+                              "round":  1,
+                              "verifyRounds":  1,
+                              "conflicts":  0,
+                              "sensitivity":  "sensitive",
+                              "domain":  "data"
+                          },
+                  "018":  {
+                              "status":  "merged",
+                              "owner":  "committer-1",
+                              "branch":  "orchestra/018-vault-guard-surface",
+                              "mergeSha":  "25a9c029d80fad353e2dae1b892e57fbe2814fd2",
+                              "round":  2,
+                              "verifyRounds":  1,
+                              "conflicts":  0,
+                              "sensitivity":  "sensitive",
+                              "domain":  "security"
+                          },
+                  "019":  {
+                              "status":  "merged",
+                              "owner":  "committer-019",
+                              "branch":  "orchestra/019-tautology-detector",
+                              "mergeSha":  "df75bb6a43ba5230427dc12e1ae3606d4d3ee992",
+                              "round":  3,
+                              "verifyRounds":  1,
+                              "conflicts":  0,
+                              "sensitivity":  "none",
+                              "domain":  "none"
+                          },
+                  "020":  {
+                              "status":  "merged",
+                              "owner":  "committer-020",
+                              "branch":  "orchestra/020-env-isolation",
+                              "mergeSha":  "af4b1f1",
+                              "round":  4,
+                              "verifyRounds":  2,
+                              "conflicts":  0,
+                              "sensitivity":  "sensitive",
+                              "domain":  "none",
+                              "note":  "merged as af4b1f1 (rounds 1-2). A test-only follow-up (rounds 3-4, the legacy profile-dir override scrub on branch orchestra/020-r3-probe-scrub) is verified FIXED and awaits its review before a second merge."
+                          },
+                  "021":  {
+                              "status":  "merged",
+                              "owner":  "committer-021",
+                              "branch":  "orchestra/021-onboarding-inference-shape",
+                              "mergeSha":  "6377525",
+                              "round":  4,
+                              "verifyRounds":  3,
+                              "conflicts":  0,
+                              "sensitivity":  "sensitive",
+                              "domain":  "api",
+                              "note":  "merged twice: 0e2702d (rounds 1-2, the fix itself) then 6377525 (rounds 3-4, the test-only pin). 6377525 is master\u0027s product state for this item."
+                          }
+              },
+    "roles":  {
+                  "researcher":  {
+                                     "state":  "idle",
+                                     "task":  null,
+                                     "since":  null
+                                 },
+                  "scout":  {
+                                "state":  "idle",
+                                "task":  null,
+                                "since":  null
+                            },
+                  "planner":  {
+                                  "state":  "idle",
+                                  "task":  null,
+                                  "since":  null
+                              },
+                  "implementer-1":  {
+                                        "state":  "idle",
+                                        "task":  null,
+                                        "since":  null
+                                    },
+                  "implementer-2":  {
+                                        "state":  "idle",
+                                        "task":  null,
+                                        "since":  null
+                                    },
+                  "implementer-3":  {
+                                        "state":  "idle",
+                                        "task":  null,
+                                        "since":  null
+                                    },
+                  "reviewer":  {
+                                   "state":  "working",
+                                   "task":  "020 round 4 - review the combined r3+r4 delta on orchestra/020-r3-probe-scrub (tip bc87121)",
+                                   "since":  "2026-10-22"
+                               },
+                  "verifier":  {
+                                   "state":  "working",
+                                   "task":  "020 round 4 verification COMPLETE - VERDICT FIXED at bc87121; the review is the remaining gate",
+                                   "since":  "2026-10-22"
+                               },
+                  "committer":  {
+                                    "state":  "working",
+                                    "task":  "merge 020 rounds 3+4 once the review returns ACCEPT",
+                                    "since":  "2026-10-22"
+                                },
+                  "librarian":  {
+                                    "state":  "idle",
+                                    "task":  null,
+                                    "since":  null
+                                }
+              }
 }
