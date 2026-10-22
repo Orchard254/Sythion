@@ -44,6 +44,11 @@ incidental):
   * the child environment is built EXPLICITLY (every ``SYTHION_*`` variable
     removed, ``PYTHONPATH`` scrubbed) so the developer's shell contributes
     nothing and the scratch tree cannot be shadowed;
+  * the migration probe's child environment removes the LEGACY profile-dir
+    override ``Sythion (Synth)_DATA_DIR`` as well: it does not start with
+    ``SYTHION_``, and ``backend/core/storage.py`` honours it whenever the
+    canonical ``SYTHION_DATA_DIR`` is absent - so it would follow the probe
+    out of the scratch tree;
   * the scratch tree is removed in a ``finally``, and a removal that still
     fails FAILS the test - debris must not accumulate silently.
 
@@ -66,9 +71,17 @@ from pathlib import Path
 import pytest
 
 try:
-    from backend.core.storage import DEFAULT_DATA_DIR_NAME
+    from backend.core.storage import (
+        DATA_DIR_ENV,
+        DEFAULT_DATA_DIR_NAME,
+        LEGACY_DATA_DIR_ENV,
+    )
 except ImportError:  # pragma: no cover - the standalone ``backend/`` layout
-    from core.storage import DEFAULT_DATA_DIR_NAME
+    from core.storage import (
+        DATA_DIR_ENV,
+        DEFAULT_DATA_DIR_NAME,
+        LEGACY_DATA_DIR_ENV,
+    )
 
 
 _TESTS_DIR = Path(__file__).resolve().parent
@@ -711,8 +724,11 @@ def _run_the_migration_probe(scratch, mode, localappdata, fake_home):
     The environment is the CHECK's own child environment (see
     ``_child_environment``) with the isolation's effect applied: the
     isolation deletes EVERY ``SYTHION_*`` variable for the duration of every
-    test, so the probe observes none of them - not even ``SYTHION_DATA_DIR``,
-    which is what makes ``data_dir()`` fall back to ``%LOCALAPPDATA%``.
+    test, so the probe observes none of them - not even ``SYTHION_DATA_DIR``.
+    The LEGACY profile-dir override is removed as well, because it is the
+    one the ``SYTHION_*`` scrub cannot see, and it is exactly what
+    ``data_dir()`` would follow once the canonical variable is gone.  With
+    both overrides absent, ``data_dir()`` falls back to ``%LOCALAPPDATA%``.
 
     Two variables are redirected into the scratch tree, and only into the
     scratch tree: ``%LOCALAPPDATA%`` (where the profile directory resolves)
@@ -726,6 +742,23 @@ def _run_the_migration_probe(scratch, mode, localappdata, fake_home):
     for key in list(env):
         if key.upper().startswith("SYTHION_"):
             del env[key]
+    # The profile directory has a SECOND override, and the prefix scrub above
+    # cannot see it: ``backend/core/storage.py`` honours the legacy
+    # ``Sythion (Synth)_DATA_DIR`` whenever the canonical
+    # ``SYTHION_DATA_DIR`` is absent - and the isolation DELETES the
+    # canonical one, so the legacy one is exactly what ``data_dir()`` would
+    # follow.  The legacy name starts with ``Sythion ``, not ``SYTHION_``,
+    # so it survives the scrub above and would resolve the probe's profile
+    # directory OUTSIDE the scratch tree (and the migration would copy the
+    # fake legacy marker there).  Both overrides are therefore removed HERE,
+    # by their production constants, so a rename in
+    # ``backend/core/storage.py`` moves the scrub with it.  The comparison is
+    # case-insensitive because that is how the Windows environment block
+    # behaves - ``os.environ`` itself upper-cases the key.
+    for override in (DATA_DIR_ENV, LEGACY_DATA_DIR_ENV):
+        for key in list(env):
+            if key.upper() == override.upper():
+                del env[key]
     env["LOCALAPPDATA"] = str(localappdata)
     env["HOME"] = str(fake_home)
     env["USERPROFILE"] = str(fake_home)
@@ -897,6 +930,111 @@ def test_the_legacy_migration_cannot_copy_user_data_into_the_scratch_tree():
             "the fake legacy profile was copied into the scratch tree while "
             "the app's lifespan was running (only the control's copy is "
             "expected): %s" % _legacy_marker_copies(scratch, legacy_dir)
+        )
+    finally:
+        removal_error = _remove_scratch_tree(scratch)
+        if removal_error is not None:
+            pytest.fail(
+                "the scratch tree %s could not be removed (%s); debris must not "
+                "accumulate silently" % (scratch, removal_error)
+            )
+
+
+# ---------------------------------------------------------------------------
+# The legacy profile-dir override must not reach the migration probe
+# ---------------------------------------------------------------------------
+#
+# ``backend/core/storage.py`` resolves the profile directory from TWO
+# environment variables: the canonical ``SYTHION_DATA_DIR`` and the legacy
+# ``Sythion (Synth)_DATA_DIR`` (the packaging and launch scripts set the
+# legacy one).  The legacy one is honoured whenever the canonical one is
+# absent - and the isolation DELETES the canonical one, so the legacy one is
+# precisely what ``data_dir()`` follows.
+#
+# The legacy name starts with ``Sythion ``, not ``SYTHION_``, so a scrub that
+# only removes ``SYTHION_*`` variables does not see it.  On a machine where
+# the legacy override happens to be set, the migration probe's profile
+# directory would therefore resolve OUTSIDE the scratch tree and the fake
+# legacy marker would be copied there.
+#
+# The test below measures exactly that.  The override is set in the PARENT
+# environment and points at a directory INSIDE the scratch tree, so the test
+# itself never writes outside it, and the test asserts both halves of the
+# containment: the probe's profile directory is the expected scratch-internal
+# one, and the override's directory is left untouched.
+
+
+def test_the_migration_probe_stays_in_the_scratch_tree_when_the_legacy_override_is_set(
+    monkeypatch,
+):
+    """A legacy profile-dir override in the shell must not move the probe out.
+
+    ``backend/core/storage.py`` honours ``Sythion (Synth)_DATA_DIR`` when the
+    canonical ``SYTHION_DATA_DIR`` is absent, and the isolation deletes the
+    canonical one.  The legacy name does not start with ``SYTHION_``, so it
+    is not removed by a ``SYTHION_*`` scrub: the probe would follow it out
+    of the scratch tree and copy the fake legacy marker there.
+
+    The override points at a directory INSIDE the scratch tree, so the test
+    never writes outside it, and the assertions cover the whole property:
+    the probe's resolved profile directory is the expected scratch-internal
+    one, the migration reports that it copied nothing, and the override's
+    directory is left empty.
+    """
+    scratch = Path(tempfile.mkdtemp(prefix="sythion-020-legacy-override-"))
+    try:
+        _build_scratch_tree(scratch)
+
+        # The fake legacy profile, INSIDE the scratch tree: the source the
+        # migration would copy.  The child's ``HOME``/``USERPROFILE`` point at
+        # it, so the developer's real ``~/.sythion`` is never a source.
+        fake_home = scratch / "fake-home"
+        legacy_dir = fake_home / ".sythion"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / LEGACY_MARKER_NAME).write_text(
+            LEGACY_MARKER_CONTENT, encoding="utf-8"
+        )
+
+        # The override the developer's shell may carry, pointing INSIDE the
+        # scratch tree.  ``monkeypatch`` restores whatever was there before,
+        # so the real override (if any) is untouched by this test.
+        override_dir = scratch / "legacy-override-target"
+        override_dir.mkdir()
+        monkeypatch.setenv(LEGACY_DATA_DIR_ENV, str(override_dir))
+
+        run = _run_the_migration_probe(
+            scratch, "migration", scratch / "localappdata", fake_home
+        )
+        assert run.completed.returncode == 0, (
+            "the migration probe (migration) exited %d; the output was:\n%s"
+            % (run.completed.returncode, _redact_sentinels(run.output))
+        )
+
+        # (1) the containment: the probe's profile directory is the
+        # scratch-internal one, NOT the directory the override named.
+        assert run.target == str(_fallback_profile_dir(scratch)), (
+            "the probe's profile directory resolved to %s and not to the "
+            "scratch-internal %s: the legacy override %s reached the probe's "
+            "child environment"
+            % (run.target, _fallback_profile_dir(scratch), LEGACY_DATA_DIR_ENV)
+        )
+
+        # (2) the probe's own report: the migration ran and copied nothing.
+        assert run.migrated == "False", (
+            "the migration reported that it copied the legacy profile into %s"
+            % run.target
+        )
+
+        # (3) the write property: the override's directory is untouched, and
+        # the fake legacy profile was not copied ANYWHERE in the scratch tree.
+        written = sorted(path.name for path in override_dir.iterdir())
+        assert written == [], (
+            "the probe wrote %s into the directory the legacy override named"
+            % written
+        )
+        assert _legacy_marker_copies(scratch, legacy_dir) == [], (
+            "the fake legacy profile was copied into the scratch tree: %s"
+            % _legacy_marker_copies(scratch, legacy_dir)
         )
     finally:
         removal_error = _remove_scratch_tree(scratch)
