@@ -198,6 +198,86 @@ def test_a_malformed_body_does_not_raise():
         assert _parse(body) == ""
 
 
+# --- the candidate rule ------------------------------------------------------
+
+# The parser's rule, over the whole enumerable domain of candidate values: a
+# candidate is taken only if its value is a ``str``.  These are the parser's
+# FOUR branches, in the parser's own order (the ``_extract_inference_text``
+# helper in backend/api/routes.py):
+#   1. native Ollama /api/chat      -> response["message"]["content"]
+#   2. OpenAI-compatible chat       -> response["choices"][0]["message"]["content"]
+#   3. OpenAI-compatible legacy     -> response["choices"][0]["text"]
+#   4. legacy Ollama /api/generate  -> response["response"]
+_CANDIDATE_BRANCHES = (
+    ("native", lambda candidate: {"message": {"content": candidate}}),
+    (
+        "openai-chat",
+        lambda candidate: {"choices": [{"message": {"content": candidate}}]},
+    ),
+    ("legacy-choice", lambda candidate: {"choices": [{"text": candidate}]}),
+    ("legacy-generate", lambda candidate: {"response": candidate}),
+)
+
+# The non-str candidate types: an int, a float, a bool, a dict and a list.
+# None of them is the model's text, so the rule rejects every one of them.
+_NON_STR_CANDIDATES = (7, 7.5, True, {"a": 1}, [1, 2])
+
+
+def _candidate_cases():
+    """Every case the candidate rule is pinned over.
+
+    Five non-str candidate types in each of the four branches - 20 cases that
+    must yield ``''`` - plus the four POSITIVE cases, a ``str`` candidate in
+    each branch, that must still be returned.  The positive cases are what
+    stops the rule from being satisfied by a helper that always answers ``''``.
+    """
+    cases = []
+    for branch, build in _CANDIDATE_BRANCHES:
+        for candidate in _NON_STR_CANDIDATES:
+            cases.append(
+                (
+                    "%s / %s" % (branch, type(candidate).__name__),
+                    build(candidate),
+                    "",
+                )
+            )
+        cases.append(("%s / str" % branch, build("OK"), "OK"))
+    return cases
+
+
+# The whole matrix is ONE parameter set on purpose: the rule is a single
+# logical property and the round's count contract is one collected test, while
+# every case inside the matrix still carries its own label, so a failure names
+# the exact branch and candidate type that broke.
+_CANDIDATE_CASES = _candidate_cases()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [_CANDIDATE_CASES],
+    ids=["every-branch-and-every-candidate-type"],
+)
+def test_a_candidate_is_taken_only_if_its_value_is_a_str(case):
+    """A non-str candidate is never the model's text - in ANY branch.
+
+    The rule the parser applies is uniform: a candidate is taken only if its
+    value is a ``str``.  Before this test the rule was pinned for the ``int``
+    value only and for three of the four branches, so a change that widened
+    ``_candidate`` to accept a float, a bool, a dict or a list - or that
+    accepted an int in the fourth branch - would have passed the whole suite
+    while the narrowing silently widened.
+
+    The helper is imported INSIDE the test function, exactly as ``_parse``
+    above does, so that a tree on which the helper does not exist yet fails
+    this test BEHAVIOURALLY instead of turning the whole module into a
+    collection error.
+    """
+    from backend.api.routes import _extract_inference_text
+
+    for label, body, expected in case:
+        assert _extract_inference_text(body) == expected, label
+
+
 # --- the endpoint ------------------------------------------------------------
 
 
@@ -250,11 +330,20 @@ def test_the_endpoint_reports_502_for_a_numeric_provider_answer(monkeypatch):
     candidate is taken only if its value is a ``str`` - rejects a number, so
     the same body is an empty response now.  Pinned here so the narrowing is
     a recorded decision and not a drift nobody noticed.
+
+    The rule is uniform, so a non-str of ANY type (int, float, bool, dict,
+    list) is an empty response.  The four bodies below cover ALL FOUR
+    branches of the parser - the native ``/api/chat`` shape, the
+    OpenAI-compatible chat shape, the OpenAI-compatible legacy completions
+    shape and the legacy ``/api/generate`` shape - so no branch can widen
+    unnoticed; the remaining non-str types are pinned at the helper level by
+    ``test_a_candidate_is_taken_only_if_its_value_is_a_str``.
     """
     for body in (
         {"response": 7},
         {"message": {"content": 7}},
         {"choices": [{"message": {"content": 7}}]},
+        {"choices": [{"text": 7}]},
     ):
         res = _post_inference(monkeypatch, body)
         assert res.status_code == 502
