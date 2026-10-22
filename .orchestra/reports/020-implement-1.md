@@ -207,7 +207,15 @@ module does not support (`check_same_thread=False` only suppresses the
 *check*, not the race). It is a native crash, not a Python exception, so no
 assertion in the repository can catch it.
 
-**Run 4 (branch, on the tip) - see E4c.**
+**Run 4 (branch, on the FINAL tip `2fdc842`) - PASSED.**
+
+```
+$ python -m pytest backend/tests -q
+...
+1584 passed, 45 skipped, 428556 warnings in 879.05s (0:14:39)
+```
+
+Wall time: 893.3 s. Zero failures, zero errors, on the final tip.
 
 ### E4b - the pre-change baseline, measured the same way (criterion 6's delta)
 
@@ -235,7 +243,25 @@ the acceptance table.
 
 ### E4c - the full suite on the FINAL tip
 
-See below.
+**Run 4 (branch, on the FINAL tip `2fdc842`) - PASSED.**
+
+```
+$ python -m pytest backend/tests -q
+...
+1584 passed, 45 skipped, 428556 warnings in 879.05s (0:14:39)
+```
+
+Wall time: 893.3 s. Zero failures, zero errors, on the final tip.
+
+All four full-suite runs of this item, for the record:
+
+| run | tree | tip | outcome | wall |
+|---|---|---|---|---|
+| 1 | branch | `708ad6f` | **native crash** (access violation) at 61% | 421.3 s |
+| 2 | branch | `708ad6f` | **1584 passed, 45 skipped** | 727.4 s |
+| 3 | branch | `2fdc842` | **native crash** (access violation) at 61% | 404.7 s |
+| 4 | branch | `2fdc842` | **1584 passed, 45 skipped** | 893.3 s |
+| - | baseline `master` | `cee7a02` | **1583 passed, 45 skipped** | 610.6 s |
 
 ### E5 - the NEGATIVE CONTROL, level (a): inside the check (automated, every run)
 
@@ -259,14 +285,22 @@ could not demonstrate.
 
 ```
 $ cd C:\Users\orcha\AppData\Local\Temp\opencode\wt-020-negctl
+$ git checkout 2fdc842          # the branch tip
 $ git diff --stat
  backend/tests/conftest.py | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
 
+$ git diff backend/tests/conftest.py
+@@ -573,7 +573,7 @@ def clean_settings_snapshot():
+-@pytest.fixture(autouse=True)
++@pytest.fixture
+ def _isolate_local_env_settings(monkeypatch, request):
+
 $ python -m pytest backend/tests/test_env_isolation.py -q
 ```
 
-**RESULT: RED.** The failure:
+**RESULT: RED.** The failure (the whole run output is in
+`C:\Users\orcha\AppData\Local\Temp\opencode\wt-020-negctl-result-2.txt`):
 
 ```
 F                                                                        [100%]
@@ -297,16 +331,18 @@ E             E       assert False is True
 E              tests\test_env_isolation_probe.py:154: AssertionError
 E             =========================== short test summary info ===========================
 E             FAILED tests\test_env_isolation_probe.py::test_the_probe_observes_that_the_local_env_isolation_holds
-E             1 failed, 11 passed, 826 warnings in 6.02s
+E             1 failed, 11 passed, 826 warnings in 6.12s
 
 E           assert 1 == 0
-E            +  where 1 = <backend.tests.test_env_isolation._NestedRun object at 0x00000022443D7E2BA0>.returncode
+E            +  where 1 = <backend.tests.test_env_isolation._NestedRun object at 0x00000027DEF22AA50>.returncode
 
-backend\tests\test_env_isolation.py:411: AssertionError
+backend\tests\test_env_isolation.py:416: AssertionError
 =========================== short test summary info ============================
 FAILED backend/tests/test_env_isolation.py::test_the_local_env_isolation_is_measured_not_assumed
-1 failed, 45 warnings in 11.23s
+1 failed, 45 warnings in 11.46s
 ```
+
+Wall time of that command: 14.8 s.
 
 Two things are visible in that output and both matter:
 
@@ -321,6 +357,10 @@ Two things are visible in that output and both matter:
 No sentinel value appears anywhere in that output (the probe's message names
 the property, not the value) - and the test asserts the same for the captured
 stdout/stderr and the JUnit XML.
+
+The same control was also run on the previous tip `708ad6f` (identical
+result, `1 failed, 45 warnings in 11.23s`, output in
+`wt-020-negctl-result.txt`); the commit `2fdc842` only adds a print.
 
 ### E7 - the diff is confined to `backend/tests/` (criterion 5)
 
@@ -337,6 +377,37 @@ sentinel REACHED the effective settings
 (`file_neutralised=False`), which is only possible if `config.py` still reads
 the env file.
 
+### E8 - no debris, and the diff is confined to `backend/tests/`
+
+```
+$ Get-ChildItem $env:TEMP -Filter "sythion-020-*" -Directory
+(no output - every scratch tree was removed)
+
+$ git -C ...\wt-020 status --porcelain
+(no output - the branch worktree is clean)
+
+$ git diff --stat master...HEAD
+ backend/tests/isolation_probe_template.py | 168 ++++++++++
+ backend/tests/test_env_isolation.py       | 496 ++++++++++++++++++++++++++++++
+ backend/tests/test_setup_readiness.py     |   8 +-
+ 3 files changed, 671 insertions(+), 1 deletion(-)
+```
+
+## Artefacts left outside the repository (for the reviewer)
+
+All of them are in `C:\Users\orcha\AppData\Local\Temp\opencode\` and none of
+them is inside the repository:
+
+| path | what it is |
+|---|---|
+| `wt-020` | the branch worktree (`orchestra/020-env-isolation` @ `2fdc842`), clean |
+| `wt-020-base` | the pre-change baseline worktree (detached @ `cee7a02` = `master`) |
+| `wt-020-negctl` | the negative-control worktree (detached @ `2fdc842`) **with the isolation deleted in `backend/tests/conftest.py`** - that modification is the control and is deliberately left in place |
+| `wt-020-fullsuite.txt`, `wt-020-fullsuite-2.txt`, `wt-020-fullsuite-3.txt`, `wt-020-fullsuite-4.txt` | the four full-suite runs (2 native crashes, 2 green) |
+| `wt-020-base-fullsuite.txt` | the baseline full-suite run |
+| `wt-020-negctl-result.txt`, `wt-020-negctl-result-2.txt` | the two negative-control runs (RED) |
+| `wt-020-newtest.txt` | the new test's `-s` run with the three observed signal lines |
+
 ## Acceptance criteria
 
 | # | Criterion | Result | Evidence |
@@ -346,7 +417,7 @@ the env file.
 | 3 | ALREADY MET - the `file_roots` swap is captured in one conftest comment | **ALREADY MET - VERIFIED (documentation fact, no code change)** | `backend/tests/conftest.py:585-590`: "``[]`` for ``file_roots`` is NOT 'no file access' ... The isolation swaps approved directories; it is not file-access-free." (also `conftest.py:510`) |
 | 4 | TO DELIVER - `_LOCAL_ENV_FIELDS` is imported by the isolation test instead of being re-hardcoded | **MET** | `backend/tests/test_setup_readiness.py`: `from backend.tests.conftest import _LOCAL_ENV_FIELDS` and `for name in _LOCAL_ENV_FIELDS:`; the literal tuple is gone. The generated probe imports the same constant and drives its sentinel sweep from it. E2 (one conftest instance) |
 | 5 | TO DELIVER - product behaviour unchanged; the diff lists only files under `backend/tests/`; `backend/core/config.py` untouched; the product still reads `backend/.env` | **MET** | E7 (the diff is exactly three files, all under `backend/tests/`); `backend/core/config.py` is not in the diff; the negative control proves the file is still read |
-| 6 | TO DELIVER - the full suite keeps the pre-change passed/skipped counts; no test deleted, skipped or marked | **MET (see the reading stated below)** | E3: collected 1628 -> 1629, i.e. exactly the one new test; the template adds no test and no skip; E4: the full suite's outcome |
+| 6 | TO DELIVER - the full suite keeps the pre-change passed/skipped counts; no test deleted, skipped or marked | **MET (see the reading stated below)** | E3: collected 1628 -> 1629, i.e. exactly the one new test; the template adds no test and no skip. E4/E4b/E4c: the pre-change baseline is 1583 passed / 45 skipped and the branch is 1584 passed / 45 skipped, with zero failures and zero errors on both - the delta is exactly the one new test, no existing test's verdict changed and the skipped count is unchanged |
 
 **Criterion 6, the reading this implementation uses** (the plan's open question 1):
 the **skipped** count is unchanged, the **passed** count grows by exactly the

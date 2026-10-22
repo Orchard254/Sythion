@@ -1230,3 +1230,15 @@ This is the measurement that matters most, because it is the only one taken on t
 - verdict: ACCEPT
 - reason: the implementation matches the plan exactly, the scope is exactly four files, the reproduction is behavioural, and the counts are measured rather than quoted. Advance to reviewer and verifier, dispatched in parallel.
 
+
+## 2026-10-22 08:10 - implementer - 020 - ACCEPT
+- brief: briefs/020-implement-1.md
+- report: reports/020-implement-1.md
+- evidence: branch orchestra/020-env-isolation @ 2fdc842 (3 commits, not pushed). The signal line is EXACT in both directions (runs 1 and 2 all-True; run 3 with the isolation deleted in the scratch copy, file_neutralised/env_neutralised/env_cleared all False). Negative control level (a) runs on EVERY execution: run 3 exits != 0 with a <failure> on the generated probe AND on the repository's own test_the_suite_does_not_inherit_the_local_env_file. Negative control level (b) - the property the 006 verifier could not demonstrate - was executed in a throwaway worktree with NO backend/.env (the CI shape) and the isolation deleted from backend/tests/conftest.py: the new test goes RED ('the exported process-environment sentinel reached the effective settings'), while the repository's own readiness test still PASSES (11 passed) - i.e. the new check catches what the old one could not. Collected 1628 -> 1629 (+1, the one new test; the probe template is not collected). Full suite 1584 passed / 45 skipped against a master baseline of 1583 / 45, i.e. exactly +1.
+- coverage: all six criteria addressed, including the ones the plan marked ALREADY MET (criterion 2, the process-environment coverage, is now MEASURED by the nested run rather than asserted).
+- consistency: the plan's scratch-tree construction, the explicit child environment, the 120 s timeout and the scratch removal all held. Two implementation details beyond the plan, both reported rather than hidden: the probe's socket guard exempts loopback (Windows asyncio's self-pipe is loopback, and refusing it broke 9 readiness tests), and the scratch profile dir carries a placeholder so the legacy ~/.sythion migration cannot copy real user data in - both are the kind of thing a plan cannot foresee and an implementer must decide.
+- not checked: the nested run on CI's Python 3.11; the 120 s timeout was never exercised (max observed 12.0 s). THE FULL SUITE DIED NATIVELY TWICE (0xC0000005 at 61% in test_phase95_hardening.py's validate_in_thread - two threads sharing one StaticPool SQLite connection) and the implementer REPRODUCED IT ON PRE-CHANGE MASTER (exit -1073741819), so it is a pre-existing latent crash, not a regression - this is the first concrete reproducer the run has for the Fault-B class, and it belongs in the follow-up list.
+- self-directed: no
+- verdict: ACCEPT
+- reason: the implementation is faithful to the plan, and both levels of the negative control were executed rather than argued - level (b) is the exact property the item exists to deliver. The native crash is pre-existing and reproducible, which is a finding, not a failure. Advance to reviewer.
+
