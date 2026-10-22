@@ -78,6 +78,71 @@ apiClient.interceptors.request.use((config) => {
   return config;
 });
 
+// The parts of an axios rejection this module reads. The interceptor
+// replaces the message on the SAME error object, so the status code, the
+// response and the config stay reachable for any caller that wants them.
+interface ApiRejection {
+  message?: string;
+  response?: { data?: unknown };
+}
+
+// The `msg` of one FastAPI validation entry, or '' when there is none.
+const messageOf = (entry: unknown): string => {
+  if (entry && typeof entry === 'object' && 'msg' in entry) {
+    const msg = (entry as { msg?: unknown }).msg;
+    return typeof msg === 'string' ? msg.trim() : '';
+  }
+  return '';
+};
+
+// A human-readable reason out of a structured error body. Only JSON fields
+// are used: a raw body (an HTML error page, a Python traceback) is never
+// surfaced, so the operator never sees a stack trace in the UI.
+const detailToText = (detail: unknown): string => {
+  if (typeof detail === 'string') {
+    return detail.trim();
+  }
+  if (Array.isArray(detail)) {
+    return detail
+      .map((entry) => messageOf(entry))
+      .filter((text) => text.length > 0)
+      .join('; ');
+  }
+  return messageOf(detail);
+};
+
+// The reason to show for a failed request: the backend's `detail` first,
+// then its `error` slug. An empty result means "say nothing", and the
+// caller's own message (axios's "Request failed with status code NNN" or
+// "Network Error") is kept.
+const errorReason = (body: unknown): string => {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return '';
+  }
+  const record = body as Record<string, unknown>;
+  const detail = detailToText(record.detail);
+  if (detail) {
+    return detail;
+  }
+  const slug = record.error;
+  return typeof slug === 'string' ? slug.trim() : '';
+};
+
+// Surface the backend's own reason instead of axios's generic message. The
+// error is never swallowed: the same error object is re-rejected with only
+// its message replaced, and a successful response is passed through
+// unchanged.
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error: ApiRejection) => {
+    const reason = errorReason(error?.response?.data);
+    if (reason) {
+      error.message = reason;
+    }
+    return Promise.reject(error);
+  }
+);
+
 export const healthService = {
   check: async (): Promise<HealthStatus> => {
     const response = await apiClient.get('/health');

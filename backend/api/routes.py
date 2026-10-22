@@ -2183,6 +2183,54 @@ def _restore_secret(previous):
         pass
 
 
+def _extract_inference_text(response: Any) -> str:
+    """Return the model's text from a provider response, or '' if there is none.
+
+    Order (the FIRST candidate that yields a non-blank string wins):
+      1. native Ollama /api/chat      -> response["message"]["content"]
+      2. OpenAI-compatible chat       -> response["choices"][0]["message"]["content"]
+      3. OpenAI-compatible legacy     -> response["choices"][0]["text"]
+      4. legacy Ollama /api/generate  -> response["response"]
+
+    The order matches backend/agents/reasoner.py:310-318 and
+    backend/cognitive/reasoning.py:187, which read ``message.content`` first.
+    Every access is type-guarded, so a malformed body yields '' instead of
+    an exception.
+    """
+
+    def _candidate(value: Any) -> str:
+        """Return the stripped string, or '' for anything that is not text."""
+        if isinstance(value, str):
+            return value.strip()
+        return ""
+
+    if not isinstance(response, dict):
+        return ""
+
+    # 1. native Ollama /api/chat
+    message = response.get("message")
+    if isinstance(message, dict):
+        native = _candidate(message.get("content"))
+        if native:
+            return native
+
+    # 2 + 3. the OpenAI-compatible shapes
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        choice = choices[0]
+        choice_message = choice.get("message")
+        if isinstance(choice_message, dict):
+            chat = _candidate(choice_message.get("content"))
+            if chat:
+                return chat
+        legacy_choice = _candidate(choice.get("text"))
+        if legacy_choice:
+            return legacy_choice
+
+    # 4. the legacy Ollama /api/generate shape
+    return _candidate(response.get("response"))
+
+
 @router.post("/onboarding/inference")
 async def onboarding_inference(request: Request, db=Depends(get_db)):
     """Run a small real inference request against a selected model."""
@@ -2212,12 +2260,7 @@ async def onboarding_inference(request: Request, db=Depends(get_db)):
             messages=[{"role": "user", "content": "Reply with OK"}],
             max_tokens=16,
         )
-        text = ""
-        if isinstance(resp, dict):
-            choices = resp.get("choices") or []
-            if choices and isinstance(choices[0], dict):
-                text = (choices[0].get("message") or {}).get("content", "") or choices[0].get("text", "")
-            text = text or resp.get("response", "") or ""
+        text = _extract_inference_text(resp)
         if not str(text).strip():
             raise HTTPException(status_code=502, detail="Inference returned an empty response")
         try:
