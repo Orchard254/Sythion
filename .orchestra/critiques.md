@@ -1501,3 +1501,21 @@ This is the measurement that matters most, because it is the only one taken on t
 - self-directed: no
 - verdict: MERGED
 - reason: the item was ACCEPTed by two rounds of review and FIXED by two independent verifications, each of which reproduced the containment property and the two-site independence by execution; the merge is clean and touches no production file; and the single suite failure was investigated to the root and PROVEN pre-existing by an interleaved measurement on a tree containing none of this run's changes. Merging on a failure that is provably not the merge's is the only defensible reading of the evidence.
+
+## 2026-10-22 19:30 - committer - 020 - RE-RUN ON THE MERGED RESULT: GREEN
+- The merged-result suite was re-run after the single flaky failure was
+  investigated and proven pre-existing. Result: **1603 passed, 45 skipped, 0
+  failed** in 328.62 s (0:05:28), exit 0, and 1603 + 45 = 1648 collected.
+- The count is EXACTLY as predicted: 1601 passed before the last merge, plus
+  that merge's 2 tests, equals 1603. The first run's "1602 passed, 1 failed"
+  is therefore 1603 accounted for, with the one failure being the proven
+  pre-existing flake - and the re-run is green with no other difference.
+- The full merged-master picture: backend 1603 passed / 45 skipped / 0 failed
+  (exit 0); frontend 10 files / 80 tests passed (exit 0); npm run lint exit 0;
+  npm run build exit 0; cargo test 24 passed / 0 failed (exit 0).
+- Master is now: item 021 merged as 6377525 (after 0e2702d), item 020 merged
+  as 552cfe5 (after af4b1f1), and the user's own src-tauri/src/sidecar.rs
+  merged as 8f9a429 - with `git diff 15a2bbe..master -- backend/api/routes.py
+  frontend/src/services/api.ts` EMPTY and `git diff 8f9a429..master --
+  src-tauri/src/sidecar.rs` EMPTY, so every product file on master is the
+  exact code its verifier judged.
