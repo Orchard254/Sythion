@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from backend.models.database import get_db, Objective, PlanStep, Skill, Task
@@ -1990,7 +1991,7 @@ async def list_models():
     provider = get_default_provider()
 
     try:
-        models = await provider.list_models()
+        models = await run_in_threadpool(provider.list_models)
         return {"models": models}
     except Exception as e:
         logger.error(f"Failed to list models: {e}")
@@ -2183,6 +2184,54 @@ def _restore_secret(previous):
         pass
 
 
+def _extract_inference_text(response: Any) -> str:
+    """Return the model's text from a provider response, or '' if there is none.
+
+    Order (the FIRST candidate that yields a non-blank string wins):
+      1. native Ollama /api/chat      -> response["message"]["content"]
+      2. OpenAI-compatible chat       -> response["choices"][0]["message"]["content"]
+      3. OpenAI-compatible legacy     -> response["choices"][0]["text"]
+      4. legacy Ollama /api/generate  -> response["response"]
+
+    The order matches backend/agents/reasoner.py:310-318 and
+    backend/cognitive/reasoning.py:187, which read ``message.content`` first.
+    Every access is type-guarded, so a malformed body yields '' instead of
+    an exception.
+    """
+
+    def _candidate(value: Any) -> str:
+        """Return the stripped string, or '' for anything that is not text."""
+        if isinstance(value, str):
+            return value.strip()
+        return ""
+
+    if not isinstance(response, dict):
+        return ""
+
+    # 1. native Ollama /api/chat
+    message = response.get("message")
+    if isinstance(message, dict):
+        native = _candidate(message.get("content"))
+        if native:
+            return native
+
+    # 2 + 3. the OpenAI-compatible shapes
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        choice = choices[0]
+        choice_message = choice.get("message")
+        if isinstance(choice_message, dict):
+            chat = _candidate(choice_message.get("content"))
+            if chat:
+                return chat
+        legacy_choice = _candidate(choice.get("text"))
+        if legacy_choice:
+            return legacy_choice
+
+    # 4. the legacy Ollama /api/generate shape
+    return _candidate(response.get("response"))
+
+
 @router.post("/onboarding/inference")
 async def onboarding_inference(request: Request, db=Depends(get_db)):
     """Run a small real inference request against a selected model."""
@@ -2212,12 +2261,7 @@ async def onboarding_inference(request: Request, db=Depends(get_db)):
             messages=[{"role": "user", "content": "Reply with OK"}],
             max_tokens=16,
         )
-        text = ""
-        if isinstance(resp, dict):
-            choices = resp.get("choices") or []
-            if choices and isinstance(choices[0], dict):
-                text = (choices[0].get("message") or {}).get("content", "") or choices[0].get("text", "")
-            text = text or resp.get("response", "") or ""
+        text = _extract_inference_text(resp)
         if not str(text).strip():
             raise HTTPException(status_code=502, detail="Inference returned an empty response")
         try:
@@ -2239,11 +2283,42 @@ async def onboarding_inference(request: Request, db=Depends(get_db)):
 
 
 
+def _effective_autonomy_is_guarded() -> bool:
+    """Return whether runtime-visible effective autonomy is exactly guarded.
+
+    Runtime consumers use ``os.environ.get("SYTHION_AUTONOMY_LEVEL",
+    settings.autonomy_level)``; validate that exact effective value here. A DB
+    marker or persisted settings row cannot override it. Does not mutate env or
+    settings.
+    """
+    import os
+
+    from backend.core import config as core_config
+
+    value = os.environ.get("SYTHION_AUTONOMY_LEVEL", core_config.settings.autonomy_level)
+    return value == "guarded"
+
+
 @router.post("/setup/safe-settings")
 async def setup_safe_settings(db=Depends(get_db)):
+    if not _effective_autonomy_is_guarded():
+        raise HTTPException(
+            status_code=409,
+            detail="Runtime autonomy is not guarded; safe setup cannot be applied.",
+        )
+
     from backend.core.settings_store import set_setting
-    set_setting(db, "setup_safe_initial_config_applied", "true")
-    db.commit()
+
+    try:
+        set_setting(db, "retention_days", "90")
+        set_setting(db, "setup_safe_initial_config_applied", "true")
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Safe setup could not be saved. Please try again.",
+        )
     return {"ok": True}
 
 
@@ -2265,7 +2340,12 @@ async def setup_readiness(db=Depends(get_db)):
     safe_settings_ok = False
     try:
         from backend.core.settings_store import get_setting
-        safe_settings_ok = get_setting(db, "setup_safe_initial_config_applied") == "true"
+
+        safe_settings_ok = (
+            get_setting(db, "setup_safe_initial_config_applied") == "true"
+            and get_setting(db, "retention_days") == "90"
+            and _effective_autonomy_is_guarded()
+        )
     except Exception:
         safe_settings_ok = False
     verified_inference_model = None
