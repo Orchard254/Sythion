@@ -41,6 +41,12 @@ def _req(main_id, role="ANALYSIS", objective="Analyze X", **kw):
 # ------------------------------------------------------------------- #
 
 class TestAdmissionAtomicity:
+    """In-memory (StaticPool) case: exercises the shared-connection harness
+    contract, not the cross-process writer guarantee. Production-parity
+    evidence lives in
+    backend/tests/test_admission_concurrency_filebacked.py. Not skipped or
+    xfail'd; intermittent flakiness is a documented diagnostic signal."""
+
     def test_two_callers_at_boundary_only_one_admits(self, env, monkeypatch):
         db, svc, main = env
         monkeypatch.setattr("backend.core.config.settings.max_specialists_per_task", 2)
