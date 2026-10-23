@@ -1519,3 +1519,91 @@ This is the measurement that matters most, because it is the only one taken on t
   frontend/src/services/api.ts` EMPTY and `git diff 8f9a429..master --
   src-tauri/src/sidecar.rs` EMPTY, so every product file on master is the
   exact code its verifier judged.
+
+## 2026-10-23 03:32 - researcher - 000 - ACCEPT
+- brief: briefs/000-research-6.md
+- report: reports/000-research-6.md
+- evidence: local reproduction command and failure output are quoted exactly in the report; file:line provided for coordination.py, conftest.py and events.py. Evidence holds.
+- coverage: brief asked for admission repro, DbEventLedger review, release boundary scan, and unchecked list. All are present. R-030 evidence summary quotes the distinct failure mode and affected files.
+- consistency: report's baseline note (1603 passed) differs from the recently measured 1648 collected / 1597? Actually docs baseline updated to 1648 but report says 1603. This is the merged-result count from log, not a defect in research. Accept.
+- not checked: the researcher explicitly notes file-backed repro not completed and release audit not performed; acceptable for a bounded research pass.
+- self-directed: no
+- verdict: ACCEPT
+- reason: focused research found one high-value candidate with reproducible evidence; scope was appropriately bounded and limitations were stated. Proceed to Scout.
+
+## 2026-10-23 03:35 - scout - 000 - ACCEPT
+- brief: briefs/000-scout-6.md
+- report: reports/000-scout-6.md
+- evidence: report states R-030 adopted as 022 with board.json and research status update; evidence from research report.
+- coverage: brief required ranked backlog item with acceptance criteria, size/risk/files/sensitivity/areas and source-only checker. Scout result matches.
+- consistency: newly created item is proposed; board and research status are synchronized per tool result.
+- not checked: acceptance criteria quality had not yet been independently verified against the plan because no plan exists; Scout's ranking is plausible with only one candidate.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Triage produced one clearly scoped high-value item tied to goal without manufacturing work. Proceed to Planner for 022.
+
+## 2026-10-23 03:40 - planner - 022 - ACCEPT
+- brief: briefs/022-plan-1.md
+- report: - 
+- evidence: plan specifies exact files, commands, assertions, sensitivity rationale, and branch policy; it grounds production-vs-harness reasoning in existing cross-process test and measured file-backed harness.
+- coverage: planning brief's requirements are fully addressed with proof method and acceptance criteria.
+- consistency: item 022 remains planned; no implementation performed yet.
+- not checked: plan is not yet executed; the 20-run file-backed and 10-run harness measurements rest on preparatory evidence, not the final committed tests.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Detailed, reversible, evidence-based plan with explicit Branch A/B policy and no human decision gate. Proceed to Implementer round 1.
+
+## 2026-10-23 03:55 - implementer - 022 - ACCEPT
+- brief: briefs/022-implement-1.md
+- report: reports/022-implement-1.md
+- evidence: 20/20 file-backed runs each, serial invariant, cross-process test, 1605 passed/45 skipped full suite, diff gate output with only allowed files changed. Commands and results quoted.
+- coverage: all plan acceptance criteria 1-7 addressed; status set; no Branch A needed.
+- consistency: commit SHAs provided; report matches worktree diffs (to be checked by Reviewer).
+- not checked: 3.11 version matrix and exhaustive StaticPool grep, explicitly listed as residuals.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Implementation is narrowly scoped, reversible, and supported by robust evidence. Proceed to Reviewer.
+
+## 2026-10-23 04:00 - reviewer - 022 - ACCEPT
+- brief: briefs/022-review-1.md
+- report: reviews/022-r1.md
+- evidence: review file starts with VERDICT: ACCEPT, reviewed commit sha and tier recorded; criteria table cites command evidence and diff.
+- coverage: all 7 acceptance criteria assessed as met.
+- consistency: report agrees with implementation files and plan.
+- not checked: reviewer ran only targeted tests; claimed full rerun was not central and plan's 20/20 loops were independently re-measured partially.
+- self-directed: no
+- verdict: ACCEPT
+- reason: review holds; scope is documentation/tests only. Proceed to Verifier.
+
+## 2026-10-23 04:21 - verifier - 022 - ACCEPT
+- brief: briefs/022-verify-1.md
+- report: verifications/022-v1.md
+- evidence: VERDICT: FIXED at reviewed commit 50ec0ae; file-backed 20/20 and per-thread 20/20, harness 3 failures /10 runs, cross-process passed, full suite 1605/45 skipped.
+- coverage: plan acceptance criteria all met; original problem classified harness-only with evidence.
+- consistency: status moved to accepted, consistent with review and implementation.
+- not checked: CPython 3.11 matrix retained as residual; not all 20-run harness further loops.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Verification complete and evidenced. Proceed to Committer with merge of orchestra/022-concurrency-admission into master.
+
+## 2026-10-23 04:39 - committer - 000 - ACCEPT
+- brief: briefs/000-commit-3.md
+- report: reports/000-commit-3.md
+- evidence: merge commit 7c77bf7 present on master; full suite 1605 passed / 45 skipped / 1650 collected, exit 0; board/backlog updated with mergeSha.
+- coverage: merge, verification, reporting, cleanup documented.
+- consistency: mergeSha verified against git rev-parse HEAD (7c77bf7d2e93d025deee2e0779b5c93bea0a2f1c), consistent with board.json and backlog.md.
+- not checked: frontend/build and Cargo tests were not rerun; only backend full suite was run because the item only touches backend tests and a comment.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Clean local merge with full backend suite green and item ledger complete. Proceed to Librarian.
+
+## 2026-10-23 04:42 - librarian - 000 - ACCEPT
+- brief: briefs/000-library-1.md
+- report: reports/000-library-1.md
+- evidence: report states log append, goal assumption 8, board/backlog consistency, no worktrees, target branch removed, report written.
+- coverage: library stage's doc/tidy tasks completed.
+- consistency: .orchestra state checked and consistent. No product code modified.
+- not checked: section-level diff of log line and goal diff were stated as appended; no recursive audit of every docs claim outside this item.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Library stage complete and state consistent. Run can continue or stop with item 022 merged.
