@@ -20,6 +20,28 @@ Sythion provides the execution-facing local runtime on Windows 10/11:
 - cancellation, replay, retention, and recovery primitives
 - local voice and dashboard flows inside the runtime boundary
 
+## Product surfaces
+
+Sythion is intended to have two complementary user-facing surfaces. The runtime
+in this repository serves both; detailed supervision belongs in the Control
+Center, not in the floating Companion.
+
+- **Companion** — unobtrusive, always-available presence for typed or spoken
+  interaction, editable speech transcription before submission, and clear
+  listening/thinking/speaking/available states. No persistent chat-history
+  panes or detailed task logs.
+- **Control Center** — operational surface for tasks, goals, plans, progress,
+  agent/specialist activity, permissions/policies/tools/capabilities, memory,
+  settings, and execution evidence.
+
+Design intent: a refined dark neumorphism with graphite surfaces, subtle raised
+and inset depth, mint accents, and strong visibility for warnings and security
+states. The Companion communicates presence through its animation and does not
+display the Sythion name or logo.
+
+Some surface and finish details remain in progress. Current verified state
+lives in `docs/PROJECT_STATUS.md` and `docs/ROADMAP.md`.
+
 ## What this repo is not
 
 This repository is **not** the whole future intelligence system. The broader
@@ -100,7 +122,7 @@ used as the current status baseline:
 
 ## Current verified baseline
 
-- Full backend suite: **1569 passed, 45 skipped** (1614 collected)
+- Full backend suite: **1569 passed, 45 skipped** (1648 collected)
 - Acceptance suite: **191 passed, 2 skipped**
 
 Measured on CPython 3.14.7 / Windows by

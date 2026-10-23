@@ -19,7 +19,7 @@ For the larger layered vision, see
 
 ## Current verified baseline
 
-- Full backend suite: **1569 passed, 45 skipped** (1614 collected)
+- Full backend suite: **1569 passed, 45 skipped** (1648 collected)
 - Acceptance suite: **191 passed, 2 skipped**
 
 Measured on CPython 3.14.7 / Windows by

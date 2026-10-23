@@ -17,6 +17,22 @@ This repository currently provides:
   memory consolidation, a first durable objective/plan work-state layer,
   and CLI-visible work-state inspection.
 
+## Product surfaces
+
+The intended product has two complementary surfaces. The runtime serves both;
+detailed supervision belongs in the Control Center, not the Companion.
+
+- Companion: unobtrusive always-available presence for typed or spoken
+  interaction, editable speech transcription before submission, and clear
+  listening/thinking/speaking/available states.
+- Control Center: operational surface for tasks, goals, plans, progress,
+  agent/specialist activity, permissions, tools, memory, settings, and
+  execution evidence.
+
+Visual intent: refined dark neumorphism with graphite surfaces,
+mint accents, and strong visibility for warnings and security states.
+The Companion communicates presence through animation rather than branding.
+
 ## Current architectural source of truth
 
 Use these documents in order:
@@ -36,7 +52,7 @@ Older reports such as `FINAL_STATUS.md`, `PHASE3_REPORT.md`, and
 
 ## Verified test baseline
 
-- Full backend suite: **1569 passed, 45 skipped** (1614 collected)
+- Full backend suite: **1569 passed, 45 skipped** (1648 collected)
 - Acceptance suite: **191 passed, 2 skipped**
 
 Measured on CPython 3.14.7 / Windows by
