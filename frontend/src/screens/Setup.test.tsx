@@ -33,7 +33,7 @@ beforeEach(async () => {
   mock.testCredentials.mockImplementation(async () => { checks.ollama_api_key_ok=true;checks.ollama_health_ok=true;return {valid:true,models:['cloud-model']}; });
   mock.selectModel.mockImplementation(async (model: string) => {selected=model;checks.selected_model_ok=true;});
   mock.inference.mockImplementation(async () => { checks.inference_verified_ok=true;return {success:true}; });
-  mock.applySafeSettings.mockImplementation(async () => { checks.safe_settings_ok=true; });
+  mock.applySafeSettings.mockImplementation(async () => { checks.safe_settings_ok=true; return { ok: true }; });
   mock.update.mockResolvedValue({});mock.speak.mockResolvedValue({success:true});
   await settle(() => {view=create(<SetupScreen onComplete={complete} />);});
 });
@@ -68,17 +68,41 @@ describe('setup to first conversation', () => {
     expect(mock.testCredentials).not.toHaveBeenCalled();
     expect(view.root.findByProps({id:'setup-key'}).props.value).toBe('');
   });
-  it('requires a real model check, applies guarded settings, and allows text without microphone', async () => {
+  it('requires a real model check, applies safe settings, and allows text without microphone', async () => {
     expect(button('Continue').props.disabled).toBe(true);
     await connect();
     expect(button('Continue').props.disabled).toBe(false);
     await settle(() => button('Continue').props.onClick());
-    expect(mock.update).toHaveBeenCalledWith({autonomy_level:'guarded',retention_days:90});
+    expect(mock.applySafeSettings).toHaveBeenCalled();
+    expect(mock.update).not.toHaveBeenCalled();
     await settle(() => button('Continue').props.onClick());
     await settle(() => button('Start conversation').props.onClick());
     expect(complete).toHaveBeenCalledWith(true);
     expect(localStorage.setItem).toHaveBeenCalledWith('sythion.replyMode','text');
     expect(mock.speak).not.toHaveBeenCalled();
+  });
+
+  it('stays on step 1 when safe settings return ok=false', async () => {
+    await connect();
+    mock.applySafeSettings.mockResolvedValueOnce({ ok: false });
+    await settle(() => button('Continue').props.onClick());
+    expect(mock.applySafeSettings).toHaveBeenCalled();
+    expect(view.root.findByProps({ id: 'setup-model' })).toBeTruthy();
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it('stays on step 1 when safe settings request is rejected', async () => {
+    await connect();
+    mock.applySafeSettings.mockRejectedValueOnce(new Error('boom'));
+    await settle(() => button('Continue').props.onClick());
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it('stays on step 1 when refresh says safe settings are not ready', async () => {
+    await connect();
+    mock.applySafeSettings.mockImplementationOnce(async () => ({ ok: true }));
+    await settle(() => button('Continue').props.onClick());
+    expect(complete).not.toHaveBeenCalled();
   });
   it('requires successful speaker playback for voice replies and recovers with text', async () => {
     await connect();await settle(() => button('Continue').props.onClick());

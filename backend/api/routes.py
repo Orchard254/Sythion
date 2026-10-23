@@ -2283,11 +2283,42 @@ async def onboarding_inference(request: Request, db=Depends(get_db)):
 
 
 
+def _effective_autonomy_is_guarded() -> bool:
+    """Return whether runtime-visible effective autonomy is exactly guarded.
+
+    Runtime consumers use ``os.environ.get("SYTHION_AUTONOMY_LEVEL",
+    settings.autonomy_level)``; validate that exact effective value here. A DB
+    marker or persisted settings row cannot override it. Does not mutate env or
+    settings.
+    """
+    import os
+
+    from backend.core import config as core_config
+
+    value = os.environ.get("SYTHION_AUTONOMY_LEVEL", core_config.settings.autonomy_level)
+    return value == "guarded"
+
+
 @router.post("/setup/safe-settings")
 async def setup_safe_settings(db=Depends(get_db)):
+    if not _effective_autonomy_is_guarded():
+        raise HTTPException(
+            status_code=409,
+            detail="Runtime autonomy is not guarded; safe setup cannot be applied.",
+        )
+
     from backend.core.settings_store import set_setting
-    set_setting(db, "setup_safe_initial_config_applied", "true")
-    db.commit()
+
+    try:
+        set_setting(db, "retention_days", "90")
+        set_setting(db, "setup_safe_initial_config_applied", "true")
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Safe setup could not be saved. Please try again.",
+        )
     return {"ok": True}
 
 
@@ -2309,7 +2340,12 @@ async def setup_readiness(db=Depends(get_db)):
     safe_settings_ok = False
     try:
         from backend.core.settings_store import get_setting
-        safe_settings_ok = get_setting(db, "setup_safe_initial_config_applied") == "true"
+
+        safe_settings_ok = (
+            get_setting(db, "setup_safe_initial_config_applied") == "true"
+            and get_setting(db, "retention_days") == "90"
+            and _effective_autonomy_is_guarded()
+        )
     except Exception:
         safe_settings_ok = False
     verified_inference_model = None

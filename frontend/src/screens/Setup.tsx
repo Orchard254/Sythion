@@ -5,7 +5,7 @@ import { canStartChat, canUseModel } from '../lib/setupReadiness';
 import { singleScreenContentStyle, singleScreenShellStyle } from '../lib/shellLayout';
 import { Button, Notice, Panel } from '../components/ui';
 import { SythionMark } from '../components/icons';
-import { setupService, modelService, voiceService, settingsService, type SetupReadiness } from '../services/api';
+import { setupService, modelService, voiceService, type SetupReadiness } from '../services/api';
 
 interface SetupProps { onComplete: (textFirst: boolean) => void; }
 
@@ -145,9 +145,11 @@ export function SetupScreen({ onComplete }: SetupProps) {
                 </>}
                 <p className="t-muted">{modelReady ? 'Your connection is ready.' : 'A successful model test is required before your first message.'}</p>
                 <Button variant="primary" disabled={busy || !modelReady || selectedModel !== readiness?.selected_model} onClick={() => void run(async () => {
-                  await settingsService.update({ autonomy_level: 'guarded', retention_days: 90 });
-                  await setupService.applySafeSettings();
-                  await refresh(); setStep(1);
+                  const result = await setupService.applySafeSettings();
+                  if (result?.ok !== true) throw new Error('Safe setup could not be applied. Please try again.');
+                  const report = await refresh();
+                  if (!canStartChat(report)) throw new Error('Guarded permissions and 90-day history are not ready yet.');
+                  setStep(1);
                 })}>Continue</Button>
               </div>
             </Panel>}
