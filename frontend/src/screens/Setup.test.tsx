@@ -1,19 +1,21 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SetupScreen } from './Setup';
+import apiClient from '../services/api';
 
 const mock = vi.hoisted(() => {
   const readiness = vi.fn();
   return { readiness, testCredentials: vi.fn(), selectModel: vi.fn(), inference: vi.fn(), applySafeSettings: vi.fn(), update: vi.fn(), speak: vi.fn() };
 });
-vi.mock('../services/api', () => ({
+vi.mock('../services/api', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/api')>(),
   setupService: { readiness: mock.readiness, testCredentials: mock.testCredentials, selectModel: mock.selectModel, inference: mock.inference, applySafeSettings: mock.applySafeSettings },
-  modelService: { available: vi.fn().mockResolvedValue(['cloud-model']) },
   voiceService: { speak: mock.speak },
   settingsService: { update: mock.update },
 }));
 vi.mock('../hooks/useVoiceCapture', () => ({ useVoiceCapture: () => ({ startCapture: vi.fn(), stopCapture: vi.fn() }) }));
 let view: ReactTestRenderer;
+const originalAdapter = apiClient.defaults.adapter;
 let checks: Record<string, boolean>;
 let selected: string;
 const complete = vi.fn();
@@ -25,6 +27,8 @@ beforeEach(async () => {
   vi.clearAllMocks(); selected = '';
   checks = { resources_ok:true,database_ok:true,sidecar_ok:true,ollama_api_key_ok:false,ollama_health_ok:false,selected_model_ok:false,inference_verified_ok:false,safe_settings_ok:false,tts_voice_ok:true,stt_model_installed:false };
   vi.stubGlobal('localStorage', { setItem: vi.fn() });
+  vi.stubGlobal('sessionStorage', { getItem: () => 'inert-discovery-token' });
+  apiClient.defaults.adapter = async () => { throw new Error('Unexpected HTTP request in setup test'); };
   mock.readiness.mockImplementation(async () => ({ checks: {...checks}, selected_model:selected }));
   mock.testCredentials.mockImplementation(async () => { checks.ollama_api_key_ok=true;checks.ollama_health_ok=true;return {valid:true,models:['cloud-model']}; });
   mock.selectModel.mockImplementation(async (model: string) => {selected=model;checks.selected_model_ok=true;});
@@ -33,7 +37,7 @@ beforeEach(async () => {
   mock.update.mockResolvedValue({});mock.speak.mockResolvedValue({success:true});
   await settle(() => {view=create(<SetupScreen onComplete={complete} />);});
 });
-afterEach(() => { act(() => view.unmount()); vi.unstubAllGlobals(); });
+afterEach(() => { act(() => view.unmount()); apiClient.defaults.adapter = originalAdapter; vi.unstubAllGlobals(); });
 
 async function connect() {
   await settle(() => view.root.findByProps({id:'setup-key'}).props.onChange({target:{value:'test-key'}}));
@@ -44,6 +48,26 @@ async function connect() {
 }
 
 describe('setup to first conversation', () => {
+  it('discovers exact selectable beam through the real object-to-ID service without saving a key', async () => {
+    checks.ollama_api_key_ok = true;
+    apiClient.defaults.adapter = async (config) => {
+      expect(config.url).toBe('/models');
+      return { data: JSON.stringify({ models: [
+        { name: 'beam', model: 'beam' }, { model: 'other:exact-tag' }, { name: 'beam' },
+      ] }), status: 200, statusText: 'OK', headers: {}, config };
+    };
+    await settle(() => button('Find available models').props.onClick());
+    expect(view.root.findAllByType('option').map((option) => [option.props.value, labels(option)]))
+      .toStrictEqual([['', 'Select a model'], ['beam', 'beam'], ['other:exact-tag', 'other:exact-tag']]);
+    await settle(() => view.root.findByProps({id:'setup-model'}).props.onChange({target:{value:'beam'}}));
+    expect(view.root.findByProps({id:'setup-model'}).props.value).toBe('beam');
+    expect(button('Test selected model').props.disabled).toBe(false);
+    await settle(() => button('Test selected model').props.onClick());
+    expect(mock.selectModel).toHaveBeenCalledWith('beam');
+    expect(mock.inference).toHaveBeenCalledWith('beam');
+    expect(mock.testCredentials).not.toHaveBeenCalled();
+    expect(view.root.findByProps({id:'setup-key'}).props.value).toBe('');
+  });
   it('requires a real model check, applies guarded settings, and allows text without microphone', async () => {
     expect(button('Continue').props.disabled).toBe(true);
     await connect();
