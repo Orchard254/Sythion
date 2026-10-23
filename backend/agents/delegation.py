@@ -55,6 +55,23 @@ import threading as _threading
 # only). The CROSS-PROCESS guarantees live at the database boundary:
 # - duplicate admission: partial UNIQUE index on Delegation.fingerprint;
 # - fan-out limit: the single conditional UPDATE in validate().
+#
+# Harness invariant (item 022 - concurrency admission classification):
+# _admission_lock is an in-process RLock and is a BEST-EFFORT FAST PATH ONLY.
+# It must NOT be treated as the cross-process fan-out guarantee. The
+# cross-process guarantee lives in the single conditional UPDATE _ADMIT_SQL
+# below: SQLite's writer lock serializes two validators on separate
+# connections, so the second's count subquery is evaluated only after the
+# first has committed its VALIDATED row. An in-memory StaticPool harness that
+# shares one DBAPI connection across threads is NOT a valid concurrency test
+# surface - it bypasses the writer lock that is the actual guarantee and
+# produces interleaved transaction state. Concurrency evidence must come
+# from per-thread sessions / separate processes on a file-backed database
+# (backend/tests/test_admission_concurrency_filebacked.py and
+# backend/tests/test_admission_concurrency_process.py).
+# The idempotent already-VALIDATED short-circuit in validate() (status ==
+# VALIDATED -> {"ok": True, "reasons": []}) is deliberately NOT folded into
+# the count predicate, so a duplicate validator never consumes a second slot.
 _admission_lock = _threading.RLock()
 
 # Delegation states that count as ADMITTED for the active-specialist limit.
@@ -70,6 +87,9 @@ _ADMITTED_STATES_SQL = (
 # SQLite serializes writers, so no two processes can both observe a passing
 # count and admit over-limit state. NULL scope columns use IS-semantics via
 # the :tid/:gid IS NOT NULL guards.
+# Harness note: the guarantee above is the writer lock on separate
+# connections; a StaticPool/single-connection harness is not a valid test
+# surface (see the invariant note above _admission_lock).
 _ADMIT_SQL = _sql_text(
     "UPDATE delegations SET status = 'VALIDATED', updated_at = :now "
     "WHERE id = :did AND status = 'PROPOSED' AND ("
