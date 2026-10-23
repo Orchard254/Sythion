@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from backend.models.database import get_db, Objective, PlanStep, Skill, Task
@@ -1990,7 +1991,7 @@ async def list_models():
     provider = get_default_provider()
 
     try:
-        models = await provider.list_models()
+        models = await run_in_threadpool(provider.list_models)
         return {"models": models}
     except Exception as e:
         logger.error(f"Failed to list models: {e}")

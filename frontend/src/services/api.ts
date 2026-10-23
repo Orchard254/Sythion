@@ -513,7 +513,16 @@ export const secretService = {
 export const modelService = {
   available: async (): Promise<string[]> => {
     const response = await apiClient.get('/models');
-    return response.data.models || [];
+    const models: unknown = response.data?.models;
+    if (!Array.isArray(models)) return [];
+    const isId = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+    return models.flatMap((entry: unknown) => {
+      if (isId(entry)) return [entry];
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+      const { name, model } = entry as { name?: unknown; model?: unknown };
+      if (isId(name)) return [name];
+      return isId(model) ? [model] : [];
+    });
   },
 
   registry: async (): Promise<Record<string, unknown>[]> => {
