@@ -286,3 +286,49 @@ class TestVoskModelLayout:
         monkeypatch.setattr(voice_assets, "STT_MODEL_SHA256", _sha256(str(archive)))
         status = voice_assets.install_voice_assets(archive_path=str(archive))
         assert status["stt_installed"] is True
+
+    @pytest.mark.parametrize(
+        "missing",
+        [
+            None,
+            "am/final.mdl",
+            "conf/model.conf",
+            "conf/mfcc.conf",
+            "graph/HCLr.fst",
+            "graph/Gr.fst",
+            "graph/disambig_tid.int",
+        ],
+    )
+    def test_split_installed_and_extraction_agree(self, tmp_path, monkeypatch, missing):
+        """Both gates accept the pinned layout and reject each missing core file."""
+        files = (
+            "am/final.mdl",
+            "conf/model.conf",
+            "conf/mfcc.conf",
+            "graph/HCLr.fst",
+            "graph/Gr.fst",
+            "graph/disambig_tid.int",
+        )
+        present = [relpath for relpath in files if relpath != missing]
+        model_dir = self._make_dir(tmp_path, "candidate", *present)
+        monkeypatch.setattr(voice_assets, "stt_model_path", lambda: str(model_dir))
+        expected = missing is None
+        assert voice_assets.stt_model_installed() is expected
+
+        archive = tmp_path / "candidate.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            for relpath in present:
+                zf.writestr(f"{voice_assets.STT_MODEL_NAME}/{relpath}", b"x")
+        assets_dir = tmp_path / "assets"
+        monkeypatch.setattr(voice_assets, "voice_assets_dir", lambda: str(assets_dir))
+        monkeypatch.setattr(voice_assets, "STT_MODEL_SHA256", _sha256(str(archive)))
+        if expected:
+            voice_assets.install_stt_assets(archive_path=str(archive))
+        else:
+            with pytest.raises(voice_assets.VoiceAssetVerificationError):
+                voice_assets.install_stt_assets(archive_path=str(archive))
+
+        published = assets_dir / voice_assets.STT_MODEL_NAME
+        monkeypatch.setattr(voice_assets, "stt_model_path", lambda: str(published))
+        assert voice_assets.stt_model_installed() is expected
+        assert (published / ".sythion-verified").is_file() is expected
