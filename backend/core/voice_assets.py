@@ -104,18 +104,56 @@ def verify_checksum(archive_path: str) -> bool:
     return _sha256_of_file(archive_path).lower() == _expected_checksum()
 
 
+def _vosk_model_dir_complete(model_dir: str) -> bool:
+    """Return True when ``model_dir`` has a complete Vosk V2 model layout.
+
+    This is the shared completeness predicate used by both ``stt_model_installed``
+    and ``_extract_stt_model``. It deliberately mirrors the native Vosk V2
+    loader (``model.cc``): ``am/final.mdl`` plus ``conf/model.conf`` and either
+    ``conf/mfcc.conf`` or ``conf/fbank.conf`` must be present; the decoding
+    graph may be either one static ``graph/HCLG.fst`` or the complete split
+    ``graph/HCLr.fst`` + ``graph/Gr.fst`` + ``graph/disambig_tid.int``. An
+    incomplete split graph or a missing acoustic/config file is rejected.
+    ``graph/words.txt`` is not universally required because ``HCLG.fst`` or
+    ``Gr.fst`` can supply the output symbol table (the pinned small model has
+    no ``words.txt``); when present it is only an optional fallback.
+    """
+    if not os.path.isdir(model_dir):
+        return False
+
+    am_dir = os.path.join(model_dir, "am")
+    conf_dir = os.path.join(model_dir, "conf")
+    graph_dir = os.path.join(model_dir, "graph")
+
+    if not os.path.isfile(os.path.join(am_dir, "final.mdl")):
+        return False
+    if not os.path.isfile(os.path.join(conf_dir, "model.conf")):
+        return False
+    if not (
+        os.path.isfile(os.path.join(conf_dir, "mfcc.conf"))
+        or os.path.isfile(os.path.join(conf_dir, "fbank.conf"))
+    ):
+        return False
+
+    # Static single-graph family.
+    if os.path.isfile(os.path.join(graph_dir, "HCLG.fst")):
+        return True
+
+    # Dynamic/split graph family (pinned small model).
+    if (
+        os.path.isfile(os.path.join(graph_dir, "HCLr.fst"))
+        and os.path.isfile(os.path.join(graph_dir, "Gr.fst"))
+        and os.path.isfile(os.path.join(graph_dir, "disambig_tid.int"))
+    ):
+        return True
+
+    return False
+
+
 def stt_model_installed() -> bool:
     """Report whether the pinned STT model is present (never downloads)."""
     model_dir = stt_model_path()
-    am = os.path.join(model_dir, "am", "final.mdl")
-    graph = os.path.join(model_dir, "graph", "HCLG.fst")
-    words = os.path.join(model_dir, "graph", "words.txt")
-    return (
-        os.path.isdir(model_dir)
-        and os.path.isfile(am)
-        and os.path.isfile(graph)
-        and os.path.isfile(words)
-    )
+    return os.path.isdir(model_dir) and _vosk_model_dir_complete(model_dir)
 
 
 def asset_status() -> Dict[str, object]:
@@ -295,10 +333,7 @@ def _extract_stt_model(archive_path: str) -> None:
                 )
             extracted = os.path.join(staging, candidates[0])
 
-        if not (
-            os.path.isfile(os.path.join(extracted, "am", "final.mdl"))
-            and os.path.isfile(os.path.join(extracted, "graph", "HCLG.fst"))
-        ):
+        if not _vosk_model_dir_complete(extracted):
             raise VoiceAssetVerificationError(
                 "Archive does not contain a usable Vosk model layout"
             )
