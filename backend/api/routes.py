@@ -2392,13 +2392,14 @@ async def voice_assets_install():
     This is the single explicit install path; nothing downloads at import or
     startup. Runs synchronously and verifies the pinned SHA-256 before use.
     """
-    from backend.core.voice_assets import install_voice_assets
+    from backend.core.voice_assets import install_stt_assets, asset_status
 
     try:
-        status = await run_in_threadpool(install_voice_assets)
+        await run_in_threadpool(install_stt_assets)
     except Exception as e:
         logger.error("Voice asset installation failed: %s", e)
         raise HTTPException(status_code=502, detail=f"Voice asset install failed: {str(e)}")
+    status = asset_status()
     return VoiceAssetsResponse(**status)
 
 

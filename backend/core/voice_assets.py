@@ -20,12 +20,17 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 import zipfile
 from typing import Dict, List, Optional
 
 from .storage import data_dir
 
 logger = logging.getLogger(__name__)
+
+# Serialize the entire STT install transaction across worker threads. This is
+# process-local only; a cross-process install collision is not prevented by it.
+_STT_INSTALL_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -169,40 +174,58 @@ def _detect_tts_voice() -> str:
 # ---------------------------------------------------------------------------
 
 
+def install_stt_assets(
+    archive_path: Optional[str] = None, force: bool = False
+) -> None:
+    """Install only the pinned STT model; no TTS work, worker-safe.
+
+    Owns the STT filesystem/download/checksum/extract/publish transaction. Does
+    not touch pyttsx3 or TTS status. Serialized by _STT_INSTALL_LOCK; rechecks
+    installed state after acquiring the lock. Intended to run on a worker thread.
+    """
+    with _STT_INSTALL_LOCK:
+        # Recheck inside the lock so a concurrent or prior install wins.
+        if stt_model_installed() and _stt_checksum_verified() and not force:
+            return
+
+        target_archive = archive_path
+        cleanup_temp = False
+        if target_archive is None:
+            target_archive, cleanup_temp = _download_pinned_archive()
+
+        try:
+            if not verify_checksum(target_archive):
+                raise VoiceAssetVerificationError(
+                    "Pinned STT model checksum mismatch; refusing to install"
+                )
+            _extract_stt_model(target_archive)
+        finally:
+            if cleanup_temp and target_archive:
+                try:
+                    os.remove(target_archive)
+                except OSError:  # pragma: no cover - temp cleanup
+                    pass
+
+
 def install_voice_assets(
     archive_path: Optional[str] = None, force: bool = False
 ) -> Dict[str, object]:
-    """Explicitly install the pinned voice assets.
+    """Synchronous compatibility wrapper.
 
-    This is the ONLY path that downloads. It is never invoked at import or
-    startup. ``archive_path`` may point at a pre-downloaded archive for
-    offline/verified installation; otherwise the pinned URL is downloaded to a
-    temporary file, its SHA-256 is verified against the manifest, and the zip
-    is extracted under the user-only voice-assets directory. A verification
-    marker is written only after a successful checksum match.
+    Runs the STT-only helper, then computes full asset status (including TTS
+    detection) on the calling thread. Existing sync callers retain the status
+    contract. Async callers invoke install_stt_assets on a worker and
+    asset_status afterward on the owning thread.
     """
-    if stt_model_installed() and _stt_checksum_verified() and not force:
-        return asset_status()
-
-    target_archive = archive_path
-    cleanup_temp = False
-    if target_archive is None:
-        target_archive, cleanup_temp = _download_pinned_archive()
-
-    try:
-        if not verify_checksum(target_archive):
-            raise VoiceAssetVerificationError(
-                "Pinned STT model checksum mismatch; refusing to install"
-            )
-        _extract_stt_model(target_archive)
-    finally:
-        if cleanup_temp and target_archive:
-            try:
-                os.remove(target_archive)
-            except OSError:  # pragma: no cover - temp cleanup
-                pass
-
+    install_stt_assets(archive_path=archive_path, force=force)
     return asset_status()
+
+
+# Worker-helper naming aliases.
+install_stt_model = install_stt_assets
+install_stt = install_stt_assets
+_install_stt_assets = install_stt_assets
+install_stt_voice_assets = install_stt_assets
 
 
 class VoiceAssetVerificationError(RuntimeError):
