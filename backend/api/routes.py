@@ -2395,7 +2395,7 @@ async def voice_assets_install():
     from backend.core.voice_assets import install_voice_assets
 
     try:
-        status = install_voice_assets()
+        status = await run_in_threadpool(install_voice_assets)
     except Exception as e:
         logger.error("Voice asset installation failed: %s", e)
         raise HTTPException(status_code=502, detail=f"Voice asset install failed: {str(e)}")
