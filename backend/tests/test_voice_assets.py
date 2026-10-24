@@ -16,11 +16,24 @@ from backend.core import voice_assets
 
 
 def _make_zip(path: str, model_dir_name: str) -> str:
-    """Create a minimal Vosk-like archive with the expected layout."""
+    """Create a minimal archive matching the pinned Vosk V2 split-graph layout."""
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr(f"{model_dir_name}/am/final.mdl", b"AM")
+        zf.writestr(f"{model_dir_name}/conf/model.conf", b"MODEL")
+        zf.writestr(f"{model_dir_name}/conf/mfcc.conf", b"MFCC")
+        zf.writestr(f"{model_dir_name}/graph/HCLr.fst", b"HCLR")
+        zf.writestr(f"{model_dir_name}/graph/Gr.fst", b"GR")
+        zf.writestr(f"{model_dir_name}/graph/disambig_tid.int", b"DISAMBIG")
+    return path
+
+
+def _make_static_zip(path: str, model_dir_name: str) -> str:
+    """Create a minimal archive matching a valid static HCLG Vosk V2 layout."""
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(f"{model_dir_name}/am/final.mdl", b"AM")
+        zf.writestr(f"{model_dir_name}/conf/model.conf", b"MODEL")
+        zf.writestr(f"{model_dir_name}/conf/mfcc.conf", b"MFCC")
         zf.writestr(f"{model_dir_name}/graph/HCLG.fst", b"GRAPH")
-        zf.writestr(f"{model_dir_name}/graph/words.txt", b"WORD")
     return path
 
 
@@ -172,3 +185,104 @@ class TestInstall:
         assert "downloaded" not in called
         assert status["downloads_on_import"] is False
         assert status["downloads_on_startup"] is False
+
+
+class TestVoskModelLayout:
+    @staticmethod
+    def _make_dir(tmp_path, name, *files):
+        model_dir = tmp_path / name
+        model_dir.mkdir(parents=True, exist_ok=True)
+        for relpath in files:
+            target = model_dir / relpath
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"x")
+        return model_dir
+
+    def test_pinned_split_layout_is_complete(self, tmp_path):
+        model_dir = self._make_dir(
+            tmp_path,
+            "split",
+            "am/final.mdl",
+            "conf/model.conf",
+            "conf/mfcc.conf",
+            "graph/HCLr.fst",
+            "graph/Gr.fst",
+            "graph/disambig_tid.int",
+        )
+        assert voice_assets._vosk_model_dir_complete(str(model_dir)) is True
+
+    def test_static_hclg_layout_is_complete(self, tmp_path):
+        model_dir = self._make_dir(
+            tmp_path,
+            "static",
+            "am/final.mdl",
+            "conf/model.conf",
+            "conf/fbank.conf",
+            "graph/HCLG.fst",
+        )
+        assert voice_assets._vosk_model_dir_complete(str(model_dir)) is True
+
+    def test_missing_split_component_is_rejected(self, tmp_path):
+        model_dir = self._make_dir(
+            tmp_path,
+            "missing-disambig",
+            "am/final.mdl",
+            "conf/model.conf",
+            "conf/mfcc.conf",
+            "graph/HCLr.fst",
+            "graph/Gr.fst",
+        )
+        assert voice_assets._vosk_model_dir_complete(str(model_dir)) is False
+
+    def test_missing_required_config_is_rejected(self, tmp_path):
+        model_dir = self._make_dir(
+            tmp_path,
+            "missing-conf",
+            "am/final.mdl",
+            "conf/mfcc.conf",
+            "graph/HCLr.fst",
+            "graph/Gr.fst",
+            "graph/disambig_tid.int",
+        )
+        assert voice_assets._vosk_model_dir_complete(str(model_dir)) is False
+
+    def test_incomplete_split_graph_is_rejected(self, tmp_path):
+        model_dir = self._make_dir(
+            tmp_path,
+            "only-hclr",
+            "am/final.mdl",
+            "conf/model.conf",
+            "conf/mfcc.conf",
+            "graph/HCLr.fst",
+        )
+        assert voice_assets._vosk_model_dir_complete(str(model_dir)) is False
+
+    def test_installed_check_matches_shared_predicate(self, tmp_path, monkeypatch):
+        model_dir = self._make_dir(
+            tmp_path,
+            "installed",
+            "am/final.mdl",
+            "conf/model.conf",
+            "conf/mfcc.conf",
+            "graph/HCLr.fst",
+            "graph/Gr.fst",
+            "graph/disambig_tid.int",
+        )
+        monkeypatch.setattr(voice_assets, "stt_model_path", lambda: str(model_dir))
+        assert voice_assets.stt_model_installed() is True
+        assert voice_assets.stt_model_installed() == voice_assets._vosk_model_dir_complete(
+            str(model_dir)
+        )
+
+        missing = self._make_dir(tmp_path, "broken", "am/final.mdl")
+        monkeypatch.setattr(voice_assets, "stt_model_path", lambda: str(missing))
+        assert voice_assets.stt_model_installed() is False
+
+    def test_static_install_from_verified_archive(self, tmp_path, monkeypatch):
+        archive = tmp_path / "static.zip"
+        _make_static_zip(str(archive), "vosk-model-small-en-us-0.15")
+        assets_dir = str(tmp_path / "assets")
+        monkeypatch.setattr(voice_assets, "voice_assets_dir", lambda: assets_dir)
+        monkeypatch.setattr(voice_assets, "STT_MODEL_SHA256", _sha256(str(archive)))
+        status = voice_assets.install_voice_assets(archive_path=str(archive))
+        assert status["stt_installed"] is True
