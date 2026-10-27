@@ -1927,6 +1927,62 @@ class ClipboardReadTool(BaseTool[ClipboardReadInput]):
         }
 
 
+class DeviceStatusTool(BaseTool[SystemTimeInput]):
+    """Read-only inventory of installed Windows devices and their status."""
+
+    name = "device_status"
+    description = "List installed Windows devices and their current status via PnP."
+    input_type = SystemTimeInput
+
+    @handle_tool_errors("DEVICE_STATUS_ERROR")
+    async def execute(self, input_data):
+        if os.name != "nt":
+            return ToolOutput(success=False, error={"code": "UNSUPPORTED_PLATFORM", "message": "Device status is Windows-only"})
+        import json
+        import subprocess
+
+        try:
+            completed = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", "Get-PnpDevice | Select-Object -First 25 Status,Class,FriendlyName | ConvertTo-Json -Compress"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ToolOutput(success=False, error={"code": "DEVICE_STATUS_ERROR", "message": str(exc)})
+
+        if completed.returncode != 0:
+            return ToolOutput(success=False, error={"code": "DEVICE_STATUS_ERROR", "message": completed.stderr.strip() or "PowerShell failed"})
+
+        try:
+            parsed = json.loads(completed.stdout) if completed.stdout.strip() else []
+        except json.JSONDecodeError:
+            return ToolOutput(success=False, error={"code": "DEVICE_STATUS_PARSE_ERROR", "message": "Unexpected PowerShell output"})
+
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+
+        return ToolOutput(
+            success=True,
+            data={"devices": parsed, "count": len(parsed)},
+            model_summary=f"Device status: {len(parsed)} device(s) returned",
+            evidence={"source": "Get-PnpDevice"},
+        )
+
+    async def verify(self, input_data, output: ToolOutput) -> bool:
+        return bool(output.success)
+
+    def get_policy_requirements(self) -> Dict[str, Any]:
+        return {
+            "risk_level": "low",
+            "requires_confirmation": False,
+            "mutating": False,
+            "requires_admin": False,
+            "privacy_sensitive": False,
+        }
+
+
 # Register all system tools
 def create_system_tools() -> list:
     """Create instances of all system read tools."""
@@ -1954,6 +2010,7 @@ def create_system_tools() -> list:
         SystemCapabilitiesTool(),
         ToolProposeTool(),
         ClipboardReadTool(),
+        DeviceStatusTool(),
     ]
 
 

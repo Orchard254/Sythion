@@ -32,9 +32,8 @@ carefully:
 - `model_prompt_contract.py` — system prompt / model-facing runtime contract
 - `model_context_builder.py` — previous-task continuity, memory/context
   injection, and overall assembly of model request context
-- `conversation_guidance_adapter.py` — recent conversation replay,
-  conversation-state formatting, speech-act analysis, and response-strategy
-  guidance for model requests
+- `conversation_guidance_adapter.py` — recent conversation replay and
+  conversation-state formatting for model requests
 - `task_execution_loop.py` — runtime execution loop; now delegates post-task
   intelligence hooks to `post_task_intelligence.py`
 - `skill_engine.py` — stable compatibility facade for the skill system

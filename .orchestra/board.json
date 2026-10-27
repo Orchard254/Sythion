@@ -156,6 +156,29 @@
             "domain": "api",
             "note": "merged twice: 0e2702d (rounds 1-2, the fix itself) then 6377525 (rounds 3-4, the test-only pin). 6377525 is master's product state for this item."
         },
+        "023": {
+            "status": "merged",
+            "owner": "committer-023",
+            "branch": "orchestra/023-onboarding-discovery",
+            "mergeSha": "29d87986a259dd27637a581a105cc7ce166b29ae",
+            "round": 1,
+            "verifyRounds": 1,
+            "conflicts": 0,
+            "sensitivity": "sensitive",
+            "domain": "api,security"
+        },
+        "024": {
+            "status": "merged",
+            "owner": "committer-024",
+            "branch": "orchestra/024-safe-onboarding",
+            "mergeSha": "c3040502f8897553a7b0eaa15096edf5ac9c99d3",
+            "round": 1,
+            "verifyRounds": 1,
+            "conflicts": 0,
+            "sensitivity": "sensitive",
+            "domain": "api,access,security,data",
+            "note": "Branch retained at fd3ef4c for audit/provability; not pushed."
+        },
         "022": {
             "status": "merged",
             "owner": "committer-022",

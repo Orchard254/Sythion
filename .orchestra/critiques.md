@@ -1607,3 +1607,190 @@ This is the measurement that matters most, because it is the only one taken on t
 - self-directed: no
 - verdict: ACCEPT
 - reason: Library stage complete and state consistent. Run can continue or stop with item 022 merged.
+
+## 2026-10-23 07:00 - investigator - 000 - ACCEPT
+- brief: briefs/onboarding-dev-e2e-20261023.md
+- report: reports/onboarding-dev-e2e-20261023.md
+- evidence: Report lines 28-45 identify retained launcher/CDP commands; stage table lines 53-67 records real DOM actions, discovery 503, beam selection/inference 200, Continue settings 400, partial refresh persistence and owned-process cleanup. Readiness at lines 71-77 is explicitly not full_ready. Planner read this report; this adjudication does not independently reproduce the browser session.
+- coverage: Accept bounded source-backend/Vite/headless-Chrome investigation and source beam connection test only. Speech, setup finish, Companion/Control Center transition and first message are BLOCKED or NOT TESTED, not successes. No production build or normal-profile mutation was requested or demonstrated.
+- consistency: Report distinguishes source imports from pre-existing staged routes.py dirt, configured env key from persistent vault storage, and partial inference persistence from backend-restart persistence. Proposed dedicated safe route is a hypothesis requiring audit of the existing endpoint, not an accepted implementation design. Board still ends at 022; no historical item is reopened by this finding.
+- not checked: No independent UI replay, full suite, build, packaged/Tauri launch, microphone, download, audio playback, backend-restart credential persistence or real-vault before/after comparison. Screenshots and private temp artifacts have not been independently inspected by this Planner.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Real UI evidence is sufficient for bounded investigation acceptance, not full onboarding success. Two source contract failures merit a smallest-safe-repair plan; downstream independent review and verification remain mandatory.
+
+## 2026-10-23 07:10 - planner - 023 - ACCEPT
+- brief: briefs/onboarding-repair-plan-20261023.md
+- report: plans/onboarding-repair-20261023.md
+- evidence: Authorized adjudication recorded by Implementer per briefs/023-implement-1.md:3,11. Source contract citations in plan:18-23 identify sync provider list_models, routes.py:1993 invalid await, api.ts:513-517 object-to-ID mismatch; existing safe-settings authority audited against runtime environment-over-settings precedence and retention's persisted reader.
+- coverage: Exactly two bounded items (023 discovery then 024 honest safe setup), exact allowlists, fail-base/pass-fix HTTP/real-client regressions, offload proof, authority/atomicity tests and independent browser proof gates.
+- consistency: Pre-existing resources/backend/api/routes.py dirty work left alone; current master base 7a9c2f5. Historical budget/overruns retained, new two-item run tracked separately. 023 building, 024 planned pending 023 merge.
+- not checked: Tests/browser not yet rerun; source evidence is not production or full onboarding success. No readiness semantics changes authorized beyond specified existing onboarding promise without independent review.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Orchestrator authorization in implementation brief accepts bounded plan: implement 023 then independently review/verify before 024. Final full onboarding requires real browser replay; no third item silently authorized.
+
+## 2026-10-23 13:50 - implementer - 023 - ACCEPT
+- brief: briefs/023-implement-1.md
+- report: reports/023-implement-1.md
+- evidence: focused backend 11 passed; frontend focused 22, full 90, tsc clean, lint clean; committed tip 5f266827034d9c423294b2819934fca73dde75fe.
+- coverage: all five Step 1 routes/client files in allowlist; no Step 2 work.
+- consistency: report matches worktree files; base negative replay was not executed, noted.
+- not checked: base negative proof for the offload test is stated as gap, not claimed. Full backend coverage outside focused tests is still owed.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Fixed-allowlist implementation verified green; proceed to independent Reviewer and Verifier in separate worktrees.
+
+## 2026-10-23 20:52 - reviewer - 023 - ACCEPT
+- brief: briefs/023-review-1.md
+- report: reviews/023-r1.md
+- evidence: review says VERDICT ACCEPT, commit 5f26682..., only 5 allowed files and exact classifier tier; tests cited.
+- coverage: all scope/auth/test-quality criteria addressed.
+- consistency: report consistent with implement evidence.
+- not checked: real browser and packaged executable not claimed by review; correctly left pending.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Review holds. Proceed to verifier and, on FIXED, Committer.
+
+## 2026-10-23 20:52 - verifier - 023 - ACCEPT
+- brief: briefs/023-verify-1.md
+- report: verifications/023-v1.md
+- evidence: first line VERDICT FIXED at 5f266827...; pre-fix tests failed 3/3 targeted 503/offload; fixed tests 6 passed; exact base vs fixed and offload-deleted control; full suite 1611/45, frontend 90, tsc/lint pass
+- coverage: acceptance criteria met including verifier-owned real browser real browser remains pending, not a code failure.
+- consistency: report consistent. Task SHA quoted.
+- not checked: final real DOM text-first retest; correct scope.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Item 023 is correctly fixed and verified. Proceed to commit.
+
+## 2026-10-23 20:55 - planner - 024 - ACCEPT
+- brief: briefs/023-implement-1.md
+- report: plans/onboarding-repair-20261023.md (item 024 section)
+- evidence: Authorized adjudication recorded by Implementer per task brief. Item 024 base pinned to merged 023 tip 29d87986a259dd27637a581a105cc7ce166b29ae on branch orchestra/024-safe-onboarding. Existing /setup/safe-settings and /setup/readiness only persist/trust setup_safe_initial_config_applied=true; trust marker alone is the honesty defect. Effective authority is runtime expression os.environ.get("SYTHION_AUTONOMY_LEVEL", settings.autonomy_level); runtime consumers are model_engine.py:178/197, task_execution_loop.py:695, system_tools.py:809. Retention consumer services/retention.py reads persisted retention_days, default 90; set_setting stages, caller owns commit; update_settings commits internally. Plan requires atomic staged transaction and three-way readiness truth; no env/settings singleton mutation, no config consumer or retention machinery edits.
+- coverage: Exactly one repair item scope: backend api safe-settings/readiness functions plus small private guarded predicate; new test_onboarding_safe_settings.py; additive test_setup_readiness expectations; Setup.tsx safe-settings Continue handler and unused settingsService import removal; Setup.test.tsx replacement of obsolete forbidden-update contract plus failure/stale/text-first gates. No new endpoint/schema, no settings_store/config consumer/auth/secrets/schema/retention/companion edits.
+- consistency: Effective-guarded gate rejects env autonomous even with a forged DB guarded marker; env guarded can supersede autonomous settings via runtime precedence; unknown/empty effective values reject; no env/settings DB mutation on 409. Staged retention=90 and marker use set_setting then one db.commit; rollback plus HTTP 500 on exception; pre-existing committed values remain unchanged. Readiness checks marker true and effective guarded and explicitly persisted valid retention exactly 90, rechecked every request. full_ready stays all checks including absent STT/TTS false. UI calls applySafeSettings, checks ok===true, refreshes, requires canStartChat before advance; no generic autonomy write; no optimistic readiness. Text-first remains available independent of safe/audio gates.
+- not checked: Browser replay after implementation; provider-gated runtime policy behavior beyond cited consumers; no production build, packaged mirror parity, durable vault, live key use. Full suites and independent review/verification still required.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Plan adjudication accepted for 024 implementer dispatch. Boundaries pinned: implement only allowed files, report honestly; if broader changes needed stop and tighten rather than expand.
+
+## 2026-10-23 21:46 - implementer - 024 - ACCEPT
+- brief: briefs/024-implement-1.md
+- report: reports/024-implement-1.md
+- evidence: 8 safe-settings tests + focused backend 91 passed/3 skipped + full backend 1619/45; frontend 93 passed, tsc/lint clean; branch tip fd3ef4c65d8c8a14f9b367ca68c81994bb9f6e81
+- coverage: allowed files only, runtime authority invariant, transactional marker/retention, readiness truth, frontend control/check refresh, text-first preservation.
+- consistency: report consistent.
+- not checked: fresh-base replay not performed by implementer; item meets planner gate for independent review/verification.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Item 024 implemented within strict safety/API constraints with focused suites green. Proceed to Reviewer and Verifier.
+
+## 2026-10-24 - researcher - voice Beam initial - IMPROVE (corrected by followup)
+- brief: briefs/beam-start-conversation-20261024.md
+- report: reports/beam-start-conversation-20261024.md
+- evidence: Report lines 25-26/39 infer click-time closed-port behavior from later process observations without an exit timestamp or request trace; followup lines 6-12 explicitly retract this inference.
+- coverage: Useful endpoint/source map and historical log observations, not a reproduction of the native click or its cause.
+- consistency: Keep the original record; accept the followup correction, not the original causal overclaim.
+- not checked: Original click, request timing, sidecar exit cause, network trace; no new execution by this committer.
+- self-directed: no
+- verdict: IMPROVE
+- reason: Reject click-time liveness certainty; reported later liveness cannot establish past liveness.
+
+## 2026-10-24 - researcher - voice Beam followup - ACCEPT (bounded evidence only)
+- brief: briefs/beam-start-conversation-followup-20261024.md
+- report: reports/beam-start-conversation-followup-20261024.md
+- evidence: Followup explicitly retracts initial timing inference; reports isolated endpoint/preflight observations but acknowledges no actual UI click (line 81) and no install invocation (line 35).
+- coverage: Supports packaged-origin/text endpoint viability in the reported isolated run and a static blocking-call hypothesis, not screenshot root-cause certification.
+- consistency: Heading "Root cause" and sequence claims at lines 44-51 are stronger than the disclosed evidence. Treat event-loop blocking as a source defect/hypothesis, not a proven explanation for Axios Network Error. Whole-installer offload proposal was subsequently rejected by r1 for COM/concurrency risks.
+- not checked: Reported historical live observations not reproduced; actual archive, click, stalled request, crash/exit cause and native outcome unverified.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Accept correction and bounded observations only; reject causal certainty and do not adopt the proposed whole-installer offload.
+
+## 2026-10-24 - implementer - voice redo - ACCEPT (static scope)
+- brief: briefs/voice-install-redo-20261024.md
+- report: voice-install-offload@536c0997d98a2f06476d60a8e8b93cbb1a689e4b:.orchestra/reports/voice-install-offload-redo-20261024.md
+- evidence: Read report directly from Git. It pins source revision 4a143bc03e4d3724881a77bea04fc2e7039e7fac, STT-only helper and process-local transaction lock; exact base-to-reviewed-tip file list is routes.py, voice_assets.py and test_voice_assets_install_offload.py.
+- coverage: Addresses the two r1 static blockers; leaves layout unchanged and packaging deferred. Reported py_compile pass is implementer-only, not independently reproduced and not a test pass.
+- consistency: r2 and verifier corroborate bounded source properties; status-error boundary changed and serialization test uses its own locking fake, so neither complete exception equivalence nor production-lock dynamic coverage is established.
+- not checked: No tests/builds/downloads/runtime/COM/audio/app actions by this committer. Added regression unrun; native outcome awaiting-confirmation.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Accept reviewed source design only. Feature ref has advanced to a report-only commit after reviewed source SHA, so exact-ref integration gate blocks this attempt.
+
+## 2026-10-24 - reviewer - voice r1 - ACCEPT (IMPROVE finding upheld)
+- brief: briefs/voice-install-review-20261024.md
+- report: reviews/voice-install-offload-20261024.md
+- evidence: Original verdict IMPROVE at eb68ddbb3b17e14c2318dea30113281f02c3bd24 identifies worker TTS/COM access and PID-shared staging race; r2 explicitly checks both after redesign.
+- coverage: Static call graph, concurrent install exposure, unchanged auth/trigger and layout-validation limits.
+- consistency: Initial whole-installer offload was not acceptable; this critique accepts the review's rejection, not that implementation. Original verdict preserved.
+- not checked: No dynamic race/COM reproduction; actual archive split layout not examined.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Review surfaced concrete reachable risks and correctly required revision without claiming native causality.
+
+## 2026-10-24 - reviewer - voice r2 - ACCEPT (source only)
+- brief: briefs/voice-install-final-review-20261024.md
+- report: reviews/voice-install-offload-r2-20261024.md
+- evidence: Actual report pins 4a143bc03e4d3724881a77bea04fc2e7039e7fac against 84efd2819c9a8131b366adae4546d2779a82ba76; accepts STT-only worker and locked recheck/publication statically, explicitly noting narrowed status exception mapping and fake-lock test weakness.
+- coverage: Prior blockers, synchronous wrapper, auth/schema/explicit trigger, residual layout and process-local locking.
+- consistency: Acceptance is bounded to source; it is not a review of later report commit 536c0997d98a2f06476d60a8e8b93cbb1a689e4b. Profile lock intent must not be elevated into proven cross-process safety (verifier adds stale-recovery caveat).
+- not checked: No tests/runtime/native click/audio or packaged update; implementer syntax result not reproduced.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Evidence supports bounded source integration once exact-ref authorization is resolved, not full product success.
+
+## 2026-10-24 - verifier - voice static - ACCEPT (scoped FIXED only)
+- brief: briefs/voice-offload-static-verify-20261024.md
+- report: verifications/voice-install-offload-static-20261024.md
+- evidence: Read independent report at detached verification worktree and copied bytes with CreateNew, without overwriting. Canonical/source SHA256 both 792C37728002B58F983F3CB84AC1037115193627F32FC1B5437C56E46EB41117. Report pins reviewed source 4a143bc03e4d3724881a77bea04fc2e7039e7fac and base 84efd2819c9a8131b366adae4546d2779a82ba76.
+- coverage: STT route call placement, no worker status/TTS path in inspected application graph, same-process lock, wrapper, auth/trigger/schema and exception-boundary residual.
+- consistency: FIXED applies only to source-route STT placement. Status remains synchronous; lock is process-local; status reads lack atomicity; packaged mirror remains unchanged. Exact native outcome remains awaiting-confirmation.
+- not checked: No tests/builds/syntax execution/downloads/runtime/native/COM/audio by verifier or committer; pinned archive not examined. No runtime pass or full-issue fix claim.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Scoped static evidence is honest and supports a bounded source change, but cannot override this brief's exact-ref stop condition. No merge performed.
+
+## 2026-10-24 - researcher - Vosk layout investigation - ACCEPT (bounded static evidence)
+- brief: briefs/vosk-layout-investigation-20261024.md
+- report: reports/vosk-layout-investigation-20261024.md
+- evidence: Recorded upstream loader/documentation citations and a public extraction transcript support V2 split HCLr/Gr/disambig, required acoustic/config presence, and non-universal words.txt. Compared the exact reviewed delta locally; no new network access.
+- coverage: Identifies both rejecting gates and proposes their shared presence predicate, with static HCLG compatibility and explicit native limits.
+- consistency: Do not adopt the report's packaged-mirror/testing recommendations: current integration authorization excludes them. Lines 154-162 contain stray drafting text, not additional verification evidence; leave the original report intact.
+- not checked: Public transcript is not a freshly opened/hash-verified archive; native constructor behavior and archive contents were not independently fetched or executed here. I-vector completeness and original Network Error remain unverified.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Accept only the documented supported-format invariant and root source rejection, not native-load readiness, comprehensive security, or user-visible success.
+
+## 2026-10-24 - implementer - Vosk layout repair - ACCEPT (source only)
+- brief: briefs/vosk-layout-fix-20261024.md
+- report: reports/vosk-layout-fix-20261024.md
+- evidence: Independently read cumulative Git delta ce56971df78d05c540cfc6fa4f91c568652da834..fea9ee21659b74e9666d8c2aa2a6a38ad039ea6e: exactly backend/core/voice_assets.py and backend/tests/test_voice_assets.py, 210 insertions/15 deletions. Shared helper is called by installed status and extraction; inert omission/parity assertions retained.
+- coverage: V2 core/config requirements, MFCC/FBANK alternative, static-or-complete-split graph, no universal words.txt, and unchanged checksum/transaction/traversal code.
+- consistency: Exact tip includes original 73bba39 implementation plus fea9ee2 regression additions. Reported AST parse is implementer-only evidence, not reproduced by this committer and not a test pass. Memory safety briefing is freshness-incomplete for Markdown/new report; inspected actual Git delta and reports rather than treating it as certification.
+- not checked: No regression execution, binary validity, embedded symbols, conditional i-vectors, symlink hardening, native load, screenshot or packaged update. Existing lack of explicit symlink denial remains.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Source scope and supported presence contract match the exact reviewed revision; accept source integration only, not full model completeness or runtime resolution.
+
+## 2026-10-24 - reviewer - Vosk layout repair - ACCEPT (static invariant only)
+- brief: briefs/vosk-layout-review-20261024.md
+- report: reviews/vosk-layout-review-20261024.md
+- evidence: Independent report pins exact fea9ee21659b74e9666d8c2aa2a6a38ad039ea6e/base ce56971df78d05c540cfc6fa4f91c568652da834 in a detached clean worktree. Its two-file/count claims match this committer's actual cumulative diff; own Git diff --check also clean.
+- coverage: Both predicate call sites, required config and graph families, source-only regression intent, preserved manifest/checksum/consent/lock/publication boundaries and pre-existing symlink omission.
+- consistency: ACCEPT is explicitly confined to the confirmed-layout invariant. Generic static graphs may still need native words fallback, and presence is not binary validity or acoustic-dependent i-vector completeness.
+- not checked: Reviewer did not execute tests, archive verification, native install, original Network Error reproduction or deployment; committer does not elevate its source reasoning to runtime proof.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Independent static review corroborates the exact allowed delta and honestly preserves all runtime/security residuals; sufficient only for authorized source-only merge.
+
+## 2026-10-24 - verifier - Vosk layout repair - ACCEPT (scoped static FIXED only)
+- brief: briefs/vosk-layout-verify-20261024.md
+- report: verifications/vosk-layout-static-20261024.md
+- evidence: Verifier independently traced exact fea9ee21659b74e9666d8c2aa2a6a38ad039ea6e in its own detached clean worktree. Its predicate D AND A AND C AND F AND (S OR (R AND G AND I)) matches the inspected helper and both call sites; missing required split/core files reject extraction before destination removal/publication.
+- coverage: Establishes PINNED_VOSK_SPLIT_GRAPH_IS_RECOGNIZED_CONSISTENTLY by source reasoning, static compatibility, unchanged checksum/traversal/transaction paths, and authored-versus-executed assertion distinction.
+- consistency: FIXED means only the named presence invariant. Public archive evidence remains inherited; process-local locking, link-following filesystem predicates and non-atomicity/security residuals are not newly certified.
+- not checked: No tests collected/run, builds, archive download/hash/open, app/native/mic/TTS/provider actions or real installation. Binary/config semantics, embedded symbols, conditional i-vectors, original Network Error and screenshot remain unverified; packaged app unchanged.
+- self-directed: no
+- verdict: ACCEPT
+- reason: Accept bounded independent static verification, not an executed outcome. Exact immutable-SHA merge is authorized by briefs/vosk-layout-integrate-20261024.md; no moving feature tip will be substituted.

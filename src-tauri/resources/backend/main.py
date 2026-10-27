@@ -37,6 +37,25 @@ control_token: str = None
 profile_lock = None
 
 
+# ---------------------------------------------------------------------------
+# Vault-write-violation marker contract
+# ---------------------------------------------------------------------------
+# An exception is a "vault-write violation" exactly when it exposes a TRUTHY
+# attribute of this name. The global exception handler below answers such an
+# exception with a distinct 409 instead of the generic 500, so a BLOCKED
+# product-credential write is never indistinguishable from an unrelated
+# crash.
+#
+# The producer of the marker is ``ProductCredentialWriteAttempt`` in
+# ``backend/tests/conftest.py`` (the test-suite guard that refuses to write to
+# or delete the product's own Windows Credential Manager entry). That is a
+# documented cross-file agreement on an attribute NAME, not an import in
+# either direction: production code must never import from ``backend/tests/``.
+VAULT_WRITE_VIOLATION_ATTR = "sythion_vault_write_violation"
+VAULT_WRITE_VIOLATION_STATUS = 409
+VAULT_WRITE_VIOLATION_ERROR = "VAULT_WRITE_BLOCKED"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
@@ -275,6 +294,20 @@ async def list_tools_legacy():
 async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler."""
     from fastapi.responses import JSONResponse
+    # Vault-write-violation marker contract (see the constants above): an
+    # exception that declares itself a blocked product-credential write is
+    # answered with a documented 409. The check is a POSITIVE marker test, so
+    # an ordinary exception cannot be diverted by accident, and the generic
+    # 500 branch below stays byte for byte what it was.
+    if getattr(exc, VAULT_WRITE_VIOLATION_ATTR, False):
+        return JSONResponse(
+            status_code=VAULT_WRITE_VIOLATION_STATUS,
+            content=ErrorResponse(
+                error=VAULT_WRITE_VIOLATION_ERROR,
+                detail=str(exc),
+                code=str(VAULT_WRITE_VIOLATION_STATUS)
+            ).model_dump()
+        )
     return JSONResponse(
         status_code=500,
         content=ErrorResponse(

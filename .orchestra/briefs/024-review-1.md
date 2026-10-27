@@ -1,0 +1,1 @@
+Review item 024 round 1. Use detach worktree at reviewed commit fd3ef4c65d8c8a14f9b367ca68c81994bb9f6e81. Audit exact allowlist, safety invariant SAFE_SETUP_IS_EFFECTIVE_GUARDED_AND_ATOMIC_90_DAY_CONFIG, auth and settings preservation, static args

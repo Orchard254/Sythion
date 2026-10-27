@@ -123,6 +123,26 @@
 - Sensitivity: sensitive
 - Domain: data
 - Status: merged (merge sha `7c77bf7`, branch `orchestra/022-concurrency-admission`, verifier FIXED)
+### 023 Onboarding model discovery contract
+- Why: saved/environment-key Find available models returns 503 by awaiting the synchronous provider; client also returns records instead of selector IDs.
+- Acceptance: approved plan `plans/onboarding-repair-20261023.md:25-44`; authenticated sync-provider response unchanged; offload thread/heartbeat proof; real-client exact string IDs and selector regression fail base/pass fix; errors, empty list and rejected-auth no-call preserved. Independent review and verification required.
+- Size: S
+- Risk: medium (public endpoint/client boundary)
+- Likely files: backend/api/routes.py, backend/tests/test_onboarding_model_discovery.py, frontend/src/services/api.ts, frontend/src/services/modelDiscovery.test.ts, frontend/src/screens/Setup.test.tsx
+- Sensitivity: sensitive
+- Domain: api, security
+- Status: merged (merge sha `29d8798`, branch `orchestra/023-onboarding-discovery`, verifier FIXED)
+
+### 024 Honest safe onboarding configuration
+- Why: forbidden generic autonomy update blocks Continue; existing safe endpoint certifies only a marker rather than effective guarded authority and persisted 90-day retention.
+- Acceptance: approved plan `plans/onboarding-repair-20261023.md:46-71`; truthful effective guarded authority, atomic retention/marker and honest readiness, UI no forbidden PUT, persistence/failure regressions and independent real text-first E2E.
+- Size: M
+- Risk: high (authority and transactional readiness)
+- Likely files: exact 024 allowlist in approved plan; no implementation authorized before 023 merge.
+- Sensitivity: sensitive
+- Domain: api, access, security, data
+- Status: merged (merge sha c304050, branch orchestra/024-safe-onboarding, verifier FIXED)
+
 ## Deferred (referenced, not re-listed)
 """,
 - Board items already deferred and unresolved, referenced instead of re-listed: `005` (operator endpoint resolution, external/infra), `008` (concurrent append event loss in `DbEventLedger.append_event`, data), `009` (readiness/onboarding endpoints read the key directly, security - sensitive-change gate).

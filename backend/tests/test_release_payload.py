@@ -287,3 +287,22 @@ def test_the_staged_release_payload_is_clean():
         pytest.skip("the release payload has not been staged")
     findings = verify.scan_tree(staged)
     assert not findings, "\n".join(f.describe() for f in findings)
+
+
+def test_staged_backend_mirror_matches_source():
+    """The staged backend mirror must not drift from the source backend."""
+    src_root = REPO_ROOT / "backend"
+    mirror_root = REPO_ROOT / "src-tauri" / "resources" / "backend"
+    assert src_root.is_dir(), "source backend missing"
+    assert mirror_root.is_dir(), "staged backend mirror missing"
+    mismatches = []
+    for source_path in sorted(src_root.rglob("*")):
+        if not source_path.is_file():
+            continue
+        relative = source_path.relative_to(src_root)
+        mirror_path = mirror_root / relative
+        if not mirror_path.is_file():
+            continue  # mirror legitimately omits prohibited/dev-only artifacts
+        if source_path.read_bytes() != mirror_path.read_bytes():
+            mismatches.append(str(relative))
+    assert not mismatches, "staged backend mirror drifts from source: " + ", ".join(mismatches)

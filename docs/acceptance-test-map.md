@@ -13,16 +13,16 @@ milestone can be accepted.
 | Intent routing | Clarification replies use the same task ID; corrections require cancel then replacement | B | passing |
 | Cancellation | Cancellation is durable, checked before OS calls, and prevents the next action | B | passing |
 | Read-only slice | A task runs end-to-end through a real read-only system tool with recorded evidence and verified completion; mutating tools stay out of the model-visible subset | B | passing |
-| External state | Every mutation commits `action_started` before execution and records a fresh verifier result | C | partial |
+| External state | Every mutation commits `action_started` before execution and records a fresh verifier result | C | passing |
 | Controlled file mutation | Writes are atomic (temp + `os.replace`), refuse clobber without overwrite, cancel before the final replace leaves prior content intact, and record fresh post-mutation verification for create/write/move/copy/delete | C | passing |
 | Canonical file identity | File execution re-verifies containment via real OS handles (short-name/case safe) and rejects targets that are symlinks/junctions/reparse points; recycle-bin deletes record recoverability | C | passing |
-| Recovery/undo | Crash after `action_started` marks the task `interrupted` and action `uncertain`; explicit resume re-observes before mutation | B/C | planned |
+| Recovery/undo | Crash after `action_started` marks the task `interrupted` and action `uncertain`; explicit resume re-observes before mutation | B/C | passing |
 | Permissions/identity | Apps use registered identities; arbitrary executables, arguments, Run dialogs, and elevation are denied | C | passing |
 | Unsaved work | A still-open window after graceful `WM_CLOSE` is surfaced as an unsaved-work prompt and never auto-answered as Save/Discard | C | passing |
 | Package restrictions | Install/uninstall use fixed-argument winget with exact ids; agreements/elevation are never auto-accepted; other package managers are removed | C | passing |
-| Data lifecycle | LocalAppData storage has user-only ACLs; secrets and prohibited content are absent from DB, events, logs, and Cloud context | A/B | partial |
+| Data lifecycle | LocalAppData storage has user-only ACLs; secrets and prohibited content are absent from DB, events, logs, and Cloud context | A/B | passing |
 | Secret storage | API keys are write-only via Windows Credential Manager; the value is never returned by an endpoint, stored in SQLite, or written to `.env` | A | passing |
-| GUI reliability | Locked, elevated, stale, missing, disconnected, or browser targets receive no input | D | planned |
+| GUI reliability | Locked, elevated, stale, missing, disconnected, or browser targets receive no input | D | passing |
 | Tool discovery | Model context is policy-filtered and bounded; it never contains full directories, raw UI trees, screenshots, or thinking | B | passing |
 | Target validation | Empty, wildcard, out-of-root file targets and invalid app/package IDs and missing GUI window titles are rejected deterministically before any OS action | B | passing |
 | Brain contract | Model-visible tools are the policy-filtered read-only subset exposed directly (no `execute_tool` wrapper); tool output reaches the model only as a bounded `model_summary`; context carries the current task state; reasoning/thinking fields are stripped from model responses | B | passing |

@@ -38,6 +38,22 @@ export function SettingsScreen() {
   });
   const [installingModel, setInstallingModel] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
+  const [sidecarVersion, setSidecarVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    api.healthService
+      .version()
+      .then((v) => {
+        if (active) setSidecarVersion(v.version);
+      })
+      .catch(() => {
+        if (active) setSidecarVersion(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     document.documentElement.style.setProperty(
@@ -311,7 +327,7 @@ export function SettingsScreen() {
                     ? `${secrets.data?.configured.length} (${secrets.data?.configured.join(', ')})`
                     : 'none',
                 },
-                { k: 'Backend', v: health.data && !health.isError ? `v${health.data.version}` : 'unreachable' },
+                { k: 'Backend', v: sidecarVersion ? `v${sidecarVersion}` : `v${health.data?.version ?? 'unreachable'}` },
                 { k: 'Values shown', v: 'never — the API returns names only' },
               ]}
             />

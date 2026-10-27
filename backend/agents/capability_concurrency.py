@@ -101,6 +101,13 @@ CAPABILITY_CONCURRENCY: Dict[str, Dict[str, str]] = {
         "evidence": "Tab discovery/page interaction via BrowserBridgeService; bridge connectivity + external service. Not validated parallel.",
         "notes": "Serialized.",
     },
+    # Device integration — PnP device inventory subprocess, not validated for parallelism.
+    "device_integration": {
+        "class": SERIAL_ONLY,
+        "stage": "STAGE_0_SERIALIZED",
+        "evidence": "Installed-device inventory via a PowerShell subprocess (Get-PnpDevice). Integration surface is largely demonstrational; not validated for parallelism.",
+        "notes": "Serialized until device/home concurrency is proven.",
+    },
     # Voice (STT/TTS) — hardware + model, no parallel validation.
     "voice": {
         "class": SERIAL_ONLY,

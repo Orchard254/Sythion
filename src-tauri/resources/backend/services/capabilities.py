@@ -110,6 +110,15 @@ def _specs() -> List[CapabilitySpec]:
             risk_class="MEDIUM", requires_permission=True,
             requires_external_service=True,
         ),
+        # Device/Home integration is not implemented in this version; the UI
+        # renders demonstration data and the registry must not claim availability.
+        CapabilitySpec(
+            id="device_integration", name="Device Integration", category="devices",
+            description="Device and home management integration available as device status inventory (not demo data).",
+            tool_names=("device_status",),
+            risk_class="MEDIUM", requires_permission=True,
+            requires_external_service=True,
+        ),
         CapabilitySpec(
             id="persistent_memory", name="Persistent Memory", category="memory",
             description="Store/recall/link durable user facts with decay and pruning.",
@@ -185,6 +194,9 @@ class CapabilityRegistry:
 
         if os.name != "nt" and "windows" in spec.environments:
             return UNAVAILABLE
+
+        if spec.id == "device_integration":
+            return UNAVAILABLE  # not implemented; UI renders demonstration data only
 
         if spec.id == "browser_control":
             try:

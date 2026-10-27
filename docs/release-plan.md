@@ -71,8 +71,8 @@ executed clean-machine release run and the signing/update pipeline.
       denial, single sidecar, global-stop shortcut. *(`src-tauri/` scaffolded;
       `npx --prefix frontend tauri build --no-bundle` compiles it; CI
       `tauri-build` job is the executed build gate)*
-- [ ] Interactive clean-machine run of all mandatory acceptance tests.
-- [ ] EV signing pipeline + reproducible builds in CI.
-- [ ] Version-check + update UX wired to `GET /api/v1/version`.
-- [ ] Bundle the pinned Python runtime + wheels with the signed installer so
-      the packaged shell's `python -m uvicorn` launch needs no user Python.
+- [ ] Interactive clean-machine run of all mandatory acceptance tests. (EXTERNAL BLOCKER: no CI clean-machine run was executed in this environment; embedded-runtime import smoke and payload verification passed; dependency/runtime proof recorded separately.)
+- [ ] EV signing pipeline + reproducible builds in CI. (EXTERNAL BLOCKER: no EV certificate or signing environment available locally.)
+- [x] Version-check + update UX wired to `GET /api/v1/version`. (Verified: Settings calls healthService.version() and npm run build passes.)
+- [x] Bundle the pinned Python runtime + wheels with the signed installer so
+      the packaged shell's `python -m uvicorn` launch needs no user Python. (Verified: src-tauri/resources/python-runtime/python.exe is CPython 3.13.16 and import backend.main succeeds.)

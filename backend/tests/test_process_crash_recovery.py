@@ -172,7 +172,7 @@ elif mode == "cognitive_park":
 
     runner = TaskRunner(session)
     assert asyncio_ok(runner.acquire_lease())
-    task = asyncio_ok(runner.create_task("sort these files somehow maybe",
+    task = asyncio_ok(runner.create_task("delete that",
                                          idempotency_key="cognitive-park:1"))
     adapter = CognitiveDecisionAdapter(runner, session)
     routing = asyncio_ok(adapter.route_new_input(task.id,
