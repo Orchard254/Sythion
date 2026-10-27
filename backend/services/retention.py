@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from backend.models.database import (
-    ConversationTurn,
+    ConversationTurn, ConversationExchange,
     ProposedSkill,
     PurgeReceipt,
     Task,
@@ -97,7 +97,7 @@ def purge_turns(
     days: Optional[int] = None,
     now: Optional[datetime] = None,
 ) -> int:
-    """Purge conversation_turns older than the retention window.
+    """Purge expired conversation data, returning the number of summary rows.
 
     The episodic transcript is bounded by the same window as tasks. Any turn
     older than `days` is deleted -- including orphans whose task row was
@@ -106,6 +106,15 @@ def purge_turns(
 
     Returns the number of turn rows deleted.
     """
+    return purge_conversation_history(db, days=days, now=now)[0]
+
+
+def purge_conversation_history(
+    db: Session,
+    days: Optional[int] = None,
+    now: Optional[datetime] = None,
+) -> tuple[int, int]:
+    """Purge expired summaries and full exchanges, returning their separate counts."""
     days = days or get_retention_days(db)
     cutoff = (now or datetime.utcnow()) - timedelta(days=days)
     purged = (
@@ -113,10 +122,15 @@ def purge_turns(
         .filter(ConversationTurn.created_at < cutoff)
         .delete(synchronize_session=False)
     )
+    exchanges = db.query(ConversationExchange).filter(
+        ConversationExchange.created_at < cutoff
+    ).delete(synchronize_session=False)
     db.commit()
     if purged:
         logger.info("Purged %d conversation turns older than %s", purged, cutoff.isoformat())
-    return purged
+    if exchanges:
+        logger.info("Purged %d conversation exchanges older than %s", exchanges, cutoff.isoformat())
+    return purged, exchanges
 
 
 def purge_expired(

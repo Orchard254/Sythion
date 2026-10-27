@@ -30,6 +30,23 @@ import type {
 
 const API_BASE_URL = '/api/v1';
 
+export interface ConversationExchange {
+  id: string;
+  session_id: string;
+  user_text: string;
+  assistant_text: string;
+  created_at: string;
+}
+
+export const conversationService = {
+  async list(cursor?: string): Promise<{ conversations: ConversationExchange[]; next_cursor: string | null }> {
+    const response = await apiClient.get<{ conversations: ConversationExchange[]; next_cursor: string | null }>(
+      '/conversations', { params: cursor ? { cursor } : undefined }
+    );
+    return response.data;
+  },
+};
+
 // Runtime bridge configuration, set by the Tauri shell (or the dev launcher)
 // before the first API call. baseURL defaults to the Vite-proxied path so the
 // browser dev path works until the bridge config is resolved.

@@ -15,8 +15,11 @@ This repository currently provides:
 - voice and dashboard support within the local runtime boundary;
 - early intelligence-layer scaffolding such as conversation state,
   memory consolidation, a first durable objective/plan work-state layer,
-  and CLI-visible work-state inspection.
-
+  and CLI-visible work-state inspection;
+- durable complete pure-conversation history (`conversation_exchanges`), exposed
+  as `GET /api/v1/conversations` with cursor pagination. These records are
+  deliberately separate from truncated episodic summaries, which remain
+  compression context rather than a transcript.
 ## Product surfaces
 
 The intended product has two complementary surfaces. The runtime serves both;
@@ -52,7 +55,7 @@ Older reports such as `FINAL_STATUS.md`, `PHASE3_REPORT.md`, and
 
 ## Verified test baseline
 
-- Full backend suite: **1569 passed, 45 skipped** (1648 collected)
+- Full backend suite: **1583 passed, 45 skipped** (1628 collected)
 - Acceptance suite: **191 passed, 2 skipped**
 
 Measured on CPython 3.14.7 / Windows by
@@ -91,6 +94,18 @@ Near-term work should continue to professionalize the repo by:
   explicit and auditable;
 - deepening intelligence-layer behavior without weakening runtime guarantees.
 
+## Conversation history and retention
+
+- `ConversationExchange` stores each complete user message and assistant reply.
+- `GET /api/v1/conversations` returns newest-first, complete exchanges only.
+  Use `limit` (1-200) and the opaque `next_cursor` for older pages. Legacy
+  `conversation_turns` are not transcripts and are excluded.
+- Retention is manual and owner-triggered through `POST /api/v1/retention/purge`.
+  There is no automatic startup purge. The configured window controls what a
+  manual purge removes, and the response reports `purged_turns` and
+  `purged_exchanges` separately.
+- The Assistant screen no longer treats a conversation response as a task and
+  no longer loses it when the polled task list refreshes.
 ## Practical reading guide for future contributors / LLMs
 
 If you need to understand the repo quickly:

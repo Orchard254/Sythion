@@ -603,7 +603,7 @@ export function SecurityScreen() {
             <div className="stack stack--tight">
               <KV
                 items={[
-                  { k: 'Retention', v: `${health.data ? 'configured' : '—'} · purge is automatic` },
+                  { k: 'Retention', v: `${health.data ? 'configured' : '—'} · purge is not automatic` },
                   { k: 'Voice recording', v: 'off by default; never auto-enabled' },
                   { k: 'Cloud requests', v: 'bounded per task by backend budget' },
                   { k: 'Secret values', v: 'write-only — the API never returns them' },

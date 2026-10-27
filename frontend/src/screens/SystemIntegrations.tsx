@@ -404,7 +404,7 @@ export function SystemScreen() {
                 <EmptyState
                   icon="trash"
                   title="Nothing purged"
-                  description="Receipts appear here when the retention window removes old task turns."
+                  description="Receipts appear here after an explicitly requested retention purge."
                 />
               ) : (
                 <div className="list">

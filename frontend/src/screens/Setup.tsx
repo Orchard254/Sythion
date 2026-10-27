@@ -107,7 +107,7 @@ export function SetupScreen({ onComplete }: SetupProps) {
   const checks: Array<[string, boolean]> = [
     ['Sythion is running on this computer', readiness?.checks.sidecar_ok === true && readiness?.checks.database_ok === true],
     ['Cloud connection and model tested', modelReady],
-    ['Guarded permissions and 90-day history', readiness?.checks.safe_settings_ok === true],
+    ['Guarded permissions and configured history retention', readiness?.checks.safe_settings_ok === true],
     [replyMode === 'voice' ? 'Spoken replies tested' : 'Text replies selected', replyMode === 'text' || ttsVerified],
   ];
 
@@ -148,7 +148,7 @@ export function SetupScreen({ onComplete }: SetupProps) {
                   const result = await setupService.applySafeSettings();
                   if (result?.ok !== true) throw new Error('Safe setup could not be applied. Please try again.');
                   const report = await refresh();
-                  if (!canStartChat(report)) throw new Error('Guarded permissions and 90-day history are not ready yet.');
+                  if (!canStartChat(report)) throw new Error('Guarded permissions and history retention are not ready yet.');
                   setStep(1);
                 })}>Continue</Button>
               </div>
@@ -180,7 +180,7 @@ export function SetupScreen({ onComplete }: SetupProps) {
               <div className="stack" style={{ gap: 12 }}>
                 <ul>{checks.map(([label, ok]) => <li key={label}>{ok ? '✓' : 'Needs attention:'} {label}</li>)}</ul>
                 <p>Try “Hello Synth, what can you help me with?” Type your message and press Enter. For voice input, tap the microphone, speak, tap it again, review the transcript, then send.</p>
-                <p className="t-muted">Your message appears immediately. Synth’s answer arrives in the same conversation{replyMode === 'voice' ? ' and is read aloud. Text remains available if playback fails.' : '.'}</p>
+                <p className="t-muted">While your message is being sent, Sythion shows its progress. Your message and Synth’s answer appear in the conversation{replyMode === 'voice' ? ', and the answer is read aloud. Text remains available if playback fails.' : '.'}</p>
                 <div className="row" style={{ gap: 8 }}><Button disabled={busy} onClick={() => { setError(null); setStep(1); }}>Back</Button><Button variant="primary" disabled={busy || !canStartChat(readiness)} onClick={() => void finish()}>Start conversation</Button></div>
               </div>
             </Panel>}

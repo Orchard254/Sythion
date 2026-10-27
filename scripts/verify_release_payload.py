@@ -546,6 +546,54 @@ def payload_ignore_patterns() -> List[str]:
     for suffix in PROHIBITED_KEY_SUFFIXES:
         patterns.add("*" + suffix)
     return sorted(patterns)
+
+
+def backend_mirror_findings(source: Path, mirror: Path) -> List[Finding]:
+    """Compare the stageable backend files in both directions, without modifying them."""
+    import fnmatch
+
+    source, mirror = Path(source), Path(mirror)
+    findings = []
+    for root, label in ((source, "source"), (mirror, "staged")):
+        if not root.is_dir():
+            findings.append(Finding(path=str(root), reason=f"{label} backend directory missing",
+                                    kind="backend-missing"))
+    if findings:
+        return findings
+
+    patterns = payload_ignore_patterns()
+
+    def included(root: Path) -> set[Path]:
+        files = set()
+        for path in root.rglob("*"):
+            relative = path.relative_to(root)
+            if any(any(fnmatch.fnmatch(part, pattern) for pattern in patterns)
+                   for part in relative.parts):
+                continue
+            if any(prohibited_dir_reason(part) for part in relative.parts[:-1]):
+                continue
+            if path.is_file() and not prohibited_file_reason(path.name):
+                files.add(relative)
+        return files
+
+    source_files, mirror_files = included(source), included(mirror)
+    for relative in sorted(source_files | mirror_files):
+        path = "backend/" + relative.as_posix()
+        if relative not in mirror_files:
+            reason = "file missing from staged backend"
+        elif relative not in source_files:
+            reason = "extra file in staged backend"
+        else:
+            try:
+                if (source / relative).read_bytes() == (mirror / relative).read_bytes():
+                    continue
+                reason = "staged backend differs from source"
+            except OSError:
+                reason = "unable to compare backend files"
+        findings.append(Finding(path=path, reason=reason, kind="backend-drift"))
+    return findings
+
+
 def _remove_tree(path: Path) -> None:
     import shutil
 
@@ -584,6 +632,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="also scan vendored third-party trees (site-packages) for secrets",
     )
     parser.add_argument("--json", action="store_true", help="emit JSON findings")
+    parser.add_argument(
+        "--check-backend-mirror", action="store_true",
+        help="also compare staged backend against this checkout's source backend",
+    )
     args = parser.parse_args(argv)
 
     root = Path(args.root) if args.root else default_root()
@@ -600,6 +652,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"    - {item}")
 
     findings = scan_tree(root, follow_third_party_names=args.include_third_party)
+    if args.check_backend_mirror:
+        findings.extend(backend_mirror_findings(
+            Path(__file__).resolve().parents[1] / "backend", root / "backend"
+        ))
 
     if args.json:
         print(
@@ -619,11 +675,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"[verify] FAIL: {len(findings)} packaging violation(s) in {root}:")
         for finding in findings:
             print(f"    - {finding.describe()}")
-        print("[verify] the distributable must not contain these files.")
-        print(
-            "[verify] re-stage with scripts/stage_python_runtime.py, or clean the "
-            "staged tree with scripts/verify_release_payload.py --prune"
-        )
+        print("[verify] resolve these violations before building a distributable.")
+        print("[verify] inspect and safely refresh the staged payload before retrying.")
         return 1
 
     print(f"[verify] OK: {root} contains no developer secrets, test databases or user state.")

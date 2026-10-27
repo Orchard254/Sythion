@@ -293,16 +293,49 @@ def test_staged_backend_mirror_matches_source():
     """The staged backend mirror must not drift from the source backend."""
     src_root = REPO_ROOT / "backend"
     mirror_root = REPO_ROOT / "src-tauri" / "resources" / "backend"
-    assert src_root.is_dir(), "source backend missing"
-    assert mirror_root.is_dir(), "staged backend mirror missing"
-    mismatches = []
-    for source_path in sorted(src_root.rglob("*")):
-        if not source_path.is_file():
-            continue
-        relative = source_path.relative_to(src_root)
-        mirror_path = mirror_root / relative
-        if not mirror_path.is_file():
-            continue  # mirror legitimately omits prohibited/dev-only artifacts
-        if source_path.read_bytes() != mirror_path.read_bytes():
-            mismatches.append(str(relative))
-    assert not mismatches, "staged backend mirror drifts from source: " + ", ".join(mismatches)
+    findings = verify.backend_mirror_findings(src_root, mirror_root)
+    assert not findings, "\n".join(f.describe() for f in findings)
+
+
+def test_backend_mirror_detects_changed_missing_and_extra_files(tmp_path):
+    source, mirror = tmp_path / "source", tmp_path / "mirror"
+    _write(source / "same.py", "same")
+    _write(mirror / "same.py", "same")
+    _write(source / "changed.py", "new")
+    _write(mirror / "changed.py", "old")
+    _write(source / "missing.py", "new")
+    _write(mirror / "extra.py", "old")
+    _write(source / "tests" / "test_dev.py", "excluded")
+    _write(source / ".env.local", "excluded")
+    findings = verify.backend_mirror_findings(source, mirror)
+    assert {f.path: f.reason for f in findings} == {
+        "backend/changed.py": "staged backend differs from source",
+        "backend/missing.py": "file missing from staged backend",
+        "backend/extra.py": "extra file in staged backend",
+    }
+
+
+def test_backend_mirror_missing_directory_fails(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    findings = verify.backend_mirror_findings(source, tmp_path / "missing")
+    assert [f.kind for f in findings] == ["backend-missing"]
+
+
+def test_backend_mirror_accepts_matching_stageable_files(tmp_path):
+    source, mirror = tmp_path / "source", tmp_path / "mirror"
+    _write(source / "main.py", "same")
+    _write(mirror / "main.py", "same")
+    _write(source / "tests" / "test_dev.py", "excluded")
+    _write(source / ".env", "excluded")
+    assert verify.backend_mirror_findings(source, mirror) == []
+
+
+def test_release_cli_gates_backend_drift(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "resources"
+    _write(root / "backend" / "main.py", "different")
+    monkeypatch.setattr(verify, "backend_mirror_findings", lambda source, mirror: [
+        verify.Finding(path="backend/main.py", reason="staged backend differs from source", kind="backend-drift")
+    ])
+    assert verify.main([str(root), "--check-backend-mirror", "--json"]) == 1
+    assert '"kind": "backend-drift"' in capsys.readouterr().out

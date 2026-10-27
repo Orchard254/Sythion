@@ -189,7 +189,7 @@ export function MemoryScreen() {
                       <span>Bulk export — no endpoint exists</span>
                     </span>
                     <p className="t-faint" style={{ marginTop: 4 }}>
-                      Retention purging is real but automatic: receipts are listed under System &amp; Integrations.
+                      Retention purging is not automatic. Receipts from explicitly requested purges are listed under System &amp; Integrations.
                     </p>
                   </div>
                 </Panel>

@@ -662,6 +662,7 @@ class RetentionRunResponse(BaseModel):
     receipts: List[PurgeReceiptResponse]
     purged_count: int
     purged_turns: int = 0
+    purged_exchanges: int = 0
 
 
 # Onboarding Schemas

@@ -269,13 +269,13 @@ export function Chips<T extends string>({
 }) {
   return (
     <div className="chips" role="group">
-      <button
+      {allLabel && <button
         type="button"
         className={`chip${value === ('__all__' as T) ? ' chip--active' : ''}`}
         onClick={() => onChange('__all__' as T)}
       >
         {allLabel}
-      </button>
+      </button>}
       {options.map((o) => (
         <button
           key={o.value}

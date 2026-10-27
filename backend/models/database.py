@@ -934,6 +934,18 @@ class MemoryContextLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class ConversationExchange(Base):
+    """A complete pure-conversation exchange, separate from episodic summaries."""
+
+    __tablename__ = "conversation_exchanges"
+
+    id = Column(String, primary_key=True)
+    session_id = Column(String, nullable=False, index=True)
+    user_text = Column(Text, nullable=False)
+    assistant_text = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
 class ConversationTurn(Base):
     """Compressed summary of a completed task for session continuity (episodic memory).
 

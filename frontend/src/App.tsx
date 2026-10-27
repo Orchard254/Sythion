@@ -141,28 +141,29 @@ function AppContent() {
 
   const [seenTaskStates, setSeenTaskStates] = useState<Record<string, string>>({});
 
-  // Raise an in-app notification the first time a task reaches an interesting
+  // Raise an in-app notification whenever a task enters an interesting
   // terminal state. Derived from polled backend state, not fabricated.
   useEffect(() => {
     if (dataMode !== 'live') return;
     const interesting = new Set(['failed', 'waiting_for_user', 'interrupted']);
     const next = { ...seenTaskStates };
+    let changed = false;
     for (const t of tasks.data ?? []) {
       const prev = seenTaskStates[t.id];
-      if (prev !== t.state && interesting.has(t.state)) {
+      if (prev !== t.state) {
         next[t.id] = t.state;
+        changed = true;
+      }
+      if (prev !== t.state && interesting.has(t.state)) {
         notify({
-          id: `task-${t.id}-${t.state}`,
           tone: t.state === 'failed' ? 'danger' : 'warn',
           title: `Task ${t.state === 'failed' ? 'failed' : 'needs your input'}`,
           body: t.terminal_reason ?? t.pending_question ?? t.normalized_goal ?? t.original_request,
           route: 'assistant',
         });
-      } else if (prev !== t.state) {
-        next[t.id] = t.state;
       }
     }
-    if (Object.keys(next).length !== Object.keys(seenTaskStates).length) {
+    if (changed) {
       setSeenTaskStates(next);
     }
   }, [tasks.data, dataMode, notify, seenTaskStates]);

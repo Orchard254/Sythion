@@ -74,11 +74,11 @@ export function GoalDetailDrawer({
     }
     for (const step of plan?.steps ?? []) {
       if (step.linked_task_id && !byId.has(step.linked_task_id)) {
-        byId.set(step.linked_task_id, all.find((t) => t.id === step.linked_task_id)!);
+        const task = all.find((t) => t.id === step.linked_task_id);
+        if (task) byId.set(step.linked_task_id, task);
       }
     }
     return Array.from(byId.values())
-      .filter(Boolean)
       .sort((a, b) => (parseTimestamp(b.updated_at) ?? 0) - (parseTimestamp(a.updated_at) ?? 0));
   }, [tasks.data, goalId, plan]);
 
@@ -220,7 +220,7 @@ export function GoalDetailDrawer({
                 <EmptyState
                   icon="inbox"
                   title="No associated tasks"
-                  description="No task is linked to this goal. That is a recorded fact, not a missing page."
+                  description="No associated task records are currently available. Plan steps may still reference tasks."
                 />
               ) : (
                 <div className="list">
@@ -389,12 +389,14 @@ function StepRow({
               depends on {blockers.join(', ')}
             </span>
           )}
-          {step.linked_task_id && (
+          {step.linked_task_id && task ? (
             <button type="button" className="link-chip" onClick={() => onOpenTask?.(step.linked_task_id!)}>
               <Icon name="link" size={11} />
-              {task ? taskLabel(task.state) : 'linked task'}
+              {taskLabel(task.state)}
             </button>
-          )}
+          ) : step.linked_task_id ? (
+            <span className="t-muted">Linked task unavailable ({step.linked_task_id})</span>
+          ) : null}
         </div>
         {step.status === 'blocked' && (
           <p className="t-warn" style={{ fontSize: 11.5 }}>

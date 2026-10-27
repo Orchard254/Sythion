@@ -160,7 +160,7 @@ export function SettingsScreen() {
                     onChange={(e) => setRetention(Math.max(1, Number(e.target.value) || 90))}
                   />
                   <span className="field__hint">
-                    Task turns older than this are purged automatically. Every purge writes a receipt.
+                    This window is used when a retention purge is explicitly requested. Purging is not automatic.
                   </span>
                 </div>
 

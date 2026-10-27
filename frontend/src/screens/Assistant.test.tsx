@@ -4,8 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AssistantScreen } from './Assistant';
 import { useAppStore } from '../store/appStore';
 import type { Task } from '../types';
-const mock=vi.hoisted(()=>({createTask:vi.fn(),speak:vi.fn(),taskList:[] as Task[]}));
-vi.mock('../services/api',()=>({voiceService:{speak:mock.speak}}));
+const mock=vi.hoisted(()=>({createTask:vi.fn(),speak:vi.fn(),conversations:vi.fn(),taskList:[] as Task[]}));
+vi.mock('../services/api',()=>({voiceService:{speak:mock.speak},conversationService:{list:mock.conversations}}));
 vi.mock('../hooks/useVoiceCapture',()=>({useVoiceCapture:()=>({startCapture:vi.fn(),stopCapture:vi.fn()})}));
 vi.mock('../hooks/useBackend',async()=>{
   const {useQuery}=await import('@tanstack/react-query');
@@ -26,7 +26,7 @@ beforeEach(async()=>{
   vi.stubGlobal('localStorage',{getItem:()=>mode,setItem:(_key:string,value:string)=>{mode=value;}});
   vi.stubGlobal('document',{visibilityState:'visible'});
   useAppStore.setState({isConnected:true,dataMode:'live',isListening:false,isVoiceSpeaking:false,transcriptDraft:''});
-  mock.taskList=[];mock.createTask.mockImplementation(async()=>{mock.taskList=[task];return task;});mock.speak.mockResolvedValue({success:true});
+  mock.taskList=[];mock.conversations.mockResolvedValue({conversations:[],next_cursor:null});mock.createTask.mockImplementation(async()=>{mock.taskList=[task];return task;});mock.speak.mockResolvedValue({success:true});
   client=new QueryClient({defaultOptions:{queries:{retry:false}}});
   await settle(()=>{view=create(<QueryClientProvider client={client}><AssistantScreen/></QueryClientProvider>);});
 });
@@ -35,6 +35,48 @@ const draft=async()=>settle(()=>view.root.findByProps({'aria-label':'Message Syt
 const send=async()=>settle(()=>view.root.findByProps({'aria-label':'Send message'}).props.onClick());
 
 describe('first message delivery',()=>{
+  it('restores full stored conversation when opening the screen',async()=>{
+    mock.conversations.mockResolvedValue({conversations:[{id:'conv-saved',session_id:'s',user_text:'Saved message',assistant_text:'Saved complete reply',created_at:'2026-10-22T00:00:00Z'}],next_cursor:null});
+    await settle(()=>{void client.invalidateQueries({queryKey:['conversation-history']});});
+    expect(text()).toContain('Saved message');
+    expect(text()).toContain('Saved complete reply');
+  });
+  it('loads older conversations on request',async()=>{
+    mock.conversations.mockImplementation(async(cursor?:string)=>cursor
+      ? {conversations:[{id:'old',session_id:'s',user_text:'Older question',assistant_text:'Older answer',created_at:'2026-10-21T00:00:00Z'}],next_cursor:null}
+      : {conversations:[],next_cursor:'older-page'});
+    await settle(()=>{void client.invalidateQueries({queryKey:['conversation-history']});});
+    await settle(()=>view.root.findAllByType('button').find(b=>b.children.includes('Load older messages'))!.props.onClick());
+    expect(mock.conversations).toHaveBeenCalledWith('older-page');
+    expect(text()).toContain('Older answer');
+  });
+  it('does not retain a cached reply after its persisted record is removed',async()=>{
+    const row={id:'conv-1',session_id:'s',user_text:'Hello Synth',assistant_text:'Saved reply',created_at:'2026-10-22T00:00:00Z'};
+    mock.createTask.mockResolvedValueOnce({...task,id:row.id,interaction_type:'CONVERSATION',state:'completed',final_result:row.assistant_text});
+    mock.conversations.mockResolvedValue({conversations:[row],next_cursor:null});
+    await draft();await send();
+    expect(text()).toContain('Saved reply');
+    mock.conversations.mockResolvedValue({conversations:[],next_cursor:null});
+    await settle(()=>{void client.invalidateQueries({queryKey:['conversation-history']});});
+    expect(text()).not.toContain('Saved reply');
+  });
+  it('keeps a conversational reply visible when the task list refreshes',async()=>{
+    mock.createTask.mockResolvedValueOnce({...task,id:'conv-1',interaction_type:'CONVERSATION',state:'completed',final_result:'Hello from Synth'});
+    await draft();await send();
+    await settle(()=>client.setQueryData(['tasks'],[]));
+    expect(text()).toContain('Hello Synth');
+    expect(text()).toContain('Hello from Synth');
+    expect(text()).not.toContain('exec-line__toggle');
+  });
+  it('does not show live conversation in preview mode',async()=>{
+    mock.createTask.mockResolvedValueOnce({...task,id:'conv-1',interaction_type:'CONVERSATION',state:'completed',final_result:'Private response'});
+    await draft();await send();
+    expect(text()).toContain('Private response');
+    await settle(()=>useAppStore.setState({dataMode:'preview'}));
+    expect(text()).not.toContain('Private response');
+    await settle(()=>useAppStore.setState({dataMode:'live'}));
+    expect(text()).toContain('Private response');
+  });
   it('shows a sent request before completion, then renders the reply in text',async()=>{
     await draft();await send();
     expect(text()).toContain('Hello Synth');

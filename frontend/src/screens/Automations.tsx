@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Icon } from '../components/icons';
 import {
   Badge,
@@ -18,10 +18,11 @@ import {
   Stat,
   Switch,
 } from '../components/ui';
-import { useAgentActivity, useBackgroundPolicy, useSkills, useSkillProposals } from '../hooks/useBackend';
+import { useActions, useAgentActivity, useBackgroundPolicy, useSkills, useSkillProposals } from '../hooks/useBackend';
 import { useAppStore } from '../store/appStore';
 import { demoAutomationRuns, demoAutomations } from '../data/demo';
 import { humanize, relTime } from '../lib/format';
+import type { SkillProposal } from '../types';
 
 /* Automations.
  *
@@ -42,6 +43,7 @@ const RUN_TONE: Record<string, 'ok' | 'warn' | 'danger' | 'idle' | 'info'> = {
 };
 
 type Automation = (typeof demoAutomations)[number];
+const isPending = (p: SkillProposal) => p.status === 'proposed' || p.status === 'pending_review';
 
 export function AutomationsScreen() {
   const background = useBackgroundPolicy();
@@ -73,7 +75,7 @@ export function AutomationsScreen() {
   const failing = demoAutomations.filter((a) =>
     ['fail', 'failed', 'warn', 'blocked'].includes(a.lastOutcome)
   ).length;
-  const pendingProposals = (proposals.data ?? []).filter((p) => (p.status ?? '').includes('pending')).length;
+  const pendingProposals = (proposals.data ?? []).filter(isPending).length;
 
   const wakesFromTriggers = (activity.data?.wakes ?? []).filter((w) => w.trigger_type !== 'user.request');
 
@@ -358,13 +360,15 @@ export function AutomationsScreen() {
 
       {openId?.startsWith('skill:') && (
         <ProposalDrawer
-          proposalId={openId.slice('skill:'.length)}
+          proposal={(proposals.data ?? []).find((p) => String(p.id) === openId.slice('skill:'.length))}
+          refresh={() => { proposals.refetch(); skills.refetch(); }}
           onClose={() => setOpenId(null)}
         />
       )}
       {openId && !openId.startsWith('skill:') && (
         <AutomationDrawer
           automation={demoAutomations.find((a) => a.id === openId)!}
+          enabled={localEnabled[openId] ?? false}
           onClose={() => setOpenId(null)}
         />
       )}
@@ -374,9 +378,11 @@ export function AutomationsScreen() {
 
 function AutomationDrawer({
   automation,
+  enabled,
   onClose,
 }: {
   automation: Automation;
+  enabled: boolean;
   onClose: () => void;
 }) {
   return (
@@ -441,7 +447,7 @@ function AutomationDrawer({
 
       <KV
         items={[
-          { k: 'State', v: automation.enabled ? 'Enabled' : 'Paused' },
+          { k: 'State', v: enabled ? 'Enabled' : 'Paused' },
           { k: 'Last run', v: automation.lastRun },
           { k: 'Last outcome', v: automation.lastOutcome },
           { k: 'Next run', v: automation.nextRun },
@@ -459,38 +465,65 @@ function AutomationDrawer({
   );
 }
 
-function ProposalDrawer({ proposalId, onClose }: { proposalId: string; onClose: () => void }) {
+function ProposalDrawer({ proposal, refresh, onClose }: { proposal: SkillProposal | undefined; refresh: () => void; onClose: () => void }) {
+  const actions = useActions();
+  const dataMode = useAppStore((s) => s.dataMode);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const inFlight = useRef(false);
+  const canReview = Boolean(proposal && isPending(proposal) && dataMode === 'live' && actions.live);
+
+  async function decide(decision: 'approve' | 'reject') {
+    if (!proposal || !canReview || inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    setError('');
+    try {
+      if (decision === 'approve') await actions.approveSkillProposal(proposal.id);
+      else await actions.rejectSkillProposal(proposal.id);
+      refresh();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Review failed. Please try again.');
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  }
+
   return (
     <Drawer
-      title={`Skill proposal ${proposalId}`}
-      subtitle={<DemoTag />}
+      title={proposal?.name ?? `Skill proposal ${proposal?.id ?? ''}`}
+      subtitle={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
       onClose={onClose}
       footer={
         <>
           <Button variant="subtle" onClick={onClose}>
             Close
           </Button>
-          <Button variant="primary" disabled>
+          <Button variant="primary" disabled={!canReview || busy} onClick={() => void decide('approve')}>
             Approve
           </Button>
-          <Button variant="danger" disabled>
+          <Button variant="danger" disabled={!canReview || busy} onClick={() => void decide('reject')}>
             Reject
           </Button>
         </>
       }
     >
-      <Notice tone="warn" icon="alert">
-        <span>
-          Approve and reject for skill proposals call{' '}
-          <span className="t-mono">POST /api/v1/skills/proposals/&#123;id&#125;/approve</span>. They are disabled here
-          because no backend is attached — approving a proposal is a genuine authorization decision and must not be
-          performable against demonstration data.
-        </span>
-      </Notice>
-      <p className="t-muted">
-        Sythion proposes a skill once it has seen several materially similar successful traces. Approval records your
-        review; nothing is executed automatically.
-      </p>
+      <Notice tone="warn" icon="alert"><span>
+        {dataMode === 'preview' ? 'Preview is read-only; demonstration proposals cannot be reviewed.' :
+          'Approval validates and enables this skill. Rejection declines it; neither decision runs the skill.'}
+      </span></Notice>
+      {!proposal && <p className="t-muted">This proposal is no longer available.</p>}
+      {proposal && <>
+        <KV items={[
+          { k: 'Status', v: humanize(proposal.status ?? 'unknown') },
+          { k: 'Evidence', v: typeof proposal.evidence_count === 'number' ? String(proposal.evidence_count) : Array.isArray(proposal.trace_ids) ? String(proposal.trace_ids.length) : '—' },
+        ]} />
+        {proposal.definition != null && <><span className="field__label">Proposed definition</span><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(proposal.definition, null, 2)}</pre></>}
+        {Array.isArray(proposal.validation_errors) && proposal.validation_errors.length > 0 && <p className="t-warn">Validation: {proposal.validation_errors.map(String).join('; ')}</p>}
+      </>}
+      {error && <Notice tone="danger" icon="alert"><span>{error}</span></Notice>}
     </Drawer>
   );
 }

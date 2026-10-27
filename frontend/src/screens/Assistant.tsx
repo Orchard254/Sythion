@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
-import { voiceService } from '../services/api';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
+import { conversationService, voiceService } from '../services/api';
 import { conversationTasks, nextSpokenReply } from '../lib/firstConversation';
 import { Icon } from '../components/icons';
 import { TaskDetailDrawer } from '../components/TaskDetailDrawer';
@@ -72,9 +72,51 @@ export function AssistantScreen() {
   const notify = useAppStore((s) => s.notify);
   const dataMode = useAppStore((s) => s.dataMode);
 
+  // Pure conversations are persisted separately from executable tasks.
+  const conversationQuery = useInfiniteQuery({
+    queryKey: ['conversation-history'],
+    queryFn: ({ pageParam }) => conversationService.list(pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.next_cursor ?? undefined,
+    enabled: dataMode === 'live' && isConnected,
+    staleTime: 10_000,
+    retry: 1,
+  });
+  const { data: recentResponses = [] } = useQuery<Task[]>({
+    queryKey: ['conversation-responses'],
+    queryFn: async () => [],
+    initialData: [],
+    enabled: false,
+    staleTime: Infinity,
+    gcTime: Infinity,
+  });
+  const storedConversations = useMemo<Task[]>(() =>
+    (conversationQuery.data?.pages.flatMap((page) => page.conversations) ?? []).map((item) => ({
+      id: item.id, conversation_id: item.id, interaction_type: 'CONVERSATION',
+      original_request: item.user_text, final_result: item.assistant_text,
+      state: 'completed', version: 1, normalized_goal: null, active_action_id: null,
+      pending_question: null, terminal_reason: null,
+      created_at: item.created_at, updated_at: item.created_at,
+    })), [conversationQuery.data]);
+  useEffect(() => {
+    if (!storedConversations.length || !recentResponses.length) return;
+    const persisted = new Set(storedConversations.map((item) => item.id));
+    if (recentResponses.some((item) => persisted.has(item.id))) {
+      queryClient.setQueryData<Task[]>(['conversation-responses'], (old = []) =>
+        old.filter((item) => !persisted.has(item.id))
+      );
+    }
+  }, [storedConversations, recentResponses, queryClient]);
+
   const { startCapture, stopCapture } = useVoiceCapture();
 
   const allTasks = useMemo(() => tasks.data ?? [], [tasks.data]);
+  const threadItems = useMemo(
+    () => dataMode === 'preview' ? allTasks : [...allTasks, ...Array.from(
+      new Map([...storedConversations, ...recentResponses].map((item) => [item.id, item])).values()
+    )],
+    [allTasks, storedConversations, recentResponses, dataMode]
+  );
 
   const status = useMemo(
     () =>
@@ -102,8 +144,8 @@ export function AssistantScreen() {
   // anything waiting on the owner is pinned above instead.
   const thread = useMemo(
     () =>
-      conversationTasks(allTasks, pinnedIds),
-    [allTasks, pinnedIds]
+      conversationTasks(threadItems, pinnedIds),
+    [threadItems, pinnedIds]
   );
 
   const filtered = useMemo(() => {
@@ -112,8 +154,16 @@ export function AssistantScreen() {
   }, [allTasks, filter]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  const olderScroll = useRef<{ height: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (olderScroll.current) {
+      el.scrollTo({ top: olderScroll.current.top + el.scrollHeight - olderScroll.current.height });
+      olderScroll.current = null;
+    } else {
+      el.scrollTo({ top: el.scrollHeight });
+    }
   }, [thread.length, awaitingTasks.length, transcriptDraft]);
 
   const onToggleVoice = useCallback(async () => {
@@ -156,12 +206,12 @@ export function AssistantScreen() {
 
   useEffect(() => {
     if (replyMode !== 'voice' || playbackTaskId || isListening || captureBusy || document.visibilityState !== 'visible') return;
-    const task = nextSpokenReply(allTasks, submittedIds.current, narratedIds.current);
+    const task = nextSpokenReply(threadItems, submittedIds.current, narratedIds.current);
     if (!task) return;
     // Mark before playback so polling and failures never repeat audio.
     narratedIds.current.add(task.id);
     void playReply(task);
-  }, [allTasks, replyMode, playbackTaskId, isListening, captureBusy, playReply]);
+  }, [threadItems, replyMode, playbackTaskId, isListening, captureBusy, playReply]);
 
   const sttReady = voiceSttAvailable ?? assets.data?.stt_installed ?? false;
   const authorization = deriveAuthorization(agent.data);
@@ -252,6 +302,25 @@ export function AssistantScreen() {
           <>
             <div className="chat chat--assistant">
               <div className="chat__scroll" ref={scrollRef}>
+                {dataMode === 'live' && conversationQuery.isError && (
+                  <div role="alert">
+                    <p>Conversation history could not be loaded. Check the connection and try again.</p>
+                    <Button size="sm" variant="subtle" onClick={() => void conversationQuery.refetch()}>Retry history</Button>
+                  </div>
+                )}
+                {dataMode === 'live' && conversationQuery.isLoading && <p role="status">Loading conversation history…</p>}
+                {dataMode === 'live' && conversationQuery.hasNextPage && (
+                  <Button size="sm" variant="subtle" disabled={conversationQuery.isFetchingNextPage} onClick={() => {
+                    const el = scrollRef.current;
+                    if (el) olderScroll.current = { height: el.scrollHeight, top: el.scrollTop };
+                    void conversationQuery.fetchNextPage().then((result) => {
+                      const pages = result.data?.pages;
+                      if (result.isFetchNextPageError || (pages && pages[pages.length - 1]?.conversations.length === 0)) olderScroll.current = null;
+                    });
+                  }}>
+                    {conversationQuery.isFetchingNextPage ? 'Loading…' : 'Load older messages'}
+                  </Button>
+                )}
                 {thread.length === 0 ? (
                   // Shown even when an approval is pinned above: the pinned
                   // card is not conversation, and leaving the panel blank
@@ -294,8 +363,14 @@ export function AssistantScreen() {
                     try {
                       const task = await actions.createTask(text);
                       submittedIds.current.add(task.id);
-                      await queryClient.cancelQueries({ queryKey: ['tasks'] });
-                      queryClient.setQueryData<Task[]>(['tasks'], (old = []) => [task, ...old.filter((t) => t.id !== task.id)]);
+                      if (task.interaction_type === 'CONVERSATION') {
+                        await queryClient.cancelQueries({ queryKey: ['conversation-responses'] });
+                        queryClient.setQueryData<Task[]>(['conversation-responses'], (old = []) => [...old.filter((t) => t.id !== task.id), task]);
+                        void queryClient.invalidateQueries({ queryKey: ['conversation-history'] });
+                      } else {
+                        await queryClient.cancelQueries({ queryKey: ['tasks'] });
+                        queryClient.setQueryData<Task[]>(['tasks'], (old = []) => [task, ...old.filter((t) => t.id !== task.id)]);
+                      }
                       setTranscriptDraft('');
                       tasks.refetch();
                       notify({
@@ -691,7 +766,7 @@ function Exchange({ task, onOpen, onSpeak, playbackBusy }: { task: Task; onOpen:
 
           {/* Compact execution summary. Timestamps and traces live behind the
               disclosure or in the drawer. */}
-          <div className="exec-line">
+          {task.interaction_type !== 'CONVERSATION' && <div className="exec-line">
             <button
               type="button"
               className="exec-line__toggle"
@@ -706,7 +781,7 @@ function Exchange({ task, onOpen, onSpeak, playbackBusy }: { task: Task; onOpen:
             <button type="button" className="exec-line__open" onClick={onOpen}>
               Open
             </button>
-          </div>
+          </div>}
 
           {open && (
             <div className="tool-card">

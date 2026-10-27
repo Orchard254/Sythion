@@ -8,6 +8,7 @@ import {
   Chips,
   DataBadge,
   DemoTag,
+  Drawer,
   EmptyState,
   Panel,
   ScreenHead,
@@ -75,6 +76,7 @@ export function GoalsScreen() {
   }, [tasks.data]);
 
   const isDemo = dataMode === 'preview';
+  const selectedTask = openTask ? (tasks.data ?? []).find((t) => t.id === openTask) : undefined;
 
   return (
     <div className="screen">
@@ -160,14 +162,18 @@ export function GoalsScreen() {
           }}
         />
       )}
-      {openTask && (
+      {openTask && selectedTask ? (
         <TaskDetailDrawer
-          task={(tasks.data ?? []).find((t) => t.id === openTask)!}
+          task={selectedTask}
           origin={tasks.origin}
           onClose={() => setOpenTask(null)}
           onChanged={tasks.refetch}
         />
-      )}
+      ) : openTask ? (
+        <Drawer title="Task unavailable" onClose={() => setOpenTask(null)}>
+          <EmptyState icon="inbox" title="Task unavailable" description={`Task ${openTask} is not in the current task list.`} />
+        </Drawer>
+      ) : null}
     </div>
   );
 }

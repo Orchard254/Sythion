@@ -4,14 +4,17 @@ Handles task management, tool execution, settings, and skills.
 """
 import logging
 import asyncio
+import base64
+import binascii
 import json
 import os
 import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks, Query
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_
 
 from backend.models.database import get_db, Objective, PlanStep, Skill, Task
 from backend.services.task_runner import get_runner, TaskRunner
@@ -119,6 +122,46 @@ async def version_check():
     }
 
 
+@router.get("/conversations")
+async def list_conversations(limit: int = Query(50, ge=1, le=200), cursor: Optional[str] = Query(None, max_length=1024), db: Session = Depends(get_db)):
+    """Recent complete pure-conversation exchanges, newest first.
+
+    Legacy episodic summaries are intentionally excluded; they are not transcripts.
+    """
+    from backend.models.database import ConversationExchange
+    query = db.query(ConversationExchange)
+    if cursor is not None:
+        try:
+            raw = base64.b64decode(cursor.encode("ascii"), altchars=b"-_", validate=True)
+            value = json.loads(raw.decode("utf-8"))
+            if not isinstance(value, list) or len(value) != 2 or not all(isinstance(v, str) and v for v in value):
+                raise ValueError("invalid cursor")
+            timestamp = datetime.fromisoformat(value[0])
+            if timestamp.tzinfo is not None or len(value[1]) > 255:
+                raise ValueError("invalid cursor")
+        except (ValueError, UnicodeError, binascii.Error, OverflowError):
+            raise HTTPException(status_code=400, detail="Invalid conversation cursor") from None
+        query = query.filter(or_(ConversationExchange.created_at < timestamp, and_(
+            ConversationExchange.created_at == timestamp, ConversationExchange.id < value[1]
+        )))
+    rows = query.order_by(
+        ConversationExchange.created_at.desc(), ConversationExchange.id.desc()
+    ).limit(limit + 1).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    next_cursor = None
+    if has_more:
+        last = rows[-1]
+        next_cursor = base64.urlsafe_b64encode(json.dumps(
+            [last.created_at.isoformat(), last.id], separators=(",", ":")
+        ).encode("utf-8")).decode("ascii")
+    return {"conversations": [
+        {"id": row.id, "session_id": row.session_id, "user_text": row.user_text,
+         "assistant_text": row.assistant_text, "created_at": row.created_at.isoformat()}
+        for row in rows
+    ], "next_cursor": next_cursor}
+
+
 @router.post("/tasks", response_model=TaskResponse)
 async def create_task(
     task_data: TaskCreate,
@@ -189,15 +232,15 @@ async def create_task(
                 status_code=503,
                 detail=f"Conversation model provider unavailable: {str(exc)}"
             )
-        except Exception as exc:
-            logger.error(f"Conversation runtime failure: {exc}", exc_info=True)
+        except Exception:
+            logger.error("Conversation runtime failure")
             raise HTTPException(
                 status_code=500,
-                detail=f"Conversation runtime failure: {str(exc)}"
-            )
+                detail="Conversation runtime failure"
+            ) from None
         
         # Return conversation response with explicit interaction contract
-        conv_id = f"conv-{uuid.uuid4()}"
+        conv_id = result.get("conversation_id") or f"conv-{uuid.uuid4()}"
         return TaskResponse(
             id=conv_id,
             conversation_id=conv_id,
@@ -1868,14 +1911,14 @@ async def purge_records(request: PurgeRequest, db: Session = Depends(get_db)):
 
     Either `days` (retention window, defaulting to the configured
     `retention_days`) or an exact `task_id` is required. Every purge writes a
-    non-sensitive receipt; task content is never retained. The windowed run
-    also sweeps expired/orphaned `conversation_turns` (`purged_turns`).
+    non-sensitive receipt for each task. The windowed run also sweeps expired
+    summaries (`purged_turns`) and full exchanges (`purged_exchanges`).
     """
     from backend.services.retention import (
         get_retention_days,
         purge_expired,
         purge_task,
-        purge_turns,
+        purge_conversation_history,
     )
 
     if request.task_id is not None:
@@ -1884,17 +1927,19 @@ async def purge_records(request: PurgeRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=404, detail=f"Task {request.task_id} not found")
         receipts = [receipt]
         purged_turns = 0
+        purged_exchanges = 0
     else:
         days = request.days or get_retention_days(db)
         if days < 1:
             raise HTTPException(status_code=400, detail="days must be >= 1")
         receipts = purge_expired(db, days=days)
-        purged_turns = purge_turns(db, days=days)
+        purged_turns, purged_exchanges = purge_conversation_history(db, days=days)
 
     return RetentionRunResponse(
         receipts=[PurgeReceiptResponse(**r) for r in receipts],
         purged_count=len(receipts),
         purged_turns=purged_turns,
+        purged_exchanges=purged_exchanges,
     )
 
 
@@ -2356,7 +2401,7 @@ async def setup_readiness(db=Depends(get_db)):
 
         safe_settings_ok = (
             get_setting(db, "setup_safe_initial_config_applied") == "true"
-            and get_setting(db, "retention_days") == "90"
+            and int(get_setting(db, "retention_days")) >= 1
             and _effective_autonomy_is_guarded()
         )
     except Exception:

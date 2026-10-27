@@ -1,10 +1,16 @@
 """Honest safe onboarding: effective guarded authority and atomic 90-day config."""
 
+import pytest
 
-def test_safe_settings_writes_guarded_90_day_config(test_client):
+
+def test_safe_settings_writes_guarded_90_day_config(test_client, test_db):
+    from backend.core.settings_store import get_setting
+
     response = test_client.post("/api/v1/setup/safe-settings")
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+    assert get_setting(test_db, "retention_days") == "90"
+    assert get_setting(test_db, "setup_safe_initial_config_applied") == "true"
 
     readiness = test_client.get("/api/v1/setup/readiness").json()
     assert readiness["checks"]["safe_settings_ok"] is True
@@ -53,23 +59,40 @@ def test_safe_settings_marker_only_is_not_ready(test_client, test_db):
     assert readiness["checks"]["safe_settings_ok"] is False
 
 
-def test_safe_settings_wrong_retention_is_not_ready(test_client, test_db):
+@pytest.mark.parametrize("days", [91, 30])
+def test_safe_settings_remains_ready_after_public_retention_update(test_client, test_db, days):
+    from backend.core.settings_store import get_setting
+
+    assert test_client.post("/api/v1/setup/safe-settings").status_code == 200
+    response = test_client.put("/api/v1/settings", json={"retention_days": days})
+    assert response.status_code == 200
+    assert get_setting(test_db, "retention_days") == str(days)
+    assert test_client.get("/api/v1/setup/readiness").json()["checks"]["safe_settings_ok"] is True
+
+
+@pytest.mark.parametrize("retention", ["not-a-number", "0", "-1", "", "1.5"])
+def test_safe_settings_invalid_retention_is_not_ready(test_client, test_db, retention):
     from backend.core.settings_store import set_setting
 
     set_setting(test_db, "setup_safe_initial_config_applied", "true")
-    set_setting(test_db, "retention_days", "30")
+    set_setting(test_db, "retention_days", retention)
     test_db.commit()
 
     readiness = test_client.get("/api/v1/setup/readiness").json()
     assert readiness["checks"]["safe_settings_ok"] is False
 
 
-def test_safe_settings_malformed_retention_is_not_ready(test_client, test_db):
+def test_safe_settings_valid_retention_without_marker_is_not_ready(test_client, test_db):
     from backend.core.settings_store import set_setting
 
-    set_setting(test_db, "setup_safe_initial_config_applied", "true")
-    set_setting(test_db, "retention_days", "not-a-number")
+    set_setting(test_db, "retention_days", "91")
     test_db.commit()
 
     readiness = test_client.get("/api/v1/setup/readiness").json()
     assert readiness["checks"]["safe_settings_ok"] is False
+
+
+def test_safe_settings_loses_readiness_when_autonomy_changes(test_client, monkeypatch):
+    assert test_client.post("/api/v1/setup/safe-settings").status_code == 200
+    monkeypatch.setenv("SYTHION_AUTONOMY_LEVEL", "autonomous")
+    assert test_client.get("/api/v1/setup/readiness").json()["checks"]["safe_settings_ok"] is False
