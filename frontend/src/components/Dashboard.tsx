@@ -14,6 +14,7 @@ export function Dashboard() {
     tts_voice: string;
   } | null>(null);
   const [settingsError, setSettingsError] = useState('');
+  const [settingsBaseline, setSettingsBaseline] = useState<number | null>(null);
 
   const {
     tasks,
@@ -27,8 +28,6 @@ export function Dashboard() {
     voiceSttAvailable,
     retentionDays,
     setRetentionDays,
-    fileRoots,
-    setFileRoots,
     activeTaskEvents,
     setActiveTaskEvents,
   } = useAppStore();
@@ -63,9 +62,9 @@ export function Dashboard() {
     voiceService.assets().then(setVoiceAssets).catch(() => {});
     settingsService.get().then((s) => {
       setRetentionDays(s.retention_days);
-      setFileRoots(s.file_roots || []);
+      setSettingsBaseline(s.retention_days);
     }).catch(() => {});
-  }, [pollTasks, setRetentionDays, setFileRoots]);
+  }, [pollTasks, setRetentionDays]);
 
   // Adaptive polling: fast while any task is in flight, slow when idle.
   useEffect(() => {
@@ -185,13 +184,13 @@ export function Dashboard() {
   const handleSaveSettings = async () => {
     setSettingsError('');
     try {
-      const updated = await settingsService.update({
-        retention_days: retentionDays,
-        file_roots: fileRoots.join(','),
-        voice_recording_enabled: false,
-      });
+      if (settingsBaseline === null) return;
+      const updates: Record<string, string | number | boolean> = {};
+      if (retentionDays !== settingsBaseline) updates.retention_days = retentionDays;
+      if (!Object.keys(updates).length) { setShowSettings(false); return; }
+      const updated = await settingsService.update(updates);
       setRetentionDays(Number(updated.retention_days) || retentionDays);
-      setFileRoots(updated.file_roots ?? fileRoots);
+      setSettingsBaseline(Number(updated.retention_days) || retentionDays);
       setShowSettings(false);
     } catch (error) {
       setSettingsError((error as Error).message || 'Failed to save settings');
@@ -263,19 +262,7 @@ export function Dashboard() {
               style={styles.input}
             />
           </label>
-          <label style={styles.settingRow}>
-            Approved file roots (comma separated)
-            <input
-              type="text"
-              value={fileRoots.join(', ')}
-              onChange={(e) =>
-                setFileRoots(
-                  e.target.value.split(',').map((r) => r.trim()).filter(Boolean)
-                )
-              }
-              style={styles.input}
-            />
-          </label>
+          <div>Manage file grants in <a href="#/settings">Settings</a>, where fallback access is shown before clearing grants.</div>
           <div style={styles.assetRow}>
             <strong>Voice assets:</strong>{' '}
             {voiceAssets

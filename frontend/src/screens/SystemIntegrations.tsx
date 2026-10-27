@@ -138,7 +138,7 @@ export function SystemScreen() {
                     items={[
                       { k: 'Max actions / task', v: String(settings.data?.max_actions_per_task ?? '—') },
                       { k: 'Max cloud requests / task', v: String(settings.data?.max_cloud_requests_per_task ?? '—') },
-                      { k: 'Approved file roots', v: `${settings.data?.file_roots.length ?? 0} configured` },
+                      { k: 'Effective file-tool roots', v: settings.data?.effective_file_roots ? `${settings.data.effective_file_roots.length} reported` : 'not reported' },
                       { k: 'Retention', v: `${settings.data?.retention_days ?? '—'} days` },
                     ]}
                   />
@@ -146,9 +146,9 @@ export function SystemScreen() {
                     These are the only real bounds the backend applies today. They limit a single task, not the system —
                     which is why bounded autonomy is labelled proposed rather than offered.
                   </p>
-                  {(settings.data?.file_roots.length ?? 0) > 0 && (
+                  {(settings.data?.effective_file_roots?.length ?? 0) > 0 && (
                     <div className="chips" style={{ marginTop: 8 }}>
-                      {settings.data?.file_roots.map((r) => (
+                      {settings.data?.effective_file_roots?.map((r) => (
                         <span className="chip" key={r}>
                           <Icon name="file" size={11} style={{ marginRight: 5 }} />
                           {r}

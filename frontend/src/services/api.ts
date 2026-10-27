@@ -509,7 +509,7 @@ export const settingsService = {
     return response.data;
   },
 
-  update: async (updates: Record<string, string | boolean | number>): Promise<AppSettings> => {
+  update: async (updates: Record<string, unknown>): Promise<AppSettings> => {
     const response = await apiClient.put('/settings', updates);
     return response.data.settings || response.data;
   },

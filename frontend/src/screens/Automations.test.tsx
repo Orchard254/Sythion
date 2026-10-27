@@ -32,6 +32,8 @@ describe('Automations proposal review', () => {
   it('shows live definition and approves once, refreshing both lists', async () => {
     let resolve!: () => void;
     mock.approve.mockImplementation(() => new Promise<void>((r) => { resolve = r; }));
+    expect(JSON.stringify(view.toJSON())).toContain('test skill');
+    expect(JSON.stringify(view.toJSON())).not.toContain('Proposal 42');
     openReview();
     expect(JSON.stringify(view.toJSON())).toContain('test skill');
     await act(async () => { button('Approve').props.onClick(); button('Approve').props.onClick(); });
@@ -41,6 +43,18 @@ describe('Automations proposal review', () => {
     await act(async () => { resolve(); });
     expect(mock.proposalsRefetch).toHaveBeenCalledOnce();
     expect(mock.skillsRefetch).toHaveBeenCalledOnce();
+  });
+
+  it('keeps pending_review visible but does not send unsupported decisions', async () => {
+    mock.status = 'pending_review';
+    act(() => view.update(<AutomationsScreen />));
+    openReview();
+    expect(button('Approve').props.disabled).toBe(true);
+    expect(button('Reject').props.disabled).toBe(true);
+    expect(JSON.stringify(view.toJSON())).toContain('This status cannot be decided by the backend.');
+    await act(async () => { button('Approve').props.onClick(); button('Reject').props.onClick(); });
+    expect(mock.approve).not.toHaveBeenCalled();
+    expect(mock.reject).not.toHaveBeenCalled();
   });
 
   it('reports rejection errors and leaves the review open', async () => {

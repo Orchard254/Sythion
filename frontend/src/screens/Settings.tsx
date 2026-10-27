@@ -30,7 +30,8 @@ export function SettingsScreen() {
   const navigate = useNavStore((s) => s.setRoute);
 
   const [retention, setRetention] = useState<number | null>(null);
-  const [roots, setRoots] = useState<string | null>(null);
+  const [roots, setRoots] = useState<string[] | null>(null);
+  const [confirmFallback, setConfirmFallback] = useState<{ persisted_file_roots: string[]; fallback_file_roots: string[] } | null>(null);
   const [saving, setSaving] = useState(false);
   const [density, setDensity] = useState<Density>(() => {
     const stored = localStorage.getItem('sythion.density');
@@ -66,7 +67,8 @@ export function SettingsScreen() {
   useEffect(() => {
     if (settings.data) {
       setRetention(settings.data.retention_days);
-      setRoots(settings.data.file_roots.join(', '));
+      setRoots(settings.data.persisted_file_roots ? [...settings.data.persisted_file_roots] : null);
+      setConfirmFallback(null);
     }
   }, [settings.data]);
 
@@ -87,21 +89,38 @@ export function SettingsScreen() {
     }
   };
 
+  const rootsDirty = roots !== null && JSON.stringify(roots) !== JSON.stringify(settings.data?.persisted_file_roots);
+  const clearingToFallback = rootsDirty && roots?.length === 0 && (settings.data?.persisted_file_roots?.length ?? 0) > 0 && settings.data?.environment_file_roots?.length === 0;
+  const fallbackKnown = settings.data?.fallback_file_roots !== undefined && settings.data.environment_file_roots !== undefined;
   const dirty =
     settings.data !== undefined &&
     ((retention !== null && retention !== settings.data.retention_days) ||
-      (roots !== null && roots !== settings.data.file_roots.join(', ')));
+      rootsDirty);
 
-  const save = async () => {
+  const save = async (confirmed = false) => {
+    if (rootsDirty && roots?.length === 0 && !fallbackKnown) return;
+    if (clearingToFallback && !confirmed) {
+      setConfirmFallback({ persisted_file_roots: [...settings.data!.persisted_file_roots!], fallback_file_roots: [...settings.data!.fallback_file_roots!] });
+      return;
+    }
+    if (confirmed && (!confirmFallback || !clearingToFallback ||
+      JSON.stringify(confirmFallback.persisted_file_roots) !== JSON.stringify(settings.data?.persisted_file_roots) ||
+      JSON.stringify(confirmFallback.fallback_file_roots) !== JSON.stringify(settings.data?.fallback_file_roots))) return;
     setSaving(true);
     try {
-      await actions.updateSettings({
-        retention_days: retention ?? 90,
-        file_roots: roots ?? '',
-      });
+      const updates: Record<string, unknown> = {};
+      if (retention !== null && retention !== settings.data?.retention_days) updates.retention_days = retention;
+      if (rootsDirty && roots !== null) updates.file_roots = roots;
+      if (confirmed) updates.file_roots_fallback_acknowledgement = confirmFallback;
+      await actions.updateSettings(updates);
+      setConfirmFallback(null);
       settings.refetch();
       notify({ tone: 'ok', title: 'Settings saved', body: 'Persisted through PUT /api/v1/settings.' });
     } catch (err) {
+      if (confirmed) {
+        setConfirmFallback(null);
+        settings.refetch();
+      }
       notify({
         tone: 'danger',
         title: 'Could not save settings',
@@ -165,33 +184,48 @@ export function SettingsScreen() {
                 </div>
 
                 <div className="field">
-                  <label className="field__label" htmlFor="roots">
-                    Approved file roots (comma separated)
-                  </label>
-                  <textarea
-                    id="roots"
-                    className="textarea"
-                    value={roots ?? ''}
-                    onChange={(e) => setRoots(e.target.value)}
-                    placeholder="C:\Users\you\Documents"
-                  />
+                  <span className="field__label">Persisted file grants</span>
+                  {roots?.map((root, index) => (
+                    <div className="row" key={index}>
+                      <input className="input" aria-label={`File grant ${index + 1}`} value={root}
+                        onChange={(e) => { const next = [...roots]; next[index] = e.target.value; setRoots(next); setConfirmFallback(null); }} />
+                      <button type="button" onClick={() => { setRoots(roots.filter((_, i) => i !== index)); setConfirmFallback(null); }}>Remove grant {index + 1}</button>
+                    </div>
+                  ))}
+                  <button type="button" disabled={roots === null} onClick={() => { setRoots([...(roots ?? []), '']); setConfirmFallback(null); }}>Add file grant</button>
                   <span className="field__hint">
-                    Sythion cannot read or write outside these roots. This is enforced by the backend, not by the
-                    interface.
+                    Environment roots are separate and cannot be removed here. With no configured roots, file tools
+                    use the home and working directories; otherwise they also allow the backend directory. Clearing
+                    grants can therefore change, rather than eliminate, access.
                   </span>
+                  {!settings.data?.persisted_file_roots && <span className="field__hint">Editing roots requires a newer backend that separates persisted grants.</span>}
+                  {rootsDirty && roots?.length === 0 && !fallbackKnown && <span className="field__hint">Cannot clear grants: backend does not report the fallback roots.</span>}
+                  <span className="field__hint">Environment roots: {settings.data?.environment_file_roots?.join(', ') || 'none reported'}</span>
+                  <span className="field__hint">Effective file-tool roots: {settings.data?.effective_file_roots?.join(', ') || 'not reported by backend'}</span>
                 </div>
 
                 <div className="row">
                   <Button
                     variant="primary"
                     icon="check"
-                    disabled={!dirty || saving}
+                    disabled={!dirty || saving || Boolean(roots?.some((root) => !root.trim())) || Boolean(rootsDirty && roots?.length === 0 && !fallbackKnown)}
                     onClick={() => void save()}
                   >
                     {saving ? 'Saving…' : 'Save settings'}
                   </Button>
                   {dirty && <span className="t-faint">Unsaved changes</span>}
                 </div>
+                {confirmFallback && clearingToFallback && (
+                  <div role="alert" className="stack">
+                    <strong>Clearing the last grant enables the following fallback file-tool roots:</strong>
+                    <ul>{confirmFallback.fallback_file_roots.map((root, i) => <li key={i}>{root}</li>)}</ul>
+                    <span>This may broaden access. Confirm only if you intend to allow these directories.</span>
+                    <div className="row">
+                      <button type="button" disabled={saving} onClick={() => void save(true)}>Confirm fallback access</button>
+                      <button type="button" onClick={() => setConfirmFallback(null)}>Cancel</button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </Panel>

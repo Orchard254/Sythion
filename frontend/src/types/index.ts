@@ -358,6 +358,7 @@ export interface SkillSummary {
 export interface SkillProposal {
   id: number | string;
   name?: string;
+  definition?: { name?: string; [key: string]: unknown } | null;
   status?: string;
   evidence_count?: number;
   created_at?: string | null;
@@ -404,6 +405,10 @@ export interface AppSettings {
   ollama_cloud_base_url: string;
   selected_model: string;
   file_roots: string[];
+  persisted_file_roots?: string[];
+  environment_file_roots?: string[];
+  effective_file_roots?: string[];
+  fallback_file_roots?: string[];
   max_actions_per_task: number;
   max_cloud_requests_per_task: number;
   voice_enabled: boolean;

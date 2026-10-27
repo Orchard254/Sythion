@@ -169,7 +169,7 @@ function AppContent() {
   }, [tasks.data, dataMode, notify, seenTaskStates]);
 
   const attentionCount = useMemo(() => {
-    const skillPending = (skillProposals.data ?? []).filter((p) => (p.status ?? '').includes('pending')).length;
+    const skillPending = (skillProposals.data ?? []).filter((p) => p.status === 'proposed' || p.status === 'pending_review').length;
     const toolPending = (toolProposals.data ?? []).filter((p) => p.status === 'pending_review').length;
     const held = (tasks.data ?? []).filter((t) => t.state === 'interrupted').length;
     return skillPending + toolPending + held;

@@ -79,7 +79,7 @@ export function SecurityScreen() {
   const gated = caps.filter((c) => c.requires_permission || c.risk_class === 'HIGH');
   const unavailable = caps.filter((c) => c.status === 'UNAVAILABLE' || c.status === 'DISABLED');
 
-  const pendingSkill = (skillProposals.data ?? []).filter((p) => (p.status ?? '').includes('pending'));
+  const pendingSkill = (skillProposals.data ?? []).filter((p) => p.status === 'proposed' || p.status === 'pending_review');
   const pendingTools = (toolProposals.data ?? []).filter((p) => p.status === 'pending_review');
   const heldTasks = (tasks.data ?? []).filter((t) => t.state === 'interrupted');
   const awaitingInput = (tasks.data ?? []).filter((t) => t.state === 'waiting_for_user');
@@ -522,20 +522,21 @@ export function SecurityScreen() {
                     <Rail tone="warn" />
                     <div className="list__main">
                       <span className="t-body t-truncate" style={{ color: 'var(--text-0)' }}>
-                        Skill: {p.name}
+                        Skill: {p.definition?.name || p.name || `Proposal ${p.id}`}
                       </span>
                       <span className="list__meta">
                         <Badge tone="warn">proposal</Badge>
                         {typeof p.evidence_count === 'number' && <span>· {p.evidence_count} runs</span>}
+                        {p.status !== 'proposed' && <span>· This status cannot be decided by the backend</span>}
                       </span>
                     </div>
                     <div className="list__trail">
                       <Button
                         size="sm"
                         variant="primary"
-                        disabled={dataMode === 'preview'}
+                        disabled={dataMode === 'preview' || !actions.live || p.status !== 'proposed' || busy !== null}
                         onClick={() =>
-                          void run(`sk-${p.id}`, () => actions.approveSkillProposal(p.id), () => {
+                          dataMode === 'live' && actions.live && p.status === 'proposed' && busy === null && void run(`sk-${p.id}`, () => actions.approveSkillProposal(p.id), () => {
                             skillProposals.refetch();
                             notify({ tone: 'ok', title: 'Proposal approved' });
                           })
@@ -546,9 +547,9 @@ export function SecurityScreen() {
                       <Button
                         size="sm"
                         variant="ghost"
-                        disabled={dataMode === 'preview'}
+                        disabled={dataMode === 'preview' || !actions.live || p.status !== 'proposed' || busy !== null}
                         onClick={() =>
-                          void run(`sk-${p.id}`, () => actions.rejectSkillProposal(p.id), () => {
+                          dataMode === 'live' && actions.live && p.status === 'proposed' && busy === null && void run(`sk-${p.id}`, () => actions.rejectSkillProposal(p.id), () => {
                             skillProposals.refetch();
                             notify({ tone: 'ok', title: 'Proposal rejected' });
                           })

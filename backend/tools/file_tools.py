@@ -166,8 +166,8 @@ def _approved_roots() -> List[Path]:
     Roots are merged from two sources: `SYTHION_FILE_ROOTS` in the environment
     (boot defaults for this device) and `file_roots` granted at runtime through
     the settings API (persisted in the DB, applied live without a restart). If
-    the settings store is unavailable we fall back to environment-only roots so
-    a failure can never silently widen access. When nothing is configured we
+    the settings store is unavailable all file access is denied, since the
+    persisted grants are unknown. When nothing is configured we
     fall back to the user's home directory and the process working directory so
     file tools remain usable but still cannot reach outside the user's own data
     (e.g. C:\\Windows, other users).
@@ -182,31 +182,22 @@ def _approved_roots() -> List[Path]:
             from core.settings_store import resolved_file_roots
             from models.database import get_db_manager
         except ImportError:
-            settings = None
-            resolved_file_roots = None
-            get_db_manager = None
+            return []
 
-    roots: List[str] = list(settings.file_roots or []) if settings else []
-    db_roots: List[str] = []
-    if resolved_file_roots is not None and get_db_manager is not None:
-        try:
-            db_mgr = get_db_manager()
-            with db_mgr.get_session() as session:
-                db_roots = resolved_file_roots(session) or []
-        except (OSError, ImportError, AttributeError, KeyError, TypeError):
-            # Expected failures: DB unavailable, settings store missing, or config errors.
-            db_roots = []
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning(
-                "Unexpected error resolving DB file roots: %s", exc, exc_info=True
-            )
-            db_roots = []
-    # Only use DB roots if they are non-empty (i.e. actual configured grants
-    # exist). An empty result here leaves env roots in place, or triggers the
-    # home + cwd fallback; it never means "no file access".
-    if db_roots:
-        roots = db_roots
+    try:
+        db_mgr = get_db_manager()
+        with db_mgr.get_session() as session:
+            roots = resolved_file_roots(session)
+        return _effective_roots(roots)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("File root lookup failed; denying file access", exc_info=True)
+        return []
+
+
+def _effective_roots(roots: List[str]) -> List[Path]:
+    """Apply the file-tool fallback and implicit backend directory policy."""
+    roots = list(roots)
     if roots:
         # Non-empty configured roots: always include the repo root (backend
         # directory) alongside them.

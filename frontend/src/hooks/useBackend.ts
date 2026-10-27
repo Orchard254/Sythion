@@ -334,7 +334,7 @@ export function useActions() {
         if (!live) throw new Error('Not connected to a Sythion backend.');
         return api.memoryService.removeEdge(id);
       },
-      async updateSettings(updates: Record<string, string | boolean | number>) {
+      async updateSettings(updates: Record<string, unknown>) {
         if (!live) throw new Error('Not connected to a Sythion backend.');
         return api.settingsService.update(updates);
       },

@@ -16,6 +16,48 @@ def test_safe_settings_writes_guarded_90_day_config(test_client, test_db):
     assert readiness["checks"]["safe_settings_ok"] is True
 
 
+@pytest.mark.parametrize("days", [1, 30, 91, 365])
+def test_safe_settings_preserves_owner_retention(test_client, test_db, days):
+    from backend.core.settings_store import get_setting, set_setting
+
+    set_setting(test_db, "retention_days", str(days))
+    test_db.commit()
+    for _ in range(2):
+        assert test_client.post("/api/v1/setup/safe-settings").status_code == 200
+        assert get_setting(test_db, "retention_days") == str(days)
+        assert get_setting(test_db, "setup_safe_initial_config_applied") == "true"
+
+
+@pytest.mark.parametrize("retention", ["not-a-number", "0", "-1", "", "1.5"])
+def test_safe_settings_repairs_invalid_retention(test_client, test_db, retention):
+    from backend.core.settings_store import get_setting, set_setting
+
+    set_setting(test_db, "retention_days", retention)
+    test_db.commit()
+    assert test_client.post("/api/v1/setup/safe-settings").status_code == 200
+    assert get_setting(test_db, "retention_days") == "90"
+    assert get_setting(test_db, "setup_safe_initial_config_applied") == "true"
+
+
+def test_safe_settings_rolls_back_retention_when_marker_write_fails(test_client, test_db, monkeypatch):
+    from backend.core import settings_store
+
+    settings_store.set_setting(test_db, "retention_days", "0")
+    test_db.commit()
+    original = settings_store.set_setting
+
+    def fail_marker(db, key, value):
+        if key == "setup_safe_initial_config_applied":
+            raise RuntimeError("injected failure")
+        original(db, key, value)
+
+    monkeypatch.setattr(settings_store, "set_setting", fail_marker)
+    assert test_client.post("/api/v1/setup/safe-settings").status_code == 500
+    test_db.expire_all()
+    assert settings_store.get_setting(test_db, "retention_days") == "0"
+    assert settings_store.get_setting(test_db, "setup_safe_initial_config_applied") is None
+
+
 def test_safe_settings_rejects_autonomous_runtime_environment(test_client, monkeypatch):
     monkeypatch.setenv("SYTHION_AUTONOMY_LEVEL", "autonomous")
     response = test_client.post("/api/v1/setup/safe-settings")

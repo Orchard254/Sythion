@@ -179,7 +179,7 @@ export function AutomationsScreen() {
                     <Rail tone="warn" />
                     <div className="list__main">
                       <span className="t-title" style={{ fontSize: 12.5 }}>
-                        {p.name ?? `Proposal ${p.id}`}
+                        {p.definition?.name || p.name || `Proposal ${p.id}`}
                       </span>
                       <span className="list__meta">
                         <Badge tone="warn">{humanize(p.status ?? 'unknown')}</Badge>
@@ -471,7 +471,7 @@ function ProposalDrawer({ proposal, refresh, onClose }: { proposal: SkillProposa
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const inFlight = useRef(false);
-  const canReview = Boolean(proposal && isPending(proposal) && dataMode === 'live' && actions.live);
+  const canReview = Boolean(proposal && proposal.status === 'proposed' && dataMode === 'live' && actions.live);
 
   async function decide(decision: 'approve' | 'reject') {
     if (!proposal || !canReview || inFlight.current) return;
@@ -493,7 +493,7 @@ function ProposalDrawer({ proposal, refresh, onClose }: { proposal: SkillProposa
 
   return (
     <Drawer
-      title={proposal?.name ?? `Skill proposal ${proposal?.id ?? ''}`}
+      title={proposal?.definition?.name || proposal?.name || `Skill proposal ${proposal?.id ?? ''}`}
       subtitle={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
       onClose={onClose}
       footer={
@@ -512,6 +512,8 @@ function ProposalDrawer({ proposal, refresh, onClose }: { proposal: SkillProposa
     >
       <Notice tone="warn" icon="alert"><span>
         {dataMode === 'preview' ? 'Preview is read-only; demonstration proposals cannot be reviewed.' :
+          !actions.live ? 'Connect to the backend to review proposals.' :
+          proposal && proposal.status !== 'proposed' ? 'This status cannot be decided by the backend.' :
           'Approval validates and enables this skill. Rejection declines it; neither decision runs the skill.'}
       </span></Notice>
       {!proposal && <p className="t-muted">This proposal is no longer available.</p>}
