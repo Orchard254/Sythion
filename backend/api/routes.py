@@ -2112,31 +2112,38 @@ async def test_onboarding_credentials(request: Request, db=Depends(get_db)):
     if not candidate:
         raise HTTPException(status_code=400, detail="API key is required")
 
-    previous = None
-    try:
-        from backend.core.secrets import _get_store
-        previous = _get_store().get(OLLAMA_API_KEY)
-    except Exception:
-        previous = None
-
     adapter = None
+    previous_adapter_key = ""
     try:
         from backend.adapters.ollama_adapter import get_adapter as _ga
         adapter = _ga()
+        previous_adapter_key = getattr(adapter, "api_key", "") or ""
     except Exception:
         adapter = None
+        previous_adapter_key = ""
+
     try:
-        set_secret(OLLAMA_API_KEY, candidate)
+        # Validate the candidate WITHOUT persisting it. The secret is only
+        # written once validation has succeeded, so a failed/invalid key never
+        # replaces the currently configured credential (vault stays untouched).
         if adapter is not None:
-            adapter.api_key = resolve_ollama_api_key(settings.ollama_api_key)
+            adapter.api_key = candidate
             adapter._client = None
             adapter._client_loop = None
-        # Use sync facade via provider-neutral entry point
+
         from backend.runtime.model_provider import get_default_provider
         provider = get_default_provider()
         models = provider.list_models()
         if not models:
             raise HTTPException(status_code=503, detail="Authenticated model discovery returned no models")
+
+        # Validation succeeded: persist the candidate through the guarded API.
+        set_secret(OLLAMA_API_KEY, candidate)
+        if adapter is not None:
+            adapter.api_key = candidate
+            adapter._client = None
+            adapter._client_loop = None
+
         # Credential changed: prior inference evidence no longer applies.
         try:
             from backend.core.settings_store import set_setting
@@ -2146,11 +2153,17 @@ async def test_onboarding_credentials(request: Request, db=Depends(get_db)):
             pass
         return {"valid": True, "model_count": len(models), "models": [m.get("name") or m.get("model") for m in models if isinstance(m, dict)]}
     except HTTPException:
-        # Restore previous credential on validation failure
-        _restore_secret(previous)
+        # Restore the in-memory adapter without reading the stored secret value.
+        if adapter is not None:
+            adapter.api_key = previous_adapter_key
+            adapter._client = None
+            adapter._client_loop = None
         raise
     except Exception as exc:
-        _restore_secret(previous)
+        if adapter is not None:
+            adapter.api_key = previous_adapter_key
+            adapter._client = None
+            adapter._client_loop = None
         msg = str(exc)
         if "401" in msg or "Invalid" in msg:
             raise HTTPException(status_code=401, detail="Invalid Ollama Cloud API key")
