@@ -4,14 +4,17 @@ Handles task management, tool execution, settings, and skills.
 """
 import logging
 import asyncio
+import base64
+import binascii
 import json
 import os
 import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks, Query
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_
 
 from backend.models.database import get_db, Objective, PlanStep, Skill, Task
 from backend.services.task_runner import get_runner, TaskRunner
@@ -119,6 +122,46 @@ async def version_check():
     }
 
 
+@router.get("/conversations")
+async def list_conversations(limit: int = Query(50, ge=1, le=200), cursor: Optional[str] = Query(None, max_length=1024), db: Session = Depends(get_db)):
+    """Recent complete pure-conversation exchanges, newest first.
+
+    Legacy episodic summaries are intentionally excluded; they are not transcripts.
+    """
+    from backend.models.database import ConversationExchange
+    query = db.query(ConversationExchange)
+    if cursor is not None:
+        try:
+            raw = base64.b64decode(cursor.encode("ascii"), altchars=b"-_", validate=True)
+            value = json.loads(raw.decode("utf-8"))
+            if not isinstance(value, list) or len(value) != 2 or not all(isinstance(v, str) and v for v in value):
+                raise ValueError("invalid cursor")
+            timestamp = datetime.fromisoformat(value[0])
+            if timestamp.tzinfo is not None or len(value[1]) > 255:
+                raise ValueError("invalid cursor")
+        except (ValueError, UnicodeError, binascii.Error, OverflowError):
+            raise HTTPException(status_code=400, detail="Invalid conversation cursor") from None
+        query = query.filter(or_(ConversationExchange.created_at < timestamp, and_(
+            ConversationExchange.created_at == timestamp, ConversationExchange.id < value[1]
+        )))
+    rows = query.order_by(
+        ConversationExchange.created_at.desc(), ConversationExchange.id.desc()
+    ).limit(limit + 1).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    next_cursor = None
+    if has_more:
+        last = rows[-1]
+        next_cursor = base64.urlsafe_b64encode(json.dumps(
+            [last.created_at.isoformat(), last.id], separators=(",", ":")
+        ).encode("utf-8")).decode("ascii")
+    return {"conversations": [
+        {"id": row.id, "session_id": row.session_id, "user_text": row.user_text,
+         "assistant_text": row.assistant_text, "created_at": row.created_at.isoformat()}
+        for row in rows
+    ], "next_cursor": next_cursor}
+
+
 @router.post("/tasks", response_model=TaskResponse)
 async def create_task(
     task_data: TaskCreate,
@@ -132,17 +175,7 @@ async def create_task(
     if task_data.idempotency_key:
         existing_task = db.query(Task).filter_by(idempotency_key=task_data.idempotency_key).first()
         if existing_task:
-            return TaskResponse(
-                id=existing_task.id,
-                original_request=existing_task.original_request,
-                state=TaskState(existing_task.state),
-                created_at=existing_task.created_at,
-                updated_at=existing_task.updated_at,
-                version=existing_task.version,
-                objective_id=existing_task.objective_id,
-                final_result=existing_task.final_result,
-                terminal_reason=existing_task.terminal_reason,
-            )
+            return TaskResponse.model_validate(existing_task)
 
     # Phase 13C: Extract conversation context from recent turns if available
     conv_context: Dict[str, Any] = {}
@@ -189,15 +222,15 @@ async def create_task(
                 status_code=503,
                 detail=f"Conversation model provider unavailable: {str(exc)}"
             )
-        except Exception as exc:
-            logger.error(f"Conversation runtime failure: {exc}", exc_info=True)
+        except Exception:
+            logger.error("Conversation runtime failure")
             raise HTTPException(
                 status_code=500,
-                detail=f"Conversation runtime failure: {str(exc)}"
-            )
+                detail="Conversation runtime failure"
+            ) from None
         
         # Return conversation response with explicit interaction contract
-        conv_id = f"conv-{uuid.uuid4()}"
+        conv_id = result.get("conversation_id") or f"conv-{uuid.uuid4()}"
         return TaskResponse(
             id=conv_id,
             conversation_id=conv_id,
@@ -252,15 +285,7 @@ async def create_task(
                             task.id, routing.mode,
                             getattr(routing.decision, "decision_type", None),
                             getattr(routing, "interaction_type", None))
-                return TaskResponse(
-                    id=task.id,
-                    original_request=task.original_request,
-                    state=TaskState(task.state),
-                    created_at=task.created_at,
-                    updated_at=task.updated_at,
-                    version=task.version,
-                    objective_id=task.objective_id,
-                )
+                return TaskResponse.model_validate(task)
 
             # PHASE 9: bounded specialist delegation. The cognitive layer
             # decided DELEGATE; the adapter runs propose→validate→assign→
@@ -272,17 +297,7 @@ async def create_task(
                 await adapter.run_delegate_decision(
                     task.id, task.original_request)
                 completed = await runner.get_task(task.id)
-                return TaskResponse(
-                    id=task.id,
-                    original_request=task.original_request,
-                    state=TaskState(completed.state),
-                    created_at=completed.created_at,
-                    updated_at=completed.updated_at,
-                    version=completed.version,
-                    objective_id=completed.objective_id,
-                    final_result=getattr(completed, "final_result", None),
-                    terminal_reason=getattr(completed, "terminal_reason", None),
-                )
+                return TaskResponse.model_validate(completed)
 
             # Phase 13A/13B: Attach objective ONLY if this is a genuine GOAL request.
             # Ordinary conversation, informational questions, and direct single actions
@@ -301,17 +316,7 @@ async def create_task(
         # terminal and must not be started again).
         if task.state != TaskState.CREATED.value:
             logger.info(f"Idempotent replay returned existing task {task.id} (state={task.state})")
-            return TaskResponse(
-                id=task.id,
-                original_request=task.original_request,
-                state=TaskState(task.state),
-                created_at=task.created_at,
-                updated_at=task.updated_at,
-                version=task.version,
-                objective_id=task.objective_id,
-                final_result=task.final_result,
-                terminal_reason=task.terminal_reason
-            )
+            return TaskResponse.model_validate(task)
 
         # Count enabled skills for the execution-start event (no prototype
         # registry; skills are validated, versioned declarative workflows).
@@ -346,15 +351,7 @@ async def create_task(
         
         logger.info(f"Task {task.id} created and execution started in background (objective={task.objective_id})")
         
-        return TaskResponse(
-            id=task.id,
-            original_request=task.original_request,
-            state=TaskState.RUNNING,
-            created_at=task.created_at,
-            updated_at=task.updated_at,
-            version=task.version,
-            objective_id=task.objective_id,
-        )
+        return TaskResponse.model_validate(task)
         
     finally:
         # Release lease after task creation (execution has its own lease)
@@ -379,17 +376,7 @@ async def list_tasks(
     
     return TaskListResponse(
         tasks=[
-            TaskResponse(
-                id=t.id,
-                original_request=t.original_request,
-                state=TaskState(t.state),
-                created_at=t.created_at,
-                updated_at=t.updated_at,
-                version=t.version,
-                objective_id=t.objective_id,
-                final_result=t.final_result,
-                terminal_reason=t.terminal_reason
-            )
+            TaskResponse.model_validate(t)
             for t in tasks
         ],
         total=len(tasks)
@@ -405,17 +392,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
     if not task:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
     
-    return TaskResponse(
-        id=task.id,
-        original_request=task.original_request,
-        state=TaskState(task.state),
-        created_at=task.created_at,
-        updated_at=task.updated_at,
-        version=task.version,
-        objective_id=task.objective_id,
-        final_result=task.final_result,
-        terminal_reason=task.terminal_reason
-    )
+    return TaskResponse.model_validate(task)
 
 
 @router.get("/tasks/{task_id}/objective", response_model=ObjectiveResponse)
@@ -459,15 +436,7 @@ async def cancel_task(task_id: str, db: Session = Depends(get_db)):
         
         updated_task = await runner.cancel_task(task_id)
         
-        return TaskResponse(
-            id=updated_task.id,
-            original_request=updated_task.original_request,
-            state=TaskState(updated_task.state),
-            created_at=updated_task.created_at,
-            updated_at=updated_task.updated_at,
-            version=updated_task.version,
-            objective_id=updated_task.objective_id
-        )
+        return TaskResponse.model_validate(updated_task)
         
     finally:
         await runner.release_lease()
@@ -506,15 +475,7 @@ async def stop_active_task(db: Session = Depends(get_db)):
     updated_task = await runner.force_cancel(task.id)
     logger.info(f"Global stop cancelled task {task.id}")
 
-    return TaskResponse(
-        id=updated_task.id,
-        original_request=updated_task.original_request,
-        state=TaskState(updated_task.state),
-        created_at=updated_task.created_at,
-        updated_at=updated_task.updated_at,
-        version=updated_task.version,
-        objective_id=updated_task.objective_id
-    )
+    return TaskResponse.model_validate(updated_task)
 
 
 @router.post("/tasks/{task_id}/resume", response_model=TaskResponse)
@@ -575,17 +536,7 @@ async def resume_task(task_id: str, db: Session = Depends(get_db)):
         
         logger.info(f"Task {task_id} resumed and execution started")
         
-        return TaskResponse(
-            id=updated_task.id,
-            original_request=updated_task.original_request,
-            state=TaskState(updated_task.state),
-            created_at=updated_task.created_at,
-            updated_at=updated_task.updated_at,
-            version=updated_task.version,
-            objective_id=updated_task.objective_id,
-            final_result=updated_task.final_result,
-            terminal_reason=updated_task.terminal_reason
-        )
+        return TaskResponse.model_validate(updated_task)
         
     finally:
         await runner.release_lease()
@@ -644,17 +595,7 @@ async def reply_to_task(task_id: str, reply_data: TaskReply, db: Session = Depen
 
         logger.info(f"Task {task_id} resumed after user reply")
 
-        return TaskResponse(
-            id=updated_task.id,
-            original_request=updated_task.original_request,
-            state=TaskState(updated_task.state),
-            created_at=updated_task.created_at,
-            updated_at=updated_task.updated_at,
-            version=updated_task.version,
-            objective_id=updated_task.objective_id,
-            final_result=updated_task.final_result,
-            terminal_reason=updated_task.terminal_reason
-        )
+        return TaskResponse.model_validate(updated_task)
 
     finally:
         await runner.release_lease()
@@ -1868,14 +1809,14 @@ async def purge_records(request: PurgeRequest, db: Session = Depends(get_db)):
 
     Either `days` (retention window, defaulting to the configured
     `retention_days`) or an exact `task_id` is required. Every purge writes a
-    non-sensitive receipt; task content is never retained. The windowed run
-    also sweeps expired/orphaned `conversation_turns` (`purged_turns`).
+    non-sensitive receipt for each task. The windowed run also sweeps expired
+    summaries (`purged_turns`) and full exchanges (`purged_exchanges`).
     """
     from backend.services.retention import (
         get_retention_days,
         purge_expired,
         purge_task,
-        purge_turns,
+        purge_conversation_history,
     )
 
     if request.task_id is not None:
@@ -1884,17 +1825,19 @@ async def purge_records(request: PurgeRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=404, detail=f"Task {request.task_id} not found")
         receipts = [receipt]
         purged_turns = 0
+        purged_exchanges = 0
     else:
         days = request.days or get_retention_days(db)
         if days < 1:
             raise HTTPException(status_code=400, detail="days must be >= 1")
         receipts = purge_expired(db, days=days)
-        purged_turns = purge_turns(db, days=days)
+        purged_turns, purged_exchanges = purge_conversation_history(db, days=days)
 
     return RetentionRunResponse(
         receipts=[PurgeReceiptResponse(**r) for r in receipts],
         purged_count=len(receipts),
         purged_turns=purged_turns,
+        purged_exchanges=purged_exchanges,
     )
 
 
@@ -1914,6 +1857,7 @@ async def get_settings(db: Session = Depends(get_db)):
         get_settings as load_persisted,
         resolved_file_roots,
     )
+    from backend.tools.file_tools import _effective_roots
 
     persisted = load_persisted(db)
     file_roots = resolved_file_roots(db)
@@ -1924,6 +1868,10 @@ async def get_settings(db: Session = Depends(get_db)):
         ollama_cloud_base_url=settings.ollama_cloud_base_url,
         selected_model=settings.selected_model,
         file_roots=file_roots,
+        persisted_file_roots=persisted.get("file_roots", []),
+        environment_file_roots=list(settings.file_roots or []),
+        effective_file_roots=[str(root) for root in _effective_roots(file_roots)],
+        fallback_file_roots=[str(root) for root in _effective_roots([])],
         max_actions_per_task=settings.max_actions_per_task,
         max_cloud_requests_per_task=settings.max_cloud_requests_per_task,
         voice_enabled=bool(persisted.get("voice_enabled", settings.voice_enabled)),
@@ -1973,8 +1921,11 @@ async def update_settings(request: Request, db: Session = Depends(get_db)):
     if not isinstance(data, dict) or not data:
         raise HTTPException(status_code=400, detail="A non-empty settings object is required")
 
+    fallback_ack = data.pop("file_roots_fallback_acknowledgement", None)
+    if not data:
+        raise HTTPException(status_code=400, detail="A non-empty settings object is required")
     try:
-        updated = persist_settings(db, data)
+        updated = persist_settings(db, data, fallback_ack=fallback_ack)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -2320,10 +2271,16 @@ async def setup_safe_settings(db=Depends(get_db)):
             detail="Runtime autonomy is not guarded; safe setup cannot be applied.",
         )
 
-    from backend.core.settings_store import set_setting
+    from backend.core.settings_store import get_setting, set_setting
 
     try:
-        set_setting(db, "retention_days", "90")
+        retention = get_setting(db, "retention_days")
+        try:
+            valid_retention = int(retention) >= 1
+        except (TypeError, ValueError):
+            valid_retention = False
+        if not valid_retention:
+            set_setting(db, "retention_days", "90")
         set_setting(db, "setup_safe_initial_config_applied", "true")
         db.commit()
     except Exception:
@@ -2356,7 +2313,7 @@ async def setup_readiness(db=Depends(get_db)):
 
         safe_settings_ok = (
             get_setting(db, "setup_safe_initial_config_applied") == "true"
-            and get_setting(db, "retention_days") == "90"
+            and int(get_setting(db, "retention_days")) >= 1
             and _effective_autonomy_is_guarded()
         )
     except Exception:

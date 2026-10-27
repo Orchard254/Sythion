@@ -662,6 +662,7 @@ class RetentionRunResponse(BaseModel):
     receipts: List[PurgeReceiptResponse]
     purged_count: int
     purged_turns: int = 0
+    purged_exchanges: int = 0
 
 
 # Onboarding Schemas
@@ -719,6 +720,10 @@ class SettingsResponse(BaseModel):
     ollama_cloud_base_url: str
     selected_model: str
     file_roots: List[str]
+    persisted_file_roots: List[str] = Field(default_factory=list)
+    environment_file_roots: List[str] = Field(default_factory=list)
+    effective_file_roots: List[str] = Field(default_factory=list)
+    fallback_file_roots: List[str] = Field(default_factory=list)
     max_actions_per_task: int
     max_cloud_requests_per_task: int
     voice_enabled: bool

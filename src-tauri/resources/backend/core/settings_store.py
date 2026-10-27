@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -19,6 +20,7 @@ from sqlalchemy.orm import Session
 from backend.models.database import SettingsMetadata
 
 logger = logging.getLogger(__name__)
+_settings_update_lock = threading.RLock()
 
 # Keys that may be read/updated through the local API. Anything not listed is
 # rejected so the model cannot inject arbitrary configuration.
@@ -42,7 +44,7 @@ _BOOL_KEYS = frozenset({"voice_enabled", "voice_recording_enabled",
 
 def get_setting(db: Session, key: str) -> Optional[str]:
     """Read one persisted setting value (None when unset)."""
-    row = db.query(SettingsMetadata).filter_by(key=key).first()
+    row = db.query(SettingsMetadata).filter_by(key=key).populate_existing().first()
     return row.value if row else None
 
 
@@ -82,10 +84,13 @@ def resolved_file_roots(db: Session) -> List[str]:
 
     raw: List[str] = list(settings.file_roots or [])
     persisted = get_setting(db, "file_roots")
-    if persisted:
-        parsed = _coerce_value("file_roots", persisted)
-        if isinstance(parsed, list):
-            raw.extend(str(r).strip() for r in parsed if str(r).strip())
+    if persisted is not None:
+        import json
+
+        parsed = json.loads(persisted)
+        if not isinstance(parsed, list) or any(not isinstance(r, str) for r in parsed):
+            raise ValueError("Invalid persisted file roots")
+        raw.extend(r.strip() for r in parsed if r.strip())
 
     seen = set()
     merged: List[str] = []
@@ -97,7 +102,7 @@ def resolved_file_roots(db: Session) -> List[str]:
     return merged
 
 
-def update_settings(db: Session, updates: Dict[str, Any]) -> Dict[str, Any]:
+def update_settings(db: Session, updates: Dict[str, Any], *, fallback_ack: Any = None) -> Dict[str, Any]:
     """Validate and persist a batch of non-secret settings.
 
     Returns the full typed settings dict after the update. Raises ValueError
@@ -112,13 +117,52 @@ def update_settings(db: Session, updates: Dict[str, Any]) -> Dict[str, Any]:
             raise ValueError(f"Unknown or non-configurable setting: {key}")
         validated[key] = _validate_value(key, raw_value)
 
-    for key, value in validated.items():
-        existing = db.query(SettingsMetadata).filter_by(key=key).first()
-        if existing:
-            existing.value = value
-        else:
-            db.add(SettingsMetadata(key=key, value=value))
-    db.commit()
+    # Serialize the check and write against all settings_store writers in this
+    # process. A stale confirmation must not authorize a different grant set.
+    with _settings_update_lock:
+        guarded_root_value = None
+        if "file_roots" in validated:
+            import json
+            from backend.core.config import settings
+            from backend.tools.file_tools import _effective_roots
+
+            new_roots = json.loads(validated["file_roots"])
+            if fallback_ack is not None and (new_roots or settings.file_roots):
+                raise ValueError("File-root state changed; refresh settings and confirm again")
+            if not new_roots and not settings.file_roots:
+                persisted_raw = get_setting(db, "file_roots")
+                persisted_roots = json.loads(persisted_raw) if persisted_raw is not None else []
+                if not isinstance(persisted_roots, list) or any(not isinstance(root, str) for root in persisted_roots):
+                    raise ValueError("Invalid persisted file roots")
+                guarded_root_value = persisted_raw
+                if any(root.strip() for root in persisted_roots):
+                    expected = {
+                        "persisted_file_roots": persisted_roots,
+                        "fallback_file_roots": [str(root) for root in _effective_roots([])],
+                    }
+                    if fallback_ack != expected:
+                        raise ValueError("Clearing the final file grant requires acknowledgement of the current grants and fallback file roots; refresh settings and confirm")
+                elif fallback_ack is not None:
+                    raise ValueError("File-root state changed; refresh settings and confirm again")
+        elif fallback_ack is not None:
+            raise ValueError("File-root acknowledgement requires a file_roots update")
+
+        for key, value in validated.items():
+            if key == "file_roots" and guarded_root_value is not None:
+                changed = db.query(SettingsMetadata).filter_by(key=key, value=guarded_root_value).update(
+                    {SettingsMetadata.value: value}, synchronize_session=False
+                )
+                if changed != 1:
+                    db.rollback()
+                    raise ValueError("File-root state changed; refresh settings and confirm again")
+                db.expire_all()
+                continue
+            existing = db.query(SettingsMetadata).filter_by(key=key).first()
+            if existing:
+                existing.value = value
+            else:
+                db.add(SettingsMetadata(key=key, value=value))
+        db.commit()
     logger.info("Settings updated: %s", sorted(validated.keys()))
     return get_settings(db)
 

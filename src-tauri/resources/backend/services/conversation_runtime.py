@@ -21,11 +21,12 @@ CONVERSATION must:
 """
 
 import logging
+import uuid
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from sqlalchemy.orm import Session
 
-from backend.models.database import ConversationTurn, MemoryEntry
+from backend.models.database import ConversationExchange, ConversationTurn, MemoryEntry
 from backend.core.session import get_current_session_id
 from backend.cognitive.state import InteractionType
 
@@ -103,7 +104,7 @@ class ConversationRuntime:
         Returns:
             Dict with 'response' and metadata
         """
-        logger.info(f"ConversationRuntime handling input: {user_input[:100]}")
+        logger.info("ConversationRuntime handling input")
         
         # Build conversational context
         context = await self._build_context(user_input)
@@ -112,12 +113,14 @@ class ConversationRuntime:
         response = await self._get_model_response(user_input, context)
         
         # Persist conversation turn ONLY when model generation succeeds
-        await self._persist_conversation(user_input, response)
+        conversation_id = f"conv-{uuid.uuid4()}"
+        await self._persist_conversation(user_input, response, conversation_id)
         
         logger.info("ConversationRuntime completed successfully")
         
         return {
             "response": response,
+            "conversation_id": conversation_id,
             "interaction_type": InteractionType.CONVERSATION.value,
             "session_id": self.session_id,
             "timestamp": datetime.utcnow().isoformat(),
@@ -234,7 +237,7 @@ You are engaging in natural conversation - not executing tasks or commands. Be:
 This is a casual conversation, not a task execution. Respond naturally as you would
 in a friendly chat."""
     
-    async def _persist_conversation(self, user_input: str, assistant_response: str) -> None:
+    async def _persist_conversation(self, user_input: str, assistant_response: str, conversation_id: Optional[str] = None) -> None:
         """
         Persist conversation turn without task dependency.
         
@@ -267,6 +270,12 @@ in a friendly chat."""
             
             self.db.add(turn_user)
             self.db.add(turn_assistant)
+            self.db.add(ConversationExchange(
+                id=conversation_id or f"conv-{uuid.uuid4()}",
+                session_id=self.session_id,
+                user_text=user_input,
+                assistant_text=assistant_response,
+            ))
             self.db.commit()
             
             logger.info(f"Persisted conversation turn for session {self.session_id}")
@@ -278,6 +287,10 @@ in a friendly chat."""
             except Exception as e:
                 logger.warning(f"Could not update conversation state: {e}")
                 
-        except Exception as e:
-            logger.error(f"Error persisting conversation: {e}", exc_info=True)
-            # Don't fail the conversation if persistence fails
+        except Exception:
+            try:
+                self.db.rollback()
+            except Exception:
+                logger.error("Conversation persistence rollback failed")
+            logger.error("Error persisting conversation")
+            raise RuntimeError("Conversation persistence failed") from None
