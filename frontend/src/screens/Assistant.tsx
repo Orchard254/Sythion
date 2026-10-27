@@ -349,8 +349,8 @@ export function AssistantScreen() {
                   submitting={submitting || captureBusy}
                   status={status}
                   blocked={status.state === 'offline'}
-                  voiceActive={status.state === 'listening' || status.state === 'speaking'}
-                  voiceBlocked={voiceBlocked || voiceUnavailable || captureBusy}
+                  voiceActive={isListening}
+                  voiceBlocked={captureBusy || (!isListening && (voiceBlocked || voiceUnavailable))}
                   voiceNotice={voiceUnavailable ? 'Speech-to-text is not installed on this machine' : null}
                   autonomyLabel={humanize(agent.data?.state ?? 'unknown')}
                   authorizationLabel={authorizationLabel}
@@ -638,7 +638,7 @@ function ApprovalCard({ task, onOpen }: { task: Task; onOpen: () => void }) {
 
   const send = async () => {
     const answer = reply.trim();
-    if (!answer || busy) return;
+    if (held || !answer || busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -653,6 +653,21 @@ function ApprovalCard({ task, onOpen }: { task: Task; onOpen: () => void }) {
     }
   };
 
+  const resume = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await actions.resumeTask(task.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not resume the task';
+      setError(message);
+      notify({ tone: 'danger', title: 'Could not resume', body: message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="attention__item">
       <span className="attention__icon" aria-hidden="true">
@@ -661,7 +676,7 @@ function ApprovalCard({ task, onOpen }: { task: Task; onOpen: () => void }) {
       <div className="attention__body">
         <div className="attention__head">
           <Badge tone={held ? 'danger' : 'warn'}>
-            {held ? 'Held for your approval' : 'Needs your answer'}
+            {held ? 'Interrupted' : 'Needs your answer'}
           </Badge>
           {/* Never truncated: knowing exactly what you are approving is the point. */}
           <span className="t-muted attention__request">{task.original_request}</span>
@@ -670,18 +685,25 @@ function ApprovalCard({ task, onOpen }: { task: Task; onOpen: () => void }) {
           <p className="attention__text">{stated}</p>
         ) : (
           <p className="attention__text">
-            Sythion is paused on this and will not continue until you reply.
+            {held ? 'This task was interrupted and will not continue until resumed.' : 'Sythion is paused on this and will not continue until you reply.'}
           </p>
         )}
         {blocked ? (
-          <p className="t-faint attention__note">Demonstration record. Start a backend to answer this.</p>
+          <p className="t-faint attention__note">{held ? 'Demonstration record. Start a backend to resume this task.' : 'Demonstration record. Start a backend to answer this.'}</p>
+        ) : held ? (
+          <div className="attention__reply">
+            <Button size="sm" variant="primary" disabled={busy} onClick={() => void resume()}>
+              {busy ? 'Resuming…' : 'Resume task'}
+            </Button>
+            <Button size="sm" variant="ghost" icon="external" onClick={onOpen}>Details</Button>
+          </div>
         ) : (
           <div className="attention__reply">
             <input
               className="input"
               value={reply}
-              placeholder={held ? 'Approve or decline…' : 'Your answer…'}
-              aria-label={`${held ? 'Approve or decline' : 'Answer to Sythion'}: ${reason}`}
+              placeholder="Your answer…"
+              aria-label={`Answer to Sythion: ${reason}`}
               disabled={busy}
               onChange={(e) => setReply(e.target.value)}
               onKeyDown={(e) => {

@@ -4,16 +4,48 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AssistantScreen } from './Assistant';
 import { useAppStore } from '../store/appStore';
 import type { Task } from '../types';
-const mock=vi.hoisted(()=>({createTask:vi.fn(),speak:vi.fn(),conversations:vi.fn(),taskList:[] as Task[]}));
+const mock=vi.hoisted(()=>({createTask:vi.fn(),replyToTask:vi.fn(),resumeTask:vi.fn(),stopCapture:vi.fn(),speak:vi.fn(),conversations:vi.fn(),taskList:[] as Task[]}));
 vi.mock('../services/api',()=>({voiceService:{speak:mock.speak},conversationService:{list:mock.conversations}}));
-vi.mock('../hooks/useVoiceCapture',()=>({useVoiceCapture:()=>({startCapture:vi.fn(),stopCapture:vi.fn()})}));
+vi.mock('../hooks/useVoiceCapture',()=>({useVoiceCapture:()=>({startCapture:vi.fn(),stopCapture:mock.stopCapture})}));
 vi.mock('../hooks/useBackend',async()=>{
   const {useQuery}=await import('@tanstack/react-query');
   return {
     useTasks:()=>useQuery({queryKey:['tasks'],queryFn:async()=>mock.taskList,initialData:[],enabled:false}),
     useTools:()=>({data:[]}),useAgent:()=>({data:null}),useVoiceAssets:()=>({data:{stt_installed:false}}),
-    useActions:()=>({live:true,createTask:mock.createTask}),useTaskEvents:()=>({data:[]}),
+    useActions:()=>({live:true,createTask:mock.createTask,replyToTask:mock.replyToTask,resumeTask:mock.resumeTask}),useTaskEvents:()=>({data:[]}),
   };
+});
+
+describe('task and microphone controls',()=>{
+  it('resumes an interrupted task instead of offering a reply',async()=>{
+    mock.resumeTask.mockResolvedValueOnce(undefined);
+    await settle(()=>client.setQueryData(['tasks'],[{...task,state:'interrupted',terminal_reason:'Paused safely'}]));
+    expect(text()).toContain('Paused safely');
+    expect(view.root.findAllByType('input')).toHaveLength(0);
+    await settle(()=>view.root.findAllByType('button').find(b=>b.children.includes('Resume task'))!.props.onClick());
+    expect(mock.resumeTask).toHaveBeenCalledWith(task.id);
+    expect(mock.replyToTask).not.toHaveBeenCalled();
+  });
+  it('still sends answers for waiting tasks',async()=>{
+    mock.replyToTask.mockResolvedValueOnce(undefined);
+    await settle(()=>client.setQueryData(['tasks'],[{...task,state:'waiting_for_user',pending_question:'Which one?'}]));
+    const input=view.root.findAllByType('input')[0];
+    await settle(()=>input.props.onChange({target:{value:'This one'}}));
+    await settle(()=>view.root.findAllByType('button').find(b=>b.children.includes('Send'))!.props.onClick());
+    expect(mock.replyToTask).toHaveBeenCalledWith(task.id,'This one');
+    expect(mock.resumeTask).not.toHaveBeenCalled();
+  });
+  it('shows active listening and disables send even when a task needs attention',async()=>{
+    await draft();
+    await settle(()=>{client.setQueryData(['tasks'],[{...task,state:'interrupted'}]);useAppStore.setState({isListening:true});});
+    const mic=view.root.findByProps({'aria-label':'Stop listening'});
+    expect(mic.props['aria-pressed']).toBe(true);
+    expect(mic.props.disabled).toBe(false);
+    expect(view.root.findByProps({'aria-label':'Send message'}).props.disabled).toBe(true);
+    await settle(()=>mic.props.onClick());
+    expect(mock.stopCapture).toHaveBeenCalled();
+    expect(mock.createTask).not.toHaveBeenCalled();
+  });
 });
 let view:ReactTestRenderer;
 let client:QueryClient;
