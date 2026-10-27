@@ -349,15 +349,16 @@ class TestGUIBatchFormTool:
 class TestToolRegistry:
     """Test that new tools are properly registered"""
 
-    def test_all_62_tools_registered(self):
-        """Test that all 62 tools are registered"""
+    def test_all_63_tools_registered(self):
+        """Test that all 63 tools are registered"""
         from backend.tools.registry import create_all_tools
 
         tools = list(create_all_tools())
         tool_names = [t.name for t in tools]
 
-        assert len(tools) == 62
+        assert len(tools) == 63
         assert "clipboard_read" in tool_names
+        assert "device_status" in tool_names
         assert "file_hash" in tool_names
         assert "gui_screenshot" in tool_names
         assert "gui_batch_form" in tool_names
