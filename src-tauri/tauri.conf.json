@@ -19,6 +19,12 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "template": "sythion-installer-template.nsi"
+      }
+    },
     "resources": {
       "resources/python-runtime": "python-runtime",
       "resources/backend": "backend"
