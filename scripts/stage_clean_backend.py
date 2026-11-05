@@ -66,8 +66,12 @@ def _is_reparse_point(path: Path) -> bool:
     """
     try:
         st = path.lstat()
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        # A genuinely missing (future) output is not a reparse point.
         return False
+    except (OSError, ValueError):
+        # Uncertain metadata fails closed.
+        return True
     if stat.S_ISLNK(st.st_mode):
         return True
     attrs = getattr(st, "st_file_attributes", 0)
@@ -138,19 +142,31 @@ def _is_within(path: Path, root: Path) -> bool:
 
 
 def _validate_paths(source: Path, output: Path) -> None:
-    if not source.is_dir():
-        raise SystemExit(f"[stage-clean] source backend directory not found: {source}")
-    # Refuse symlinks / junctions / reparse points up front: they could
-    # redirect reading or cleanup at a protected or personal-data tree.
+    # Check reparse/symlink metadata first, before existence checks can
+    # collapse an uncertain error into "not found".
     if _is_reparse_point(source):
         raise SystemExit(f"[stage-clean] refusing reparse point / symlink source: {source}")
     if _is_reparse_point(output):
         raise SystemExit(f"[stage-clean] refusing reparse point / symlink output: {output}")
-    s, o = source.resolve(), output.resolve()
+
+    try:
+        if not source.is_dir():
+            raise SystemExit(f"[stage-clean] source backend directory not found: {source}")
+    except (OSError, ValueError):
+        raise SystemExit(f"[stage-clean] cannot inspect source backend directory: {source}")
+
+    try:
+        s, o = source.resolve(), output.resolve()
+    except (OSError, RuntimeError, ValueError):
+        raise SystemExit(f"[stage-clean] cannot resolve source/output paths: {source} {output}")
+
     # Never target the pre-existing staged mirror or its parent resources tree.
     protected_candidates = [SRC_TAURI_RESOURCES, SRC_TAURI_RESOURCES / "backend"]
     for protected in protected_candidates:
-        pr = protected.resolve()
+        try:
+            pr = protected.resolve()
+        except (OSError, RuntimeError, ValueError):
+            raise SystemExit(f"[stage-clean] cannot resolve protected path: {protected}")
         if o == pr or _is_within(o, pr):
             raise SystemExit(
                 f"[stage-clean] refusing to target protected path {o} "
@@ -200,7 +216,15 @@ def stage(
     source = _resolve(source)
     output = _resolve(output)
 
-    if output.exists() and not overwrite:
+    _output_exists = False
+    try:
+        output.lstat()
+        _output_exists = True
+    except FileNotFoundError:
+        _output_exists = False
+    except OSError as exc:
+        raise SystemExit(f"[stage-clean] cannot inspect output path metadata: {output}: {exc}")
+    if _output_exists and not overwrite:
         raise SystemExit(
             f"[stage-clean] output already exists: {output}\n"
             f"            overwrite is disabled; choose a new output path or remove "
@@ -251,7 +275,14 @@ def stage(
                 _safe_rmtree(temp_root)
             return 1, findings, removed, None
 
-        if output.exists() or output.is_symlink():
+        _final_output_lstat = None
+        try:
+            _final_output_lstat = output.lstat()
+        except FileNotFoundError:
+            _final_output_lstat = None
+        except OSError as exc:
+            raise SystemExit(f"[stage-clean] cannot inspect final output metadata: {output}: {exc}")
+        if _final_output_lstat is not None:
             if not overwrite:
                 raise SystemExit(f"[stage-clean] output appeared during staging: {output}")
             if _is_reparse_point(output):

@@ -40,7 +40,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -368,6 +370,63 @@ def prohibited_file_reason(name: str) -> Optional[str]:
     return None
 
 
+def _is_reparse_point(path) -> bool:
+    """Report whether ``path`` is a symlink or Windows reparse point.
+
+    Uses ``lstat`` so a junction/reparse point is never followed. A dangling
+    reparse point still exposes lstat metadata and is treated as unsafe.
+
+    A genuinely missing future output is NOT a reparse point. Any other
+    metadata uncertainty fails closed.
+    """
+    try:
+        st = Path(path).lstat()
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return True
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    return bool(getattr(st, "st_file_attributes", 0) & 0x400)
+
+
+def _safe_rmtree(path) -> bool:
+    """Remove ``path`` without ever following a symlink or reparse point.
+
+    Returns True only when the target is missing or has been removed. A
+    failed or uncertain deletion returns False rather than claiming success.
+    """
+    path = Path(path)
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        return False
+    if stat.S_ISLNK(st.st_mode) or (getattr(st, "st_file_attributes", 0) & 0x400):
+        try:
+            path.unlink()
+            return True
+        except OSError:
+            return False
+    if not stat.S_ISDIR(st.st_mode):
+        try:
+            path.unlink()
+            return True
+        except OSError:
+            return False
+    for child in list(path.iterdir()):
+        if not _safe_rmtree(child):
+            return False
+    try:
+        path.rmdir()
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
 def secret_material_file_reason(name: str) -> Optional[str]:
     """Filename-only classification of files that must never be read, hashed or
     copied under any circumstance.
@@ -508,6 +567,18 @@ def scan_tree(root: Path, *, follow_third_party_names: bool = True) -> List[Find
     """
     root = Path(root)
     findings: List[Finding] = []
+    # A reparse-point root must not be traversed: otherwise rglob follows the
+    # link and reports/removes content in an unrelated external tree. Fail
+    # closed with one finding so the CLI exits non-zero instead of printing OK.
+    if _is_reparse_point(root):
+        findings.append(
+            Finding(
+                path=".",
+                reason="payload root is a symlink or reparse point",
+                kind="reparse-point",
+            )
+        )
+        return findings
     if not root.is_dir():
         return findings
 
@@ -515,6 +586,24 @@ def scan_tree(root: Path, *, follow_third_party_names: bool = True) -> List[Find
         parts = path.relative_to(root).parts
         relative = path.relative_to(root).as_posix()
         scope = _scope_of(parts)
+
+        # Never follow a symlink/reparse point that appeared in the staged tree:
+        # classify and report it without touching its target. Skip its
+        # descendants too (rglob may surface them when following links).
+        if len(parts) > 1 and any(
+            _is_reparse_point(root.joinpath(*parts[:i])) for i in range(1, len(parts))
+        ):
+            continue
+        if _is_reparse_point(path):
+            # Vendored third-party trees may legitimately contain links; never
+            # read them, and do not make them a release gate there.
+            if scope == "third-party":
+                continue
+            findings.append(
+                Finding(path=relative, reason="symlink or reparse point in a distributable file",
+                       kind="prohibited-file")
+            )
+            continue
 
         # Skip any descendant of a secret-material ancestor BEFORE reading,
         # hashing or reporting child violations.
@@ -609,6 +698,8 @@ def prune_tree(root: Path) -> List[str]:
     """
     root = Path(root)
     removed: List[str] = []
+    if _is_reparse_point(root):
+        return removed
     if not root.is_dir():
         return removed
 
@@ -617,31 +708,35 @@ def prune_tree(root: Path) -> List[str]:
         relative = path.relative_to(root).as_posix()
         scope = _scope_of(parts)
 
+        # Never descend through, or remove anything reached through, a reparse
+        # point anywhere in the path. This protects external targets even when
+        # a prohibited-looking entry sits beneath a junction/symlink.
+        if len(parts) > 1 and any(
+            _is_reparse_point(root.joinpath(*parts[:i])) for i in range(1, len(parts))
+        ):
+            continue
+        if _is_reparse_point(path):
+            continue
+
         if path.is_dir():
             if scope == "third-party":
                 continue
             if prohibited_dir_reason(path.name):
-                _remove_tree(path)
-                removed.append(relative + "/")
+                if _remove_tree(path):
+                    removed.append(relative + "/")
             continue
 
         if scope != "third-party" and secret_material_file_reason(path.name) is not None:
-            try:
-                path.unlink()
+            if _safe_rmtree(path):
                 removed.append(relative)
-            except OSError:
-                pass
             continue
         if prohibited_file_reason(path.name):
             if scope == "third-party":
                 # Reported, never deleted: a vendored package may legitimately
                 # ship a file with this name.
                 continue
-            try:
-                path.unlink()
+            if _safe_rmtree(path):
                 removed.append(relative)
-            except OSError:
-                pass
     return removed
 
 
@@ -674,8 +769,8 @@ def backend_mirror_findings(source: Path, mirror: Path) -> List[Finding]:
     source, mirror = Path(source), Path(mirror)
     findings = []
     for root, label in ((source, "source"), (mirror, "staged")):
-        if not root.is_dir():
-            findings.append(Finding(path=str(root), reason=f"{label} backend directory missing",
+        if _is_reparse_point(root) or not root.is_dir():
+            findings.append(Finding(path=str(root), reason=f"{label} backend directory missing or unsafe",
                                     kind="backend-missing"))
     if findings:
         return findings
@@ -688,15 +783,26 @@ def backend_mirror_findings(source: Path, mirror: Path) -> List[Finding]:
 
     def included(root: Path) -> set[Path]:
         files = set()
-        for dirpath, dirs, names in os.walk(root):
-            # Prune directories the exact policy excludes - never descend.
+        for dirpath, dirs, names in os.walk(root, followlinks=False):
+            # Prune directories the exact policy excludes - never descend. Also
+            # never descend through (or report through) a symlink/reparse point,
+            # since following it could reach outside the intended backend tree.
             ignored_dirs = ignore(dirpath, list(dirs))
-            dirs[:] = [name for name in dirs if name not in ignored_dirs]
+            dirs[:] = [
+                name for name in dirs
+                if name not in ignored_dirs and not _is_reparse_point(Path(dirpath) / name)
+            ]
             for name in names:
                 if name in ignore(dirpath, [name]):
                     continue
                 candidate = Path(dirpath) / name
-                if not candidate.is_file():
+                if _is_reparse_point(candidate):
+                    continue
+                try:
+                    st = candidate.lstat()
+                except OSError:
+                    continue
+                if not stat.S_ISREG(st.st_mode):
                     continue
                 relative = candidate.relative_to(root)
                 # Defense in depth: the classifier above already excludes
@@ -725,10 +831,10 @@ def backend_mirror_findings(source: Path, mirror: Path) -> List[Finding]:
     return findings
 
 
-def _remove_tree(path: Path) -> None:
-    import shutil
-
-    shutil.rmtree(path, ignore_errors=True)
+def _remove_tree(path: Path) -> bool:
+    # Never follow a symlink/reparse point. This also keeps prune_tree safe if a
+    # prohibited entry was replaced by a reparse point after classification.
+    return bool(_safe_rmtree(path))
 
 
 # ---------------------------------------------------------------------------

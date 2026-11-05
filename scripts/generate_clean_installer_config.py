@@ -127,8 +127,10 @@ def _is_reparse_point(path: Path | str) -> bool:
     WITHOUT following it."""
     try:
         st = Path(path).lstat()
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return False
+    except (OSError, ValueError):
+        return True
     if stat.S_ISLNK(st.st_mode):
         return True
     return bool(getattr(st, "st_file_attributes", 0) & 0x400)
@@ -219,6 +221,21 @@ def _validate_paths(repo_root: Path, output_dir: Any, resources_dir: Any) -> Non
         fail(
             "isolated resources directory must not contain the protected mirror: "
             f"{resources_resolved}"
+        )
+    # Never target a filesystem root and never let the output or the payload be
+    # written under src-tauri or inside one another ambiguously.
+    if str(output_resolved) == str(output_resolved.anchor):
+        fail(f"output directory must not be a filesystem root: {output_resolved}")
+    if str(resources_resolved) == str(resources_resolved.anchor):
+        fail(f"resources directory must not be a filesystem root: {resources_resolved}")
+    if _within(output_resolved, src_tauri_dir):
+        fail(f"output directory must not be inside src-tauri: {output_resolved}")
+    if _within(resources_resolved, src_tauri_dir) and resources_resolved != protected:
+        fail(f"resources directory must not be inside src-tauri: {resources_resolved}")
+    if output_resolved == resources_resolved or _within(output_resolved, resources_resolved):
+        fail(
+            "output directory must not be inside the isolated resources directory: "
+            f"{output_resolved}"
         )
     if not resources_resolved.is_dir():
         fail(f"isolated resources directory does not exist: {resources_resolved}")
