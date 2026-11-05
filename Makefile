@@ -17,7 +17,7 @@
 #   make build                 - build frontend + backend
 #   make clean                 - clean build artifacts
 
-.PHONY: test test-fast test-acceptance test-unit test-gui test-network check-test-selections lint build clean
+.PHONY: test test-fast test-acceptance test-unit test-gui test-network check-test-selections lint build clean stage-clean-runtime generate-clean-installer-config clean-source-build tauri-clean-build
 
 # Full backend suite - every test under backend/tests.
 test:
@@ -94,6 +94,22 @@ build: build-backend build-frontend
 # Tauri desktop shell build (requires Rust + MSVC)
 tauri-build:
 	npx --prefix frontend tauri build --no-bundle
+
+# Stage an isolated clean runtime/backend payload from source only
+stage-clean-runtime:
+	python scripts/stage_clean_runtime.py --allow-network
+
+# Generate the alternate Tauri config that points at the isolated payload
+generate-clean-installer-config: stage-clean-runtime
+	python scripts/generate_clean_installer_config.py --output-dir build/clean-installer --resources-dir build/staging/clean-runtime-payload
+
+# Isolated clean source build validation (no tracked src-tauri/resources dependency)
+clean-source-build: generate-clean-installer-config
+	@echo "Isolated clean installer configuration generated at build/clean-installer/tauri.conf.json"
+
+# Build the desktop shell using the isolated clean source configuration (dev/unverified)
+tauri-clean-build: clean-source-build
+	npx --prefix frontend tauri build --no-bundle --config build/clean-installer/tauri.conf.json
 
 # Clean build artifacts
 clean:

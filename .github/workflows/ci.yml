@@ -104,7 +104,7 @@ jobs:
         run: npm test
 
   tauri-build:
-    name: Tauri shell build (Windows)
+    name: Tauri shell build (Windows, isolated clean source)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -113,6 +113,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -126,8 +131,20 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Build the desktop shell (compile only, no bundle)
-        run: npx --prefix frontend tauri build --no-bundle
+      - name: Stage isolated clean runtime/backend payload (no tracked resources)
+        run: python scripts/stage_clean_runtime.py --allow-network
+
+      - name: Generate isolated Tauri configuration
+        run: python scripts/generate_clean_installer_config.py --output-dir build/clean-installer --resources-dir build/staging/clean-runtime-payload
+
+      - name: Build the desktop shell (compile only, no bundle, isolated config)
+        run: npx --prefix frontend tauri build --no-bundle --config build/clean-installer/tauri.conf.json
 
       - name: Assert the shell binary was produced
-        run: Test-Path "src-tauri/target/release/sythion.exe"
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "src-tauri/target/release/sythion.exe")) {
+            Write-Error "Tauri shell binary was not produced"
+            exit 1
+          }
+          Write-Host "Tauri shell binary produced"

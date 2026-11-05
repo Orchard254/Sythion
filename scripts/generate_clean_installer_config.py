@@ -89,10 +89,10 @@ def _rel(base_dir: Path, target: Path) -> str:
     try:
         return Path(os.path.relpath(target, base_dir)).as_posix()
     except ValueError:
-        try:
-            return Path(target).resolve().as_posix()
-        except (OSError, RuntimeError, ValueError):
-            return Path(target).as_posix()
+        fail(
+            "path is not on the same Windows drive as src-tauri and cannot be merged safely: "
+            f"{target}"
+        )
 
 
 def _path_has_reparse_ancestor(path: Path | str) -> bool:
@@ -200,6 +200,18 @@ def _validate_paths(repo_root: Path, output_dir: Any, resources_dir: Any) -> Non
     resources_resolved = resources_path.resolve()
     protected = (repo_root / "src-tauri" / "resources").resolve()
     src_tauri_dir = (repo_root / "src-tauri").resolve()
+    if src_tauri_dir.drive and output_resolved.drive and str(output_resolved.drive).lower() != str(src_tauri_dir.drive).lower():
+        fail(
+            "output directory must be on the same Windows drive as src-tauri; "
+            "cross-drive generated/config paths are mangled by Tauri configuration merges: "
+            f"output={output_resolved}, src-tauri={src_tauri_dir}"
+        )
+    if src_tauri_dir.drive and resources_resolved.drive and str(resources_resolved.drive).lower() != str(src_tauri_dir.drive).lower():
+        fail(
+            "isolated resources (payload) must be on the same Windows drive as src-tauri; "
+            "cross-drive resource paths are mangled by Tauri configuration merges: "
+            f"resources={resources_resolved}, src-tauri={src_tauri_dir}"
+        )
     if output_resolved == src_tauri_dir:
         fail(
             "output directory must not be src-tauri itself: "
