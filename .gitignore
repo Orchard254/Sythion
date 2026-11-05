@@ -48,3 +48,11 @@ build/staging/audit-clean-*/
 build/staging/clean-*/
 build/staging/prototype-*/
 build/staging/test-runtime-offline/
+
+# Transient diagnostics at repository root (untracked; narrow)
+/.tmp*.txt
+/out*.txt
+/tmp_fixed_ws.txt
+/tmp_ws_path.txt
+/temp_diff_stat.txt
+/.append_contexts.txt
