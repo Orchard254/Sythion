@@ -85,8 +85,9 @@ PROHIBITED_STATE_DIRS = (
 
 #: Directory names whose whole subtree is development-only. The backend ships
 #: its own copy of the test suite under ``backend/tests``; the installed
-#: application never imports it.
-DEV_ONLY_DIR_NAMES = ("tests",)
+#: application never imports it. ``scratchpad`` holds untracked probe/debug
+#: workspace artifacts (see memory decision) and must never ship either.
+DEV_ONLY_DIR_NAMES = ("tests", "scratchpad")
 
 #: Payload subtrees that hold the application's own code. The full policy
 #: applies to them.

@@ -62,7 +62,7 @@ def test_stage_produces_clean_isolated_payload(tmp_path):
     backend = output / "backend"
     assert (backend / "main.py").is_file()
     assert (backend / "cli.py").is_file()
-    assert (backend / "scratchpad" / "probe.py").is_file()
+    assert not (backend / "scratchpad" / "probe.py").exists()
     assert (backend / ".env.example").is_file()
     # Prohibited artifacts never enter the new isolated tree.
     assert not (backend / ".env").exists()
@@ -205,7 +205,7 @@ def test_cli_main_end_to_end_fresh_output(tmp_path, capsys):
     assert rc == 0, rc
     assert output.is_dir()
     assert (output / "backend" / "main.py").is_file()
-    assert (output / "backend" / "scratchpad" / "probe.py").is_file()
+    assert not (output / "backend" / "scratchpad").exists()
     assert not (output / "backend" / ".env").exists()
     assert not (output / "backend" / ".env.local").exists()
     assert not (output / "backend" / "secret.pem").exists()
