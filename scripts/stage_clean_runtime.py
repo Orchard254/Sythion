@@ -28,7 +28,8 @@ def fail(msg): raise SystemExit(f"[stage-runtime] ERROR: {msg}")
 def download(url, dest):
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists(): return dest
+    if dest.exists():
+        return dest
     print(f"[stage-runtime] downloading {url}")
     try:
         with urllib.request.urlopen(url) as r, open(dest, "wb") as o:
@@ -421,6 +422,10 @@ def _coalesce_named(mapping, names, default=None):
 
 def verify_get_pip_digest(path, expected_digest):
     path = Path(path)
+    # Never follow a pre-existing reparse point/symlink to an attacker-controlled
+    # file before the digest has been checked.
+    if is_rp(path):
+        raise SystemExit(f"[stage-runtime] refusing reparse point get-pip path: {path}")
     if expected_digest is None:
         raise SystemExit("[stage-runtime] release mode requires an caller-supplied/pinned get-pip SHA-256")
     expected = str(expected_digest).strip().lower()
@@ -471,6 +476,8 @@ def ensure_getpip(value, allow_network, *, expected_sha256=None, release=False, 
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
     d = DOWNLOAD_DIR / "get-pip.py"
     if d.exists():
+        if is_rp(d):
+            raise SystemExit(f"[stage-runtime] refusing reparse point get-pip cache: {d}")
         # Never trust a locally cached copy by its cached digest alone: only a
         # caller-supplied pinned digest (or prototype mode without enforcement)
         # can authorize it.
@@ -483,18 +490,54 @@ def ensure_getpip(value, allow_network, *, expected_sha256=None, release=False, 
         return d.resolve()
     if not allow_network:
         raise SystemExit(f"[stage-runtime] cached get-pip.py missing and network disabled: {d}")
-    downloaded = download(GET_PIP_URL, d)
-    resolved = downloaded.resolve()
-    if expected_sha256 is not None or release:
-        if release and expected_sha256 is None:
+    if is_rp(d):
+        raise SystemExit(f"[stage-runtime] refusing reparse point get-pip cache: {d}")
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    # Owned-by-creation temporary file: mkstemp returns an exclusive descriptor
+    # for an inode we own, so network bytes are written to that handle rather
+    # than reopening/replacing a path. This avoids losing ownership or following
+    # a path that may have changed after creation.
+    fd, temp_name = tempfile.mkstemp(prefix="get-pip.", suffix=".py", dir=str(DOWNLOAD_DIR))
+    temp_path = Path(temp_name)
+    owned_fd = fd
+    try:
+        if is_rp(temp_path):
+            raise SystemExit(f"[stage-runtime] refusing reparse point get-pip download: {temp_path}")
+        try:
+            with urllib.request.urlopen(GET_PIP_URL) as response, os.fdopen(owned_fd, "wb") as output:
+                owned_fd = -1
+                shutil.copyfileobj(response, output)
+        except Exception as exc:
+            raise SystemExit(f"[stage-runtime] download failed for {GET_PIP_URL}: {exc}") from exc
+        resolved = temp_path.resolve()
+        if expected_sha256 is not None or release:
+            if release and expected_sha256 is None:
+                raise SystemExit("[stage-runtime] release mode requires an caller-supplied/pinned get-pip SHA-256")
+            if expected_sha256 is not None:
+                verify_get_pip_digest(resolved, expected_sha256)
+        if d.exists() and is_rp(d):
+            raise SystemExit(f"[stage-runtime] refusing reparse point get-pip cache: {d}")
+        os.replace(resolved, d)
+        return d.resolve()
+    finally:
+        if owned_fd >= 0:
             try:
-                d.unlink()
+                os.close(owned_fd)
             except OSError:
                 pass
-            raise SystemExit("[stage-runtime] release mode requires an caller-supplied/pinned get-pip SHA-256")
-        if expected_sha256 is not None:
-            verify_get_pip_digest(resolved, expected_sha256)
-    return resolved
+        # Remove only our temporary path if promotion did not happen.
+        if temp_path.exists():
+            # Guard against path replacement races: only unlink the path when it
+            # still refers to a regular file owned by our temporary storage.
+            try:
+                st = temp_path.lstat()
+            except OSError:
+                st = None
+            if st is not None and stat.S_ISREG(st.st_mode):
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
 def read_lock(value):
     if value is not None:
         p=Path(value).resolve()
@@ -555,7 +598,10 @@ def _release_lock_records(path):
 
 
 def _exact_hash_options(record):
-    return list(re.finditer(r"--hash(?:\s*=\s*|\s+)([A-Za-z0-9-]+):([0-9A-Fa-f]+)(?=\s|$)", record))
+    # Only pip-valid spellings: "--hash=sha256:<digest>" or
+    # "--hash sha256:<digest>". Spaces around the equals sign are not accepted
+    # by pip and must not be treated as valid hash options.
+    return list(re.finditer(r"--hash(?:=|\s+)([A-Za-z0-9-]+):([0-9A-Fa-f]+)(?=\s|$)", record))
 
 
 def _release_lock_hash_algorithms(record):
@@ -761,7 +807,10 @@ def install_requirements(python_exe, lock_path, *, allow_network=False, verify_i
         try: return subprocess.run(args, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as e:
             raise SystemExit(f"[stage-runtime] pip command failed ({' '.join(args)}):\n{(e.stderr or e.stdout or '').strip()}")
-    has_hashes=any("--hash=" in ln for ln in read_lock_lines(lock_path)) or lock_has_complete_hashes(lock_path)
+    has_hashes = (
+        lock_has_complete_hashes(lock_path)
+        or any(re.search(r"--hash(?:=|\s+)", ln) is not None for ln in read_lock_lines(lock_path))
+    )
     cmd=[str(python_exe),"-m","pip","install","--no-user"]
     if _rel or _req:
         cmd.append("--require-hashes")
@@ -845,6 +894,11 @@ def stage(source, output, runtime_source=None, *, runtime_zip=None, python_zip=N
     if _truthy_flag(require_hashes) is True:
         _complete_hashes = True
     _release = _release or _complete_hashes
+    if _release:
+        if not bootstrap_pip:
+            raise SystemExit("[stage-runtime] release mode requires actual pip bootstrap before execution")
+        if not install_dependencies:
+            raise SystemExit("[stage-runtime] release mode requires actual dependency installation before execution")
     if not _release:
         print("[stage-runtime] mode=prototype/unverified: dependency hashes and get-pip provenance are NOT enforced")
     else:
@@ -854,11 +908,6 @@ def stage(source, output, runtime_source=None, *, runtime_zip=None, python_zip=N
     if is_rp(output) or output.exists() or output.is_symlink():
         raise SystemExit(f"[stage-runtime] output already exists: {output}")
     if install_dependencies is None: install_dependencies=bool(allow_network)
-    if _release:
-        if not bootstrap_pip:
-            raise SystemExit("[stage-runtime] release mode requires actual pip bootstrap before execution")
-        if not install_dependencies:
-            raise SystemExit("[stage-runtime] release mode requires actual dependency installation before execution")
     resolved_zip=zip_path or runtime_zip or python_zip or runtime_archive or (Path(runtime_source) if runtime_source is not None and Path(runtime_source).is_file() else None)
     resolved_runtime_zip = resolve_zip(resolved_zip, python_version, allow_network)
     rslock = Path(runtime_source)/"requirements.lock.txt" if runtime_source is not None and Path(runtime_source).is_dir() else None
@@ -869,6 +918,24 @@ def stage(source, output, runtime_source=None, *, runtime_zip=None, python_zip=N
         _lock_error = release_lock_hash_error(resolved_lock)
         if _lock_error is not None:
             raise SystemExit(_lock_error)
+    if _gp_digest is not None:
+        _gp_digest = str(_gp_digest).strip().lower()
+        if len(_gp_digest) != 64 or any(ch not in "0123456789abcdef" for ch in _gp_digest):
+            raise SystemExit("[stage-runtime] get-pip SHA-256 must be a 64-character hex digest")
+    if _release and _gp_digest is None:
+        raise SystemExit("[stage-runtime] release mode requires an caller-supplied/pinned get-pip SHA-256")
+    # Fail closed before any extraction/runtime work when a pinned get-pip digest
+    # can be checked against an already available bootstrap script or cache.
+    if _gp_digest is not None:
+        if get_pip_path is not None:
+            _gp_candidates = [Path(get_pip_path)]
+        else:
+            _gp_candidates = [DOWNLOAD_DIR / "get-pip.py"]
+        for _gp_candidate in _gp_candidates:
+            if is_rp(_gp_candidate):
+                raise SystemExit(f"[stage-runtime] refusing reparse point get-pip path: {_gp_candidate}")
+            if _gp_candidate.is_file():
+                verify_get_pip_digest(_gp_candidate, _gp_digest)
     parent=output.parent; parent.mkdir(parents=True, exist_ok=True)
     if is_rp(parent): raise SystemExit(f"[stage-runtime] refusing reparse point output parent: {parent}")
     temp_root=Path(tempfile.mkdtemp(prefix=f".{output.name}.staging.", dir=str(parent)))
@@ -912,7 +979,8 @@ def stage(source, output, runtime_source=None, *, runtime_zip=None, python_zip=N
             "pip_bootstrapped":bool(bootstrap_pip),
             "get_pip_sha256":str(_gp_digest).lower() if _gp_digest is not None else None,
             "provenance_mode":"release" if _release else "prototype/unverified",
-            "release_provenance_verified":bool(_release and bootstrap_pip and install_dependencies and resolved_lock and lock_has_complete_hashes(resolved_lock) and verify and verification_performed and verify_inventory and inventory_verified),
+            "get_pip_verified":bool(_release and bootstrap_pip and _gp_digest is not None),
+            "release_provenance_verified":bool(_release and bootstrap_pip and install_dependencies and resolved_lock and lock_has_complete_hashes(resolved_lock) and verify and verification_performed and verify_inventory and inventory_verified and _gp_digest is not None),
         }
         (temp_root/"runtime-manifest.json").write_text(json.dumps(manifest,indent=2)+"\n", encoding="utf-8")
         if findings:

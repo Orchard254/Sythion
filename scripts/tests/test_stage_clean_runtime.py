@@ -542,3 +542,128 @@ def test_install_requirements_release_rejects_incomplete_hashes(tmp_path):
             verify_inventory=False, release=True,
         )
     assert "hash" in str(exc.value).lower()
+
+
+
+def test_release_lock_rejects_spaced_equals_hash(tmp_path):
+    spaced_equals = tmp_path / "spaced-equals.lock"
+    spaced_equals.write_text(
+        "foo==1.0 --hash = sha256:" + "a" * 64 + "\n",
+        encoding="utf-8",
+    )
+    assert S.lock_has_complete_hashes(spaced_equals) is False
+
+
+def test_release_lock_accepts_spaced_hash_option(tmp_path):
+    spaced = tmp_path / "spaced.lock"
+    spaced.write_text(
+        "foo==1.0 --hash sha256:" + "b" * 64 + "\n",
+        encoding="utf-8",
+    )
+    assert S.lock_has_complete_hashes(spaced) is True
+
+
+def test_stage_rejects_reparse_get_pip_candidate_before_verification(tmp_path):
+    source = _make_tree(tmp_path / "source", {"main.py": "print(1)\n"})
+    output = tmp_path / "isolated"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    reparsed_get_pip = tmp_path / "get-pip-reparse"
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(reparsed_get_pip), str(outside)],
+        capture_output=True,
+        text=True,
+    )
+    if created.returncode != 0:
+        pytest.skip("directory junction creation unavailable in this environment")
+    assert S.is_rp(reparsed_get_pip)
+
+    lock = tmp_path / "requirements.lock.txt"
+    lock.write_text("foo==1.0 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc:
+        S.stage(
+            source, output, runtime_zip=_TEST_ZIP, allow_network=False,
+            install_dependencies=True, required_imports=False, verify=False,
+            bootstrap_pip=True, get_pip=reparsed_get_pip,
+            get_pip_sha256="a" * 64, lock=lock, release=True,
+        )
+    assert "reparse" in str(exc.value).lower()
+
+
+def test_ensure_getpip_download_mismatch_does_not_leave_cache(tmp_path, monkeypatch):
+    download_dir = tmp_path / "downloads"
+    download_dir.mkdir()
+    monkeypatch.setattr(S, "DOWNLOAD_DIR", download_dir)
+
+    def fake_download(url, dest, *, force=False):
+        pathlib.Path(dest).write_text("untrusted bootstrap\n", encoding="utf-8")
+        return pathlib.Path(dest)
+
+    monkeypatch.setattr(S, "download", fake_download)
+
+    with pytest.raises(SystemExit):
+        S.ensure_getpip(
+            None, True, expected_sha256="0" * 64, release=False,
+        )
+
+    assert not (download_dir / "get-pip.py").exists()
+    assert list(download_dir.iterdir()) == []
+
+
+def test_ensure_getpip_download_integration_uses_network_content(tmp_path, monkeypatch):
+    import hashlib
+    import io
+    import urllib.request
+
+    download_dir = tmp_path / "downloads"
+    download_dir.mkdir()
+    monkeypatch.setattr(S, "DOWNLOAD_DIR", download_dir)
+
+    content = b"# verified bootstrap from mocked upstream\n"
+    expected_digest = hashlib.sha256(content).hexdigest()
+
+    def fake_urlopen(url):
+        return io.BytesIO(content)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = S.ensure_getpip(None, True, expected_sha256=expected_digest, release=False)
+
+    cached = download_dir / "get-pip.py"
+    assert result == cached.resolve()
+    assert cached.is_file()
+    assert cached.read_bytes() == content
+
+
+def test_ensure_getpip_fd_download_does_not_unlink_temp_path(tmp_path, monkeypatch):
+    import hashlib
+    import io
+    import os
+    import urllib.request
+
+    download_dir = tmp_path / "downloads"
+    download_dir.mkdir()
+    monkeypatch.setattr(S, "DOWNLOAD_DIR", download_dir)
+
+    content = b"fd-owned bootstrap content\n"
+    expected_digest = hashlib.sha256(content).hexdigest()
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda url: io.BytesIO(content))
+
+    unlinks = []
+    original_unlink = os.unlink
+
+    def tracking_unlink(path, *args, **kwargs):
+        unlinks.append(str(path))
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", tracking_unlink)
+
+    result = S.ensure_getpip(None, True, expected_sha256=expected_digest, release=False)
+
+    cached = download_dir / "get-pip.py"
+    assert result == cached.resolve()
+    assert cached.read_bytes() == content
+    # The owned descriptor is written directly; no unlink/recreate of the path.
+    assert unlinks == []
