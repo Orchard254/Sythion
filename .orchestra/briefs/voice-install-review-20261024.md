@@ -1,7 +1,0 @@
-# Independent review voice offload
-
-Review feature eb68ddb base84efd28 branch voice-install-offload. Read report .orchestra/reports/voice-install-offload-20261024.md and inspect git refs/worktrees. Own detached review worktree mandatory. No builds/test execution/provider probes/downloads/user profile or app changes. User requests minimal tokens/no more tests.
-
-Audit correctness/scope/auth and crucially native thread safety: implementer reports COM uncertainty. Trace install_voice_assets -> voice_assets_status/TTS voice selection and any COM initialization dependencies on calling thread. Determine if current worker implementation is safe; don't rubber stamp uncertain COM. Preserve exception mapping and response contract. Regression added unexecuted cannot be reported pass. Output .orchestra/reviews/voice-install-offload-20261024.md first line VERDICT ACCEPT or IMPROVE, SHA, safety reasoning, what unverified. Do not modify product files/merge or claim native Start conversation fixed.
-
-Additionally brief read-only identification of separately reported Archive does not contain a usable Vosk model layout root: inspect archive layout selection code and expected Vosk root names; no archive fetch, private files, or changes. Report separately if obvious bug with file:line and minimal fix proposal; no new claims without evidence. User confirms attempted voice install before Start conversation failure.

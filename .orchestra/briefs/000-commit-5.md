@@ -1,1 +1,0 @@
-Commit item 024 into master. Branch orchestra/024-safe-onboarding tip fd3ef4c... at reviewed commit same. Merge --no-ff, no push, record merge SHA in board/backlog, run full backend+focused frontend gates, clean worktree/branch. Preserve user changes no vault mutation. Write report reports/000-commit-5.md. Do not ask.

@@ -1,3 +1,0 @@
-# Commit item 023
-
-You are Committer for item 023 (onboarding discovery). Merge branch orchestra/023-onboarding-discovery (tip 5f266827034d9c423294b2819934fca73dde75fe) into master with --no-ff, preserving existing uncommitted changes (including modified staged resource? Current main has src-tauri/resources/backend/api/routes.py modification and .orchestra state; baseline doc changes already committed, but note main currently clean? Check git status). Record mergeSha in board/backlog, rerun full backend suite and focused frontend gates, clean up worktrees/branch, write reports/000-commit-4.md. No push. Use normal recovery if suite fails. Do not ask.

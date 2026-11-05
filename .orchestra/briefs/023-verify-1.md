@@ -1,3 +1,0 @@
-# Verify item 023 round 1
-
-You are verifier. Work only in worktree C:\Users\orcha\AppData\Local\Temp\opencode\sythion-023-verify at reviewed commit 5f266827034d9c423294b2819934fca73dde75fe. Determine whether discovery contract fix is actually fixed and produce verification report C:\Sythion\sythion\.orchestra\verifications\023-v1.md. Follow plan tests/control boundary. Independently reproduce both pre-fix failures and post-fix success, run focused and full backend/frontend tests and lint/tsc if feasible. no source mods, no builds. Quote reviewed commit. Set state accepted/verify. Do not ask.
