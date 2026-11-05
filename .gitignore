@@ -56,3 +56,7 @@ build/staging/test-runtime-offline/
 /tmp_ws_path.txt
 /temp_diff_stat.txt
 /.append_contexts.txt
+
+# Local investigation scratchpads (not application source)
+/scratchpad/
+/backend/scratchpad/
