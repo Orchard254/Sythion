@@ -667,3 +667,215 @@ def test_ensure_getpip_fd_download_does_not_unlink_temp_path(tmp_path, monkeypat
     assert cached.read_bytes() == content
     # The owned descriptor is written directly; no unlink/recreate of the path.
     assert unlinks == []
+
+
+def test_runtime_provenance_manifest_verifier_rejects_tampered_python_digest(tmp_path, monkeypatch):
+    import json as _json
+    source = _make_tree(tmp_path / "source", {"main.py": "print(1)\n"})
+    output = tmp_path / "isolated"
+    get_pip = tmp_path / "get-pip.py"
+    get_pip.write_text("print('bootstrap')\n", encoding="utf-8")
+    digest = hashlib.sha256(get_pip.read_bytes()).hexdigest()
+    lock = tmp_path / "requirements.lock.txt"
+    lock.write_text("foo==1.0 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8")
+
+    def fake_run(args, **kwargs):
+        if "freeze" in list(args):
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="foo==1.0\n", stderr="")
+        return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    rc, findings, removed, out = S.stage(
+        source, output, runtime_zip=_TEST_ZIP, allow_network=False,
+        install_dependencies=True, required_imports=False, verify=True,
+        bootstrap_pip=True, get_pip=get_pip, get_pip_sha256=digest, lock=lock, release=True,
+    )
+    assert rc == 0, [f.describe() for f in findings]
+    manifest_path = out / "runtime-manifest.json"
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["python_sha256"] = "0" * 64
+    manifest_path.write_text(_json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        S.verify_runtime_manifest(manifest_path, root=out, release=True)
+
+
+def test_runtime_provenance_manifest_verifier_prototype_accepts_manifest(tmp_path):
+    source = _make_tree(tmp_path / "source", {"main.py": "print(1)\n"})
+    output = tmp_path / "isolated"
+    rc, findings, removed, out = S.stage(
+        source, output, runtime_zip=_TEST_ZIP, allow_network=False,
+        install_dependencies=False, required_imports=False, verify=True,
+        bootstrap_pip=False, release=False,
+    )
+    assert rc == 0, [f.describe() for f in findings]
+    # Prototype manifests are not release-audited.
+    assert S.runtime_provenance_manifest_verified(out / "runtime-manifest.json", root=out) is True
+
+
+def test_runtime_provenance_manifest_verifier_rejects_archive_digest_as_python_digest(tmp_path, monkeypatch):
+    # TRUSTED_PYTHON_EMBEDDED_SHA256 identifies the downloaded archive, never
+    # python.exe. A manifest claiming that archive digest for python.exe must fail.
+    import json as _json
+    source = _make_tree(tmp_path / "source", {"main.py": "print(1)\n"})
+    output = tmp_path / "isolated"
+    get_pip = tmp_path / "get-pip.py"
+    get_pip.write_text("print('bootstrap')\n", encoding="utf-8")
+    digest = hashlib.sha256(get_pip.read_bytes()).hexdigest()
+    lock = tmp_path / "requirements.lock.txt"
+    lock.write_text("foo==1.0 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8")
+
+    def fake_run(args, **kwargs):
+        if "freeze" in list(args):
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="foo==1.0\n", stderr="")
+        return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    rc, findings, removed, out = S.stage(
+        source, output, runtime_zip=_TEST_ZIP, allow_network=False,
+        install_dependencies=True, required_imports=False, verify=True,
+        bootstrap_pip=True, get_pip=get_pip, get_pip_sha256=digest, lock=lock, release=True,
+    )
+    assert rc == 0, [f.describe() for f in findings]
+    manifest_path = out / "runtime-manifest.json"
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    # The official embedded archive digest is not the python.exe digest.
+    manifest["python_sha256"] = S.TRUSTED_PYTHON_EMBEDDED_SHA256["3.13.16"]
+    manifest_path.write_text(_json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        S.verify_runtime_manifest(manifest_path, root=out, release=True)
+
+
+def test_runtime_provenance_manifest_does_not_self_promote_to_release(tmp_path, monkeypatch):
+    source = _make_tree(tmp_path / "source", {"main.py": "print(1)\n"})
+    output = tmp_path / "isolated"
+    rc, findings, removed, out = S.stage(
+        source, output, runtime_zip=_TEST_ZIP, allow_network=False,
+        install_dependencies=False, required_imports=False, verify=True,
+        bootstrap_pip=False, release=False,
+    )
+    assert rc == 0, [f.describe() for f in findings]
+    # Caller metadata alone cannot make the unaudited manifest release-audited.
+    assert S.runtime_provenance_manifest_verified(out / "runtime-manifest.json", root=out, release=False) is True
+
+
+def test_runtime_provenance_manifest_prototype_marks_unknown_archive_unverifiable(tmp_path, monkeypatch):
+    import json as _json
+    source = _make_tree(tmp_path / "source", {"main.py": "print(1)\n"})
+    output = tmp_path / "isolated"
+    rc, findings, removed, out = S.stage(
+        source, output, runtime_zip=_TEST_ZIP, allow_network=False,
+        install_dependencies=False, required_imports=False, verify=True,
+        bootstrap_pip=False, release=False,
+    )
+    assert rc == 0, [f.describe() for f in findings]
+    manifest_path = out / "runtime-manifest.json"
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["python_version"] = "9.9.9"
+    manifest_path.write_text(_json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    ok, info = S._verify_runtime_manifest_core(manifest_path, root=out, release=False)
+    assert ok is True
+    assert any("unverifiable" in str(item).lower() for item in info)
+
+
+def test_runtime_provenance_manifest_release_fails_closed_without_trusted_archive(tmp_path, monkeypatch):
+    import json as _json
+    source = _make_tree(tmp_path / "source", {"main.py": "print(1)\n"})
+    output = tmp_path / "isolated"
+    get_pip = tmp_path / "get-pip.py"
+    get_pip.write_text("print('bootstrap')\n", encoding="utf-8")
+    digest = hashlib.sha256(get_pip.read_bytes()).hexdigest()
+    lock = tmp_path / "requirements.lock.txt"
+    lock.write_text("foo==1.0 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8")
+
+    def fake_run(args, **kwargs):
+        if "freeze" in list(args):
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="foo==1.0\n", stderr="")
+        return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    rc, findings, removed, out = S.stage(
+        source, output, runtime_zip=_TEST_ZIP, allow_network=False,
+        install_dependencies=True, required_imports=False, verify=True,
+        bootstrap_pip=True, get_pip=get_pip, get_pip_sha256=digest, lock=lock, release=True,
+    )
+    assert rc == 0, [f.describe() for f in findings]
+    manifest_path = out / "runtime-manifest.json"
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["python_version"] = "9.9.9"
+    manifest_path.write_text(_json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="unverifiable"):
+        S.verify_runtime_manifest(manifest_path, root=out, release=True)
+
+
+def test_runtime_provenance_manifest_enforces_explicit_approved_archive_pin(tmp_path, monkeypatch):
+    import json as _json
+    source = _make_tree(tmp_path / "source", {"main.py": "print(1)\n"})
+    output = tmp_path / "isolated"
+    rc, findings, removed, out = S.stage(
+        source, output, runtime_zip=_TEST_ZIP, allow_network=False,
+        install_dependencies=False, required_imports=False, verify=True,
+        bootstrap_pip=False, release=False,
+    )
+    assert rc == 0, [f.describe() for f in findings]
+    bad_archive = tmp_path / "bad-archive.zip"
+    bad_archive.write_bytes(b"modified archive evidence")
+    manifest_path = out / "runtime-manifest.json"
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["source_zip"] = str(bad_archive)
+    manifest["source_zip_sha256"] = hashlib.sha256(bad_archive.read_bytes()).hexdigest()
+    manifest_path.write_text(_json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="trusted Python embedded archive digest mismatch"):
+        S.verify_runtime_manifest(manifest_path, root=out, release=True,
+                                 zip_path=bad_archive,
+                                 trusted_archive_sha256=S.TRUSTED_PYTHON_EMBEDDED_SHA256["3.13.16"])
+    # A manifest marker cannot force the gate absent an explicit caller request.
+    manifest_path = out / "runtime-manifest.json"
+    import json as _json
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["provenance_mode"] = "release"
+    manifest["release_provenance_verified"] = True
+    manifest_path.write_text(_json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    assert S.runtime_provenance_manifest_verified(manifest_path, root=out, release=False) is True
+
+
+def test_runtime_provenance_manifest_verifier_trusted_archive_mismatch(tmp_path, monkeypatch):
+    import json as _json
+    source = _make_tree(tmp_path / "source", {"main.py": "print(1)\n"})
+    output = tmp_path / "isolated"
+    get_pip = tmp_path / "get-pip.py"
+    get_pip.write_text("print('bootstrap')\n", encoding="utf-8")
+    digest = hashlib.sha256(get_pip.read_bytes()).hexdigest()
+    lock = tmp_path / "requirements.lock.txt"
+    lock.write_text("foo==1.0 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8")
+
+    def fake_run(args, **kwargs):
+        if "freeze" in list(args):
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="foo==1.0\n", stderr="")
+        return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    rc, findings, removed, out = S.stage(
+        source, output, runtime_zip=_TEST_ZIP, allow_network=False,
+        install_dependencies=True, required_imports=False, verify=True,
+        bootstrap_pip=True, get_pip=get_pip, get_pip_sha256=digest, lock=lock, release=True,
+    )
+    assert rc == 0, [f.describe() for f in findings]
+    bad_archive = tmp_path / "bad-archive.zip"
+    bad_archive.write_bytes(b"modified archive evidence")
+    bad_digest = hashlib.sha256(bad_archive.read_bytes()).hexdigest()
+    manifest_path = out / "runtime-manifest.json"
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["source_zip"] = str(bad_archive)
+    manifest["source_zip_sha256"] = bad_digest
+    manifest_path.write_text(_json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="trusted Python embedded archive digest mismatch"):
+        S.verify_runtime_manifest(manifest_path, root=out, release=True, zip_path=bad_archive)
+
+
+def test_explicit_release_mode_is_strict_about_whitespace(tmp_path):
+    # Whitespace around an otherwise valid mode must be normalized, but embedded
+    # or partial strings must not be accepted as release.
+    assert S._explicit_release_mode(" release ") is True
+    assert S._explicit_release_mode("RELEASE") is True
+    assert S._explicit_release_mode("release please") is False
+    assert S._explicit_release_mode("releasedx") is False

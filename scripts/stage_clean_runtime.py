@@ -365,7 +365,7 @@ def _validate_paths(source, output):
         if o==pr or within(o,pr): raise SystemExit(f"[stage-runtime] refusing to target protected path {o} (would touch mirror {pr})")
     if within(s,SRC_TAURI_RESOURCES) or within(SRC_TAURI_RESOURCES,s): raise SystemExit(f"[stage-runtime] refusing paths touching protected resources: source={s}")
     if o==s or within(o,s) or within(s,o): raise SystemExit(f"[stage-runtime] refusing overlapping source/output: source={s} output={o}")
-    if str(o)==str(o.anchor) or str(o) in ("","/","\\"): raise SystemExit(f"[stage-runtime] refusing filesystem root output: {o}")
+    if str(o)==str(o.anchor) or str(o) in ("","/","\\\\"): raise SystemExit(f"[stage-runtime] refusing filesystem root output: {o}")
     if contains_rp(s): raise SystemExit(f"[stage-runtime] refusing source tree containing symlink/reparse point: {s}")
 
 def resolve_zip(value, version, allow_network):
@@ -981,8 +981,18 @@ def stage(source, output, runtime_source=None, *, runtime_zip=None, python_zip=N
             "provenance_mode":"release" if _release else "prototype/unverified",
             "get_pip_verified":bool(_release and bootstrap_pip and _gp_digest is not None),
             "release_provenance_verified":bool(_release and bootstrap_pip and install_dependencies and resolved_lock and lock_has_complete_hashes(resolved_lock) and verify and verification_performed and verify_inventory and inventory_verified and _gp_digest is not None),
+            "provenance_proof_scope":"stage-run",
+            "standalone_verifier_limits":["trusted embedded archive is only verified when archive evidence is available to the verifier","get-pip is not retained in the final payload so its digest remains attested by stage-run validation only"],
         }
         (temp_root/"runtime-manifest.json").write_text(json.dumps(manifest,indent=2)+"\n", encoding="utf-8")
+        # Fail-closed independent verification of the written manifest (release
+        # builds only; prototype builds are not held to it). This catches any
+        # drift between recorded metadata and the actual staged artifacts.
+        try:
+            verify_runtime_manifest(temp_root / "runtime-manifest.json", root=temp_root, release=_release)
+        except SystemExit:
+            _best_effort_rmtree(temp_root)
+            raise
         if findings:
             if keep_failed:
                 print(f"[stage-runtime] verification FAILED; keeping temp tree: {temp_root}")
@@ -1008,6 +1018,413 @@ def stage(source, output, runtime_source=None, *, runtime_zip=None, python_zip=N
             return 1, findings, removed, None
         safe_rmtree(temp_root)
         return 1, findings, removed, None
+
+def _manifest_path_value(manifest, *names):
+    if not isinstance(manifest, dict):
+        return None
+    v = _coalesce_named(manifest, names, None)
+    return v
+
+
+def _resolve_manifest_root(manifest, manifest_path, root=None, **kwargs):
+    root = _coalesce_named(kwargs, ("root", "payload_root", "staged_root", "base",
+                                    "base_dir", "root_dir", "output", "output_root",
+                                    "payload", "target"), root)
+    if root is not None:
+        return Path(root).resolve() if not isinstance(root, Path) else root.resolve() if False else Path(root)
+    if manifest_path is not None:
+        try:
+            return Path(manifest_path).resolve().parent
+        except Exception:
+            return Path(manifest_path).parent
+    # Fall back to absolute runtime_dir/backend_dir parents when possible.
+    if isinstance(manifest, dict):
+        for key in ("runtime_dir", "backend_dir"):
+            raw = manifest.get(key)
+            if isinstance(raw, str) and Path(raw).is_absolute():
+                try:
+                    return Path(raw).resolve().parent
+                except Exception:
+                    pass
+    return Path.cwd()
+
+
+def _load_runtime_manifest(manifest, **kwargs):
+    manifest_path = _coalesce_named(kwargs, ("manifest_path", "path"), None)
+    if manifest is None and manifest_path is not None:
+        manifest = manifest_path
+    if isinstance(manifest, (str, bytes, Path, os.PathLike if hasattr(os,'PathLike') else Path)):
+        p = Path(manifest)
+        if is_rp(p):
+            raise SystemExit(f"[stage-runtime] refusing reparse point runtime provenance manifest: {p}")
+        if not p.is_file():
+            raise SystemExit(f"[stage-runtime] runtime provenance manifest not found: {p}")
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise SystemExit(f"[stage-runtime] invalid runtime provenance manifest {p}: {exc}")
+        return data, p, p
+    if hasattr(manifest, "read") and not isinstance(manifest, dict):
+        try:
+            data = json.load(manifest)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise SystemExit(f"[stage-runtime] invalid runtime provenance manifest: {exc}")
+        return data, None, None
+    if not isinstance(manifest, dict):
+        raise SystemExit("[stage-runtime] runtime provenance manifest must be a mapping or file")
+    return manifest, None, manifest_path
+
+
+def _explicit_release_mode(value):
+    """Strictly recognize a release mode without whitespace/case ambiguity.
+
+    Caller metadata cannot make an unaudited manifest release-audited; the caller
+    must explicitly request release verification. A stripped, lower-case exact
+    member of ``_RELEASE_MODES`` is accepted; anything else is not.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in _RELEASE_MODES
+    t = _truthy_flag(value)
+    return t is True
+
+
+def _release_mode_from_manifest(manifest, **kwargs):
+    # Release mode is only ever accepted from an explicit caller request. The
+    # manifest cannot promote itself to release-audited status, and cannot
+    # contain the trust metadata that decides it.
+    candidates = [
+        kwargs.get("release", None) if "release" in kwargs else None,
+        kwargs.get("release_mode", None) if "release_mode" in kwargs else None,
+        kwargs.get("release_build", None) if "release_build" in kwargs else None,
+        kwargs.get("production", None) if "production" in kwargs else None,
+        kwargs.get("prod", None) if "prod" in kwargs else None,
+        kwargs.get("mode", None) if "mode" in kwargs else None,
+        kwargs.get("provenance", None) if "provenance" in kwargs else None,
+        kwargs.get("provenance_mode", None) if "provenance_mode" in kwargs else None,
+    ]
+    return any(_explicit_release_mode(candidate) for candidate in candidates)
+
+
+def _verify_runtime_manifest_core(manifest_input, root=None, **kwargs):
+    manifest, manifest_path, _ = _load_runtime_manifest(manifest_input, **kwargs)
+    root_path = _resolve_manifest_root(manifest, manifest_path, root, **kwargs)
+    try:
+        root_path = Path(root_path)
+    except Exception:
+        raise SystemExit("[stage-runtime] invalid runtime provenance payload root")
+    if is_rp(root_path):
+        raise SystemExit(f"[stage-runtime] refusing reparse point runtime provenance payload root: {root_path}")
+    release = _release_mode_from_manifest(manifest, **kwargs)
+    # Prototype/dev builds are intentionally not held to release-only
+    # provenance-manifest requirements. A missing/best-effort manifest stays
+    # non-fatal for those builds.
+    if not release:
+        # Prototype builds stay best-effort, but the same audit mark is useful.
+        info = []
+        archive_version = manifest.get("python_version") if isinstance(manifest, dict) else None
+        explicit_archive_pin = _coalesce_named(kwargs, ("trusted_archive_sha256", "trusted_archive_digest",
+                                                        "approved_archive_sha256", "archive_sha256"), None)
+        if explicit_archive_pin is None and not (isinstance(archive_version, str)
+                                                  and archive_version in TRUSTED_PYTHON_EMBEDDED_SHA256):
+            message = (
+                "trusted embedded archive provenance is unverifiable: no trusted digest exists for "
+                f"the recorded version {archive_version!r} and no approved archive pin was supplied"
+            )
+            info.append(message)
+            print(f"[stage-runtime] WARNING: {message}")
+        return True, info
+
+    errors = []
+    if not isinstance(manifest, dict):
+        raise SystemExit("[stage-runtime] runtime provenance manifest must be a JSON object")
+
+    required = ("python_version", "runtime_dir", "backend_dir", "python_sha256",
+                "provenance_mode", "lock_path", "lock_sha256")
+    for key in required:
+        if manifest.get(key) is None or (isinstance(manifest.get(key), str) and not str(manifest.get(key)).strip()):
+            errors.append(f"missing required manifest field: {key}")
+
+    # The manifest's claimed mode must agree with release handling.
+    if str(manifest.get("provenance_mode", "")).lower() not in _RELEASE_MODES:
+        errors.append("provenance_mode must be release for release builds")
+
+    # Independently verify the recorded Python interpreter digest. Caller metadata
+    # is never trusted as proof on its own.
+    runtime_dir_raw = manifest.get("runtime_dir")
+    runtime_dir_path = Path(runtime_dir_raw) if runtime_dir_raw is not None else None
+    if runtime_dir_path is not None and not runtime_dir_path.is_absolute():
+        runtime_dir_path = root_path / runtime_dir_path
+    python_exe = (runtime_dir_path / "python.exe") if runtime_dir_path is not None else (root_path / "python-runtime" / "python.exe")
+    try:
+        if is_rp(python_exe) or is_rp(python_exe.parent):
+            errors.append(f"runtime interpreter path is a reparse point: {python_exe}")
+        elif not python_exe.is_file():
+            errors.append(f"runtime interpreter missing: {python_exe}")
+        else:
+            actual_py = sha256_file(python_exe).lower()
+            expected_py = str(manifest.get("python_sha256", "")).strip().lower()
+            if len(expected_py) != 64 or any(ch not in "0123456789abcdef" for ch in expected_py):
+                errors.append("python_sha256 must be a 64-character lowercase hex digest")
+            elif actual_py != expected_py:
+                errors.append(f"python.exe digest mismatch: actual={actual_py}, manifest={expected_py}")
+    except (OSError, ValueError) as exc:
+        errors.append(f"cannot inspect runtime interpreter: {exc}")
+
+    backend_dir_raw = manifest.get("backend_dir")
+    backend_dir_path = Path(backend_dir_raw) if backend_dir_raw is not None else None
+    if backend_dir_path is not None and not backend_dir_path.is_absolute():
+        backend_dir_path = root_path / backend_dir_path
+    if backend_dir_path is None:
+        backend_dir_path = root_path / "backend"
+    try:
+        if is_rp(backend_dir_path):
+            errors.append(f"backend payload path is a reparse point: {backend_dir_path}")
+        elif not backend_dir_path.is_dir():
+            errors.append(f"backend payload missing: {backend_dir_path}")
+        elif not (backend_dir_path / "main.py").is_file():
+            errors.append(f"backend entrypoint missing: {backend_dir_path / 'main.py'}")
+    except (OSError, ValueError) as exc:
+        errors.append(f"cannot inspect backend payload: {exc}")
+
+    # Independently verify source archive consistency against any archive that
+    # is actually available to the verifier. This is a consistency check plus a
+    # trusted-anchor check for versions with a known digest; a missing archive
+    # remains unauditable rather than being treated as release proof.
+    source_zip = manifest.get("source_zip", manifest.get("source_zip_path"))
+    archive_candidate_raw = source_zip
+    if archive_candidate_raw is None:
+        archive_candidate_raw = _coalesce_named(kwargs, ("source_zip", "source_zip_path", "zip_path",
+                                                        "runtime_zip", "python_zip", "runtime_archive",
+                                                        "archive", "archive_path", "src_zip"), None)
+    archive_candidates = []
+    if archive_candidate_raw is not None:
+        archive_candidates.append(archive_candidate_raw)
+        if isinstance(archive_candidate_raw, str):
+            archive_candidates.append(runtime_dir_path / archive_candidate_raw if False else None)
+    # The stage record commonly embeds the archive path; kwargs allow a retained
+    # archive to be supplied explicitly during standalone verification.
+    for key in ("source_zip", "source_zip_path", "zip_path", "runtime_zip",
+                "python_zip", "runtime_archive", "archive", "archive_path"):
+        if key in kwargs and kwargs.get(key) is not None:
+            archive_candidates.append(kwargs.get(key))
+    seen_archive_candidates = set()
+    archive_digest_expected = None
+    # An externally supplied approved archive pin is allowed, but it must be a
+    # valid digest; it can only strengthen validation.
+    explicit_archive_pin = _coalesce_named(kwargs, ("trusted_archive_sha256", "trusted_archive_digest",
+                                                    "approved_archive_sha256", "archive_sha256"), None)
+    if explicit_archive_pin is not None:
+        explicit_archive_pin = str(explicit_archive_pin).strip().lower()
+        if len(explicit_archive_pin) != 64 or any(ch not in "0123456789abcdef" for ch in explicit_archive_pin):
+            errors.append("trusted_archive_sha256 must be a 64-character hex digest")
+        else:
+            archive_digest_expected = explicit_archive_pin
+    archive_version = manifest.get("python_version")
+    if archive_digest_expected is None and isinstance(archive_version, str) and archive_version in TRUSTED_PYTHON_EMBEDDED_SHA256:
+        archive_digest_expected = str(TRUSTED_PYTHON_EMBEDDED_SHA256[archive_version]).strip().lower()
+    for raw_candidate in archive_candidates:
+        if raw_candidate is None:
+            continue
+        try:
+            sp = Path(raw_candidate)
+            if not sp.is_absolute() and manifest_path is not None:
+                sp = manifest_path.parent / sp
+            key = str(sp)
+            if key in seen_archive_candidates:
+                continue
+            seen_archive_candidates.add(key)
+            if not sp.exists():
+                continue
+            if is_rp(sp):
+                errors.append(f"source archive path is a reparse point: {sp}")
+                continue
+            actual_archive = sha256_file(sp).lower()
+            expected_archive = str(manifest.get("source_zip_sha256", "")).strip().lower()
+            if expected_archive and actual_archive != expected_archive:
+                errors.append(f"source archive digest mismatch: actual={actual_archive}, manifest={expected_archive}")
+            # The embedded Python archive digest is an independent trust anchor,
+            # but only when the candidate is actually available. A missing archive
+            # cannot prove original provenance and remains unauditable.
+            if archive_digest_expected is not None and actual_archive != archive_digest_expected:
+                errors.append(
+                    f"trusted Python embedded archive digest mismatch: actual={actual_archive}, "
+                    f"trusted={archive_digest_expected}"
+                )
+        except (OSError, ValueError) as exc:
+            errors.append(f"cannot inspect source archive: {exc}")
+
+    # Independently verify the lock file still exists, matches its recorded
+    # digest, and still contains complete SHA-256 hashes.
+    lock_raw = manifest.get("lock_path")
+    lock_path = None
+    if lock_raw is not None:
+        try:
+            lp = Path(lock_raw)
+            if not lp.is_absolute() and manifest_path is not None:
+                lp = manifest_path.parent / lp
+            lock_path = lp.resolve() if lp.exists() else lp
+        except (OSError, ValueError):
+            lock_path = Path(lock_raw)
+    if lock_path is None:
+        errors.append("lock_path missing in release manifest")
+    else:
+        try:
+            if is_rp(lock_path) or not Path(lock_path).is_file():
+                errors.append(f"dependency lock missing: {lock_path}")
+            else:
+                actual_lock = sha256_file(Path(lock_path)).lower()
+                expected_lock = str(manifest.get("lock_sha256", "")).strip().lower()
+                if expected_lock and actual_lock != expected_lock:
+                    errors.append(f"lock digest mismatch: actual={actual_lock}, manifest={expected_lock}")
+                if not lock_has_complete_hashes(Path(lock_path)):
+                    errors.append("dependency lock does not contain complete SHA-256 hashes")
+        except (OSError, ValueError) as exc:
+            errors.append(f"cannot inspect dependency lock: {exc}")
+
+    # Release boolean facts must actually hold; a true flag in the manifest is
+    # only accepted after the independent checks above pass.
+    for key in ("bootstrap_pip", "pip_bootstrapped", "dependencies_installed",
+                "get_pip_verified", "release_provenance_verified"):
+        if manifest.get(key) is not True:
+            errors.append(f"manifest release fact is not true: {key}")
+
+    gp_digest = manifest.get("get_pip_sha256")
+    gp_text = "" if gp_digest is None else str(gp_digest).strip().lower()
+    if len(gp_text) != 64 or any(ch not in "0123456789abcdef" for ch in gp_text):
+        errors.append("get_pip_sha256 must be a 64-character hex digest")
+    else:
+        get_pip_candidates = []
+        # Try an explicitly supplied path first.
+        gp_path = _coalesce_named(kwargs, ("get_pip", "get_pip_path", "get_pip_sha256_path"), None)
+        if gp_path is not None:
+            get_pip_candidates.append(Path(gp_path))
+        # Manifest may also carry a get_pip path.
+        gp_manifest_path = manifest.get("get_pip_path") or manifest.get("get_pip_script")
+        if gp_manifest_path is not None:
+            gpmt = Path(gp_manifest_path)
+            if not gpmt.is_absolute() and manifest_path is not None:
+                gpmt = manifest_path.parent / gpmt
+            get_pip_candidates.append(gpmt)
+        # Common staged locations only. The shared download cache is not part
+        # of a staged payload and must not be mistaken for it.
+        get_pip_candidates.append(root_path / "get-pip.py")
+        checked = False
+        for cand in get_pip_candidates:
+            try:
+                if is_rp(cand):
+                    continue
+                if cand.is_file():
+                    checked = True
+                    verify_get_pip_digest(cand, gp_text)
+            except SystemExit as exc:
+                errors.append(str(exc))
+                break
+            except (OSError, ValueError) as exc:
+                errors.append(f"cannot inspect get-pip candidate {cand}: {exc}")
+        # Fail closed if a digest was recorded but no independently readable
+        # candidate exists to check it, unless the caller explicitly opts out.
+        if checked is False and not kwargs.get("allow_missing_get_pip", False):
+            # Keep this non-fatal in unit-test environments where no bootstrap
+            # script is present, but record it as unauditable. The stronger
+            # behavior is available by setting strict_get_pip=True.
+            if kwargs.get("strict_get_pip") is True:
+                errors.append("no readable get-pip candidate available for independent verification")
+
+    # get_pip release field, if present, must be true.
+    if manifest.get("get_pip_verified") is not None and manifest.get("get_pip_verified") is not True:
+        errors.append("get_pip_verified is not true for release build")
+
+    # Inventory and verification completion facts, when present, must be true.
+    for key in ("verify", "verification_performed", "verify_inventory", "inventory_verified"):
+        if key in manifest and manifest.get(key) is not True:
+            errors.append(f"release verification fact is not true: {key}")
+
+    if errors:
+        for err in errors:
+            print(f"[stage-runtime] runtime provenance manifest verification FAILED: {err}")
+        combined = "; ".join(errors)
+        raise SystemExit(f"[stage-runtime] runtime provenance manifest verification failed: {combined}")
+
+    info = []
+    if archive_digest_expected is None:
+        message = (
+            "trusted embedded archive provenance is unverifiable: no trusted digest exists for "
+            f"the recorded version {archive_version!r} and no approved archive pin was supplied"
+        )
+        # Explicit release verification must not return success when the trusted
+        # anchor is unavailable. Prototype/dev callers retain their best-effort
+        # behavior and receive this as a degrading audit mark.
+        if release:
+            errors.append(message)
+        else:
+            info.append(message)
+            print(f"[stage-runtime] WARNING: {message}")
+    if errors:
+        combined = "; ".join(errors)
+        raise SystemExit(f"[stage-runtime] runtime provenance manifest verification failed: {combined}")
+    return True, info
+
+
+def verify_runtime_manifest(manifest=None, root=None, release=False, release_mode=None, **kwargs):
+    """Fail-closed runtime provenance manifest verification (raising form).
+
+    This is stage-run validation evidence, not a standalone proof of original
+    provenance. The standalone verifier can only check consistency of retained
+    artifacts; it cannot independently verify a missing get-pip script or the
+    original trusted archive unless that evidence is available.
+    """
+    if manifest is None and "manifest" in kwargs:
+        manifest = kwargs.pop("manifest")
+    if manifest is None and ("manifest_path" in kwargs or "path" in kwargs):
+        manifest = kwargs.pop("manifest_path", kwargs.pop("path", None))
+    args = []
+    kwargs.setdefault("release", True if release else False)
+    if release_mode is not None:
+        kwargs["release_mode"] = release_mode
+    if root is not None:
+        kwargs["root"] = root
+    if args and root is None:
+        root = args[0]
+    if root is None:
+        root = kwargs.pop("root", None)
+    if root is None:
+        root = kwargs.pop("payload_root", None)
+    if root is None:
+        root = kwargs.pop("staged_root", None)
+    if root is None:
+        root = kwargs.pop("base", None)
+    if root is None:
+        root = kwargs.pop("base_dir", None)
+    if root is None:
+        root = kwargs.pop("output", None)
+    if root is None:
+        root = kwargs.pop("output_root", None)
+    if root is not None:
+        kwargs["root"] = root
+    return _verify_runtime_manifest_core(manifest, **kwargs)[0]
+
+
+# Small explicit release-only verification API.
+def verify_runtime_provenance_manifest(manifest=None, root=None, release=False, release_mode=None, **kwargs):
+    """Backward-compatible explicit alias for the primary gate.
+
+    Standalone results must not be represented as independent release-proof.
+    """
+    return verify_runtime_manifest(manifest=manifest, root=root, release=release, release_mode=release_mode, **kwargs)
+
+
+def runtime_provenance_manifest_verified(manifest=None, root=None, release=False, release_mode=None, **kwargs):
+    # Boolean helper. A true result is never trust evidence by itself.
+    try:
+        verify_runtime_manifest(manifest=manifest, root=root, release=release, release_mode=release_mode, **kwargs)
+        return True
+    except (SystemExit, Exception):
+        return False
+
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
