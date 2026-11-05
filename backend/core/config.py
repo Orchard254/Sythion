@@ -202,14 +202,17 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Prototype / ambiguous identity must never inherit a production credential
-# from SYTHION_OLLAMA_API_KEY or backend/.env.
+# Prototype / ambiguous identity must never inherit a production credential or
+# selected model from SYTHION_OLLAMA_API_KEY, SYTHION_SELECTED_MODEL or
+# backend/.env.
 try:
     _secret_namespace, _is_prototype, _fail_closed, _ = resolve_secret_context()
     if _is_prototype or _fail_closed or _secret_namespace != "Sythion (Synth)":
         settings.ollama_api_key = ""
+        settings.selected_model = ""
 except Exception:
     settings.ollama_api_key = ""
+    settings.selected_model = ""
 
 
 def generate_control_token() -> str:
@@ -221,13 +224,23 @@ def resolve_selected_model() -> str:
     """Return the active selected Cloud model ID.
 
     Precedence:
-      1. Environment override (SYTHION_SELECTED_MODEL, dev convenience).
+      1. Environment override (SYTHION_SELECTED_MODEL, dev convenience),
+         only in an unambiguous production identity context.
       2. Persisted non-secret profile metadata (set during onboarding).
 
+    Prototype / ambiguous / fail-closed identities must never inherit a
+    production model id from the environment or ``backend/.env``; they only
+    ever read the isolated profile metadata under their own data directory.
     This is the single resolution point for the selected model; callers must
     not read Settings.selected_model directly.
     """
-    if settings.selected_model:
+    namespace, is_prototype, fail_closed, _ = resolve_secret_context()
+    allow_env_override = (
+        namespace == "Sythion (Synth)"
+        and not is_prototype
+        and not fail_closed
+    )
+    if allow_env_override and settings.selected_model:
         return settings.selected_model
     from .profile import get_selected_model
     return get_selected_model()
