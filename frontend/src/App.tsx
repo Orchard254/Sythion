@@ -88,6 +88,8 @@ function AppContent() {
   const error = useAppStore((s) => s.error);
   const dataMode = useAppStore((s) => s.dataMode);
   const setDataMode = useAppStore((s) => s.setDataMode);
+  const setConnectedStore = useAppStore((s) => s.setConnected);
+  const setErrorStore = useAppStore((s) => s.setError);
   const notify = useAppStore((s) => s.notify);
 
   const [setupNeeded, setSetupNeeded] = useState<boolean | null>(null);
@@ -120,6 +122,23 @@ function AppContent() {
   const setRoute = useNavStore((s) => s.setRoute);
 
   const health = useHealth();
+
+  // Keep the sticky handshake gate honest: a failed health check means the
+  // backend is no longer reachable, while a later successful one means it has
+  // recovered. Partial degradation (a successful check reporting degraded)
+  // does not drop the gate, so safe features stay available. The health query
+  // itself keeps polling (ignoreConnection) to observe both directions.
+  useEffect(() => {
+    if (dataMode === 'preview') return;
+    if (health.isError) {
+      setConnectedStore(false);
+      if (health.error?.message) setErrorStore(health.error.message);
+    } else if (health.data !== undefined) {
+      setConnectedStore(true);
+      setErrorStore(null);
+    }
+  }, [dataMode, health.isError, health.data, health.error, setConnectedStore, setErrorStore]);
+
   const runtimeHealth = useMemo(
     () =>
       assessRuntimeHealth({

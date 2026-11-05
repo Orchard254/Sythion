@@ -32,14 +32,14 @@ function useSource<T>(
   key: string,
   live: () => Promise<T>,
   demoValue: T,
-  options: { enabled?: boolean; refetchInterval?: number; staleMs?: number } = {}
+  options: { enabled?: boolean; refetchInterval?: number; staleMs?: number; ignoreConnection?: boolean } = {}
 ): SourceResult<T> {
   const preview = usePreview();
   const connected = useAppStore((s) => s.isConnected);
 
   // A query only runs once the bridge handshake has succeeded. Without this,
   // every panel would fire at a dead proxy while the offline screen is showing.
-  const canQuery = connected && !preview && (options.enabled ?? true);
+  const canQuery = (options.ignoreConnection || connected) && !preview && (options.enabled ?? true);
 
   const query = useQuery<T>({
     queryKey: [key],
@@ -70,7 +70,11 @@ function useSource<T>(
 export function useBackendLive(): boolean {
   const dataMode = useAppStore((s) => s.dataMode);
   const isConnected = useAppStore((s) => s.isConnected);
-  return dataMode === 'live' && isConnected;
+  const health = useHealth();
+  // A failed health check is definitive enough to stop uncertain mutations even
+  // when the original bridge handshake succeeded. Safe, read-only features that
+  // tolerate partial degradation keep working while the check is only degraded.
+  return dataMode === 'live' && isConnected && !health.isError;
 }
 
 export function useDataMode() {
@@ -80,7 +84,12 @@ export function useDataMode() {
 /* --- Runtime ------------------------------------------------------------- */
 
 export function useHealth() {
-  return useSource('health', api.healthService.check, demo.demoHealth, { refetchInterval: 20_000 });
+  // The health check keeps running even after the handshake gate drops so that
+  // a lost backend can be observed and a recovered one can flip the gate back.
+  return useSource('health', api.healthService.check, demo.demoHealth, {
+    refetchInterval: 20_000,
+    ignoreConnection: true,
+  });
 }
 
 export function useVersion() {
