@@ -3759,7 +3759,7 @@ async def setup_safe_settings(db=Depends(get_db)):
 @router.get("/setup/readiness")
 @router.get("/onboarding/readiness")
 @router.get("/first-run/readiness")
-async def setup_readiness(db=Depends(get_db)):
+async def setup_readiness(db=Depends(get_health_db)):
     """Authoritative first-run readiness based on backend checks and assets."""
     from backend.core.secrets import has_secret, OLLAMA_API_KEY
     from backend.core.config import resolve_selected_model, settings
@@ -3789,9 +3789,20 @@ async def setup_readiness(db=Depends(get_db)):
     except Exception:
         verified_inference_model = None
     inference_ok = bool(model) and verified_inference_model == model
+    # Truthful database connectivity for first-run readiness.
+    _database_connected = False
+    if db is not None:
+        try:
+            from sqlalchemy import text as _text
+            from sqlalchemy.exc import OperationalError, SQLAlchemyError
+
+            db.execute(_text("SELECT 1"))
+            _database_connected = True
+        except (OperationalError, SQLAlchemyError):
+            _database_connected = False
     checks = {
         "resources_ok": True,
-        "database_ok": True,
+        "database_ok": _database_connected,
         "sidecar_ok": True,
         "ollama_api_key_ok": key_ok,
         "ollama_health_ok": health.status == ModelHealth.HEALTHY,

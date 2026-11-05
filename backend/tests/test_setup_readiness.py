@@ -64,7 +64,9 @@ def _client(monkeypatch, provider=None, selected=None):
         pass
     monkeypatch.setattr(routes, "_validate_ollama_cloud_key", valid_key)
 
+    from backend.api.routes import get_health_db
     app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_health_db] = lambda: session
     import backend.main as backend_main
 
     previous_token = backend_main.control_token
