@@ -15,11 +15,35 @@ from ..core.secrets import resolve_ollama_api_key
 logger = logging.getLogger(__name__)
 
 
-# Explicit context window sent on every Ollama Cloud request. gemma4:31b
-# supports 262144 tokens (256K). We use 131072 (128K) as a practical default —
-# well above any realistic task context, while leaving headroom for KV-cache
-# overhead on Ollama Cloud infrastructure.
+# Requested native context option, not an authoritative model limit or a
+# guarantee that the provider honors it. Input token fit is not established here.
 NUM_CTX = 131072
+
+# Default-inert configured byte envelope for the final serialized HTTP
+# request body.  Zero means "disabled" and preserves historical behavior.
+# This is a conservative transport-size guard only; it is NOT a claim about
+# token usage, model context windows, or provider-side acceptance.
+DEFAULT_MAX_REQUEST_PAYLOAD_BYTES = 0
+MAX_REQUEST_PAYLOAD_BYTES = DEFAULT_MAX_REQUEST_PAYLOAD_BYTES
+
+
+class OllamaRequestPayloadTooLargeError(ValueError, RuntimeError):
+    """Final Ollama request body exceeds the configured byte envelope."""
+
+    def __init__(self, message, *, payload_bytes=None, max_payload_bytes=None,
+                 reason=None, **extra):
+        super().__init__(message)
+        self.reason = reason or "payload_byte_envelope_exceeded"
+        self.code = self.reason
+        self.error_code = self.reason
+        self.payload_bytes = payload_bytes
+        self.actual_bytes = payload_bytes
+        self.observed_bytes = payload_bytes
+        self.max_payload_bytes = max_payload_bytes
+        self.configured_limit = max_payload_bytes
+        self.limit = max_payload_bytes
+        for key, value in extra.items():
+            setattr(self, key, value)
 
 
 
@@ -41,7 +65,54 @@ def _friendly_http_error(exc: Exception) -> str:
         if status == 401:
             return "Invalid API key"
         return f"HTTP error {status}"
-    return str(exc)
+    return type(exc).__name__
+
+
+def _safe_httpx_cause(exc: Exception) -> Exception:
+    """Return a secret-free causal exception preserving only its httpx type.
+
+    The original request/response objects, URLs, headers, bodies, and message
+    text can contain credentials or sensitive transport details, so they are
+    deliberately not chained.  Callers still get enough structural identity to
+    classify the failure without exposing the provider exchange.
+    """
+    exc_type = type(exc)
+    status_code = None
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status_code = getattr(response, "status_code", None)
+
+    if exc_type is getattr(httpx, "HTTPStatusError", None) or issubclass(
+        exc_type, getattr(httpx, "HTTPStatusError", Exception)
+    ):
+        safe_response = httpx.Response(status_code if isinstance(status_code, int) else 500)
+        safe_request = httpx.Request("POST", "/")
+        try:
+            return exc_type("HTTP error", request=safe_request, response=safe_response)
+        except Exception:
+            return exc_type()
+
+    try:
+        return exc_type()
+    except Exception:
+        return exc_type(str(exc_type.__name__))
+
+
+def _raise_sanitized(exc: BaseException, cause: Optional[Exception] = None) -> None:
+    """Raise ``exc`` after clearing the implicit exception context.
+
+    Attaching ``cause`` sets ``__cause__`` and suppresses context printing, but
+    Python still records the in-flight exception in ``__context__`` where it can
+    leak request/response details.  Scrub it before propagation.
+    """
+    if cause is not None:
+        exc.__cause__ = cause
+        exc.__suppress_context__ = True
+    try:
+        raise exc
+    except BaseException:  # scrub regardless of exc concrete type
+        exc.__context__ = None
+        raise
 
 
 @dataclass(frozen=True)
@@ -53,7 +124,8 @@ class ProviderCapabilityProfile:
 class OllamaCloudAdapter:
     """Adapter for Ollama Cloud API."""
 
-    def __init__(self):
+    def __init__(self, max_request_payload_bytes=0):
+        self.max_request_payload_bytes = max_request_payload_bytes
         self.base_url = settings.ollama_cloud_base_url
         self.api_key = resolve_ollama_api_key(settings.ollama_api_key)
         self.selected_model = resolve_selected_model()
@@ -123,7 +195,10 @@ class OllamaCloudAdapter:
             data = response.json()
             return data.get("models", [])
         except Exception as e:
-            raise RuntimeError(f"Failed to list models: {_friendly_http_error(e)}")
+            _raise_sanitized(
+                RuntimeError(f"Failed to list models: {_friendly_http_error(e)}"),
+                _safe_httpx_cause(e),
+            )
 
     async def ensure_capabilities(self, model_id: Optional[str] = None) -> ProviderCapabilityProfile:
         """Fail closed until the Cloud model proves native tool support.
@@ -180,7 +255,10 @@ class OllamaCloudAdapter:
                 self._capability_failed_at_map[target_model] = time.monotonic()
                 if target_model == self.selected_model:
                     self._capability_failed_at = self._capability_failed_at_map[target_model]
-                raise ProviderCapabilityError(f"Model listing failed: {exc}") from exc
+                _raise_sanitized(
+                    ProviderCapabilityError(f"Model listing failed: {exc}"),
+                    exc,
+                )
 
             model_ids = {
                 mid
@@ -209,9 +287,10 @@ class OllamaCloudAdapter:
                         "parameters": {"type": "object", "properties": {}},
                     },
                 }],
-                "num_ctx": NUM_CTX,
+                "options": {"num_ctx": NUM_CTX},
                 "stream": False,
             }
+            self._enforce_final_request_payload_byte_envelope(payload)
             try:
                 client = await self._get_client()
                 response = await client.post("/api/chat", json=payload)
@@ -221,9 +300,12 @@ class OllamaCloudAdapter:
                 self._capability_failed_at_map[target_model] = time.monotonic()
                 if target_model == self.selected_model:
                     self._capability_failed_at = self._capability_failed_at_map[target_model]
-                raise ProviderCapabilityError(
-                    f"Native tool probe failed: {_friendly_http_error(exc)}"
-                ) from exc
+                _raise_sanitized(
+                    ProviderCapabilityError(
+                        f"Native tool probe failed: {_friendly_http_error(exc)}"
+                    ),
+                    _safe_httpx_cause(exc),
+                )
 
             if len(tool_calls) != 1 or tool_calls[0].get("function", {}).get("name") != probe_tool_name:
                 raise ProviderCapabilityError("Selected model did not return one valid native tool call")
@@ -238,6 +320,33 @@ class OllamaCloudAdapter:
                 self._capability_profile = profile
             return profile
 
+    def _request_payload_byte_limit(self, configured=None):
+        raw = self.max_request_payload_bytes if configured is None else configured
+        if raw is None:
+            return 0
+        try:
+            limit = int(raw)
+        except (TypeError, ValueError):
+            return 0
+        return limit if limit > 0 else 0
+
+    def _enforce_final_request_payload_byte_envelope(self, payload, configured=None):
+        limit = self._request_payload_byte_limit(configured)
+        if limit <= 0:
+            return None
+        request = httpx.Request("POST", "/api/chat", json=payload)
+        actual = len(request.content)
+        if actual > limit:
+            raise OllamaRequestPayloadTooLargeError(
+                "Final HTTP request payload exceeds configured byte envelope: "
+                f"{actual} bytes > {limit} bytes (conservative request-body bound; "
+                "not a token or context-window fit claim)",
+                payload_bytes=actual,
+                max_payload_bytes=limit,
+                reason="payload_byte_envelope_exceeded",
+            )
+        return actual
+
     async def execute_tool_call(
         self,
         messages: List[Dict[str, Any]],
@@ -250,7 +359,7 @@ class OllamaCloudAdapter:
         Args:
             messages: Conversation messages
             tools: Tool definitions in OpenAI format
-            max_tokens: Maximum output tokens
+            max_tokens: Maximum output tokens (None means the default 4000).
 
         Returns:
             Model response with tool calls
@@ -258,62 +367,79 @@ class OllamaCloudAdapter:
         Raises:
             RuntimeError: If the request fails
         """
+        output_tokens = 4000 if max_tokens is None else max_tokens
+        payload = {
+            "model": model_id or self.selected_model,
+            "messages": messages,
+            "tools": tools,
+            "options": {"num_predict": output_tokens, "num_ctx": NUM_CTX},
+            "tool_choice": "auto",
+            "stream": False,
+        }
+        self._enforce_final_request_payload_byte_envelope(payload)
+
         max_network_retries = 2
         for attempt in range(max_network_retries):
             try:
                 await self.ensure_capabilities()
                 client = await self._get_client()
-                
-                payload = {
-                    "model": model_id or self.selected_model,
-                    "messages": messages,
-                    "tools": tools,
-                    "max_tokens": max_tokens,
-                    "tool_choice": "auto",
-                    "num_ctx": NUM_CTX,
-                    "stream": False,
-                }
 
                 response = await client.post("/api/chat", json=payload)
                 response.raise_for_status()
                 return response.json()
 
+            except OllamaRequestPayloadTooLargeError:
+                raise
             except ProviderCapabilityError:
                 raise
             except httpx.HTTPStatusError as e:
-                # Capture response body for debugging - Ollama Cloud may return detailed error info
-                error_body = ""
-                try:
-                    error_body = e.response.text
-                except Exception:
-                    pass
-                
-                msg = f"HTTP error {e.response.status_code}"
-                if error_body:
-                    msg += f": {error_body}"
-                
-                if e.response.status_code == 429:
-                    raise RuntimeError(msg) from e
-                elif e.response.status_code == 401:
-                    raise RuntimeError(msg) from e
-                else:
-                    raise RuntimeError(msg) from e
-            except httpx.ReadTimeout:
-                raise RuntimeError(
-                    "Request timed out after 300s - the model is taking too long to respond"
+                status_code = getattr(getattr(e, "response", None), "status_code", None)
+                msg = (
+                    f"HTTP error {status_code}"
+                    if status_code is not None
+                    else "HTTP error"
                 )
-            except (httpx.ReadError, httpx.RemoteProtocolError, httpx.ConnectError, httpx.ConnectTimeout) as e:
+                if status_code == 429:
+                    _raise_sanitized(RuntimeError(msg), _safe_httpx_cause(e))
+                elif status_code == 401:
+                    _raise_sanitized(RuntimeError(msg), _safe_httpx_cause(e))
+                else:
+                    _raise_sanitized(RuntimeError(msg), _safe_httpx_cause(e))
+            except httpx.ReadTimeout as e:
+                _raise_sanitized(RuntimeError(
+                    "Request timed out after 300s - the model is taking too long to respond"
+                ), _safe_httpx_cause(e))
+            except httpx.ConnectTimeout as e:
                 if attempt < max_network_retries - 1:
-                    logger.warning("Transient network error (%s: %s) on Cloud LLM call; retrying in 1.5s with fresh client...", type(e).__name__, e)
+                    logger.warning(
+                        "Transient network error (%s) on Cloud LLM call; retrying in 1.5s with fresh client...",
+                        type(e).__name__,
+                    )
                     if self._client and not self._client.is_closed:
                         await self._client.aclose()
                     self._client = None
                     import asyncio
                     await asyncio.sleep(1.5)
                     continue
-                raise RuntimeError(f"Connection error after retry: {type(e).__name__}: {e}") from e
+                _raise_sanitized(RuntimeError("Connection timed out"), _safe_httpx_cause(e))
+            except (httpx.ReadError, httpx.RemoteProtocolError, httpx.ConnectError) as e:
+                if attempt < max_network_retries - 1:
+                    logger.warning(
+                        "Transient network error (%s) on Cloud LLM call; retrying in 1.5s with fresh client...",
+                        type(e).__name__,
+                    )
+                    if self._client and not self._client.is_closed:
+                        await self._client.aclose()
+                    self._client = None
+                    import asyncio
+                    await asyncio.sleep(1.5)
+                    continue
+                _raise_sanitized(RuntimeError("Connection error after retry"), _safe_httpx_cause(e))
             except Exception as e:
-                raise RuntimeError(f"Request failed: {type(e).__name__}: {str(e)}") from e
+                if isinstance(e, OllamaRequestPayloadTooLargeError):
+                    raise
+                _raise_sanitized(RuntimeError(f"Request failed: {type(e).__name__}"), _safe_httpx_cause(e))
+
 
 
     async def chat(
@@ -322,23 +448,35 @@ class OllamaCloudAdapter:
         max_tokens: int = 4000,
         timeout: float = 300.0,
         model_id: Optional[str] = None,
+        temperature: Optional[float] = None,
+        think=None,
+        format=None,
     ) -> Dict[str, Any]:
         """Plain chat completion with no tool calling.
 
         Used by background services (e.g. memory consolidation) that need a
         free-form LLM judgment rather than a decision loop tool call.
         ``model_id`` targets a specific registered model (evaluation);
-        defaults to the configured selection.
+        defaults to the configured selection. ``temperature``, when provided,
+        is forwarded under ``options.temperature``. ``max_tokens=None`` means
+        the default 4000.
         """
         try:
             client = await self._get_client()
+            output_tokens = 4000 if max_tokens is None else max_tokens
             payload = {
                 "model": model_id or self.selected_model,
                 "messages": messages,
-                "max_tokens": max_tokens,
-                "num_ctx": NUM_CTX,
+                "options": {"num_predict": output_tokens, "num_ctx": NUM_CTX},
                 "stream": False,
             }
+            if temperature is not None:
+                payload["options"]["temperature"] = temperature
+            if think is not None:
+                payload["think"] = think
+            if format is not None:
+                payload["format"] = format
+            self._enforce_final_request_payload_byte_envelope(payload)
             response = await client.post(
                 "/api/chat",
                 json=payload,
@@ -347,31 +485,31 @@ class OllamaCloudAdapter:
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as e:
-            # Capture response body for debugging
-            error_body = ""
-            try:
-                error_body = e.response.text
-            except Exception:
-                pass
-            
-            msg = f"HTTP error {e.response.status_code}"
-            if error_body:
-                msg += f": {error_body}"
-            
-            if e.response.status_code == 429:
-                raise RuntimeError(msg) from e
-            elif e.response.status_code == 401:
-                raise RuntimeError(msg) from e
-            else:
-                raise RuntimeError(msg) from e
-        except httpx.ReadTimeout:
-            raise RuntimeError(
-                f"Request timed out after {timeout}s - the model is taking too long to respond"
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            msg = (
+                f"HTTP error {status_code}"
+                if status_code is not None
+                else "HTTP error"
             )
+            if status_code == 429:
+                _raise_sanitized(RuntimeError(msg), _safe_httpx_cause(e))
+            elif status_code == 401:
+                _raise_sanitized(RuntimeError(msg), _safe_httpx_cause(e))
+            else:
+                _raise_sanitized(RuntimeError(msg), _safe_httpx_cause(e))
+        except httpx.ReadTimeout as e:
+            _raise_sanitized(RuntimeError(
+                f"Request timed out after {timeout}s - the model is taking too long to respond"
+            ), _safe_httpx_cause(e))
+        except httpx.ConnectTimeout as e:
+            _raise_sanitized(RuntimeError("Connection timed out"), _safe_httpx_cause(e))
         except httpx.ConnectError as e:
-            raise RuntimeError(f"Connection error: {e}") from e
+            _raise_sanitized(RuntimeError("Connection error"), _safe_httpx_cause(e))
         except Exception as e:
-            raise RuntimeError(f"Request failed: {type(e).__name__}: {str(e)}") from e
+            if isinstance(e, OllamaRequestPayloadTooLargeError):
+                raise
+            _raise_sanitized(RuntimeError(f"Request failed: {type(e).__name__}"), _safe_httpx_cause(e))
+
 
     async def close(self):
         """Close the HTTP client."""
@@ -465,9 +603,18 @@ class OllamaCloudProvider:
         messages: List[Dict[str, Any]],
         max_tokens: int = 4000,
         timeout: float = 300.0,
+        temperature: Optional[float] = None,
+        think=None,
+        format=None,
     ) -> Dict[str, Any]:
-        return await get_adapter().chat(messages, max_tokens=max_tokens,
-                                        timeout=timeout)
+        return await get_adapter().chat(
+            messages,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            temperature=temperature,
+            think=think,
+            format=format,
+        )
 
 
 _provider: Optional[OllamaCloudProvider] = None

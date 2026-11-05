@@ -39,7 +39,7 @@ export function Sidebar({
 }) {
   const agentState = agent?.state ?? 'unknown';
   const stateTone = AGENT_STATE_TONE[agentState] ?? 'idle';
-  const runtimeTone = preview ? 'warn' : connected ? (HEALTH_DOT[overallHealth ?? 'UNKNOWN']) : 'danger';
+  const runtimeTone = preview ? 'warn' : connected ? (runtimeState === 'degraded' ? 'warn' : (HEALTH_DOT[overallHealth ?? 'UNKNOWN'])) : 'danger';
 
   return (
     <>
@@ -100,20 +100,24 @@ export function Sidebar({
                     ? 'Runtime online'
                     : runtimeState === 'checking'
                       ? 'Checking runtime…'
-                      : runtimeState === 'stale'
-                        ? 'Runtime unconfirmed'
-                        : 'Backend offline'}
+                      : runtimeState === 'degraded'
+                        ? 'Runtime degraded'
+                        : runtimeState === 'stale'
+                          ? 'Runtime unconfirmed'
+                          : 'Backend offline'}
               </span>
               <span className="runtime-card__meta">
                 {preview
                   ? 'Demonstration data'
                   : runtimeState === 'healthy'
                     ? `${humanize(agentState)} agent · v${version ?? '—'}`
-                    : runtimeState === 'stale'
-                      ? `Last seen ${runtimeAgeMs !== null ? `${Math.round(runtimeAgeMs / 1000)}s ago` : 'recently'} · may be offline`
-                      : runtimeState === 'checking'
-                        ? 'Confirming connection…'
-                        : 'No connection to local backend'}
+                    : runtimeState === 'degraded'
+                      ? 'Backend is serving with a degraded startup'
+                      : runtimeState === 'stale'
+                        ? `Last seen ${runtimeAgeMs !== null ? `${Math.round(runtimeAgeMs / 1000)}s ago` : 'recently'} · may be offline`
+                        : runtimeState === 'checking'
+                          ? 'Confirming connection…'
+                          : 'No connection to local backend'}
               </span>
             </span>
           </button>

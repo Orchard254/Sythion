@@ -32,6 +32,7 @@ DOWNLOAD_DIR = APP_DIR / "build" / "staging" / "python-downloads"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from verify_release_payload import (  # noqa: E402
     payload_ignore_patterns,
+    payload_copy_ignore,
     prune_tree,
 )
 
@@ -186,7 +187,7 @@ def stage_backend() -> None:
         src_backend,
         dst_backend,
         dirs_exist_ok=True,
-        ignore=shutil.ignore_patterns(*payload_ignore_patterns()),
+        ignore=payload_copy_ignore(),
     )
     removed = prune_tree(dst_backend)
     if removed:

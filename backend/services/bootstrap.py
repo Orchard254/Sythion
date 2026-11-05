@@ -21,15 +21,37 @@ from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
+STATUS_COMPLETED = "completed"
+STATUS_FAILED = "failed"
+STATUS_SKIPPED = "skipped"
+
+
+def _stage_result(name: str, status: str, detail: Any = None,
+                  error: str = None) -> Dict[str, Any]:
+    entry: Dict[str, Any] = {"stage": name, "status": status}
+    if detail is not None:
+        entry["detail"] = detail
+    if error is not None:
+        entry["error"] = error
+    return entry
+
 
 def run_startup_sequence(db_manager) -> Dict[str, Any]:
     """Execute ordered startup steps; failures are logged, never fatal.
 
     Returns {'order': [...], 'recovery': ..., 'migration': ...,
-             'agent_id': ..., 'wake_recovery': ...}.
+             'agent_id': ..., 'wake_recovery': ..., 'stage_statuses': {...},
+             'stages': [...], 'startup_sequence_status': ...}.
     """
     order: list[str] = []
     result: Dict[str, Any] = {"order": order}
+    stage_statuses: Dict[str, str] = {}
+    stages: list[Dict[str, Any]] = []
+
+    def _record(stage: str, status: str, detail: Any = None,
+                error: str = None) -> None:
+        stage_statuses[stage] = status
+        stages.append(_stage_result(stage, status, detail=detail, error=error))
 
     # 1. Task/lease recovery ---------------------------------------------------
     order.append("task_recovery")
@@ -45,11 +67,13 @@ def run_startup_sequence(db_manager) -> Dict[str, Any]:
             result["recovery"] = orchestrator.recover_all()
             if result["recovery"]:
                 logger.info("Startup goal recovery: %s", result["recovery"])
+            _record("task_recovery", STATUS_COMPLETED, detail=result["recovery"])
         finally:
             session.close()
     except Exception as exc:
         logger.warning(f"Startup goal recovery skipped due to error: {exc}")
         result["recovery"] = []
+        _record("task_recovery", STATUS_FAILED, error=str(exc))
 
     # 2. Goal migration (legacy sunset) ----------------------------------------
     order.append("goal_migration")
@@ -62,11 +86,13 @@ def run_startup_sequence(db_manager) -> Dict[str, Any]:
             result["migration"] = report
             if report["migrated"] or report["skipped"]:
                 logger.info("Legacy objective migration: %s", report)
+            _record("goal_migration", STATUS_COMPLETED, detail=report)
         finally:
             session.close()
     except Exception as exc:
         logger.warning(f"Legacy objective migration skipped due to error: {exc}")
         result["migration"] = {"migrated": [], "skipped": []}
+        _record("goal_migration", STATUS_FAILED, error=str(exc))
 
     # 3. Main-agent initialization ----------------------------------------------
     order.append("agent_init")
@@ -79,10 +105,12 @@ def run_startup_sequence(db_manager) -> Dict[str, Any]:
             agent = MainAgentService(session).get_or_create()
             agent_id = agent.agent_id
             logger.info("Main agent %s state=%s", agent_id, agent.state)
+            _record("agent_init", STATUS_COMPLETED, detail=agent_id)
         finally:
             session.close()
     except Exception as exc:
         logger.warning(f"Main agent initialization skipped due to error: {exc}")
+        _record("agent_init", STATUS_FAILED, error=str(exc))
     result["agent_id"] = agent_id
 
     # 4. Wake recovery (BEFORE worker start; nothing executes here) --------------
@@ -102,14 +130,124 @@ def run_startup_sequence(db_manager) -> Dict[str, Any]:
                 if result["wake_recovery"]["pending"]:
                     logger.info("Durable wakes pending after recovery: %s",
                                 result["wake_recovery"])
+                _record("wake_recovery", STATUS_COMPLETED,
+                        detail=result["wake_recovery"])
             finally:
                 session.close()
         except Exception as exc:
             logger.warning(f"Wake recovery skipped due to error: {exc}")
             result["wake_recovery"] = {"reclaimed": 0, "failed_reclaims": 0,
                                        "pending": 0}
+            _record("wake_recovery", STATUS_FAILED, error=str(exc))
     else:
         result["wake_recovery"] = {"reclaimed": 0, "failed_reclaims": 0,
                                    "pending": 0}
+        # Agent identity was never established, so wake recovery could not run.
+        prior = stage_statuses.get("agent_init")
+        if prior == STATUS_FAILED:
+            _record("wake_recovery", STATUS_SKIPPED,
+                    error="main agent unavailable")
+        else:
+            _record("wake_recovery", STATUS_SKIPPED,
+                    error="main agent unavailable")
+
+    # Aggregate status is truthful: any non-completed stage means the startup
+    # sequence did not fully succeed, even though individual failures are
+    # non-fatal and never abort the ordered sequence.
+    if all(status == STATUS_COMPLETED for status in stage_statuses.values()):
+        aggregate = STATUS_COMPLETED
+    else:
+        aggregate = "failed"
+
+    result["stage_statuses"] = stage_statuses
+    result["stages"] = stages
+    result["startup_sequence_status"] = aggregate
+    # Common aliases for callers / health surfaces.
+    result["status"] = aggregate
+    result["overall_status"] = aggregate
+    result["aggregate_status"] = aggregate
 
     return result
+
+
+_STARTUP_STATUS_KEYS = (
+    "startup_sequence_status",
+    "startup_status",
+    "status",
+    "overall_status",
+    "startup_overall_status",
+    "aggregate_status",
+    "startup_aggregate_status",
+)
+
+
+def _startup_alias_value(boot: Dict[str, Any], *keys: str) -> Any:
+    """Return the first present, non-empty value for any of ``keys``."""
+    for key in keys:
+        if key in boot:
+            value = boot.get(key)
+            if value is not None and value != "":
+                return value
+    return None
+
+
+def _canonical_startup_status(boot: Any) -> str:
+    """Resolve the canonical startup aggregate/status from a boot payload.
+
+    Single fallback precedence shared by every consumer of the startup boot
+    result: ``startup_sequence_status`` -> ``startup_status`` -> ``status`` ->
+    ``overall_status`` -> ``startup_overall_status`` -> ``aggregate_status`` ->
+    ``startup_aggregate_status`` -> ``"unknown"``.  Missing/empty values never
+    fabricate ``completed``/``failed``; they stay ``"unknown"``.
+    """
+    if not isinstance(boot, dict):
+        return "unknown"
+    for key in _STARTUP_STATUS_KEYS:
+        value = boot.get(key)
+        if value is not None and value != "":
+            return str(value)
+    return "unknown"
+
+
+def startup_status_projection(boot: Any = None) -> Dict[str, Any]:
+    """Project a raw startup boot payload into canonical + compatibility fields.
+
+    The projection is pure: it performs no database probing and changes no
+    input.  Consumers keep their own database connectivity checks.  Compatibility
+    alias fields are preserved (falling back to the canonical value when absent)
+    so external schemas do not change.
+    """
+    if not isinstance(boot, dict):
+        boot = {}
+    canonical = _canonical_startup_status(boot)
+
+    overall_value = _startup_alias_value(
+        boot, "overall_status", "startup_overall_status"
+    )
+    aggregate_value = _startup_alias_value(
+        boot, "aggregate_status", "startup_aggregate_status"
+    )
+    overall = str(overall_value) if overall_value is not None else canonical
+    aggregate = str(aggregate_value) if aggregate_value is not None else canonical
+
+    stages = boot.get("stage_statuses")
+    if not isinstance(stages, dict):
+        stages = boot.get("startup_stage_statuses")
+    if not isinstance(stages, dict):
+        stages = {}
+
+    return {
+        # Canonical aggregate/status.
+        "startup_sequence_status": canonical,
+        "startup_status": canonical,
+        "status": canonical,
+        "canonical_status": canonical,
+        # Compatibility aliases (preserved, never silently dropped).
+        "overall_status": overall,
+        "startup_overall_status": overall,
+        "aggregate_status": aggregate,
+        "startup_aggregate_status": aggregate,
+        # Stage detail (read-only projection).
+        "stage_statuses": stages,
+        "startup_stage_statuses": stages,
+    }

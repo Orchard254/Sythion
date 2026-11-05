@@ -25,8 +25,10 @@ from pydantic import BaseModel, Field, ValidationError
 
 try:
     from backend.models.database import Session, Skill, SkillVersion, Task
+    from backend.api.schemas import ToolOutput
 except ImportError:
     from models.database import Session, Skill, SkillVersion, Task
+    from api.schemas import ToolOutput
 from sqlalchemy.orm import Session, sessionmaker
 
 logger = logging.getLogger(__name__)
@@ -251,17 +253,71 @@ def validate_definition(
     return errors
 
 
+def _policy_requirements(tool: Any) -> Optional[Dict[str, Any]]:
+    """Return tool metadata authoritatively, or None when it is missing/malformed."""
+    if tool is None:
+        return None
+    getter = getattr(tool, "get_policy_requirements", None)
+    if not callable(getter):
+        return None
+    try:
+        reqs = getter()
+    except Exception:
+        return None
+    return reqs if isinstance(reqs, dict) else None
+
+
+def _policy_value_is_bool(reqs: Dict[str, Any], key: str) -> bool:
+    return key not in reqs or isinstance(reqs.get(key), bool)
+
+
+def _is_state_changing_policy(reqs: Any) -> bool:
+    """Fail closed when policy metadata is absent, malformed, or state-changing."""
+    if not isinstance(reqs, dict):
+        return True
+    if any(
+        not _policy_value_is_bool(reqs, key)
+        for key in ("mutating", "destructive", "read_only", "app_internal", "requires_confirmation")
+    ):
+        return True
+    risk_level = reqs.get("risk_level", "none")
+    if risk_level not in {"none", "low", None}:
+        # Unknown risk levels are treated as state-changing/untrusted.
+        return True
+    if reqs.get("mutating") is True or reqs.get("destructive") is True:
+        return True
+    if reqs.get("read_only") is False:
+        return True
+    return False
+
+
 def allowed_tool_names(tool_executor: Any) -> Dict[str, Any]:
-    """Return the policy-filtered read-only tool subset skills may call."""
+    """Return the policy-filtered read-only tool subset skills may call.
+
+    Skills have no trusted task action/grant boundary today, so any tool
+    whose authoritative metadata is missing, malformed, or state-changing is
+    excluded.  ``app_internal`` no longer exempts a mutating tool.
+    """
     allowed = {}
+    try:
+        from backend.tools.executor import is_reviewed_safe_builtin
+    except Exception:
+        try:
+            from tools.executor import is_reviewed_safe_builtin
+        except Exception:
+            is_reviewed_safe_builtin = None
     for name in tool_executor.list_tools():
         tool = tool_executor.get_tool(name)
         if not tool:
             continue
-        reqs = tool.get_policy_requirements()
-        if reqs.get("mutating") or reqs.get("destructive"):
-            if not reqs.get("app_internal"):
-                continue
+        # Name-only allowlists and self-reported metadata are not authoritative.
+        if callable(is_reviewed_safe_builtin) and not is_reviewed_safe_builtin(tool):
+            continue
+        reqs = _policy_requirements(tool)
+        if reqs is None:
+            continue
+        if _is_state_changing_policy(reqs):
+            continue
         if reqs.get("requires_confirmation"):
             continue
         if reqs.get("risk_level") in {"medium", "high"}:
@@ -503,14 +559,38 @@ async def execute_skill(
         except ValueError as exc:
             return SkillRunOutcome(success=False, error=str(exc))
 
-        result = await tool_executor.execute_tool(
-            tool_name=step.tool,
-            input_data=resolved,
-            policy_context=PolicyContext(
-                direct_user_instruction=False,
-                cancelled_check=_is_cancelled,
-            ),
-        )
+        tool = tool_executor.get_tool(step.tool)
+        tool_reqs = _policy_requirements(tool)
+        step_mutating = _is_state_changing_policy(tool_reqs)
+
+        # Skills do not currently have a trusted task action/grant boundary for
+        # any non-read-only, privacy/screen/UI, risky, confirmation-requiring,
+        # state-changing, or unclassified tool.  Fail closed before any effect
+        # can occur; approvals/status/app_internal bits are not consent and do
+        # not widen dispatch.
+        policy_allowed = allowed_tool_names(tool_executor)
+        if tool is None or step.tool not in policy_allowed or step_mutating:
+            if step_mutating or _policy_requirements(tool) is None:
+                denial_code = "SKILL_STATE_CHANGING_TOOL_DENIED"
+            else:
+                denial_code = "SKILL_TOOL_NOT_ALLOWED"
+            result = ToolOutput(
+                success=False,
+                error={
+                    "code": denial_code,
+                    "message": "skill dispatch is fail-closed until a trusted task action/grant boundary exists",
+                },
+                duration_ms=0,
+            )
+        else:
+            result = await tool_executor.execute_tool(
+                tool_name=step.tool,
+                input_data=resolved,
+                policy_context=PolicyContext(
+                    direct_user_instruction=False,
+                    cancelled_check=_is_cancelled,
+                ),
+            )
 
         model_summary = result.model_summary
         if not model_summary and result.data is not None:
@@ -528,7 +608,7 @@ async def execute_skill(
                 "error": result.error,
                 "evidence": result.evidence,
                 "duration_ms": result.duration_ms,
-                "mutating": False,
+                "mutating": step_mutating,
                 "verification": "passed" if result.success else "failed",
                 "via_skill": skill_id,
                 "skill_version": version.version,

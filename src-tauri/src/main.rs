@@ -588,6 +588,13 @@ fn main() {
         }
     }
 
+    // Build the Tauri context once so the shell can identify whether this is a
+    // separately generated prototype build. A prototype uses an isolated default
+    // profile, so it can never merge with or overwrite the production profile.
+    let app_context = tauri::generate_context!();
+    let product_name = app_context.config().product_name.clone();
+    let identifier = Some(app_context.config().identifier.clone());
+
     // Resolve the profile directory ONCE, before anything is built.
     //
     // Tauri turns a failing setup hook into a panic, and a release build is a
@@ -595,13 +602,13 @@ fn main() {
     // the application would simply never appear. A conflicting override
     // configuration is therefore rejected here, where the reason can still be
     // shown to the user.
-    let profile_dir = match sidecar::resolve_data_dir() {
+    let profile_dir = match sidecar::resolve_data_dir_for_build(product_name.as_deref(), identifier.as_deref()) {
         Ok(dir) => dir,
         Err(e) => {
             // Persist the reason next to the profile the operator asked for.
             let diag_dir = std::env::var_os(sidecar::DATA_DIR_ENV)
                 .map(std::path::PathBuf::from)
-                .unwrap_or_else(sidecar::default_data_dir);
+                .unwrap_or_else(|| sidecar::default_data_dir_for(product_name.as_deref(), identifier.as_deref()));
             append_log_in(
                 &diag_dir,
                 "sythion-shell.log",
@@ -637,7 +644,13 @@ fn main() {
             let started: Result<(), String> = (|| {
                 register_stop_shortcut(app);
                 let app_handle = app.handle().clone();
-                let child = sidecar::spawn_sidecar(&app_handle, &profile_dir).map_err(|e| {
+                let child = sidecar::spawn_sidecar_for_build(
+                    &app_handle,
+                    &profile_dir,
+                    product_name.as_deref(),
+                    identifier.as_deref(),
+                )
+                .map_err(|e| {
                     format!("the local runtime could not be started: {e}")
                 })?;
                 *app.state::<AppState>().child.lock().unwrap() = Some(child);
@@ -672,7 +685,7 @@ fn main() {
             }
             Ok(())
         })
-        .build(tauri::generate_context!());
+        .build(app_context);
 
     let app = match app {
         Ok(app) => app,

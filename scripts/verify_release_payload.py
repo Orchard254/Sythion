@@ -368,6 +368,78 @@ def prohibited_file_reason(name: str) -> Optional[str]:
     return None
 
 
+def secret_material_file_reason(name: str) -> Optional[str]:
+    """Filename-only classification of files that must never be read, hashed or
+    copied under any circumstance.
+
+    This is the SINGLE source of truth for "secret material" classification used
+    by every consuming code path (the scanner, the staged-copy ignore callback,
+    the prune pass and the backend-mirror comparison). No file content is ever
+    consulted: the classification is based entirely on the file name.
+
+    The accepted placeholder-only ``.env.example`` is deliberately NOT
+    classified as secret material: it may ship, but only when all of its values
+    are placeholders (checked separately by the content scan).
+    """
+    # Only the EXACT lowercase placeholder example is exempt; mixed-case
+    # (or otherwise disguised) forms are treated as secret material.
+    if name == ".env.example":
+        return None
+
+    normalized = name.lower()
+    if normalized in {x.lower() for x in PROHIBITED_ENV_FILES}:
+        return "local environment file (may contain developer credentials)"
+    if normalized == ".env":
+        return "local environment file (may contain developer credentials)"
+    if normalized.startswith(".env."):
+        return "local environment file (may contain developer credentials)"
+    for suffix in PROHIBITED_KEY_SUFFIXES:
+        if normalized.endswith(suffix.lower()):
+            return "private key material"
+    return None
+
+
+def payload_copy_ignore():
+    """Return a ``shutil.copytree`` ignore callable backed by the shared
+    classifier.
+
+    This is a drop-in ``ignore`` argument: ``shutil.copytree(..., ignore=payload_copy_ignore())``.
+    It uses filename-only classification through :func:`secret_material_file_reason`
+    together with the existing policy rules, so prohibited secret-material files
+    are classified BEFORE they are ever copied.
+    """
+
+    def _ignore(directory, names):
+        ignored = set()
+        for name in names:
+            # Filename-only classifier first.
+            if secret_material_file_reason(name) is not None:
+                ignored.add(name)
+                continue
+            if name in PROHIBITED_STATE_DIRS:
+                ignored.add(name)
+                continue
+            if name in DEV_ONLY_DIR_NAMES:
+                ignored.add(name)
+                continue
+            if name in PROHIBITED_STATE_FILES or name in PROHIBITED_ENV_FILES:
+                ignored.add(name)
+                continue
+            if name.endswith(PROHIBITED_DB_SUFFIXES) or name.endswith(PROHIBITED_BUILD_SUFFIXES):
+                ignored.add(name)
+                continue
+            if name.endswith(PROHIBITED_KEY_SUFFIXES):
+                ignored.add(name)
+                continue
+            for suffix in PROHIBITED_KEY_SUFFIXES:
+                if name.endswith(suffix):
+                    ignored.add(name)
+                    break
+        return ignored
+
+    return _ignore
+
+
 def prohibited_dir_reason(name: str) -> Optional[str]:
     """Return why a directory may not ship, or None when it may."""
     if name in PROHIBITED_STATE_DIRS:
@@ -444,8 +516,31 @@ def scan_tree(root: Path, *, follow_third_party_names: bool = True) -> List[Find
         relative = path.relative_to(root).as_posix()
         scope = _scope_of(parts)
 
+        # Skip any descendant of a secret-material ancestor BEFORE reading,
+        # hashing or reporting child violations.
+        if len(parts) > 1 and any(
+            secret_material_file_reason(part) is not None for part in parts[:-1]
+        ):
+            continue
+
         if path.is_dir():
             if scope == "third-party":
+                # Vendored policy: only environment files are a leak signal.
+                if secret_material_file_reason(path.name) is not None and \
+                        path.name.lower().startswith(".env"):
+                    findings.append(
+                        Finding(
+                            path=relative,
+                            reason=secret_material_file_reason(path.name),
+                            kind="prohibited-directory",
+                        )
+                    )
+                continue
+            sec_reason = secret_material_file_reason(path.name)
+            if sec_reason is not None:
+                findings.append(
+                    Finding(path=relative, reason=sec_reason, kind="prohibited-directory")
+                )
                 continue
             reason = prohibited_dir_reason(path.name)
             if reason:
@@ -457,6 +552,21 @@ def scan_tree(root: Path, *, follow_third_party_names: bool = True) -> List[Find
         if scope != "third-party" and any(
             prohibited_dir_reason(part) for part in parts[:-1]
         ):
+            continue
+
+        # Classify secret/material files by NAME first, before ANY stat/read.
+        # A prohibited secret-material file must never be opened for its
+        # content; the violation is reported filename-only.
+        sec_reason = secret_material_file_reason(path.name)
+        if sec_reason is not None:
+            if scope == "third-party" and not path.name.lower().startswith(".env"):
+                # Preserve the accepted policy: only an environment file is a leak
+                # signal in vendored code. Other secret-named files (e.g. CA
+                # bundles) are not reported, but they are NEVER opened either.
+                continue
+            findings.append(
+                Finding(path=relative, reason=sec_reason, kind="prohibited-file")
+            )
             continue
 
         reason = prohibited_file_reason(path.name)
@@ -480,7 +590,7 @@ def scan_tree(root: Path, *, follow_third_party_names: bool = True) -> List[Find
             if path.stat().st_size > _MAX_SCANNED_BYTES:
                 continue
             text = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
+        except (OSError, UnicodeError):
             continue
         findings.extend(
             secret_findings_in_text(relative, text, code_file=_is_code_file(path))
@@ -515,6 +625,13 @@ def prune_tree(root: Path) -> List[str]:
                 removed.append(relative + "/")
             continue
 
+        if scope != "third-party" and secret_material_file_reason(path.name) is not None:
+            try:
+                path.unlink()
+                removed.append(relative)
+            except OSError:
+                pass
+            continue
         if prohibited_file_reason(path.name):
             if scope == "third-party":
                 # Reported, never deleted: a vendored package may legitimately
@@ -538,6 +655,9 @@ def payload_ignore_patterns() -> List[str]:
     patterns = set(PROHIBITED_STATE_DIRS)
     patterns.update(DEV_ONLY_DIR_NAMES)
     patterns.update(PROHIBITED_ENV_FILES)
+    # Note: this flat pattern set is a legacy/compatibility convenience only.
+    # It cannot express the exact-cased .env.* exclusion policy, so primary
+    # copy protection is `payload_copy_ignore()` (used by stage_backend).
     patterns.update(PROHIBITED_STATE_FILES)
     for suffix in PROHIBITED_DB_SUFFIXES:
         patterns.add("*" + suffix)
@@ -550,8 +670,7 @@ def payload_ignore_patterns() -> List[str]:
 
 def backend_mirror_findings(source: Path, mirror: Path) -> List[Finding]:
     """Compare the stageable backend files in both directions, without modifying them."""
-    import fnmatch
-
+    import os
     source, mirror = Path(source), Path(mirror)
     findings = []
     for root, label in ((source, "source"), (mirror, "staged")):
@@ -561,18 +680,30 @@ def backend_mirror_findings(source: Path, mirror: Path) -> List[Finding]:
     if findings:
         return findings
 
-    patterns = payload_ignore_patterns()
+    # Use the SAME copy-time ignore policy as ``payload_copy_ignore()`` so the
+    # set of "stageable" files here cannot drift from what gets copied. The
+    # flat glob patterns were a legacy approximation and disagreed with the
+    # exact classifier on several filenames.
+    ignore = payload_copy_ignore()
 
     def included(root: Path) -> set[Path]:
         files = set()
-        for path in root.rglob("*"):
-            relative = path.relative_to(root)
-            if any(any(fnmatch.fnmatch(part, pattern) for pattern in patterns)
-                   for part in relative.parts):
-                continue
-            if any(prohibited_dir_reason(part) for part in relative.parts[:-1]):
-                continue
-            if path.is_file() and not prohibited_file_reason(path.name):
+        for dirpath, dirs, names in os.walk(root):
+            # Prune directories the exact policy excludes - never descend.
+            ignored_dirs = ignore(dirpath, list(dirs))
+            dirs[:] = [name for name in dirs if name not in ignored_dirs]
+            for name in names:
+                if name in ignore(dirpath, [name]):
+                    continue
+                candidate = Path(dirpath) / name
+                if not candidate.is_file():
+                    continue
+                relative = candidate.relative_to(root)
+                # Defense in depth: the classifier above already excludes
+                # secret-material names, but never let a misclassified path
+                # slip through into a hash comparison.
+                if any(secret_material_file_reason(part) is not None for part in relative.parts):
+                    continue
                 files.add(relative)
         return files
 

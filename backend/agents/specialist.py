@@ -221,6 +221,57 @@ class SpecialistRuntime:
                 f"{self.agent_id} (allowed: {sorted(self.allowed_tools)})"
             )
         self._enforce_budget()
+
+        # Narrow fail-closed containment: specialist direct ToolExecutor actions
+        # cannot cause state-changing or privacy-sensitive effects until a
+        # trusted task/consent fence exists.  Metadata is authoritative; missing
+        # or malformed metadata fails closed.  Model events/status are NOT consent.
+        # Preserve the usual specialist failure contract (failed ToolOutput, no
+        # exception) so higher-level runners can aggregate the denied action
+        # without changing mutation-state semantics.
+        try:
+            from backend.api.schemas import ToolOutput
+        except ImportError:
+            from api.schemas import ToolOutput
+
+        tool = self.executor.get_tool(tool_name)
+        reqs = _policy_requirements(tool)
+        try:
+            from backend.tools.executor import is_reviewed_safe_builtin
+        except Exception:
+            try:
+                from tools.executor import is_reviewed_safe_builtin
+            except Exception:
+                is_reviewed_safe_builtin = lambda _t: False
+        # Specialist dispatch must mirror the reviewed-identity skill fence: a
+        # substitute or self-reported tool is never trusted merely because its
+        # name/metadata looks safe.
+        if (not is_reviewed_safe_builtin(tool)
+                or _specialist_tool_blocked(reqs)):
+            containment_output = ToolOutput(
+                success=False,
+                error={
+                    "code": "SPECIALIST_CONTAINMENT_DENIED",
+                    "message": (
+                        "specialist direct action is fail-closed for "
+                        "state-changing or privacy-sensitive tools until a "
+                        "trusted task/consent fence exists"
+                    ),
+                },
+                duration_ms=0,
+            )
+            self.actions_used += 1
+            self.ledger.append_event(self.task_id, "specialist.action", {
+                "delegation_id": self.delegation_id,
+                "agent_id": self.agent_id,
+                "tool": tool_name,
+                "success": False,
+                "error_code": "SPECIALIST_CONTAINMENT_DENIED",
+                "seq": self.actions_used,
+            })
+            self.db.commit()
+            return containment_output
+
         from backend.tools.executor import PolicyContext
         start = time.monotonic()
         output = await self.executor.execute_tool(
@@ -286,6 +337,60 @@ class SpecialistRuntime:
                 "model_calls": settings.max_specialist_model_calls,
             },
         }
+
+
+def _policy_requirements(tool: Any) -> Optional[Dict[str, Any]]:
+    """Return authoritative policy metadata, or None when missing/malformed."""
+    if tool is None:
+        return None
+    getter = getattr(tool, "get_policy_requirements", None)
+    if not callable(getter):
+        return None
+    try:
+        reqs = getter()
+    except Exception:
+        return None
+    return reqs if isinstance(reqs, dict) else None
+
+
+def _specialist_tool_blocked(reqs: Any) -> bool:
+    """Fail closed for specialist direct mutations/privacy-sensitive tools."""
+    if not isinstance(reqs, dict):
+        return True
+    bool_keys = (
+        "mutating",
+        "destructive",
+        "read_only",
+        "app_internal",
+        "requires_confirmation",
+        "privacy_sensitive",
+        "requires_screen_access",
+        "requires_ui_automation",
+        "requires_admin",
+    )
+    for key in bool_keys:
+        if key in reqs and reqs.get(key) is not None and not isinstance(reqs.get(key), bool):
+            return True
+    risk_level = reqs.get("risk_level", "none")
+    if risk_level not in {"none", "low", None}:
+        return True
+    if reqs.get("requires_admin") is True:
+        return True
+    if reqs.get("mutating") is True or reqs.get("destructive") is True:
+        return True
+    if reqs.get("read_only") is False:
+        return True
+    if reqs.get("requires_confirmation") is True:
+        return True
+    if risk_level in {"medium", "high"}:
+        return True
+    if (
+        reqs.get("privacy_sensitive") is True
+        or reqs.get("requires_screen_access") is True
+        or reqs.get("requires_ui_automation") is True
+    ):
+        return True
+    return False
 
 
 def resolve_allowed_tools(role_capabilities: List[str],

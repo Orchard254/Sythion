@@ -34,9 +34,14 @@ export function TaskDetailDrawer({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reply, setReply] = useState('');
+  const [replyVersion, setReplyVersion] = useState<number | null>(null);
 
   const tone = taskTone(task.state);
-  const running = task.state === 'running' || task.state === 'waiting_for_user';
+  const running = task.state === 'created' || task.state === 'running' || task.state === 'waiting_for_user';
+  // Only explicitly typed clarification waits can be resumed with a free-text
+  // answer. Permission and unclassified/model questions stay visible but are
+  // not routed through the clarification reply path.
+  const canReplyByText = task.state === 'waiting_for_user' && task.waiting_kind === 'clarification';
   const timeline = [...events.data ?? []].sort((a, b) => a.sequence_num - b.sequence_num);
 
   const run = async (fn: () => Promise<unknown>) => {
@@ -61,7 +66,7 @@ export function TaskDetailDrawer({
         disabled={busy}
         onClick={() => void run(() => actions.cancelTask(task.id))}
       >
-        {busy ? 'Cancelling…' : 'Interrupt task'}
+        {busy ? 'Cancelling…' : task.state === 'created' ? 'Cancel queued request' : 'Interrupt task'}
       </Button>
     ) : dataMode === 'live' && task.state === 'interrupted' ? (
       <Button
@@ -117,7 +122,7 @@ export function TaskDetailDrawer({
             </span>
             <span>{task.pending_question}</span>
           </div>
-          {dataMode === 'live' && (
+          {dataMode === 'live' && canReplyByText && (
             <div className="row" style={{ marginTop: 9, gap: 7 }}>
               <input
                 className="input"
@@ -125,18 +130,25 @@ export function TaskDetailDrawer({
                 value={reply}
                 placeholder="Your answer…"
                 aria-label="Answer to Sythion"
-                onChange={(e) => setReply(e.target.value)}
+                disabled={busy}
+                onChange={(e) => { if (!reply) setReplyVersion(task.version); setReply(e.target.value); }}
               />
               <Button
                 variant="primary"
                 size="sm"
-                disabled={!reply.trim() || busy}
-                onClick={() => void run(async () => actions.replyToTask(task.id, reply.trim()))}
+                disabled={!reply.trim() || busy || replyVersion !== task.version}
+                onClick={() => void run(async () => { await actions.replyToTask(task.id, reply.trim(), false, replyVersion ?? undefined); setReply(''); setReplyVersion(null); })}
               >
                 Send
               </Button>
             </div>
           )}
+          {dataMode === 'live' && !canReplyByText && (
+            <p role="status" style={{ marginTop: 9 }}>
+              This wait cannot be resumed by typing an answer here.
+            </p>
+          )}
+          {reply && replyVersion !== task.version && canReplyByText && <p role="alert">This question changed. Review it before using your saved answer. <Button size="sm" variant="subtle" onClick={() => setReplyVersion(task.version)}>Use this answer for the current question</Button></p>}
         </Notice>
       )}
 
@@ -164,7 +176,7 @@ export function TaskDetailDrawer({
         <Notice tone="warn" icon="lock">
           <div className="stack stack--tight">
             <span className="t-title" style={{ fontSize: 12 }}>
-              Held for authorization
+              {task.waiting_kind === 'permission' ? 'Held for authorization' : 'Execution interrupted'}
             </span>
             <span>{task.terminal_reason}</span>
           </div>

@@ -3,15 +3,20 @@ Owner-configurable task/audit retention and complete-record purge.
 
 Retention: tasks (and their full audit event records) older than the
 owner-configured `retention_days` setting (default 90) can be purged. The
-episodic conversation transcript (`conversation_turns`) is bounded by the same
-window: every expired turn -- including orphans whose task was already purged --
-is swept so the table cannot grow forever. Durable memory (`memory_entries`,
-`memory_edges`) is exempt: it is not a transcript.
+episodic conversation transcript (`conversation_turns`) is bounded by the
+same window through an explicit, separate sweep (`purge_conversation_history`);
+every expired turn -- including orphans whose task was already purged -- is
+swept so the table cannot grow forever. Task purge does NOT delete retained
+conversation turns, memberships or contexts; it only detaches them from the
+deleted task. Durable memory (`memory_entries`, `memory_edges`) is exempt:
+it is not a transcript.
 
-Purge: a complete-record purge deletes the task row, every event row for that
-task, and that task's conversation turns, then writes a non-sensitive purge
-receipt (task ID, reason, purge time, event count). Receipts never contain
-task content, request text, or other sensitive material.
+Purge: a complete-record purge deletes the task row and every event row for
+that task, plus its task-specific artifacts (decision windows,
+task/exchange associations). Conversation turns, memberships and contexts
+survive and are detached from the deleted task. Then a non-sensitive purge
+receipt (task ID, reason, purge time, event count) is written. Receipts
+never contain task content, request text, or other sensitive material.
 """
 
 from __future__ import annotations
@@ -20,15 +25,24 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from backend.models.database import (
-    ConversationTurn, ConversationExchange,
+    ConversationTurn, ConversationExchange, ConversationTaskAssociation, TaskDecisionWindow,
+    DiscussionContextMembership,
     ProposedSkill,
     PurgeReceipt,
     Task,
     TaskEvent,
 )
+try:
+    from backend.runtime.followup_instruction_ledger import FollowupInstructionLedgerRow
+except Exception:  # pragma: no cover - alternate invocation layout
+    try:
+        from runtime.followup_instruction_ledger import FollowupInstructionLedgerRow  # type: ignore
+    except Exception:
+        FollowupInstructionLedgerRow = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -56,22 +70,42 @@ def _count_events(db: Session, task_id: str) -> int:
 
 
 def _delete_complete_record(db: Session, task: Task, reason: str) -> Dict[str, Any]:
-    """Delete a task, its full audit event record, and its conversation turns.
+    """Delete a task and its full audit event record, preserving conversation
+    turns, memberships and contexts (detaching task identity).
 
     Committed atomically so a crash mid-purge cannot leave partial records.
     """
-    event_count = _count_events(db, task.id)
-    db.query(ConversationTurn).filter_by(task_id=task.id).delete(synchronize_session=False)
-    db.query(TaskEvent).filter_by(task_id=task.id).delete(synchronize_session=False)
-    db.delete(task)
-    receipt = PurgeReceipt(
-        task_id=task.id,
-        reason=reason,
-        purged_at=datetime.utcnow(),
-        event_count=event_count,
-    )
-    db.add(receipt)
-    db.commit()
+    try:
+        event_count = _count_events(db, task.id)
+        db.query(TaskDecisionWindow).filter_by(task_id=task.id).delete(synchronize_session=False)
+        # User context survives task deletion: retain follow-up instruction
+        # ledger rows with their original task identity and null only the
+        # mutable task foreign key.  Do not swallow storage errors here.
+        if FollowupInstructionLedgerRow is not None:
+            (db.query(FollowupInstructionLedgerRow)
+             .filter_by(task_id=task.id)
+             .update({"task_id": None}, synchronize_session=False))
+        db.query(ConversationTaskAssociation).filter_by(task_id=task.id).delete(synchronize_session=False)
+        # Episodic conversation transcript rows survive task deletion:
+        # they are discussion history, not task records. Clear the deleted
+        # task identity to avoid a dangling link, but keep row content and
+        # all discussion-context memberships/contexts intact.
+        db.query(ConversationTurn).filter_by(task_id=task.id).update(
+            {"task_id": None}, synchronize_session=False
+        )
+        db.query(TaskEvent).filter_by(task_id=task.id).delete(synchronize_session=False)
+        db.delete(task)
+        receipt = PurgeReceipt(
+            task_id=task.id,
+            reason=reason,
+            purged_at=datetime.utcnow(),
+            event_count=event_count,
+        )
+        db.add(receipt)
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
     logger.info(
         "Purged complete record for task %s (%d events), reason=%s",
         task.id, event_count, reason,
@@ -115,17 +149,38 @@ def purge_conversation_history(
     now: Optional[datetime] = None,
 ) -> tuple[int, int]:
     """Purge expired summaries and full exchanges, returning their separate counts."""
-    days = days or get_retention_days(db)
-    cutoff = (now or datetime.utcnow()) - timedelta(days=days)
-    purged = (
-        db.query(ConversationTurn)
-        .filter(ConversationTurn.created_at < cutoff)
-        .delete(synchronize_session=False)
-    )
-    exchanges = db.query(ConversationExchange).filter(
-        ConversationExchange.created_at < cutoff
-    ).delete(synchronize_session=False)
-    db.commit()
+    try:
+        days = days or get_retention_days(db)
+        cutoff = (now or datetime.utcnow()) - timedelta(days=days)
+        expired_turns = db.query(ConversationTurn.id).filter(ConversationTurn.created_at < cutoff)
+        expired_exchanges = db.query(ConversationExchange.id).filter(ConversationExchange.created_at < cutoff)
+        from backend.services.discussion_contexts import prune_empty_contexts
+        expired_members = db.query(DiscussionContextMembership).filter(or_(
+            DiscussionContextMembership.exchange_id.in_(expired_exchanges),
+            DiscussionContextMembership.user_turn_id.in_(expired_turns),
+            DiscussionContextMembership.assistant_turn_id.in_(expired_turns),
+        ))
+        context_ids = [row.context_id for row in expired_members.all()]
+        expired_members.delete(synchronize_session=False)
+        prune_empty_contexts(db, context_ids)
+        # Explicit cleanup also works on SQLite connections without FK enforcement.
+        db.query(ConversationTaskAssociation).filter(or_(
+            ConversationTaskAssociation.exchange_id.in_(expired_exchanges),
+            ConversationTaskAssociation.user_turn_id.in_(expired_turns),
+            ConversationTaskAssociation.assistant_turn_id.in_(expired_turns),
+        )).delete(synchronize_session=False)
+        purged = (
+            db.query(ConversationTurn)
+            .filter(ConversationTurn.created_at < cutoff)
+            .delete(synchronize_session=False)
+        )
+        exchanges = db.query(ConversationExchange).filter(
+            ConversationExchange.created_at < cutoff
+        ).delete(synchronize_session=False)
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
     if purged:
         logger.info("Purged %d conversation turns older than %s", purged, cutoff.isoformat())
     if exchanges:
@@ -142,9 +197,9 @@ def purge_expired(
 
     Returns a list of non-sensitive purge receipts. Nothing is purged before
     the retention window, and terminal-state tasks at any age within the
-    window are kept for the full window. Each purged task also takes its
-    conversation turns with it (complete-record semantics); expired/orphaned
-    turns are swept separately by purge_turns().
+    window are kept for the full window. Task purge does not remove
+    conversation turns; retained history is swept separately by
+    purge_turns()/purge_conversation_history().
     """
     days = days or get_retention_days(db)
     cutoff = (now or datetime.utcnow()) - timedelta(days=days)

@@ -120,7 +120,7 @@ export function findAwaitingTasks(tasks: Task[]): Task[] {
 export function findRunningTask(tasks: Task[]): Task | null {
   const running = tasks
     .filter((t) => t.state === 'running' || t.state === 'created')
-    .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+    .sort((a, b) => Number(b.state === 'running') - Number(a.state === 'running') || new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
   return running[0] ?? null;
 }
 
@@ -229,7 +229,7 @@ export function deriveAssistantStatus(input: AssistantStatusInput): AssistantSta
     return {
       state: 'executing',
       tone: 'info',
-      label: 'Working on it',
+      label: running.state === 'created' ? 'Queued — not started' : 'Working on it',
       detail: running.normalized_goal || running.original_request,
       live: true,
       taskId: running.id,

@@ -48,7 +48,7 @@ export function TopBar({
     <header className="topbar">
       <div className="topbar__heading">
         <span className="topbar__title">{route.label}</span>
-        <span className="topbar__subtitle">{route.blurb}</span>
+        {route.id !== 'assistant' && <span className="topbar__subtitle">{route.blurb}</span>}
       </div>
 
       <div className="topbar__spacer" />
@@ -57,8 +57,8 @@ export function TopBar({
         {origin === 'demo' ? (
           <DemoTag />
         ) : (
-          <Badge tone={runtimeState === 'healthy' ? 'ok' : runtimeState === 'checking' ? 'idle' : runtimeState === 'stale' ? 'warn' : connected ? 'ok' : 'danger'}>
-            {runtimeState === 'healthy' ? 'Live' : runtimeState === 'checking' ? 'Checking' : runtimeState === 'stale' ? 'Stale' : connected ? 'Live' : 'Offline'}
+          <Badge tone={runtimeState === 'healthy' ? 'ok' : runtimeState === 'degraded' ? 'warn' : runtimeState === 'checking' ? 'idle' : runtimeState === 'stale' ? 'warn' : connected ? 'ok' : 'danger'}>
+            {runtimeState === 'healthy' ? 'Live' : runtimeState === 'degraded' ? 'Degraded' : runtimeState === 'checking' ? 'Checking' : runtimeState === 'stale' ? 'Stale' : connected ? 'Live' : 'Offline'}
           </Badge>
         )}
 

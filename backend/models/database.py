@@ -849,6 +849,28 @@ class SettingsMetadata(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class SessionLineage(Base):
+    """Persisted system-generated session lineage (cross-day recall).
+
+    Only rows with ``system_generated=True`` and a system provenance marker are
+    trusted. Pre-feature/legacy IDs and in-process overrides are never added
+    here, so absence means "not trusted provenance" rather than "unknown".
+    Rows are bounded by retention; older generations are pruned when a new
+    trusted session is minted.
+    """
+
+    __tablename__ = "session_lineages"
+
+    session_id = Column(String, primary_key=True)
+    generation = Column(Integer, nullable=False, default=1)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    system_generated = Column(Boolean, nullable=False, default=True)
+    provenance = Column(String, nullable=False, default="system_uuid4")
+    parent_session_id = Column(String, nullable=True)
+    reason = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class MemoryEntry(Base):
     """Persistent real-time memory storage for user preferences, facts, and profile info.
 
@@ -943,6 +965,7 @@ class ConversationExchange(Base):
     session_id = Column(String, nullable=False, index=True)
     user_text = Column(Text, nullable=False)
     assistant_text = Column(Text, nullable=False)
+    status = Column(String, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
 
 
@@ -967,6 +990,56 @@ class ConversationTurn(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class DiscussionContext(Base):
+    """Named exchange-origin context; a name never implies topic matching."""
+
+    __tablename__ = "discussion_contexts"
+
+    id = Column(String, primary_key=True)
+    session_id = Column(String, nullable=False, index=True)
+    name = Column(Text, nullable=False)
+    name_source = Column(String, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class DiscussionContextMembership(Base):
+    """One immutable context membership per exact full conversation exchange."""
+
+    __tablename__ = "discussion_context_memberships"
+
+    exchange_id = Column(String, ForeignKey("conversation_exchanges.id"), primary_key=True)
+    context_id = Column(String, ForeignKey("discussion_contexts.id"), nullable=False, index=True)
+    user_turn_id = Column(Integer, ForeignKey("conversation_turns.id"), nullable=False, unique=True)
+    assistant_turn_id = Column(Integer, ForeignKey("conversation_turns.id"), nullable=False, unique=True)
+
+
+class TaskDecisionWindow(Base):
+    """Durable admission fence for cooperative instruction revisions."""
+
+    __tablename__ = "task_decision_windows"
+
+    task_id = Column(String, ForeignKey("tasks.id"), primary_key=True)
+    owner_nonce = Column(String, nullable=False)
+    revision = Column(Integer, nullable=False, default=0)
+    phase = Column(String, nullable=False)
+
+
+class ConversationTaskAssociation(Base):
+    """Exact initiating exchange identity for a composer-created task.
+
+    This records association only, not execution, completion, or permission.
+    Written atomically with the exchange and its turns before dispatch. A
+    task cannot acquire a second initiating exchange, even after completion.
+    """
+
+    __tablename__ = "conversation_task_associations"
+
+    exchange_id = Column(String, ForeignKey("conversation_exchanges.id"), primary_key=True)
+    task_id = Column(String, ForeignKey("tasks.id"), nullable=False, unique=True)
+    user_turn_id = Column(Integer, ForeignKey("conversation_turns.id"), nullable=False, unique=True)
+    assistant_turn_id = Column(Integer, ForeignKey("conversation_turns.id"), nullable=False, unique=True)
+
+
 class ConversationState(Base):
     """Tracks conversational context for a session.
 
@@ -983,3 +1056,76 @@ class ConversationState(Base):
     open_threads = Column(JSON, default=list)  # ["unresolved topic1", ...]
     last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+
+# Register task-scoped ownership metadata at startup without duplicating model
+# definitions; the runtime module owns TaskOwnershipRow.
+try:
+    import backend.runtime.task_ownership  # noqa: F401
+except Exception:  # pragma: no cover - alternate invocation layout
+    try:
+        import runtime.task_ownership  # noqa: F401
+    except Exception:
+        pass
+
+# Register durable follow-up instruction ledger metadata at startup; the runtime
+# module owns FollowupInstructionLedgerRow.
+try:
+    import backend.runtime.followup_instruction_ledger  # noqa: F401
+except Exception:  # pragma: no cover - alternate invocation layout
+    try:
+        import runtime.followup_instruction_ledger  # noqa: F401
+    except Exception:
+        pass
+
+# Register durable permission decision receipt metadata at startup; the runtime
+# module owns PermissionDecisionReceiptRow.
+try:
+    import backend.runtime.permission_decision_receipt  # noqa: F401
+    from backend.runtime.permission_decision_receipt import (  # noqa: E402
+        PermissionDecisionReceiptManager,
+        PermissionDecisionReceiptRow,
+        PermissionDecisionReceipt,
+    )
+except Exception:  # pragma: no cover - alternate invocation layout
+    try:
+        import runtime.permission_decision_receipt  # noqa: F401
+        from runtime.permission_decision_receipt import (  # type: ignore  # noqa: E402
+            PermissionDecisionReceiptManager,
+            PermissionDecisionReceiptRow,
+            PermissionDecisionReceipt,
+        )
+    except Exception:
+        PermissionDecisionReceiptManager = None  # type: ignore
+        PermissionDecisionReceiptRow = None  # type: ignore
+        PermissionDecisionReceipt = None  # type: ignore
+
+# Register durable permission proposal metadata at startup; the runtime
+# module owns PermissionProposalRow.
+try:
+    import backend.runtime.permission_proposal  # noqa: F401
+    from backend.runtime.permission_proposal import (  # noqa: E402
+        PermissionProposalManager,
+        PermissionProposalRow,
+        PermissionProposal,
+    )
+except Exception:  # pragma: no cover - alternate invocation layout
+    try:
+        import runtime.permission_proposal  # noqa: F401
+        from runtime.permission_proposal import (  # type: ignore  # noqa: E402
+            PermissionProposalManager,
+            PermissionProposalRow,
+            PermissionProposal,
+        )
+    except Exception:
+        PermissionProposalManager = None  # type: ignore
+        PermissionProposalRow = None  # type: ignore
+        PermissionProposal = None  # type: ignore
+
+# Register optional durable receipt models on Base metadata at import.
+try:
+    from backend.runtime.composer_request_receipt import ComposerRequestReceiptRow  # noqa: F401
+except Exception:
+    try:
+        from runtime.composer_request_receipt import ComposerRequestReceiptRow  # noqa: F401
+    except Exception:
+        pass

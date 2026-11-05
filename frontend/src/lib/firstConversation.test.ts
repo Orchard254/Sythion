@@ -31,4 +31,25 @@ describe('first message and reply', () => {
     }
     expect(nextSpokenReply([{ ...task('new', 'completed'), final_result: ' ' }], new Set(['new']), new Set())).toBeUndefined();
   });
+
+  it('shows a background task result after its initiating conversation', () => {
+    const background = {
+      ...task('background', 'completed', '2026-10-22T00:00:00Z'),
+      interaction_type: 'task',
+      updated_at: '2026-10-22T00:02:00Z',
+      final_result: 'Background work finished.',
+    };
+    const initiating = {
+      ...task('conversation', 'completed', '2026-10-22T00:01:00Z'),
+      interaction_type: 'CONVERSATION',
+      final_result: "I'll queue that background work.",
+    };
+    expect(conversationTasks([background, initiating], new Set())).toEqual([initiating, background]);
+  });
+
+  it('does not change tie ordering by inventing timestamps when a conversation and task share one instant', () => {
+    const taskAtInstant = { ...task('task', 'completed', '2026-10-22T00:00:00Z'), interaction_type: 'task', updated_at: '2026-10-22T00:00:00Z' };
+    const conversationAtInstant = { ...task('conversation', 'completed', '2026-10-22T00:00:00Z'), interaction_type: 'CONVERSATION' };
+    expect(conversationTasks([taskAtInstant, conversationAtInstant], new Set())).toEqual([conversationAtInstant, taskAtInstant]);
+  });
 });

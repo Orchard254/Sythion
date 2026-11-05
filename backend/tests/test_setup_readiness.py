@@ -59,6 +59,10 @@ def _client(monkeypatch, provider=None, selected=None):
 
     from backend.adapters import ollama_adapter
     monkeypatch.setattr(ollama_adapter, "get_adapter", lambda: None)
+    import backend.api.routes as routes
+    async def valid_key(candidate, base_url):
+        pass
+    monkeypatch.setattr(routes, "_validate_ollama_cloud_key", valid_key)
 
     app.dependency_overrides[get_db] = lambda: session
     import backend.main as backend_main
@@ -103,6 +107,51 @@ def test_invalid_credentials_preserve_previous(monkeypatch):
         backend_main.control_token = previous_token
         app.dependency_overrides.clear()
         set_secret_store_for_testing(None)
+
+
+def test_rejected_key_is_not_stored_even_when_models_are_public(monkeypatch):
+    from fastapi import HTTPException
+    import backend.api.routes as routes
+    import backend.core.secrets as secrets
+
+    client, previous_token, backend_main = _client(monkeypatch, provider=_Provider(), selected=None)
+    secrets.set_secret(secrets.OLLAMA_API_KEY, "old-key")
+    async def rejected_key(candidate, base_url):
+        raise HTTPException(status_code=401, detail="Invalid Ollama Cloud API key")
+    monkeypatch.setattr(routes, "_validate_ollama_cloud_key", rejected_key)
+    try:
+        res = client.post("/api/v1/onboarding/credentials/test", json={"value": "bad-key"})
+        assert res.status_code == 401
+        assert "bad-key" not in res.text
+        assert secrets.resolve_ollama_api_key() == "old-key"
+    finally:
+        backend_main.control_token = previous_token
+        app.dependency_overrides.clear()
+        set_secret_store_for_testing(None)
+
+
+def test_key_check_requires_authenticated_200_and_does_not_follow_redirects(monkeypatch):
+    import asyncio
+    import httpx
+    import pytest
+    from fastapi import HTTPException
+    from backend.api.routes import _validate_ollama_cloud_key
+
+    original_client = httpx.AsyncClient
+    statuses = iter([200, 401, 403, 302, 503])
+    def handler(request):
+        assert request.url.path == "/api/usage"
+        assert request.headers["Authorization"] == "Bearer test-key"
+        return httpx.Response(next(statuses), headers={"Location": "https://other.example/"})
+    def client(**kwargs):
+        assert kwargs["follow_redirects"] is False
+        return original_client(transport=httpx.MockTransport(handler), **kwargs)
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    asyncio.run(_validate_ollama_cloud_key("test-key", "https://ollama.com"))
+    for expected in (401, 403, 503, 503):
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(_validate_ollama_cloud_key("test-key", "https://ollama.com"))
+        assert error.value.status_code == expected
 
 
 def test_model_id_rejection(monkeypatch):

@@ -270,6 +270,11 @@ class MemoryService:
         if old.status == "FORGOTTEN":
             raise ValueError("cannot update a forgotten memory")
 
+        # Normalize like create(): source_type is matched case-insensitively by
+        # its canonical uppercase token. (Fix: update previously used the raw
+        # value, so lowercase/variant labels fell through to the UNKNOWN
+        # policy even though create() uppercased them.)
+        source_type = (source_type or "UNKNOWN").upper()
         policy = WRITE_AUTHORITY.get(source_type, WRITE_AUTHORITY["UNKNOWN"])
         target_kind = (new_kind or old.kind).upper()
         if target_kind != old.kind and target_kind not in policy["kinds"]:
@@ -278,9 +283,15 @@ class MemoryService:
             )
         # A MODEL_INFERENCE / CONSOLIDATION update can never VERIFY a memory.
         verification = self._verification_for(source_type, policy)
-        if old.verification_status.startswith("VERIFIED") and \
-                verification == "UNVERIFIED":
-            verification = old.verification_status  # verified survives weak updates
+        # A prior verified badge survives only a genuine reinforcement of the
+        # SAME value; a changed value must not inherit the old verified badge
+        # merely because MemoryService.update() was called. This preserves
+        # legitimate verified values (reinforcement) while refusing to mint
+        # verification for changed/unvalidated claims.
+        if (old.verification_status.startswith("VERIFIED")
+                and verification == "UNVERIFIED"
+                and (new_value or "") == (old.value or "")):
+            verification = old.verification_status  # verified survives weak reinforcement
 
         now = datetime.utcnow()
         if old.status != "ACTIVE":
@@ -529,6 +540,113 @@ class MemoryService:
             self.db.query(MemoryEntry)
             .filter_by(key=key, status="ACTIVE").first()
         )
+
+    # ------------------------------------------------------------------ #
+    # Listing / browsing (truthful, paginated, scope-safe)                 #
+    # ------------------------------------------------------------------ #
+    #
+    # ``retrieve()`` above is a *semantic-ish* scorer that pulls a recent
+    # candidate pool (ordered, capped) and then ranks in Python. That is the
+    # right trade-off for context injection, but it makes older matching rows
+    # invisible in a browser list. ``list_items`` is the stable, database-level
+    # listing path used by the read-only memory UI: every ACTIVE row in the
+    # requested scope(s) is eligible regardless of age, filtering happens in
+    # SQL where it can be expressed (kind/scope/confidence/verification and
+    # a lexical key/value search), and pagination is applied by the database in
+    # a stable order. It deliberately does not claim global semantic scoring:
+    # the keyword match is a substring test over ``key``/``value`` only and
+    # results are ordered by recency, not by the retrieve() score.
+
+    def list_items(
+        self,
+        *,
+        query: str = "",
+        kinds: Optional[List[str]] = None,
+        scopes: Optional[List[str]] = None,
+        max_results: Optional[int] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        min_confidence: Optional[float] = None,
+        require_verified: bool = False,
+    ) -> List[RetrievedMemory]:
+        page_size = 25
+        if limit is not None:
+            page_size = limit
+        if max_results is not None:
+            page_size = max_results
+        if page_size is None or page_size < 1:
+            page_size = 25
+
+        # Canonicalise filters exactly like retrieve().
+        q = self.db.query(MemoryEntry).filter(MemoryEntry.status == "ACTIVE")
+        if kinds:
+            q = q.filter(MemoryEntry.kind.in_([k.upper() for k in kinds]))
+        if scopes:
+            q = q.filter(MemoryEntry.scope.in_([s.upper() for s in scopes]))
+        if min_confidence is not None:
+            q = q.filter(MemoryEntry.confidence >= min_confidence)
+        if require_verified:
+            q = q.filter(MemoryEntry.verification_status.like("VERIFIED%"))
+
+        tokens = [t for t in re.split(r"[^a-z0-9]+", (query or "").lower()) if t]
+        # Lexical key/value search. A row matches if ANY token appears as a
+        # substring of key or value. This is a complete (within these columns)
+        # but deliberately non-semantic filter; see the method docstring.
+        if tokens:
+            from sqlalchemy import or_
+            conditions = []
+            for t in tokens:
+                like = f"%{t}%"
+                conditions.append(MemoryEntry.key.ilike(like))
+                conditions.append(MemoryEntry.value.ilike(like))
+            q = q.filter(or_(*conditions))
+
+        ordered = q.order_by(
+            MemoryEntry.updated_at.desc(),
+            MemoryEntry.id.desc(),
+        )
+        rows = ordered.offset(int(offset or 0)).limit(int(page_size)).all()
+
+        out: List[RetrievedMemory] = []
+        for r in rows:
+            out.append(RetrievedMemory(
+                id=r.id, kind=r.kind, scope=r.scope, scope_ref=r.scope_ref,
+                key=r.key, value=r.value, confidence=r.confidence,
+                verification_status=r.verification_status,
+                source_type=r.source_type, observed_at=r.observed_at,
+                updated_at=r.updated_at, score=0.0,
+            ))
+        return out
+
+    def count_items(
+        self,
+        *,
+        query: str = "",
+        kinds: Optional[List[str]] = None,
+        scopes: Optional[List[str]] = None,
+        min_confidence: Optional[float] = None,
+        require_verified: bool = False,
+    ) -> int:
+        q = self.db.query(MemoryEntry).filter(MemoryEntry.status == "ACTIVE")
+        if kinds:
+            q = q.filter(MemoryEntry.kind.in_([k.upper() for k in kinds]))
+        if scopes:
+            q = q.filter(MemoryEntry.scope.in_([s.upper() for s in scopes]))
+        if min_confidence is not None:
+            q = q.filter(MemoryEntry.confidence >= min_confidence)
+        if require_verified:
+            q = q.filter(MemoryEntry.verification_status.like("VERIFIED%"))
+        tokens = [t for t in re.split(r"[^a-z0-9]+", (query or "").lower()) if t]
+        if tokens:
+            from sqlalchemy import or_
+            conditions = []
+            for t in tokens:
+                like = f"%{t}%"
+                conditions.append(MemoryEntry.key.ilike(like))
+                conditions.append(MemoryEntry.value.ilike(like))
+            q = q.filter(or_(*conditions))
+        return int(q.count())
+
 
     # ------------------------------------------------------------------ #
     # Decay                                                                #

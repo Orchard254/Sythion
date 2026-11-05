@@ -157,9 +157,7 @@ def test_credential_manager_round_trip(monkeypatch):
     # Pin the target prefix for the duration of this test. ``_cm_target()``
     # reads the module global at call time, so the REAL win32cred store is
     # still exercised - only the target NAME changes.
-    monkeypatch.setattr(secrets_module, "_CM_TARGET_PREFIX", _TEST_TARGET_PREFIX)
-
-    store = secrets_module.CredentialManagerStore()
+    store = secrets_module.CredentialManagerStore(_TEST_TARGET_PREFIX)
     # Pin the active store so ``has_secret()`` / ``list_secret_names()`` answer
     # from the real Credential Manager instead of a MemoryStore that another
     # test may have left behind. ``monkeypatch`` restores the previous value.
@@ -167,8 +165,8 @@ def test_credential_manager_round_trip(monkeypatch):
 
     # The composed target must be the test-scoped one AND must not sit under
     # the PRODUCT prefix (asserted against the import-time snapshot, not
-    # against the attribute this test just patched).
-    target = secrets_module._cm_target(SECRET_NAME)
+    # against any mutable module global).
+    target = secrets_module._cm_target(SECRET_NAME, _TEST_TARGET_PREFIX)
     assert target == "Sythion (Synth) [TEST]/ollama_api_key"
     assert not target.startswith(_PRODUCT_TARGET_PREFIX)
 

@@ -115,10 +115,10 @@ class TestAutonomyMode:
             "file_write", _MEDIUM_RISK_POLICY, autonomy_level="guarded"
         ) is True
 
-    def test_consequential_in_autonomous_does_not_need_approval(self):
+    def test_consequential_in_autonomous_still_needs_approval(self):
         assert needs_approval(
             "file_write", _MEDIUM_RISK_POLICY, autonomy_level="autonomous"
-        ) is False
+        ) is True
 
     def test_routine_never_needs_approval(self):
         assert needs_approval("system_time", _READONLY_POLICY) is False

@@ -302,7 +302,7 @@ button {
   border: none;
   border-radius: var(--r-full);
   background: var(--n-surface);
-  box-shadow: var(--sh-raise-sm);
+  box-shadow: var(--sh-raise-sm), var(--rim);
   color: var(--text-1);
   cursor: pointer;
   text-align: left;
@@ -316,7 +316,7 @@ button {
 .nav-item:hover:not(.nav-item--active) {
   background: var(--n-surface-2);
   color: var(--text-0);
-  box-shadow: var(--sh-raise-md);
+  box-shadow: var(--sh-raise-md), var(--rim-lift);
 }
 
 .nav-item:active:not(.nav-item--active) {
@@ -325,7 +325,7 @@ button {
 
 .nav-item--active {
   background: var(--n-surface);
-  box-shadow: var(--sh-inset-sm);
+  box-shadow: var(--sh-inset-sm), var(--rim);
   color: var(--accent-bright);
   font-weight: 620;
 }
@@ -348,7 +348,7 @@ button {
   display: flex;
   flex: 0 0 auto;
   color: currentColor;
-  opacity: 0.92;
+  opacity: 1;
 }
 
 .nav-item__label {
@@ -388,7 +388,7 @@ button {
   padding: 11px 13px;
   border-radius: var(--r-full);
   background: var(--n-surface);
-  box-shadow: var(--sh-raise-sm);
+  box-shadow: var(--sh-raise-sm), var(--rim);
   cursor: pointer;
   text-align: left;
   color: inherit;
@@ -1922,7 +1922,7 @@ button {
   padding: 13px 16px;
   border-radius: var(--r-lg);
   background: var(--n-well);
-  box-shadow: var(--sh-inset-sm);
+  box-shadow: var(--sh-inset-sm), var(--rim);
   font-size: 13px;
   line-height: 1.65;
   color: var(--text-1);
@@ -1931,7 +1931,7 @@ button {
 }
 .msg--user .msg__bubble {
   background: var(--n-surface);
-  box-shadow: var(--sh-raise-sm);
+  box-shadow: var(--sh-raise-sm), var(--rim);
   color: var(--text-0);
 }
 .msg__foot {
@@ -2330,7 +2330,7 @@ button {
   overflow: hidden;
   border-radius: var(--r-lg);
   background: var(--n-surface);
-  box-shadow: var(--sh-raise-lg), var(--rim);
+  box-shadow: var(--sh-raise-md), var(--rim);
   position: relative;
 }
 
@@ -2357,7 +2357,7 @@ button {
   padding: 8px 8px 8px 16px;
   border-radius: var(--r-lg);
   background: var(--n-well);
-  box-shadow: var(--sh-inset-md);
+  box-shadow: var(--sh-inset-md), var(--rim);
   transition: box-shadow var(--t-mid) var(--ease);
 }
 
@@ -2685,6 +2685,9 @@ button {
    card background alone. */
 .attn--approval .attn__icon {
   color: var(--warn);
+}
+.attn--input .attn__icon {
+  color: var(--info);
 }
 .attn--failure .attn__icon {
   color: var(--danger);
@@ -3387,6 +3390,14 @@ html[data-surface='companion'] .companion {
   .nav-item {
     justify-content: center;
     padding: 11px 0;
+    min-height: 44px;
+  }
+  .nav-item__icon {
+    opacity: 1;
+  }
+  .nav-item__icon svg {
+    width: 18px;
+    height: 18px;
   }
   .nav-item--active::before {
     left: 3px;

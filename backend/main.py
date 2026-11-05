@@ -35,6 +35,11 @@ db_manager: DatabaseManager = None
 tool_executor: ToolExecutor = None
 control_token: str = None
 profile_lock = None
+# Captured result of the Phase 4.5 startup sequence so consumers (health /
+# readiness surfaces) can report partial startup truthfully instead of
+# treating it as fully successful. None until the lifespan actually runs.
+startup_boot: dict = None
+startup_sequence_status: str = "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -84,16 +89,36 @@ async def lifespan(app: FastAPI):
     
     # Initialize database
     from .core.storage import database_path, data_dir, migrate_legacy_data_dir
-    migrate_legacy_data_dir()
+    # Prototype builds must not run the legacy ~/.sythion migration, not even
+    # to probe whether the real legacy path exists.
+    try:
+        from .core.secrets import (
+            is_prototype_build as _is_proto_build,
+            secret_fail_closed as _secret_fail_closed,
+        )
+
+        # A fail-closed (ambiguous/conflicting) identity is isolated too; never
+        # treat ambiguity as production for legacy migration.
+        _is_prototype = bool(_is_proto_build()) or bool(_secret_fail_closed())
+    except Exception:
+        # Fail closed: uncertain prototype identity must never trigger legacy
+        # profile migration or access to ambient/production profile data.
+        _is_prototype = True
+    if not _is_prototype:
+        migrate_legacy_data_dir()
     db_path = settings.database_path or database_path()
-    db_manager = init_database(db_path)
+    db_manager = init_database(db_path, profile_lock=profile_lock)
     set_db_manager(db_manager)
     logger.info(f"Database initialized at: {db_path}")
 
     # Phase 4.5: single authoritative startup ordering (task/lease recovery →
     # goal migration → agent init → wake recovery). The wake worker starts
     # only AFTER this sequence, so no wake ever executes against unrecovered
-    # state. Failures are logged, never fatal to startup.
+    # state. Failures are logged, never fatal to startup. The returned
+    # aggregate is captured (not discarded) so health/readiness surfaces can
+    # report partial startup truthfully.
+    global startup_boot, startup_sequence_status
+    boot = None
     try:
         from .services.bootstrap import run_startup_sequence
 
@@ -101,6 +126,31 @@ async def lifespan(app: FastAPI):
         logger.info("Startup sequence order: %s", boot["order"])
     except Exception as exc:
         logger.warning(f"Startup sequence skipped due to error: {exc}")
+        boot = {
+            "order": [],
+            "stage_statuses": {},
+            "stages": [],
+            "startup_sequence_status": "failed",
+            "status": "failed",
+            "overall_status": "failed",
+            "aggregate_status": "failed",
+            "error": str(exc),
+        }
+
+    startup_boot = boot
+    try:
+        app.state.startup_boot = boot
+    except Exception:
+        pass
+    from .services.bootstrap import startup_status_projection
+
+    _startup_projection = startup_status_projection(boot)
+    startup_sequence_status = _startup_projection["startup_sequence_status"]
+    # Alias expected by older/alternate consumers.
+    try:
+        app.state.startup_sequence_status = startup_sequence_status
+    except Exception:
+        pass
 
     # Phase 4: persistent Main Agent identity + event-driven wake worker.
     # The worker is ALWAYS started (so policy toggles apply live), but it can
@@ -267,11 +317,46 @@ app.add_middleware(
 async def health_check():
     """Health check endpoint (legacy, moved to /api/v1/health)."""
     from .core.secrets import resolve_ollama_api_key
+    import backend.main as _self
+    boot = getattr(_self, "startup_boot", None)
+    if not isinstance(boot, dict):
+        boot = {}
+    from .services.bootstrap import startup_status_projection
+
+    _startup_projection = startup_status_projection(boot)
+    startup_ss = _startup_projection["startup_sequence_status"]
+    startup_stages = _startup_projection["startup_stage_statuses"]
+    # The top-level liveness status must not mask a degraded startup: a process
+    # that is serving but did not complete its startup sequence is degraded,
+    # not healthy. Unknown startup state (e.g. before the lifespan runs) keeps
+    # the conservative "healthy" liveness answer so probes are not falsely
+    # failed.
+    _database_connected = False
+    if db_manager is not None:
+        try:
+            from sqlalchemy import text as _text
+
+            with db_manager.engine.connect() as _conn:
+                _conn.execute(_text("SELECT 1"))
+            _database_connected = True
+        except Exception:
+            _database_connected = False
+
+    if startup_ss in ("failed", "degraded", "error") or not _database_connected:
+        health_status = "degraded"
+    else:
+        health_status = "healthy"
     return HealthResponse(
-        status="healthy",
+        status=health_status,
         version="0.1.0",
-        database_connected=db_manager is not None,
-        cloud_configured=bool(resolve_ollama_api_key(settings.ollama_api_key))
+        database_connected=_database_connected,
+        cloud_configured=bool(resolve_ollama_api_key(settings.ollama_api_key)),
+        startup_sequence_status=startup_ss,
+        startup_status=startup_ss,
+        startup_overall_status=_startup_projection["startup_overall_status"],
+        startup_aggregate_status=_startup_projection["startup_aggregate_status"],
+        startup_stage_statuses=startup_stages,
+        startup_boot=boot,
     )
 
 

@@ -33,6 +33,7 @@ export function SettingsScreen() {
   const [roots, setRoots] = useState<string[] | null>(null);
   const [confirmFallback, setConfirmFallback] = useState<{ persisted_file_roots: string[]; fallback_file_roots: string[] } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [spokenReplies, setSpokenReplies] = useState(() => localStorage.getItem('sythion.replyMode') !== 'text');
   const [density, setDensity] = useState<Density>(() => {
     const stored = localStorage.getItem('sythion.density');
     return stored === 'compact' ? 'compact' : 'comfortable';
@@ -297,6 +298,10 @@ export function SettingsScreen() {
             icon="microphone"
             actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
           >
+            <Switch label="Read new replies aloud" checked={spokenReplies} onChange={(enabled) => {
+              setSpokenReplies(enabled);
+              localStorage.setItem('sythion.replyMode', enabled ? 'voice' : 'text');
+            }} />
             {assets.isLoading ? (
               <LoadingBlock rows={3} />
             ) : (
@@ -309,6 +314,12 @@ export function SettingsScreen() {
                     { k: 'Microphone', v: 'never records without an explicit start' },
                   ]}
                 />
+                {!assets.data?.tts_voice && (
+                  <Notice tone="info" icon="info">
+                    <span>Spoken replies need a local voice. If none is available, replies stay as text.</span>
+                  </Notice>
+                )}
+
                 {!assets.data?.stt_installed && (
                   <Notice tone="info" icon="info">
                     <span>

@@ -19,7 +19,7 @@ from backend.tools.executor import ToolExecutor
 from backend.core.budgets import TaskBudget, BudgetExceededError
 from backend.services.model_context_builder import ModelContextBuilder
 from backend.services.model_prompt_contract import build_system_prompt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Dict, Any, Optional as Opt
 
 logger = logging.getLogger(__name__)
@@ -27,27 +27,28 @@ logger = logging.getLogger(__name__)
 
 class CompleteTaskInput(BaseModel):
     """Input for complete_task decision."""
-    result: str = Field(..., description="The user-facing response message or result text. MUST be written directly to the user (e.g., 'Hello! I am doing well, how can I help you?'), NEVER a meta-summary of what you did.")
-
+    model_config = ConfigDict(extra="forbid")
+    result: str = Field(..., description="The user-facing response message or result text. MUST be written directly to the user. complete_task finalizes the task; use request_user_input instead when waiting for an answer.")
 
 class FailTaskInput(BaseModel):
     """Input for fail_task decision."""
+    model_config = ConfigDict(extra="forbid")
     reason: str = Field(..., description="Reason the task could not be completed")
-
 
 class RequestUserInput(BaseModel):
     """Input for request_user_input decision."""
-    question: str = Field(..., description="Question to ask the user")
-
+    model_config = ConfigDict(extra="forbid")
+    question: str = Field(..., description="Question to ask the user. This pauses the task as WAITING_FOR_USER; do not also call complete_task.")
 
 class RunSkillInput(BaseModel):
     """Input for run_skill decision."""
+    model_config = ConfigDict(extra="forbid")
     skill_id: str = Field(..., description="ID of the skill to run")
     inputs: Dict[str, Any] = Field(default_factory=dict, description="Skill input parameters")
 
-
 class ExecuteToolInput(BaseModel):
     """Input for execute_tool decision."""
+    model_config = ConfigDict(extra="forbid")
     tool_name: str = Field(..., description="Name of the tool to execute")
     params: Dict[str, Any] = Field(default_factory=dict, description="Tool parameters")
 
@@ -202,6 +203,12 @@ class ModelDecisionEngine:
             reqs = tool.get_policy_requirements()
             if reqs.get("requires_admin"):
                 continue
+            if (
+                reqs.get("privacy_sensitive")
+                or reqs.get("requires_screen_access")
+                or reqs.get("requires_ui_automation")
+            ):
+                continue
             if active_autonomy != "autonomous":
                 if reqs.get("mutating") or reqs.get("destructive"):
                     if not reqs.get("app_internal"):
@@ -210,12 +217,7 @@ class ModelDecisionEngine:
                     continue
                 if reqs.get("risk_level") in {"medium", "high"}:
                     continue
-                if (
-                    reqs.get("privacy_sensitive")
-                    or reqs.get("requires_screen_access")
-                    or reqs.get("requires_ui_automation")
-                ):
-                    continue
+
             visible.append({
                 "name": tool.name,
                 "description": tool.description,
@@ -228,7 +230,7 @@ class ModelDecisionEngine:
         return [
             {
                 "name": DecisionType.COMPLETE_TASK,
-                "description": "Complete the task with the final result",
+                "description": "Finalize the task with the final user-facing result; this ends the task and must not ask a question or request input",
                 "input_schema": CompleteTaskInput,
             },
             {
@@ -238,7 +240,7 @@ class ModelDecisionEngine:
             },
             {
                 "name": DecisionType.REQUEST_USER_INPUT,
-                "description": "Ask the user a clarifying question",
+                "description": "Ask the user a question or request clarification/confirmation and pause the task (WAITING_FOR_USER); use this alone, never together with complete_task",
                 "input_schema": RequestUserInput,
             },
             {
@@ -373,6 +375,38 @@ class ModelDecisionEngine:
                     len(parsed_tool_calls),
                 )
 
+            # An explicit clarification/confirmation request wins over a
+            # contradictory task-final decision. A single response cannot both
+            # finish a task and wait for the user; prioritize asking and drop all
+            # terminal decisions except the chosen request.
+            request_index = next(
+                (i for i, pc in enumerate(parsed_tool_calls)
+                 if pc["decision_type"] == DecisionType.REQUEST_USER_INPUT),
+                None,
+            )
+            if request_index is not None:
+                terminal_types = {
+                    DecisionType.COMPLETE_TASK,
+                    DecisionType.FAIL_TASK,
+                    DecisionType.REQUEST_USER_INPUT,
+                }
+                # Keep earlier non-terminal calls in their original order.
+                preserved = [
+                    pc for pc in parsed_tool_calls[:request_index]
+                    if pc["decision_type"] not in terminal_types
+                ]
+                chosen = parsed_tool_calls[request_index]
+                raw_args = chosen.get("args", {})
+                if isinstance(raw_args, str):
+                    try:
+                        raw_args = json.loads(raw_args)
+                    except json.JSONDecodeError:
+                        raw_args = {}
+                if not isinstance(raw_args, dict):
+                    raw_args = {}
+                self._pending_tool_calls = preserved
+                return DecisionType.REQUEST_USER_INPUT, raw_args
+
             # First tool call is the primary decision
             primary = parsed_tool_calls[0]
             decision_type = primary['decision_type']
@@ -406,8 +440,29 @@ class ModelDecisionEngine:
                     message=f"Unknown decision type: {decision_type}"
                 )
             
-            # Store extra tool calls for sequential execution by the loop
-            self._pending_tool_calls = parsed_tool_calls[1:] if len(parsed_tool_calls) > 1 else []
+            # Asking the user is a terminal wait: never execute later calls from the
+            # same response, especially a trailing complete_task that would falsely
+            # finish work the task is still waiting to clarify or resume.
+            if decision_type in {DecisionType.COMPLETE_TASK, DecisionType.FAIL_TASK, DecisionType.REQUEST_USER_INPUT}:
+                pending_tool_calls = []
+            else:
+                # A terminal decision (complete/fail/ask) ends or waits the task.
+                # Nothing may execute after the first such decision in the same
+                # response, so truncate the pending queue at the first terminal.
+                terminal_types = {
+                    DecisionType.COMPLETE_TASK,
+                    DecisionType.FAIL_TASK,
+                    DecisionType.REQUEST_USER_INPUT,
+                }
+                pending_tool_calls = []
+                seen_terminal = False
+                for pc in parsed_tool_calls[1:]:
+                    if seen_terminal:
+                        break
+                    pending_tool_calls.append(pc)
+                    if pc["decision_type"] in terminal_types:
+                        seen_terminal = True
+            self._pending_tool_calls = pending_tool_calls
             return decision_type, args
             
         except ModelDecisionError:

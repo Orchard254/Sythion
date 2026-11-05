@@ -46,6 +46,36 @@ LEGACY_DATA_DIR = os.path.join(os.path.expanduser("~"), ".sythion")
 DATA_DIR_ENV = "SYTHION_DATA_DIR"
 LEGACY_DATA_DIR_ENV = "Sythion (Synth)_DATA_DIR"
 DEFAULT_DATA_DIR_NAME = "Sythion (Synth)"
+PROTOTYPE_DATA_DIR_NAME = "Sythion (Synth) Prototype"
+
+
+def _is_prototype_build() -> bool:
+    """Whether this backend runs as an isolated prototype build.
+
+    Mirrors ``backend.core.secrets.is_prototype_build`` without importing it
+    at module load time (storage is imported by lower layers). Fail-closed:
+    any resolution/import error is treated as a prototype (isolated) build so
+    the legacy profile and ambient roots are never reached.
+    """
+    try:
+        try:
+            from backend.core.secrets import (
+                is_prototype_build as _proto,
+                secret_fail_closed as _fail_closed,
+            )
+        except ImportError:
+            from core.secrets import (
+                is_prototype_build as _proto,
+                secret_fail_closed as _fail_closed,
+            )
+        # A fail-closed (ambiguous/conflicting) identity is isolated even when
+        # it is not labelled "prototype"; never treat ambiguity as production.
+        return bool(_proto()) or bool(_fail_closed())
+    except Exception:
+        # Fail closed: an unresolvable/ambiguous prototype identity must never
+        # be treated as production. Treating uncertain builds as prototypes keeps
+        # the legacy profile, ambient roots, and production data dir out of reach.
+        return True
 
 
 def _local_app_data_dir() -> Optional[str]:
@@ -58,9 +88,15 @@ def _local_app_data_dir() -> Optional[str]:
 
 
 def default_data_dir() -> str:
-    """Return the default profile directory when no override is supplied."""
+    """Return the default profile directory when no override is supplied.
+
+    Prototype builds resolve to an isolated, build-distinct directory so a
+    prototype can never merge with or overwrite the production profile, even
+    when launched directly without a launcher-provided override.
+    """
+    name = PROTOTYPE_DATA_DIR_NAME if _is_prototype_build() else DEFAULT_DATA_DIR_NAME
     if _local_app_data_dir():
-        return os.path.join(_local_app_data_dir(), DEFAULT_DATA_DIR_NAME)
+        return os.path.join(_local_app_data_dir(), name)
     return os.path.join(tempfile.gettempdir(), "sythion-data")
 
 
@@ -207,7 +243,14 @@ def migrate_legacy_data_dir() -> bool:
 
     Returns True when a migration occurred. Non-destructive: the legacy
     directory is left in place.
+
+    Prototype builds never migrate the real legacy profile: returning before
+    any filesystem access keeps a prototype from importing user data from
+    ``~/.sythion`` even when the launcher/target directory would otherwise
+    be empty.
     """
+    if _is_prototype_build():
+        return False
     legacy = Path(LEGACY_DATA_DIR)
     target = Path(data_dir())
     if not legacy.is_dir() or target == legacy:

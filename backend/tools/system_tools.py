@@ -1248,10 +1248,49 @@ class BrowserScreenshotTool(BaseTool[BrowserScreenshotInput]):
 
             # Determine destination path
             if input_data.save_path:
-                target_path = Path(input_data.save_path).resolve()
+                candidate = Path(input_data.save_path).resolve()
+                _proto = False
+                try:
+                    from backend.tools.file_tools import _is_prototype_build as _ipb
+
+                    _proto = bool(_ipb())
+                except Exception:
+                    _proto = os.environ.get("SYTHION_PROTECT_BUILD", "").strip().lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                        "prototype",
+                    }
+                if _proto:
+                    try:
+                        from backend.tools.file_tools import _contained as _contained_path
+                        from backend.core.storage import data_dir as _browser_data_dir
+                    except ImportError:
+                        from tools.file_tools import _contained as _contained_path
+                        from core.storage import data_dir as _browser_data_dir
+                    data_root = Path(_browser_data_dir()).resolve()
+                    if not (
+                        _contained_path(candidate)
+                        or str(candidate).lower().startswith(str(data_root).lower() + os.sep)
+                        or candidate == data_root
+                    ):
+                        return ToolOutput(
+                            success=False,
+                            error={
+                                "code": "TARGET_OUTSIDE_ROOTS",
+                                "message": f"Screenshot target is outside approved prototype roots: {candidate}",
+                            },
+                            model_summary="Screenshot save path rejected (prototype isolation).",
+                        )
+                target_path = candidate
                 target_path.parent.mkdir(parents=True, exist_ok=True)
             else:
-                screenshots_dir = Path.home() / "AppData" / "Local" / "Sythion (Synth)" / "screenshots"
+                try:
+                    from backend.core.storage import data_dir as _sythion_data_dir
+                except ImportError:
+                    from core.storage import data_dir as _sythion_data_dir
+                screenshots_dir = Path(_sythion_data_dir()) / "screenshots"
                 screenshots_dir.mkdir(parents=True, exist_ok=True)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 safe_title = "".join(c for c in title if c.isalnum() or c in (" ", "_", "-")).strip()[:30]
@@ -1287,7 +1326,14 @@ class BrowserScreenshotTool(BaseTool[BrowserScreenshotInput]):
         # Capturing an observation may create a Sythion-owned artifact, but it
         # does not alter the browser, a user document, or external state. A
         # timeout must therefore never block an otherwise valid completion.
-        return {"risk_level": "low", "mutating": False, "read_only": True, "requires_confirmation": False}
+        return {
+            "risk_level": "low",
+            "mutating": False,
+            "read_only": True,
+            "requires_confirmation": False,
+            "privacy_sensitive": True,
+            "redact_sensitive": True,
+        }
 
 
 class SystemVolumeTool(BaseTool[SystemVolumeInput]):
@@ -1745,7 +1791,7 @@ class BrightnessControlTool(BaseTool[BrightnessControlInput]):
         return output.success
 
     def get_policy_requirements(self) -> Dict[str, Any]:
-        return {"risk_level": "low", "requires_confirmation": False, "read_only": False}
+        return {"risk_level": "low", "requires_confirmation": False, "read_only": False, "mutating": True}
 
 
 class NetworkStatusTool(BaseTool[NetworkStatusInput]):
@@ -1932,7 +1978,7 @@ class DeviceStatusTool(BaseTool[SystemTimeInput]):
 
     name = "device_status"
     description = "List installed Windows devices and their current status via PnP."
-    input_type = SystemTimeInput
+    input_schema = SystemTimeInput
 
     @handle_tool_errors("DEVICE_STATUS_ERROR")
     async def execute(self, input_data):
@@ -2014,4 +2060,66 @@ def create_system_tools() -> list:
     ]
 
 
+# ---------------------------------------------------------------------------
+# Prototype-only fail-closed handling for host-data observation tools.
+# ---------------------------------------------------------------------------
 
+def _is_prototype_build() -> bool:
+    try:
+        from backend.core.secrets import is_prototype_build as _proto
+    except Exception:
+        try:
+            from core.secrets import is_prototype_build as _proto
+        except Exception:
+            _proto = None
+    if _proto is None:
+        return True
+    try:
+        return bool(_proto())
+    except Exception:
+        return True
+
+
+_PROTOTYPE_HOST_DATA_TOOL_CLASSES = (
+    SystemProcessesTool,
+    SystemActiveWindowTool,
+    WindowListTool,
+    BrowserTabsTool,
+    BrowserReadPageTool,
+    BrowserScreenshotTool,
+    ClipboardReadTool,
+)
+
+
+def _prototype_host_data_guard(method):
+    async def wrapped(self, input_data):
+        if _is_prototype_build():
+            return ToolOutput(
+                success=False,
+                error={
+                    "code": "PROTOTYPE_HOST_DATA_DISABLED",
+                    "message": "Host data observation is disabled in prototype builds.",
+                },
+                duration_ms=0,
+            )
+        return await method(self, input_data)
+    wrapped.__name__ = getattr(method, "__name__", "execute")
+    wrapped.__doc__ = getattr(method, "__doc__", None)
+    return wrapped
+
+
+for _cls in _PROTOTYPE_HOST_DATA_TOOL_CLASSES:
+    if hasattr(_cls, "execute") and callable(getattr(_cls, "execute", None)):
+        _cls.execute = _prototype_host_data_guard(_cls.execute)
+
+    _orig_policy = getattr(_cls, "get_policy_requirements", None)
+    if callable(_orig_policy):
+        def _make_policy(orig):
+            def _policy(self):
+                reqs = orig(self)
+                if isinstance(reqs, dict) and _is_prototype_build():
+                    reqs = dict(reqs)
+                    reqs["privacy_sensitive"] = True
+                return reqs
+            return _policy
+        _cls.get_policy_requirements = _make_policy(_orig_policy)

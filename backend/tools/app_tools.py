@@ -447,6 +447,21 @@ class AppLaunchTool(BaseTool[AppLaunchInput]):
                 duration_ms=0
             )
 
+        # Fail closed before any app-id validation, registry enumeration, or OS
+        # effect: direct execution has no trusted consent boundary.
+        return ToolOutput(
+            success=False,
+            error={
+                "code": "DIRECT_INSTRUCTION_REQUIRED",
+                "message": (
+                    "A state-changing or sensitive built-in action requires a "
+                    "trusted consent boundary, not identity, metadata, "
+                    "app_internal status, configuration, or a caller flag"
+                ),
+            },
+            duration_ms=0,
+        )
+
         app_id = input_data.app_id
         _validate_app_id(app_id)
 
@@ -468,12 +483,36 @@ class AppLaunchTool(BaseTool[AppLaunchInput]):
                 duration_ms=0
             )
 
+        # Direct execution already failed closed above; retained validation
+        # behavior below is unreachable for side effects.
+        return ToolOutput(
+            success=False,
+            error={
+                "code": "DIRECT_INSTRUCTION_REQUIRED",
+                "message": (
+                    "A state-changing or sensitive built-in action requires a "
+                    "trusted consent boundary, not identity, metadata, "
+                    "app_internal status, configuration, or a caller flag"
+                ),
+            },
+            duration_ms=0,
+        )
+
         # Focus-First Check: by default (new_instance=False) an open window
         # matching this application is brought to front instead of spawning
         # a duplicate process. new_instance=True skips this entirely.
+        # The internal focus attempt is a built-in consequential/sensitive
+        # effect, so it is contained by the same fail-closed reviewed-safe policy
+        # as direct execution: it cannot run via identity/metadata/app_internal
+        # status, configuration, or caller flags.
         if not input_data.new_instance:
             try:
+                from backend.tools.executor import ToolExecutor
+
                 focus_tool = AppFocusTool()
+                policy_error = ToolExecutor._policy_error(focus_tool, None)
+                if policy_error is not None:
+                    return ToolOutput(success=False, error=policy_error, duration_ms=0)
                 focus_res = await focus_tool.execute(AppFocusInput(app_id=app_id))
                 if focus_res.success:
                     return ToolOutput(
@@ -608,7 +647,7 @@ class AppFocusTool(BaseTool[AppFocusInput]):
 
     def get_policy_requirements(self) -> Dict[str, Any]:
         """Get policy requirements for this tool."""
-        return {"risk_level": "low", "requires_confirmation": False}
+        return {"risk_level": "low", "requires_confirmation": False, "mutating": True, "read_only": False}
 
     def validate_targets(self, input_data: AppFocusInput) -> Optional[Dict[str, str]]:
         return _app_target_error(input_data.app_id)

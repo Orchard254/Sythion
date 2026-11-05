@@ -254,6 +254,31 @@ def run_health_checks(include_provider: bool = False, db_session=None) -> Dict[s
         checks.append(CheckResult("provider", UNKNOWN,
                                   {"detail": "remote probe disabled"}))
 
+    # 6. Startup sequence aggregate (Phase 4.5). Partial startup must be
+    # reported, never treated as fully healthy by consumers.
+    try:
+        import backend.main as _bm
+        _boot = getattr(_bm, "startup_boot", None)
+    except Exception:
+        _boot = None
+    if isinstance(_boot, dict):
+        from backend.services.bootstrap import startup_status_projection
+
+        _projection = startup_status_projection(_boot)
+        _raw = _projection["startup_sequence_status"]
+        _evidence = {"startup_sequence_status": _raw,
+                     "stage_statuses": _projection["startup_stage_statuses"]}
+    else:
+        _raw = None
+        _evidence = {"startup_sequence_status": None}
+    if _raw == "completed":
+        _st_status = HEALTHY
+    elif _raw in ("failed", "degraded", "error"):
+        _st_status = DEGRADED
+    else:
+        _st_status = UNKNOWN
+    checks.append(CheckResult("startup_sequence", _st_status, _evidence))
+
     statuses = {c.status for c in checks}
     if UNAVAILABLE in statuses:
         overall = UNAVAILABLE

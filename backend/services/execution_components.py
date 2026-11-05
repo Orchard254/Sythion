@@ -98,7 +98,9 @@ class CancellationController:
             return current is not None and current.state == "cancelled"
 
         task = await self._state_store.get_task(task_id)
-        direct_instruction = bool((task.original_request or "").strip()) if task else False
+        # Internal/stored task text is never by itself authenticated human consent
+        # to execute a confirmation-gated tool directly.
+        direct_instruction = False
         return PolicyContext(
             direct_user_instruction=direct_instruction,
             task_id=task_id,
@@ -288,6 +290,10 @@ class CompletionVerifier:
         if task.state == TaskState.CANCELLED.value:
             return "Task cancellation was accepted"
 
+        error = self.action_evidence_error(task_id)
+        if error:
+            return error
+
         events = self._event_history(task_id)
 
         for event in events:
@@ -308,6 +314,120 @@ class CompletionVerifier:
                 return "The final mutating action has no confirmed verification"
 
         return None
+
+    def action_evidence_error(self, task_id, *, include_pending=True, consuming_action_id=None,
+                              in_progress_action_id=None, proposed_action_id=None, mutation=False):
+        """Exact-action obligations, not counts or unrelated later successes.
+
+        Legacy approvals lacking linkage remain unresolved. This is evidence
+        gating only: no event here authorizes replay or proves external effects.
+        Mutation callers must hold the writer transaction. Only their exact
+        validated proposal/current fenced handoff may receive an exemption.
+        """
+        from backend.models.database import Task
+        from backend.runtime.task_ownership import TaskOwnershipManager
+
+        task = self.db.query(Task).filter_by(id=task_id).populate_existing().first()
+        if task is None:
+            return "Task no longer exists"
+        if task.active_action_id is not None and task.active_action_id != in_progress_action_id:
+            return "An action outcome is unresolved"
+        if in_progress_action_id is not None and task.active_action_id != in_progress_action_id:
+            return "The exact in-progress action marker is missing"
+        # Deliberately do not swallow reads: unavailable evidence fails closed.
+        owner = TaskOwnershipManager(self.db).get(task_id)
+        if owner and (owner.uncertain_action_ids or
+                      (owner.active_action_id is not None and owner.active_action_id != in_progress_action_id)):
+            return "An owned action outcome is uncertain"
+        if include_pending and task.pending_action:
+            try:
+                pending = json.loads(task.pending_action)
+            except (ValueError, TypeError):
+                return "Pending action evidence is malformed"
+            if not isinstance(pending, dict) or pending.get("status") != "denied":
+                return "A pending action is unresolved"
+        unresolved = {}
+        proposals = {}
+        proposal = None
+        started = {}
+        executed = set()
+        handoffs = set()
+        action_kinds = {
+            "action.pending_approval", "action.approved", "action.denied", "action.started",
+            "action.handoff_unresolved", "action.uncertain", "task.interrupted", "tool.executed",
+        }
+        for index, event in enumerate(self._event_history(task_id)):
+            kind = event.get("event_type")
+            data = event.get("event_data")
+            if not mutation:
+                data = data or {}
+            if mutation and kind not in action_kinds:
+                continue
+            if mutation:
+                if not isinstance(data, dict) or "raw" in data:
+                    return "Malformed action evidence is unresolved"
+                if kind in {"action.uncertain", "task.interrupted"}:
+                    return "An action outcome is uncertain"
+                if kind in {"action.started", "tool.executed"} and (
+                    not isinstance(data.get("tool_name"), str) or not data["tool_name"].strip()
+                ):
+                    return "Malformed action tool identity is unresolved"
+                if kind == "tool.executed" and (
+                    not isinstance(data.get("success"), bool) or not isinstance(data.get("mutating"), bool)
+                ):
+                    return "Malformed action result is unresolved"
+            action_id = data.get("action_id")
+            if mutation and action_id is not None and (not isinstance(action_id, str) or not action_id.strip()):
+                return "Malformed action identity is unresolved"
+            if (proposed_action_id is not None and action_id == proposed_action_id
+                    and kind in {"action.started", "action.handoff_unresolved", "tool.executed"}):
+                return "This action was already admitted; refusing replay"
+            if kind == "action.pending_approval":
+                proposal = action_id
+                if action_id:
+                    proposals[action_id] = data
+            elif kind == "action.approved":
+                key = action_id or proposal or ("legacy-approval", index)
+                unresolved[key] = proposals.get(key, data)
+                proposal = None
+            elif kind == "action.denied":
+                proposal = None
+            elif kind in {"action.started", "action.handoff_unresolved"}:
+                key = action_id or ("unlinked-action", index)
+                unresolved[key] = proposals.get(key, data)
+                if kind == "action.started":
+                    if mutation and key in started:
+                        return "Repeated action start evidence is unresolved"
+                    started[key] = started.get(key, 0) + 1
+                else:
+                    handoffs.add(key)
+            elif kind == "tool.executed":
+                if mutation and action_id and data.get("mutating") and action_id in executed:
+                    return "Repeated action result evidence is unresolved"
+                executed.add(action_id)
+                if mutation and data.get("mutating") and (
+                    not action_id or data.get("success") is not True or data.get("verification") != "passed"
+                ):
+                    unresolved[action_id or ("unlinked-result", index)] = data
+                elif action_id and data.get("mutating") and data.get("success") is True and data.get("verification") == "passed":
+                    expected = unresolved.get(action_id)
+                    if expected and expected.get("tool_name") == data.get("tool_name") and ("params" not in expected or expected["params"] == data.get("params")):
+                        unresolved.pop(action_id)
+        # Only a current, separately validated proposal's approval may be
+        # consumed. An already-started/handoff/result obligation is never an
+        # approval exemption, even when it shares the requested action ID.
+        if (consuming_action_id and consuming_action_id not in started
+                and consuming_action_id not in handoffs and consuming_action_id not in executed):
+            unresolved.pop(consuming_action_id, None)
+        if (in_progress_action_id and started.get(in_progress_action_id) == 1
+                and in_progress_action_id not in handoffs and in_progress_action_id not in executed):
+            # Caller must prove current nonce/fence/expiry before requesting
+            # this internal handoff exemption. It is not dispatch authority.
+            unresolved.pop(in_progress_action_id, None)
+        if unresolved:
+            return "An approved or started action has no exact verified result"
+        return None
+
 
     def validate_and_enrich_result(
         self,

@@ -1,6 +1,7 @@
 import axios from 'axios';
 import type {
   AgentActivity,
+  AssistantTurn,
   AgentHealthReport,
   AgentIdentity,
   AgentRegistry,
@@ -11,6 +12,8 @@ import type {
   GoalSummary,
   HealthStatus,
   MemoryEdge,
+  MemoryItem,
+  MemoryItemsPage,
   MemoryReport,
   Objective,
   PurgeReceipt,
@@ -44,6 +47,35 @@ export const conversationService = {
       '/conversations', { params: cursor ? { cursor } : undefined }
     );
     return response.data;
+  },
+};
+
+export const assistantService = {
+  async turn(text: string, clientRequestId?: string): Promise<AssistantTurn> {
+    const body: { text: string; client_request_id?: string } = { text };
+    if (clientRequestId) {
+      body.client_request_id = clientRequestId;
+    }
+    try {
+      const response = await apiClient.post('/assistant/turns', body);
+      return response.data;
+    } catch (error) {
+      // Only a rejection with no HTTP response is an unknown transport outcome:
+      // there is no server verdict to surface, and no safe way to claim the work
+      // stopped or was recorded. Known HTTP rejections (503, 401, ...) keep
+      // their server-provided detail via the global interceptor.
+      const hasResponse =
+        typeof error === 'object' &&
+        error !== null &&
+        'response' in error &&
+        (error as { response?: unknown }).response != null;
+      if (!hasResponse) {
+        throw new Error(
+          'Connection lost. The request outcome is unknown; it was not automatically retried. Your draft is still here.'
+        );
+      }
+      throw error;
+    }
   },
 };
 
@@ -183,8 +215,12 @@ export const taskService = {
     return response.data;
   },
 
-  create: async (originalRequest: string): Promise<Task> => {
-    const response = await apiClient.post('/tasks', { original_request: originalRequest });
+  interpret: async (originalRequest: string, ignorePending = false): Promise<{kind: 'conversation' | 'task' | 'reply' | 'ambiguous'; task_id: string | null}> => {
+    const response = await apiClient.post('/assistant/interpret', { original_request: originalRequest, ignore_pending: ignorePending });
+    return response.data;
+  },
+  create: async (originalRequest: string, interactionHint?: 'conversation' | 'task'): Promise<Task> => {
+    const response = await apiClient.post('/tasks', { original_request: originalRequest, interaction_hint: interactionHint });
     return response.data;
   },
 
@@ -197,8 +233,8 @@ export const taskService = {
     return response.data;
   },
 
-  reply: async (taskId: string, answer: string): Promise<Task> => {
-    const response = await apiClient.post(`/tasks/${taskId}/reply`, { answer });
+  reply: async (taskId: string, answer: string, inferred = false, expectedVersion?: number): Promise<Task> => {
+    const response = await apiClient.post(`/tasks/${taskId}/reply`, { answer, inferred, expected_version: expectedVersion });
     return response.data;
   },
 
@@ -387,6 +423,21 @@ export const memoryService = {
   report: async (): Promise<MemoryReport> => {
     const response = await apiClient.get('/memory/report');
     return response.data;
+  },
+
+  items: async (params?: {
+    query?: string;
+    kind?: string;
+    kinds?: string[];
+    limit?: number;
+    offset?: number;
+  }): Promise<MemoryItemsPage> => {
+    const response = await apiClient.get('/memory/items', { params });
+    const data = (response.data ?? {}) as { items?: unknown; has_more?: unknown };
+    return {
+      items: Array.isArray(data.items) ? (data.items as MemoryItem[]) : [],
+      has_more: data.has_more === true,
+    };
   },
 
   edges: async (): Promise<MemoryEdge[]> => {

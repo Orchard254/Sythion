@@ -174,14 +174,17 @@ class TestRetentionExpiry:
 
 
 class TestConversationTurnRetention:
-    def test_purge_task_removes_its_conversation_turns(self, db_session):
+    def test_purge_task_preserves_its_conversation_turns(self, db_session):
         _task(db_session, "t-old", created_days_ago=200)
         _turn(db_session, "t-old", created_days_ago=200, role="user")
         _turn(db_session, "t-old", created_days_ago=200, role="assistant")
 
         purge_task(db_session, "t-old", reason="owner_requested")
 
+        # Rows survive and are detached from the deleted task.
+        assert db_session.query(ConversationTurn).count() == 2
         assert db_session.query(ConversationTurn).filter_by(task_id="t-old").count() == 0
+        assert all(t.task_id is None for t in db_session.query(ConversationTurn).all())
 
     def test_purge_task_keeps_other_tasks_turns(self, db_session):
         _task(db_session, "t-a")
@@ -191,6 +194,7 @@ class TestConversationTurnRetention:
 
         purge_task(db_session, "t-a")
 
+        assert db_session.query(ConversationTurn).count() == 2
         assert db_session.query(ConversationTurn).filter_by(task_id="t-a").count() == 0
         assert db_session.query(ConversationTurn).filter_by(task_id="t-b").count() == 1
 
@@ -252,6 +256,8 @@ class TestConversationTurnRetention:
         receipts = purge_expired(db_session, days=90)
 
         assert len(receipts) == 1
+        # Purged task's turns survive but are detached.
         assert db_session.query(ConversationTurn).filter_by(task_id="t-old").count() == 0
+        assert db_session.query(ConversationTurn).count() == 3
         # The recent task's turns are untouched.
         assert db_session.query(ConversationTurn).filter_by(task_id="t-recent").count() == 1

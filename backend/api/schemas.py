@@ -2,8 +2,9 @@
 Pydantic schemas for API request/response validation.
 """
 
-from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field, field_validator, computed_field
+import json
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 from enum import Enum
 
@@ -31,11 +32,15 @@ class TaskCreate(BaseModel):
     """Schema for creating a new task."""
     original_request: str = Field(..., min_length=1, max_length=10000)
     idempotency_key: Optional[str] = None
+    interaction_hint: Optional[Literal['conversation', 'task']] = None
+    ignore_pending: bool = False
 
 
 class TaskReply(BaseModel):
     """Schema for replying to a waiting_for_user task."""
     answer: str = Field(..., min_length=1, max_length=5000)
+    inferred: bool = False
+    expected_version: Optional[int] = None
 
 
 class TaskResponse(BaseModel):
@@ -48,6 +53,7 @@ class TaskResponse(BaseModel):
     active_action_id: Optional[str] = None
     objective_id: Optional[str] = None
     pending_question: Optional[str] = None
+    pending_action: Optional[str] = Field(default=None, exclude=True)
     final_result: Optional[str] = None
     created_at: datetime
     updated_at: datetime
@@ -58,6 +64,19 @@ class TaskResponse(BaseModel):
     response: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+    @computed_field
+    @property
+    def waiting_kind(self) -> Literal['clarification', 'permission', 'unknown']:
+        """Expose only a conservative classification, never private metadata."""
+        if self.state != TaskState.WAITING_FOR_USER:
+            return 'unknown'
+        try:
+            metadata = json.loads(self.pending_action or '')
+            kind = metadata.get('kind') if isinstance(metadata, dict) else None
+            return kind if kind in ('clarification', 'permission') else 'unknown'
+        except (ValueError, TypeError):
+            return 'unknown'
 
 
 class TaskListResponse(BaseModel):
@@ -741,6 +760,15 @@ class HealthResponse(BaseModel):
     database_connected: bool
     cloud_configured: bool
     selected_model: str = ""
+    # Truthful reflection of the Phase 4.5 startup sequence aggregate.
+    # "completed" when every stage succeeded; "failed"/"unknown" otherwise.
+    # Consumers must read this instead of assuming full success.
+    startup_sequence_status: str = "unknown"
+    startup_status: str = "unknown"
+    startup_overall_status: str = "unknown"
+    startup_aggregate_status: str = "unknown"
+    startup_stage_statuses: dict = {}
+    startup_boot: dict = {}
 
 
 # Voice Schemas
@@ -794,11 +822,75 @@ class VoiceAssetsResponse(BaseModel):
 
 # Error Response Schema
 
+# --- Read-only user memory list -------------------------------------------
+
+class MemoryItemResponse(BaseModel):
+    """A single remembered user memory entry exposed by the read-only
+    memory list."""
+
+    id: int
+    kind: str
+    scope: str
+    key: str
+    value: str
+    confidence: Optional[float] = None
+    verification_status: str
+    source_type: str
+    observed_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    score: float = 0.0
+
+
+class MemoryItemsResponse(BaseModel):
+    """Canonical paginated envelope for the read-only memory item list.
+
+    ``has_more`` reports whether additional matching ACTIVE USER-scoped
+    rows exist beyond the returned page; it is derived server-side from a
+    ``page_size + 1`` probe rather than a CORS-exposed response header.
+    """
+
+    items: List[MemoryItemResponse] = Field(default_factory=list)
+    has_more: bool = False
+
+
 class ErrorResponse(BaseModel):
     """Schema for error responses."""
     error: str
     detail: Optional[str] = None
     code: Optional[str] = None
+
+
+class AssistantTurnRequest(BaseModel):
+    """Request body for POST /assistant/turns.
+
+    ``client_request_id`` is an optional, caller-supplied stable identity for
+    one user submission. It is transported for future receipt/deduplication
+    work but does not by itself create idempotency, routing, dispatch, or
+    execution authority in this request path. Older callers may send
+    ``request_id`` as the same transport value.
+    """
+    text: str = Field(..., min_length=1, max_length=12000)
+    client_request_id: Optional[str] = Field(default=None, max_length=256)
+    request_id: Optional[str] = Field(default=None, max_length=256)
+
+
+class AssistantTurnResponse(BaseModel):
+    """Response body for POST /assistant/turns."""
+    exchange_id: str
+    user_text: str
+    assistant_text: str
+    status: str
+    background_task_ids: List[str] = Field(default_factory=list)
+    background_task_scheduling_status: Optional[str] = None
+    scheduling_status: Optional[str] = None
+    task_scheduling_status: Optional[str] = None
+    dispatch_status: Optional[str] = None
+    scheduling_established: Optional[bool] = None
+    receipt_id: Optional[str] = None
+    request_receipt_id: Optional[str] = None
+    composer_receipt_id: Optional[str] = None
+
+
 
 
 # Tool Execution Request/Response Schemas

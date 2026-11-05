@@ -113,7 +113,10 @@ def test_app_internal_memory_store_is_skill_visible(db_session, full_tool_execut
     full_tool_executor.register_tool(MemoryRecallTool())
 
     allowed = allowed_tool_names(full_tool_executor)
-    assert "memory_store" in allowed
+    # App-internal mutations are state-changing; skills have no trusted task
+    # action/grant boundary yet, so they are not skill-dispatchable even though
+    # the normal model path may still call memory_store directly.
+    assert "memory_store" not in allowed
     assert "memory_recall" in allowed
     assert "file_write" not in allowed
     assert "app_launch" not in allowed

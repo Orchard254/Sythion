@@ -1,5 +1,61 @@
 # Sythion (Synth) Project Status
 
+## User-outcome checklist — updated 2026-11-03
+
+**Goal:** A dependable, always-available AI on Windows initially, using cloud
+models and current internet information, with continuity and useful autonomous
+work inside user-controlled access toggles. Long term: a genuinely isolated
+system. Irreversible actions are excluded. Availability does not require
+continuous inference.
+
+This checklist is the current progress summary. Older descriptions and suite
+counts below are historical evidence, not verification of today's dirty tree.
+Check a user outcome only after a representative end-to-end demonstration;
+source implementation, focused tests, integration, and deployment are distinct.
+
+| User outcome | Current status | Evidence needed to finish |
+|---|---|---|
+| I can converse naturally and give follow-ups without losing their order or task. | Partial: focused conversation/follow-up work exists; integrated experience not reverified. | A real multi-turn project with corrections, interruption, and resumption. |
+| Synth remembers my project accurately across restarts, without inventing personal facts or authority. | Partial; durable history foundations exist, memory authority and recall ACL gaps remain. | Restart continuity, controlled durable-memory writes, and principal-scoped recall tests. |
+| Synth uses cloud models and fresh web information without leaking my private data. | Partial: provider integration exists; safe research and egress behavior not demonstrated end to end. | Current sourced research, scoped data handling, outage and credential-isolation checks. |
+| I can leave Synth available on Windows all day and reach it when needed. | Not demonstrated; no verified always-on deployment or soak run. | Measured idle/active soak, sleep/network recovery, clean shutdown and supervised restart. |
+| Synth carries a goal forward in bounded background sessions without constant supervision. | Partial: wake/session foundations exist; protected work remains blocked. | One useful long-running goal with measured bounds, durable progress and honest blockers. |
+| My access toggles are real permissions, and turning one off prevents new covered actions. | Blocked: authenticated operator issuance and enforcement are unimplemented. | Principal/scope binding, revocation fence, resource-bound enforcement, adversarial tests. |
+| Pause/stop works, and crashes never silently repeat uncertain actions. | Partial: controls/recovery primitives exist; cross-process fencing and uncertainty gaps remain. | Process-kill and cancellation tests around actual effect windows without bypassing authorization. |
+| I can tell what is available, running, completed, blocked or uncertain. | In progress: lifecycle endpoint candidate in an isolated worktree; not integrated. | Independent review and verification, then conflict-safe integration and user-facing observation. |
+| Synth stays predictable during cloud outages and within resource/cost limits. | Partial: bounded retry foundations exist; runtime-wide resilience/budgets incomplete. | Outage/rate-limit/cancellation tests and measured session/daily limits. |
+| Installation and updates are reproducible and do not damage unrelated files. | Blocked: destructive staging, runtime/provenance and clean-machine release gaps remain. | Non-destructive packaging, dependency authenticity and clean-machine validation. |
+| Synth is genuinely isolated from the rest of my system except through granted interfaces. | Not implemented as the target isolation boundary. | Verified OS/process sandbox and controlled filesystem/network interfaces. |
+
+### Verified foundations, not completed product promises
+
+- [x] Focused source memory-tool containment: independently accepted 10-test evidence.
+- [x] Response-engine validation: independently accepted 67-test evidence.
+- [x] Transcript persistence fixture corrections: independently accepted 2-test evidence.
+- [x] Packaging secret-classification/copy callback fixes: independently accepted 23-test evidence.
+
+These results cover their specific changes only, not the whole current source,
+packaged application, or release. Mixed-provenance uncommitted changes are being
+preserved rather than swept into a baseline commit.
+
+### Current work and exact next step
+
+Independent verification reproduced **9 passing tests** (8 lifecycle, 1 health)
+on the isolated candidate, but acceptance is **blocked**. Sandbox probes confirmed
+partial startup failure can still appear as aggregate completion; existing tests
+do not exercise the actual main lifespan. Static review also found hidden global
+boot state, internal lock-field access, and optimistic uptime on clock skew.
+The implementer is correcting these defects and adding real lifespan regression
+coverage. No commit or main-tree integration has occurred.
+Next: independently review and verify the corrected
+revision, and locally commit only explicit verified paths. Integration into the
+dirty working tree is a separate compatibility check, not assumed by that commit.
+
+Agents report directly and share memory; this existing status document is the
+single human-readable checklist, not a new orchestration framework. Update it
+when outcomes or verification change. No persistent agent runner, push, release,
+installation, or 24/7 operation is claimed.
+
 ## Status summary
 
 Sythion is being developed as the **trusted runtime core** of a larger

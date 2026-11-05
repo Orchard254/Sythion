@@ -7,6 +7,7 @@
  */
 
 export interface Task {
+  waiting_kind?: 'clarification' | 'permission' | 'unknown';
   id: string;
   original_request: string;
   normalized_goal: string | null;
@@ -28,6 +29,7 @@ export type TaskState =
   | 'created'
   | 'running'
   | 'waiting_for_user'
+  | 'queued'
   | 'completed'
   | 'failed'
   | 'cancelled'
@@ -56,6 +58,13 @@ export interface HealthStatus {
   database_connected: boolean;
   cloud_configured: boolean;
   selected_model?: string;
+  // Truthful startup aggregate reported by /health. Optional for older payloads.
+  startup_sequence_status?: string;
+  startup_status?: string;
+  startup_overall_status?: string;
+  startup_aggregate_status?: string;
+  startup_stage_statuses?: Record<string, string>;
+  startup_boot?: Record<string, unknown>;
 }
 
 /** GET /api/v1/version */
@@ -382,6 +391,25 @@ export interface ToolProposal {
 
 /* --- Memory -------------------------------------------------------------- */
 
+export interface MemoryItem {
+  id: number;
+  kind: string;
+  scope: string;
+  key: string;
+  value: string;
+  confidence: number | null;
+  verification_status: string;
+  source_type: string;
+  observed_at: string | null;
+  updated_at: string | null;
+  score: number;
+}
+
+export interface MemoryItemsPage {
+  items: MemoryItem[];
+  has_more: boolean;
+}
+
 export interface MemoryEdge {
   id: number;
   source_key: string;
@@ -449,3 +477,17 @@ export interface PurgeReceipt {
 export type DataOrigin = 'live' | 'demo';
 
 export type Tone = 'ok' | 'warn' | 'danger' | 'info' | 'idle' | 'accent' | 'plain';
+
+/* --- Assistant conversation turns (POST /assistant/turns) ---------------- */
+export interface AssistantTurn {
+  exchange_id: string;
+  user_text: string;
+  assistant_text: string;
+  status: string;
+  background_task_ids: string[];
+  background_task_scheduling_status?: string | null;
+  scheduling_status?: string | null;
+  task_scheduling_status?: string | null;
+  dispatch_status?: string | null;
+  scheduling_established?: boolean | null;
+}

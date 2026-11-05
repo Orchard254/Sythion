@@ -125,6 +125,22 @@ def classify_action(
     destructive = bool(tool_policy.get("destructive"))
     requires_confirmation = bool(tool_policy.get("requires_confirmation"))
 
+    # Canonical identity, metadata, app_internal status, configuration, or a
+    # caller's direct_user_instruction are never authenticated consent.  A
+    # mutating, app-internal, privacy-sensitive, screen/UI, or unpermissioned
+    # effect therefore escalates to CONSEQUENTIAL even when its risk level or
+    # confirmation flag looks benign.
+    if (
+        tool_policy.get("app_internal") is True
+        or destructive
+        or tool_policy.get("read_only") is False
+        or tool_policy.get("privacy_sensitive") is True
+        or tool_policy.get("requires_screen_access") is True
+        or tool_policy.get("requires_ui_automation") is True
+        or tool_policy.get("requires_admin") is True
+    ):
+        return Importance.CONSEQUENTIAL
+
     if destructive or risk == "high":
         return Importance.CONSEQUENTIAL
 
@@ -191,9 +207,8 @@ def needs_approval(
     if classification == Importance.ROUTINE:
         return False
 
-    # CONSEQUENTIAL — approval needed unless autonomous mode overrides
-    # or the user has already explicitly approved this tool.
-    if approved_by_user or autonomy_level == "autonomous":
+    # An internally stored approval cancels staging, but autonomous mode does
+    # not. Execution remains separately authorization-gated.
+    if approved_by_user:
         return False
-
     return True

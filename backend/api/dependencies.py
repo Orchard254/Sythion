@@ -15,7 +15,7 @@ are never loaded into any executor, so all executors have identical content.
 from __future__ import annotations
 
 import threading
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from backend.tools.executor import ToolExecutor
 
@@ -53,3 +53,35 @@ def get_tool_executor() -> ToolExecutor:
     if _provider is not None:
         return _provider()
     return _build_fallback()
+
+
+# Optional, explicitly injected grounded discussion linkage service.  Default is
+# None, so production behavior is unchanged unless a caller installs a
+# provider.
+_grounded_discussion_provider = None
+
+
+def set_grounded_discussion_provider(provider: Any = None) -> None:
+    global _grounded_discussion_provider
+    _grounded_discussion_provider = provider
+
+
+def set_discussion_linkage_provider(provider: Any = None) -> None:
+    set_grounded_discussion_provider(provider)
+
+
+def reset_grounded_discussion_provider() -> None:
+    global _grounded_discussion_provider
+    _grounded_discussion_provider = None
+
+
+def reset_discussion_linkage_provider() -> None:
+    reset_grounded_discussion_provider()
+
+
+def get_grounded_discussion_provider() -> Any:
+    return _grounded_discussion_provider
+
+
+def get_discussion_linkage_provider() -> Any:
+    return _grounded_discussion_provider

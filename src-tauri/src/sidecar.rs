@@ -221,6 +221,14 @@ pub const DATA_DIR_ENV: &str = "SYTHION_DATA_DIR";
 pub const LEGACY_DATA_DIR_ENV: &str = "Sythion (Synth)_DATA_DIR";
 pub const DEFAULT_DATA_DIR_NAME: &str = "Sythion (Synth)";
 
+pub const PROTOTYPE_PRODUCT_NAME: &str = "Sythion (Synth) Prototype";
+pub const PROTOTYPE_DATA_DIR_NAME: &str = "Sythion (Synth) Prototype";
+pub const PROTOTYPE_IDENTIFIER: &str = "ai.sythion.desktop.prototype";
+
+pub const PRODUCTION_SECRET_NAMESPACE: &str = "Sythion (Synth)";
+pub const PROTOTYPE_SECRET_NAMESPACE: &str = "Sythion (Synth) Prototype";
+
+
 /// The default profile directory when no override is supplied.
 ///
 /// On Windows this is `%LOCALAPPDATA%\Sythion (Synth)`, the location the
@@ -323,6 +331,89 @@ pub fn resolve_data_dir() -> Result<PathBuf, String> {
 /// A conflicting configuration falls back to the canonical override so that
 /// diagnostics still have a destination. The application itself refuses to
 /// start in that state - see `resolve_data_dir`.
+/// Report whether the build identity identifies a separately generated prototype.
+pub fn is_prototype_build(product_name: Option<&str>, identifier: Option<&str>) -> bool {
+    // Compile-time build marker from src-tauri/build.rs is authoritative when
+    // present; runtime identity remains a fallback for direct macro merges.
+    cfg!(prototype_build)
+        || product_name
+            .map(|name| !name.is_empty() && name.to_lowercase().contains("prototype"))
+            .unwrap_or(false)
+        || identifier
+            .map(|value| {
+                let lowered = value.to_lowercase();
+                !value.is_empty()
+                    && (lowered.contains("prototype") || lowered.ends_with(".prototype"))
+            })
+            .unwrap_or(false)
+}
+
+/// Default profile directory for the given build identity.
+pub fn default_data_dir_for(product_name: Option<&str>, identifier: Option<&str>) -> PathBuf {
+    let name = if is_prototype_build(product_name, identifier) {
+        PROTOTYPE_DATA_DIR_NAME
+    } else {
+        DEFAULT_DATA_DIR_NAME
+    };
+    match std::env::var_os("LOCALAPPDATA") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir).join(name),
+        _ => std::env::temp_dir().join("sythion-data"),
+    }
+}
+
+/// Resolve the profile directory for the given build identity. Explicit overrides
+/// still win, and conflicting overrides still fail fast.
+pub fn resolve_data_dir_for_build(
+    product_name: Option<&str>,
+    identifier: Option<&str>,
+) -> Result<PathBuf, String> {
+    let default = default_data_dir_for(product_name, identifier);
+    resolve_data_dir_from(
+        std::env::var_os(DATA_DIR_ENV).as_deref(),
+        std::env::var_os(LEGACY_DATA_DIR_ENV).as_deref(),
+        &default,
+    )
+}
+
+pub fn resolve_data_dir_for_product(
+    product_name: Option<&str>,
+    identifier: Option<&str>,
+) -> Result<PathBuf, String> {
+    resolve_data_dir_for_build(product_name, identifier)
+}
+
+/// Report whether a build separates its secret storage from the production one.
+pub fn is_prototype_secret_build(product_name: Option<&str>, identifier: Option<&str>) -> bool {
+    is_prototype_build(product_name, identifier)
+}
+
+/// Secret namespace derived from the build identity. Fail-closed: anything that
+/// is not provably the checked-in production identity uses the prototype
+/// namespace, so a misidentified prototype can never reuse production secrets.
+pub fn secret_namespace_for_build(product_name: Option<&str>, identifier: Option<&str>) -> &'static str {
+    if is_prototype_build(product_name, identifier) {
+        PROTOTYPE_SECRET_NAMESPACE
+    } else {
+        // Only the combination of the production product name and the absence of
+        // a prototype identifier counts as production. Everything else stays on
+        // the isolated (prototype) side so unknown identities fail closed toward
+        // isolation instead of toward the production vault.
+        match (product_name, identifier) {
+            (Some(name), _) if name.to_lowercase().contains("prototype") => PROTOTYPE_SECRET_NAMESPACE,
+            (_, Some(value)) if value.to_lowercase().contains("prototype") || value.ends_with(".prototype") => {
+                PROTOTYPE_SECRET_NAMESPACE
+            }
+            (Some(name), _) if !name.is_empty() && name == DEFAULT_DATA_DIR_NAME => PRODUCTION_SECRET_NAMESPACE,
+            (None, None) => PRODUCTION_SECRET_NAMESPACE,
+            _ => PROTOTYPE_SECRET_NAMESPACE,
+        }
+    }
+}
+
+pub fn secret_target_prefix_for_build(product_name: Option<&str>, identifier: Option<&str>) -> String {
+    format!("{}/", secret_namespace_for_build(product_name, identifier))
+}
+
 pub fn data_dir() -> PathBuf {
     match resolve_data_dir() {
         Ok(dir) => dir,
@@ -461,6 +552,15 @@ fn development_mode_flag() -> &'static str {
 }
 
 pub fn spawn_sidecar(app_handle: &tauri::AppHandle, dir: &Path) -> Result<Child, String> {
+    spawn_sidecar_for_build(app_handle, dir, None, None)
+}
+
+pub fn spawn_sidecar_for_build(
+    app_handle: &tauri::AppHandle,
+    dir: &Path,
+    product_name: Option<&str>,
+    identifier: Option<&str>,
+) -> Result<Child, String> {
     // The profile directory is resolved ONCE, by the caller, and handed to the
     // sidecar explicitly. A conflicting configuration is fatal: starting with a
     // split profile would leave the sidecar waiting for a handshake that lands
@@ -510,9 +610,26 @@ pub fn spawn_sidecar(app_handle: &tauri::AppHandle, dir: &Path) -> Result<Child,
         // the profile lock, the handshake file and its own log file.
         .env(DATA_DIR_ENV, &dir)
         .env("SYTHION_LOG_DIR", &log_dir)
+        .env("SYTHION_BUILD_IDENTITY", product_name.unwrap_or(""))
+        .env("SYTHION_APP_IDENTIFIER", identifier.unwrap_or(""))
+        .env(
+            "SYTHION_PROTECT_BUILD",
+            if is_prototype_build(product_name, identifier) { "1" } else { "false" },
+        )
+        .env(
+            "SYTHION_PROTOTYPE_BUILD",
+            if is_prototype_build(product_name, identifier) { "1" } else { "false" },
+        )
+        .env(
+            "SYTHION_SECRET_NAMESPACE",
+            secret_namespace_for_build(product_name, identifier),
+        )
         // The legacy variable is removed so the sidecar can never read a
         // different directory than the one the shell resolved.
         .env_remove(LEGACY_DATA_DIR_ENV)
+        // Prototype identity must never inherit or discover a production cloud
+        // credential through the environment. Production builds keep this path.
+        // (Handled below: the command is only scrubbed for prototype builds.)
         .stdout(stdout_file.map(Stdio::from).unwrap_or_else(Stdio::null))
         .stderr(stderr_file.map(Stdio::from).unwrap_or_else(Stdio::null));
 
@@ -521,6 +638,11 @@ pub fn spawn_sidecar(app_handle: &tauri::AppHandle, dir: &Path) -> Result<Child,
     {
         use std::os::windows::process::CommandExt;
         command.creation_flags(sidecar_creation_flags());
+    }
+
+    if is_prototype_build(product_name, identifier) {
+        // Prototype shells must not inherit a production cloud credential.
+        command.env_remove("SYTHION_OLLAMA_API_KEY");
     }
 
     let child = command
@@ -595,9 +717,10 @@ pub fn spawn_watcher(app_handle: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::{
-        data_dir_key, development_mode_flag, development_mode_flag_for, normalize_data_dir,
-        python_override_workdir, resolve_data_dir_from, sidecar_creation_flags, DATA_DIR_ENV, DEFAULT_DATA_DIR_NAME,
-        LEGACY_DATA_DIR_ENV,
+        data_dir_key, default_data_dir_for, development_mode_flag, development_mode_flag_for, is_prototype_build,
+        normalize_data_dir, python_override_workdir, resolve_data_dir_for_build, resolve_data_dir_from,
+        sidecar_creation_flags, DATA_DIR_ENV, DEFAULT_DATA_DIR_NAME, LEGACY_DATA_DIR_ENV,
+        PROTOTYPE_DATA_DIR_NAME,
     };
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
@@ -777,5 +900,34 @@ mod tests {
             normalize_data_dir(Path::new("C:\\a\\.\\b")),
             PathBuf::from("C:\\a\\b")
         );
+    }
+
+    #[test]
+    fn prototype_builds_resolve_an_isolated_default_profile() {
+        let production = resolve_data_dir_for_build(None, None).expect("production profile");
+        let prototype =
+            resolve_data_dir_for_build(Some("Sythion (Synth) Prototype"), Some("ai.sythion.desktop.prototype"))
+                .expect("prototype profile");
+        assert!(production.ends_with(DEFAULT_DATA_DIR_NAME));
+        assert!(prototype.ends_with(PROTOTYPE_DATA_DIR_NAME));
+        assert_ne!(production, prototype);
+    }
+
+    #[test]
+    fn prototype_profile_still_honours_explicit_overrides_and_conflicts() {
+        let resolved = resolve_data_dir_for_build(Some("Sythion (Synth) Prototype"), None)
+            .expect("prototype profile");
+        assert!(resolved.ends_with(PROTOTYPE_DATA_DIR_NAME));
+
+        let forced_default = default_data_dir_for(Some("Sythion (Synth) Prototype"), None);
+        let err = resolve_data_dir_from(
+            Some(std::ffi::OsStr::new(r"C:\profiles\one")),
+            Some(std::ffi::OsStr::new(r"C:\profiles\two")),
+            &forced_default,
+        )
+        .expect_err("conflicting overrides must fail");
+        let text = err.to_string();
+        assert!(text.contains(DATA_DIR_ENV));
+        assert!(text.contains(LEGACY_DATA_DIR_ENV));
     }
 }

@@ -85,9 +85,11 @@ if mode == "crash":
         "evidence_task_id": task.id,
         "attempt_count": 1,
     }})
+    # Commit the step's pending mutation before runner transition, so the
+    # runner does not see a caller-owned transaction (production guard).
+    session.commit()
     asyncio_ok(runner.transition_state(task.id, TaskState.RUNNING,
                                        "task.execution_started", {{}}))
-    session.commit()
     print(json.dumps({{"goal_id": goal.id, "step_id": step.id, "task_id": task.id}}), flush=True)
     # Simulate ongoing work; parent will hard-kill us here.
     time.sleep(120)

@@ -26,7 +26,7 @@ const settle = async (action: () => void) => { await act(async () => { action();
 beforeEach(async () => {
   vi.clearAllMocks(); selected = '';
   checks = { resources_ok:true,database_ok:true,sidecar_ok:true,ollama_api_key_ok:false,ollama_health_ok:false,selected_model_ok:false,inference_verified_ok:false,safe_settings_ok:false,tts_voice_ok:true,stt_model_installed:false };
-  vi.stubGlobal('localStorage', { setItem: vi.fn() });
+  vi.stubGlobal('localStorage', { getItem: vi.fn(() => 'text'), setItem: vi.fn() });
   vi.stubGlobal('sessionStorage', { getItem: () => 'inert-discovery-token' });
   apiClient.defaults.adapter = async () => { throw new Error('Unexpected HTTP request in setup test'); };
   mock.readiness.mockImplementation(async () => ({ checks: {...checks}, selected_model:selected }));
@@ -42,21 +42,34 @@ afterEach(() => { act(() => view.unmount()); apiClient.defaults.adapter = origin
 async function connect() {
   await settle(() => view.root.findByProps({id:'setup-key'}).props.onChange({target:{value:'test-key'}}));
   await settle(() => button('Connect and save key').props.onClick());
-  expect(view.root.findByProps({id:'setup-key'}).props.value).toBe('');
+  expect(view.root.findAllByProps({id:'setup-key'})).toHaveLength(0);
   await settle(() => view.root.findByProps({id:'setup-model'}).props.onChange({target:{value:'cloud-model'}}));
   await settle(() => button('Test selected model').props.onClick());
 }
 
 describe('setup to first conversation', () => {
+  it('guides a new user to connect a key before discovering models', async () => {
+    expect(view.root.findAllByProps({id:'setup-model'})).toHaveLength(0);
+    expect(view.root.findAllByType('button').some((b) => labels(b) === 'Use configured key')).toBe(false);
+    await settle(() => view.root.findByProps({id:'setup-key'}).props.onChange({target:{value:'test-key'}}));
+    await settle(() => button('Connect and save key').props.onClick());
+    expect(view.root.findAllByProps({id:'setup-key'})).toHaveLength(0);
+    expect(view.root.findByProps({id:'setup-model'})).toBeTruthy();
+    expect(button('Continue').props.disabled).toBe(true);
+    await settle(() => button('Back').props.onClick());
+    expect(view.root.findByProps({id:'setup-key'}).props.value).toBe('');
+    expect(button('Use configured key')).toBeTruthy();
+  });
   it('discovers exact selectable beam through the real object-to-ID service without saving a key', async () => {
     checks.ollama_api_key_ok = true;
+    await settle(() => button('Recheck connection').props.onClick());
     apiClient.defaults.adapter = async (config) => {
       expect(config.url).toBe('/models');
       return { data: JSON.stringify({ models: [
         { name: 'beam', model: 'beam' }, { model: 'other:exact-tag' }, { name: 'beam' },
       ] }), status: 200, statusText: 'OK', headers: {}, config };
     };
-    await settle(() => button('Find available models').props.onClick());
+    await settle(() => button('Use configured key').props.onClick());
     expect(view.root.findAllByType('option').map((option) => [option.props.value, labels(option)]))
       .toStrictEqual([['', 'Select a model'], ['beam', 'beam'], ['other:exact-tag', 'other:exact-tag']]);
     await settle(() => view.root.findByProps({id:'setup-model'}).props.onChange({target:{value:'beam'}}));
@@ -66,10 +79,10 @@ describe('setup to first conversation', () => {
     expect(mock.selectModel).toHaveBeenCalledWith('beam');
     expect(mock.inference).toHaveBeenCalledWith('beam');
     expect(mock.testCredentials).not.toHaveBeenCalled();
-    expect(view.root.findByProps({id:'setup-key'}).props.value).toBe('');
+    expect(view.root.findAllByProps({id:'setup-key'})).toHaveLength(0);
   });
   it('requires a real model check, applies safe settings, and allows text without microphone', async () => {
-    expect(button('Continue').props.disabled).toBe(true);
+    expect(button('Connect and save key').props.disabled).toBe(true);
     await connect();
     expect(button('Continue').props.disabled).toBe(false);
     await settle(() => button('Continue').props.onClick());
@@ -80,6 +93,25 @@ describe('setup to first conversation', () => {
     expect(complete).toHaveBeenCalledWith(true);
     expect(localStorage.setItem).toHaveBeenCalledWith('sythion.replyMode','text');
     expect(mock.speak).not.toHaveBeenCalled();
+  });
+
+  it('does not say the connection is ready for a different untested model', async () => {
+    await connect();
+    await settle(() => view.root.findByProps({id:'setup-model'}).props.onChange({target:{value:'another-model'}}));
+    expect(button('Continue').props.disabled).toBe(true);
+    expect(labels(view.root)).not.toContain('Your connection is ready.');
+    expect(labels(view.root)).toContain('The test sends a short request');
+  });
+
+  it('explains key setup and offers a useful recovery when connection fails', async () => {
+    expect(labels(view.root)).toContain('ollama.com/settings/keys');
+    expect(labels(view.root)).toContain('Keep it private');
+    mock.testCredentials.mockRejectedValueOnce(new Error('technical failure'));
+    await settle(() => view.root.findByProps({id:'setup-key'}).props.onChange({target:{value:'test-key'}}));
+    await settle(() => button('Connect and save key').props.onClick());
+    expect(labels(view.root)).toContain('Check your key and internet connection');
+    expect(view.root.findByProps({id:'setup-key'}).props.value).toBe('test-key');
+    expect(view.root.findAllByProps({id:'setup-model'})).toHaveLength(0);
   });
 
   it('stays on step 1 when safe settings return ok=false', async () => {

@@ -161,11 +161,11 @@ describe('state predicates', () => {
 describe('collectAttention', () => {
   const now = Date.parse('2026-10-19T12:00:00Z');
 
-  it('raises an approval even when the backend supplied no question', () => {
-    // This is the case preview data can never produce and which previously
-    // caused a real approval request to render as nothing at all.
+  it('raises an approval when a wait carries permission metadata, even without a question', () => {
+    // Staged permissions are the only waits that may advertise approval. A null
+    // question alone must not imply one.
     const items = collectAttention({
-      tasks: [task({ state: 'waiting_for_user', pending_question: null })],
+      tasks: [task({ state: 'waiting_for_user', pending_question: null, waiting_kind: 'permission' })],
       now,
     });
     expect(items).toHaveLength(1);
@@ -173,12 +173,50 @@ describe('collectAttention', () => {
     expect(items[0].detail).toContain('will not continue until you reply');
   });
 
-  it('classifies interrupted as an approval, never as a failure', () => {
+  it('keeps an unclassified wait visible as a neutral input request', () => {
+    // A model question with no pending_action must not be labelled approval.
     const items = collectAttention({
-      tasks: [task({ state: 'interrupted', terminal_reason: 'awaiting owner approval' })],
+      tasks: [task({ state: 'waiting_for_user', pending_question: 'How many people?' })],
+      now,
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0].kind).toBe('input');
+    expect(items[0].title).toBe('Needs your answer');
+  });
+
+  it('classifies waiting states from explicit kind only', () => {
+    const cases: Array<[Partial<Task>, 'approval' | 'input']> = [
+      [{ waiting_kind: 'permission' }, 'approval'],
+      [{ waiting_kind: 'clarification' }, 'input'],
+      [{ waiting_kind: 'unknown' }, 'input'],
+      [{}, 'input'],
+      [{ pending_question: null }, 'input'],
+    ];
+    for (const [overrides, expected] of cases) {
+      const items = collectAttention({
+        tasks: [task({ state: 'waiting_for_user', pending_question: 'Question?', ...overrides })],
+        now,
+      });
+      expect(items[0].kind).toBe(expected);
+    }
+  });
+
+  it('classifies an interrupted wait with explicit permission metadata as an approval', () => {
+    const items = collectAttention({
+      tasks: [task({ state: 'interrupted', terminal_reason: 'awaiting owner approval', waiting_kind: 'permission' })],
       now,
     });
     expect(items[0].kind).toBe('approval');
+    expect(items.some((i) => i.kind === 'failure')).toBe(false);
+  });
+
+  it('keeps an interrupted execution visible without approval claims', () => {
+    const items = collectAttention({
+      tasks: [task({ state: 'interrupted', terminal_reason: 'worker lost' })],
+      now,
+    });
+    expect(items[0].kind).toBe('input');
+    expect(items[0].title).toBe('Execution interrupted');
     expect(items.some((i) => i.kind === 'failure')).toBe(false);
   });
 
@@ -233,7 +271,7 @@ describe('collectAttention', () => {
       tasks: [
         task({ id: 'stall', state: 'running', updated_at: '2026-10-19T09:00:00' }),
         task({ id: 'fail', state: 'failed', terminal_reason: 'boom' }),
-        task({ id: 'appr', state: 'waiting_for_user', pending_question: 'which one?' }),
+        task({ id: 'appr', state: 'waiting_for_user', pending_question: 'which one?', waiting_kind: 'permission' }),
         task({ id: 'unver', state: 'completed', final_result: 'x' }),
       ],
       now,

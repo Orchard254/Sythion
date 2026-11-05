@@ -82,7 +82,32 @@ def resolved_file_roots(db: Session) -> List[str]:
     """
     from backend.core.config import settings
 
-    raw: List[str] = list(settings.file_roots or [])
+    # Prototype builds must not inherit ambient file roots from the process
+    # environment (SYTHION_FILE_ROOTS and the Settings default). Deliberate
+    # grants persisted in the DB are still honoured; production behavior is
+    # unchanged.
+    try:
+        try:
+            from backend.core.secrets import (
+                is_prototype_build as _is_proto_build,
+                secret_fail_closed as _secret_fail_closed,
+            )
+        except ImportError:
+            from core.secrets import (
+                is_prototype_build as _is_proto_build,
+                secret_fail_closed as _secret_fail_closed,
+            )
+        # Ambiguous/conflicting (fail-closed) identities are isolated too:
+        # production roots must not be admitted when identity is uncertain.
+        _prototype = bool(_is_proto_build()) or bool(_secret_fail_closed())
+    except Exception:
+        # Fail closed: uncertain prototype identity means ambient roots are NOT
+        # admitted. Deliberate DB grants below are still honoured.
+        _prototype = True
+    if _prototype:
+        raw: List[str] = []
+    else:
+        raw: List[str] = list(settings.file_roots or [])
     persisted = get_setting(db, "file_roots")
     if persisted is not None:
         import json

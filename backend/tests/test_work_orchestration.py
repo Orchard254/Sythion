@@ -190,7 +190,16 @@ class TestRecovery:
 
     def test_recovery_of_verified_only_completion(self, db_session, runner):
         """A 'completed' task whose last mutating action failed verification
-        must NOT recover to COMPLETED."""
+        must NOT recover to COMPLETED.
+
+        Public completion is evidence-gated now, so a task carrying a failed
+        mutating action cannot be moved to COMPLETED through the runner.  We
+        assert that guard explicitly, then seed an explicit legacy/corrupt
+        terminal fixture (a task row already stored as ``completed`` despite
+        the failed evidence) to exercise the recovery path only.
+        """
+        from backend.models.database import Task
+
         goal, planner, orch = _goal_with_steps(db_session, runner, ("a", ""))
         started = asyncio.run(orch.start_next_step(goal.id))
         task_id = started["task"].id
@@ -198,7 +207,18 @@ class TestRecovery:
             "tool_name": "file_write", "success": False,
             "mutating": True, "verification": "failed",
         }))
-        _run_and_finish(db_session, runner, orch, task_id, TaskState.COMPLETED)
+        # Guard: public completion after a failed mutating action is rejected.
+        with pytest.raises(RuntimeError, match="final mutating tool action failed"):
+            _run_and_finish(db_session, runner, orch, task_id, TaskState.COMPLETED)
+
+        # Explicit legacy corrupt terminal fixture for recovery testing only:
+        # a persisted task already claiming COMPLETED even though its final
+        # mutating action failed verification.  This is never produced by the
+        # public API; recovery must refuse to forge COMPLETED from it.
+        task = db_session.query(Task).filter_by(id=task_id).first()
+        task.state = TaskState.COMPLETED.value
+        db_session.commit()
+
         result = orch.recover_step(started["step"].id)
         assert result["outcome"] in ("failed", "retry_scheduled")
         assert planner.get_step(started["step"].id).status != "completed"
@@ -219,6 +239,16 @@ class TestRecovery:
         step.linked_task_id = task.id
         step.evidence_task_id = task.id
         step.attempt_count = 1
+
+        # Pending plan-step work must NOT be mutated over by the runner: the
+        # caller-owned transaction guard protects the transaction.
+        with pytest.raises(RuntimeError, match="pending work"):
+            asyncio.run(writer.transition_state(
+                task.id, TaskState.RUNNING, "task.execution_started", {}))
+
+        db_session.commit()
+
+        # With a committed baseline, runner mutations proceed normally.
         asyncio.run(writer.transition_state(
             task.id, TaskState.RUNNING, "task.execution_started", {}))
         asyncio.run(writer.transition_state(

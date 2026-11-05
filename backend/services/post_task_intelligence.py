@@ -14,15 +14,75 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
 from typing import Any
-
 from backend.api.schemas import TaskState
 from backend.core.session import get_current_session_id
 from backend.models.database import ConversationTurn, MemoryEdge, MemoryEntry, Task
+from backend.services.memory_service import MemoryService
 from sqlalchemy.orm import sessionmaker
-
 logger = logging.getLogger(__name__)
+
+
+def _caller_owns_transaction(db) -> bool:
+    """Return True when committing now would risk caller-owned data.
+
+    ``save_conversation_turn`` needs to persist conversation turns in an
+    independent, verified transaction before optional memory extraction.
+    If the caller already has a physical transaction or staged rows, an early
+    commit would silently commit that caller work, so the function reports and
+    stops instead of forcing the commit.
+    """
+    # Pending (including flushed-but-uncommitted) rows make an early commit
+    # unsafe regardless of the physical transaction state.
+    for collection_name in ("new", "dirty", "deleted"):
+        try:
+            if getattr(db, collection_name, None):
+                return True
+        except Exception:
+            # Fail closed: if we cannot inspect pending rows, assume caller-owned.
+            return True
+
+    # Respect caller ownership for explicitly begun transactions and nested
+    # savepoints as well as pending writes. SQLAlchemy records the reason a
+    # session transaction exists; only its ordinary AUTOBEGIN (typically a
+    # read-only Select) may be augmented. Anything explicit, or any real
+    # physical transaction, means the caller owns it.
+    try:
+        transaction = db.get_transaction()
+    except Exception:
+        return True
+    try:
+        from sqlalchemy.orm.session import SessionTransactionOrigin
+
+        origin = getattr(transaction, "origin", None)
+        if origin is not None and origin is not SessionTransactionOrigin.AUTOBEGIN:
+            return True
+        if transaction is None:
+            origin = None
+    except Exception:
+        return True
+    if transaction is not None:
+        origin = getattr(transaction, "origin", None)
+        if origin is None:
+            return True
+
+    # Physical (dbapi) transaction state, for flushed/pending or explicit work.
+    try:
+        connection = db.connection()
+        dbapi_connection = getattr(connection, "connection", None)
+        dbapi_connection = getattr(
+            dbapi_connection, "dbapi_connection", dbapi_connection
+        )
+        physical = getattr(dbapi_connection, "in_transaction", None)
+        if callable(physical):
+            physical = physical()
+        if physical is None:
+            # Cannot determine transaction state: fail closed.
+            return True
+        return bool(physical)
+    except Exception:
+        # Fail closed if physical transaction state cannot be determined.
+        return True
 
 
 async def propose_skill_from_trace(db, task_id: str, tool_executor: Any) -> None:
@@ -43,81 +103,112 @@ async def propose_skill_from_trace(db, task_id: str, tool_executor: Any) -> None
 
 async def save_conversation_turn(db, task_id: str, task: Task) -> None:
     """Save a compressed user/assistant turn for episodic continuity."""
+    if _caller_owns_transaction(db):
+        logger.warning(
+            "Could not save conversation turn for task %s: caller-owned transaction "
+            "makes an independent commit unsafe",
+            task_id,
+        )
+        return
+
+    session_id = get_current_session_id()
+
+    req_summary = (task.original_request or "").strip()
+    if len(req_summary) > 500:
+        req_summary = req_summary[:497] + "..."
+
+    res_summary = (task.final_result or task.terminal_reason or "").strip()
+    if not res_summary:
+        res_summary = (
+            "Task completed"
+            if task.state == TaskState.COMPLETED.value
+            else "Task failed"
+        )
+    if len(res_summary) > 2000:
+        res_summary = res_summary[:1997] + "..."
+
+    turn_user = ConversationTurn(
+        session_id=session_id,
+        task_id=task_id,
+        role="user",
+        summary=req_summary,
+    )
+    turn_assistant = ConversationTurn(
+        session_id=session_id,
+        task_id=task_id,
+        role="assistant",
+        summary=f"[{task.state.upper()}] {res_summary}",
+    )
+
     try:
-        session_id = get_current_session_id()
-
-        req_summary = (task.original_request or "").strip()
-        if len(req_summary) > 500:
-            req_summary = req_summary[:497] + "..."
-
-        res_summary = (task.final_result or task.terminal_reason or "").strip()
-        if not res_summary:
-            res_summary = (
-                "Task completed"
-                if task.state == TaskState.COMPLETED.value
-                else "Task failed"
-            )
-        if len(res_summary) > 2000:
-            res_summary = res_summary[:1997] + "..."
-
-        turn_user = ConversationTurn(
-            session_id=session_id,
-            task_id=task_id,
-            role="user",
-            summary=req_summary,
-        )
-        turn_assistant = ConversationTurn(
-            session_id=session_id,
-            task_id=task_id,
-            role="assistant",
-            summary=f"[{task.state.upper()}] {res_summary}",
-        )
-
+        # Persist conversation turns first, in their own committed transaction,
+        # so optional memory extraction can never lose or half-persist them.
         db.add(turn_user)
         db.add(turn_assistant)
-
-        req_text = task.original_request or ""
-        patterns = [
-            (r"(?:my name is|i'?m called)\s+([A-Za-z0-9_\-]{2,30})", "user_profile", "user_name"),
-            (
-                r"(?:i prefer|my preferred text editor is|my favorite editor is)\s+([A-Za-z0-9_\-\s\.\+]{2,30})",
-                "user_preference",
-                "preferred_editor",
-            ),
-            (r"(?:remember that|note that)\s+([A-Za-z0-9_\-\s\.\+:]{5,100})", "user_instruction", None),
-        ]
-        for pattern, cat, fixed_key in patterns:
-            m = re.search(pattern, req_text, re.IGNORECASE)
-            if m:
-                val = m.group(1).strip()
-                key = fixed_key or f"pref_{re.sub(r'[^a-zA-Z0-9_]', '_', val[:20]).lower()}"
-                existing = db.query(MemoryEntry).filter_by(key=key).first()
-                if existing:
-                    existing.value = val
-                    existing.category = cat
-                    existing.updated_at = datetime.utcnow()
-                else:
-                    db.add(MemoryEntry(
-                        key=key,
-                        value=val,
-                        category=cat,
-                        source_task_id=task_id,
-                    ))
-
         db.commit()
-        # Verify the conversation turns were persisted
+
+        # Verify the conversation turns were persisted before optional extraction.
         try:
             engine = db.bind
             SessionLocal = sessionmaker(bind=engine)
             with SessionLocal() as verify_session:
                 turns = verify_session.query(ConversationTurn).filter_by(task_id=task_id).all()
                 if len(turns) < 2:
-                    logger.warning("Verification failed: conversation turns not persisted for task %s", task_id)
+                    logger.warning(
+                        "Verification failed: conversation turns not persisted for task %s",
+                        task_id,
+                    )
                     return
         except Exception as exc:
             logger.warning("Verification of conversation turn persistence failed: %s", exc)
             return
-        logger.info("Saved conversation turn for task %s", task_id)
+
+        # Optional, isolated memory extraction. Authority remains with
+        # MemoryService; a failure in one extraction must not undo turns or other
+        # committed extractions, and must leave no phantom uncommitted rows.
+        req_text = task.original_request or ""
+        patterns = [
+            (r"(?:my name is|i'?m called)\s+([A-Za-z0-9_\-]{2,30})", "user_profile", "user_name", "FACT"),
+            (
+                r"(?:i prefer|my preferred text editor is|my favorite editor is)\s+([A-Za-z0-9_\-\s\.\+]{2,30})",
+                "user_preference",
+                "preferred_editor",
+                "PREFERENCE",
+            ),
+            (r"(?:remember that|note that)\s+([A-Za-z0-9_\-\s\.\+:]{5,100})", "user_instruction", None, "INSTRUCTION"),
+        ]
+        memory_service = MemoryService(db)
+        for pattern, cat, fixed_key, kind in patterns:
+            m = re.search(pattern, req_text, re.IGNORECASE)
+            if not m:
+                continue
+            val = m.group(1).strip()
+            key = fixed_key or f"pref_{re.sub(r'[^a-zA-Z0-9_]', '_', val[:20]).lower()}"
+            # Authority, duplicate, contradiction, scope, and lifecycle state
+            # are owned solely by MemoryService using conservative
+            # USER_CONVERSATION provenance. Auto-extracted facts remain UNVERIFIED.
+            try:
+                memory_service.create(
+                    key=key,
+                    value=val,
+                    kind=kind,
+                    scope="USER",
+                    source_type="USER_CONVERSATION",
+                    source_ref=task_id,
+                    category=cat,
+                    check_contradictions=True,
+                )
+            except Exception as exc:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                logger.warning(
+                    "Memory extraction failed for task %s (key=%s): %s",
+                    task_id,
+                    key,
+                    exc,
+                )
 
         try:
             from backend.services.conversation_state import update_state
@@ -126,7 +217,16 @@ async def save_conversation_turn(db, task_id: str, task: Task) -> None:
         except Exception as e:
             logger.warning("Could not update conversation state: %s", e)
 
+        logger.info("Saved conversation turn for task %s", task_id)
+
     except Exception as e:
+        # Roll back only the current, uncommitted transaction. Previously
+        # committed conversation turns (and any committed extractions) remain.
+        try:
+            if db.in_transaction():
+                db.rollback()
+        except Exception:
+            pass
         logger.warning("Could not save conversation turn for task %s: %s", task_id, e)
 
 

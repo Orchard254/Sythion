@@ -13,7 +13,9 @@ def _client_with_db(db_session):
     def override_get_db():
         yield db_session
 
-    app.dependency_overrides[get_db] = override_get_db
+    from backend.api.routes import get_health_db
+
+    app.dependency_overrides[get_health_db] = override_get_db
     import backend.main as backend_main
 
     previous_token = backend_main.control_token

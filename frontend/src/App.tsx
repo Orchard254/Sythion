@@ -129,6 +129,22 @@ function AppContent() {
         hasData: health.data !== undefined,
         dataUpdatedAt: health.dataUpdatedAt,
         now: Date.now(),
+        // Backend can answer (HTTP success) while still reporting a degraded
+        // startup; liveness is unaffected, but it must not be called healthy.
+        isDegraded:
+          health.data?.status === 'degraded' ||
+          health.data?.startup_sequence_status === 'degraded' ||
+          health.data?.startup_sequence_status === 'failed' ||
+          health.data?.startup_sequence_status === 'error' ||
+          health.data?.startup_status === 'degraded' ||
+          health.data?.startup_status === 'failed' ||
+          health.data?.startup_status === 'error' ||
+          health.data?.startup_overall_status === 'degraded' ||
+          health.data?.startup_overall_status === 'failed' ||
+          health.data?.startup_overall_status === 'error' ||
+          health.data?.startup_aggregate_status === 'degraded' ||
+          health.data?.startup_aggregate_status === 'failed' ||
+          health.data?.startup_aggregate_status === 'error',
       }),
     [isConnected, health.isFetching, health.isError, health.data, health.dataUpdatedAt]
   );

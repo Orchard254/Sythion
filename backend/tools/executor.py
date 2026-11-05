@@ -149,8 +149,16 @@ class BaseTool(ABC, Generic[T_Input]):
         return bool(output.success)
 
     def get_policy_requirements(self) -> dict[str, Any]:
-        """Get policy requirements for this tool."""
-        return {"risk_level": "none", "requires_confirmation": False, "read_only": True}
+        """Fail-closed default: an unreviewed/underspecified tool is NOT
+        read-only, IS confirmation-gated, and is state-changing. Trusted tools
+        must override this explicitly."""
+        return {
+            "risk_level": "high",
+            "requires_confirmation": True,
+            "read_only": False,
+            "mutating": True,
+            "destructive": True,
+        }
 
 
 @dataclass(frozen=True)
@@ -365,17 +373,291 @@ class ToolExecutor:
         policy_context: PolicyContext | None,
     ) -> dict[str, str] | None:
         """Apply non-bypassable, deterministic policy before a tool executes."""
+        # Prototype-only fail-closed exclusion for host-data observation
+        # tools. Handled before the generic authorization messages so the
+        # refusal is accurately attributable. This does not weaken policy:
+        # it always blocks in prototype builds.
+        try:
+            from backend.core.secrets import is_prototype_build as _proto
+        except Exception:
+            try:
+                from core.secrets import is_prototype_build as _proto
+            except Exception:
+                _proto = None
+        _is_prototype = False
+        if _proto is not None:
+            try:
+                _is_prototype = bool(_proto())
+            except Exception:
+                _is_prototype = False
+        if (
+            _is_prototype
+            and getattr(tool, "name", None) in _PROTOTYPE_HOST_DATA_TOOL_NAMES
+        ):
+            return {
+                "code": "PROTOTYPE_HOST_DATA_DISABLED",
+                "message": "Host data observation is disabled in prototype builds.",
+            }
+
         requirements = tool.get_policy_requirements()
         if requirements.get("requires_admin"):
             return {
                 "code": "ELEVATION_NOT_ALLOWED",
                 "message": "Sythion (Synth) only performs standard-user actions",
             }
-        if requirements.get("requires_confirmation") and not (
-            policy_context and policy_context.direct_user_instruction
-        ):
+        # Never trust caller-supplied consent flags: a confirmation-gated tool
+        # requires a real authenticated boundary, which is absent here, so it is
+        # always blocked fail-closed.
+        if requirements.get("requires_confirmation"):
             return {
                 "code": "DIRECT_INSTRUCTION_REQUIRED",
-                "message": "A mutating action requires a direct user instruction",
+                "message": "A mutating or sensitive action requires a trusted consent boundary; a direct user instruction alone is not authorization",
+            }
+
+        # Automatic dispatch is allowed only for an exact reviewed builtin that is
+        # genuinely safe: read-only, non-mutating, non-destructive, non-privacy,
+        # non-screen/UI, non-admin, low-risk, and never app_internal.  A reviewed
+        # canonical built-in that is state-changing (or self-reports unsafe
+        # metadata) is NOT auto-dispatchable even when requires_confirmation
+        # is False, app_internal is True, configuration is permissive, or the
+        # caller asserts direct_user_instruction.  It must go through the trusted
+        # consent/action boundary instead.
+        if not is_reviewed_safe_builtin(tool) or not _safe_automatic_dispatch_metadata(requirements):
+            if is_reviewed_implementation(tool):
+                return {
+                    "code": "DIRECT_INSTRUCTION_REQUIRED",
+                    "message": (
+                        "A state-changing or sensitive built-in action requires a "
+                        "trusted consent boundary, not identity, metadata, "
+                        "app_internal status, configuration, or a caller flag"
+                    ),
+                }
+            return {
+                "code": "UNREVIEWED_IMPLEMENTATION",
+                "message": (
+                    "An unreviewed implementation cannot be dispatched by "
+                    "trusted identity"
+                ),
             }
         return None
+
+    def is_reviewed_safe_builtin(self, tool: Any) -> bool:
+        """Whether ``tool`` is a genuinely reviewed safe built-in implementation."""
+        return is_reviewed_safe_builtin(tool)
+
+
+# =============================================================================
+# Reviewed safe built-in implementation identity (skill-fencing hardening)
+# =============================================================================
+
+_REVIEWED_SAFE_TOOL_CLASSES_CACHE: Optional[dict[type, str]] = None
+
+
+def _reviewed_safe_tool_classes() -> dict[type, str]:
+    global _REVIEWED_SAFE_TOOL_CLASSES_CACHE
+    if _REVIEWED_SAFE_TOOL_CLASSES_CACHE is not None:
+        return _REVIEWED_SAFE_TOOL_CLASSES_CACHE
+    mapping: dict[type, str] = {}
+    try:
+        from backend.tools.activity_recall_tool import ActivityRecallTool
+        from backend.tools.app_tools import AppListTool
+        from backend.tools.file_tools import (
+            FileHashTool,
+            FileListTool,
+            FileReadTool,
+            FileSearchTool,
+        )
+        from backend.tools.objective_planning_tool import ObjectiveGetPlanTool
+        from backend.tools.package_tools import PackageListTool, PackageSearchTool
+        from backend.tools.persistent_memory_tools import (
+            MemoryExportTool,
+            MemoryRecallRelatedTool,
+            MemoryRecallTool,
+            MemoryStatsTool,
+        )
+        from backend.tools.system_tools import (
+            BrowserReadPageTool,
+            BrowserTabsTool,
+            DeviceStatusTool,
+            NetworkStatusTool,
+            SystemActiveWindowTool,
+            SystemBatteryTool,
+            SystemCapabilitiesTool,
+            SystemDiskTool,
+            SystemFileRootsTool,
+            SystemPowerTool,
+            SystemProcessesTool,
+            SystemTimeTool,
+            ToolProposeTool,
+            WindowListTool,
+        )
+    except Exception:
+        _REVIEWED_SAFE_TOOL_CLASSES_CACHE = {}
+        return _REVIEWED_SAFE_TOOL_CLASSES_CACHE
+
+    mapping.update(
+        {
+            ActivityRecallTool: "activity_recall",
+            AppListTool: "app_list",
+            BrowserReadPageTool: "browser_read_page",
+            BrowserTabsTool: "browser_tabs",
+            DeviceStatusTool: "device_status",
+            FileHashTool: "file_hash",
+            FileListTool: "file_list",
+            FileReadTool: "file_read",
+            FileSearchTool: "file_search",
+            MemoryExportTool: "memory_export",
+            MemoryRecallTool: "memory_recall",
+            MemoryRecallRelatedTool: "memory_recall_related",
+            MemoryStatsTool: "memory_stats",
+            NetworkStatusTool: "network_status",
+            ObjectiveGetPlanTool: "objective_get_plan",
+            PackageListTool: "package_list",
+            PackageSearchTool: "package_search",
+            SystemActiveWindowTool: "system_active_window",
+            SystemBatteryTool: "system_battery",
+            SystemCapabilitiesTool: "system_capabilities",
+            SystemDiskTool: "system_disk",
+            SystemFileRootsTool: "system_file_roots",
+            SystemPowerTool: "system_power",
+            SystemProcessesTool: "system_processes",
+            SystemTimeTool: "system_time",
+            ToolProposeTool: "tool_propose",
+            WindowListTool: "window_list",
+        }
+    )
+    _REVIEWED_SAFE_TOOL_CLASSES_CACHE = mapping
+    return _REVIEWED_SAFE_TOOL_CLASSES_CACHE
+
+
+def is_reviewed_safe_builtin(tool: Any) -> bool:
+    """Return True only for an exact reviewed safe built-in implementation."""
+    mapping = _reviewed_safe_tool_classes()
+    if not mapping:
+        return False
+    cls = type(tool)
+    expected_name = mapping.get(cls)
+    if expected_name is None:
+        return False
+    try:
+        if getattr(tool, "name", None) != expected_name:
+            return False
+    except Exception:
+        return False
+    return True
+
+
+_AUTOMATIC_DISPATCH_BOOL_KEYS = (
+    "mutating",
+    "destructive",
+    "read_only",
+    "app_internal",
+    "requires_confirmation",
+    "privacy_sensitive",
+    "requires_screen_access",
+    "requires_ui_automation",
+    "requires_admin",
+)
+
+
+def _safe_automatic_dispatch_metadata(requirements: Any) -> bool:
+    """Metadata may never authorize an effect.  Only a strictly read-only,
+    non-mutating, non-sensitive, low-risk requirement set can be dispatched
+    without a separate trusted consent/action boundary."""
+    if not isinstance(requirements, dict):
+        return False
+    for key in _AUTOMATIC_DISPATCH_BOOL_KEYS:
+        value = requirements.get(key)
+        if value is not None and not isinstance(value, bool):
+            return False
+    if requirements.get("requires_admin") is True:
+        return False
+    if requirements.get("requires_confirmation") is True:
+        return False
+    if requirements.get("app_internal") is True:
+        return False
+    if requirements.get("mutating") is True or requirements.get("destructive") is True:
+        return False
+    if requirements.get("read_only") is False:
+        return False
+    risk_level = requirements.get("risk_level", "none")
+    if risk_level not in ("none", "low", None):
+        return False
+    if (
+        requirements.get("privacy_sensitive") is True
+        or requirements.get("requires_screen_access") is True
+        or requirements.get("requires_ui_automation") is True
+    ):
+        return False
+    return True
+
+
+_REVIEWED_IMPLEMENTATION_CLASSES_CACHE = None
+
+
+def _reviewed_implementation_classes() -> dict[type, str]:
+    global _REVIEWED_IMPLEMENTATION_CLASSES_CACHE
+    if _REVIEWED_IMPLEMENTATION_CLASSES_CACHE is not None:
+        return _REVIEWED_IMPLEMENTATION_CLASSES_CACHE
+    mapping: dict[type, str] = {}
+    try:
+        from backend.tools.registry import create_all_tools
+    except Exception:
+        _REVIEWED_IMPLEMENTATION_CLASSES_CACHE = {}
+        return _REVIEWED_IMPLEMENTATION_CLASSES_CACHE
+    try:
+        for tool in create_all_tools():
+            cls = type(tool)
+            name = getattr(tool, "name", None)
+            if isinstance(name, str) and name:
+                mapping[cls] = name
+    except Exception:
+        _REVIEWED_IMPLEMENTATION_CLASSES_CACHE = {}
+        return _REVIEWED_IMPLEMENTATION_CLASSES_CACHE
+    _REVIEWED_IMPLEMENTATION_CLASSES_CACHE = mapping
+    return _REVIEWED_IMPLEMENTATION_CLASSES_CACHE
+
+
+def get_reviewed_safe_tool_classes() -> frozenset[type]:
+    return frozenset(_reviewed_safe_tool_classes().keys())
+
+
+reviewed_safe_tool_classes = get_reviewed_safe_tool_classes
+
+
+def is_reviewed_implementation(tool: Any) -> bool:
+    mapping = _reviewed_implementation_classes()
+    if not mapping:
+        return False
+    cls = type(tool)
+    expected_name = mapping.get(cls)
+    if expected_name is None:
+        return False
+    try:
+        return getattr(tool, "name", None) == expected_name
+    except Exception:
+        return False
+
+
+reviewed_implementation = is_reviewed_implementation
+
+
+# Prototype-only host-data observation surfaces. Keep this enumeration in sync
+# with the guard installed in system_tools.py / gui_tools.py.
+_PROTOTYPE_HOST_DATA_TOOL_NAMES = frozenset({
+    "system_processes",
+    "system_active_window",
+    "window_list",
+    "browser_tabs",
+    "browser_read_page",
+    "browser_screenshot",
+    "clipboard_read",
+    "gui_observe",
+    "gui_screenshot",
+})
+
+
+def __getattr__(name: str):
+    if name == "REVIEWED_SAFE_TOOL_CLASSES":
+        return get_reviewed_safe_tool_classes()
+    raise AttributeError(name)

@@ -13,6 +13,8 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from backend.services.task_runner import TaskRunner
+from backend.services.task_instruction_revision import TaskInstructionRevision
+from backend.runtime.action_guard import OSActionGuard
 from backend.services.model_engine import ModelDecisionEngine, ModelDecisionError, DecisionType
 from backend.services.execution_components import (
     BudgetGuard,
@@ -30,6 +32,15 @@ from backend.core.budgets import TaskBudget, BudgetExceededError
 from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Cancellation-safe guard for actual external mutating tool actions.
+_OS_ACTION_GUARD = OSActionGuard()
+
+
+class UnresolvedActionEvidenceError(RuntimeError):
+    """Staging a new permission is blocked by unresolved prior external-action
+    evidence. This is an honest terminal condition, not a retryable action
+    failure or a replay grant."""
 
 
 class TaskExecutionLoop:
@@ -72,6 +83,7 @@ class TaskExecutionLoop:
         self.runner = task_runner
         self.tool_executor = tool_executor
         self.model_engine = ModelDecisionEngine(db_session, tool_executor)
+        self.instruction_revision = TaskInstructionRevision(task_runner)
 
         # Extracted components (one responsibility each).
         self.guard = ExecutionGuard()
@@ -91,22 +103,47 @@ class TaskExecutionLoop:
         """
         logger.info(f"Starting execution of task: {task_id}")
 
+        self._ownership_lost = False
         repair_attempts = 0
         refused_completions = 0  # consecutive complete_task calls refused by precondition guard
         budget = BudgetGuard(TaskBudget())
 
-        # Start a lease heartbeat so long LLM calls don't let the lease
-        # expire mid-task (expiry governed by settings.lease_timeout_seconds,
-        # renewal interval by settings.lease_heartbeat_seconds). Without
-        # this, a second request can steal the lease and we get spurious
-        # 409s or double execution.
+        worker_id = f"pid-{os.getpid()}"
+        ownership_acquired = False
+        if self.runner is not None:
+            ownership_result = await self.runner.acquire_task_ownership(
+                task_id=task_id, worker_id=worker_id
+            )
+            if not getattr(ownership_result, "acquired", False):
+                raise RuntimeError(
+                    f"Task ownership not acquired: {getattr(ownership_result, 'reason', '')}"
+                )
+            ownership_acquired = True
+
+        # Start a lease/ownership heartbeat so long LLM calls don't let the
+        # task ownership expire mid-task.
         heartbeat = asyncio.create_task(self._heartbeat_lease(task_id))
 
+        terminal_retry = False
+        primary_error = None
+        recording_failure = False
         try:
             # Transition to running state (no-op if the route already did)
             task = await self.runner.get_task(task_id)
             if task is None:
                 raise RuntimeError(f"Task {task_id} not found")
+            # A queued/retried worker may arrive after STOP or another worker
+            # has settled the task. Terminal state is not a restart request;
+            # preserve its action evidence and do not infer or replay effects.
+            if task.state in (
+                TaskState.CANCELLED.value,
+                TaskState.COMPLETED.value,
+                TaskState.FAILED.value,
+            ):
+                terminal_retry = True
+                if task.state == TaskState.CANCELLED.value:
+                    return
+                raise RuntimeError(f"Cannot execute terminal task {task_id}: {task.state}")
             if task.state != TaskState.RUNNING.value:
                 task = await self.runner.transition_state(
                     task_id=task_id,
@@ -115,7 +152,48 @@ class TaskExecutionLoop:
                     event_data={"started_at": datetime.utcnow().isoformat()}
                 )
 
+            # Durable scheduling evidence is recorded only after ownership is
+            # acquired and the task is established as runnable/running.  This
+            # proves a historical worker start for this task/attempt; it does
+            # not prove current execution, completion, clearance, or ongoing
+            # ownership.
+            if ownership_acquired and self.runner is not None:
+                try:
+                    task_row = self.db.query(Task).filter_by(id=task_id).first()
+                    self.runner.ledger.append_event(
+                        task_id,
+                        "task.worker_started",
+                        {
+                            "task_id": task_id,
+                            "task_version": getattr(task_row, "version", None),
+                            "worker_id": worker_id,
+                            "process_id": os.getpid(),
+                            "historical": True,
+                            "current_execution_claimed": False,
+                            "cleared": False,
+                            "terminal": False,
+                        },
+                    )
+                    self.db.commit()
+                except Exception:
+                    try:
+                        self.db.rollback()
+                    except Exception:
+                        pass
+
             while True:
+
+                if getattr(self, "_ownership_lost", False):
+                    recording_failure = True
+                    await self._fail_task(
+                        task_id,
+                        code="OWNERSHIP_LOST",
+                        message="Task ownership lost; further decisions and actions stopped",
+                    )
+                    recording_failure = False
+                    await self._mark_reviewed_followups_not_applied(task_id, "ownership_lost")
+                    break
+
                 # Enforce budgets before each iteration: a task must fail
                 # honestly (never retry, mutate, or fall back locally) once any
                 # per-task budget is exhausted.
@@ -143,6 +221,30 @@ class TaskExecutionLoop:
                 # Check for cancellation
                 if task.state == TaskState.CANCELLED.value:
                     logger.info(f"Task {task_id} was cancelled")
+                    await self._mark_reviewed_followups_not_applied(task_id, "cancelled")
+                    break
+
+                # All admitted work from the prior response has now settled.
+                # Open first: an absent/executing window cannot accept revisions.
+                snapshot = self.instruction_revision.open(task_id)
+                if snapshot is None:
+                    await self._mark_reviewed_followups_not_applied(task_id, "stopped_before_safe_point")
+                    break
+                if not await self._apply_reviewed_followups(task_id):
+                    # Fail closed without losing or superseding the instruction.
+                    # Pending permission/uncertain-action evidence stays intact;
+                    # even an approved proposal cannot run past a failed drain.
+                    self.runner._ensure_transaction()
+                    task = self.db.query(Task).filter_by(id=task_id).populate_existing().one()
+                    if task.state == TaskState.RUNNING.value:
+                        await self.runner.transition_state(
+                            task_id=task_id, new_state=TaskState.PAUSED,
+                            event_type="task.followup_blocked",
+                            event_data={"reason": "Queued instruction could not be safely applied; retained for review."},
+                        )
+                    else:
+                        self.db.rollback()
+                        await self._mark_reviewed_followups_not_applied(task_id, task.state)
                     break
 
                 # Check for pending action (approval/denial)
@@ -155,15 +257,27 @@ class TaskExecutionLoop:
                     p_tool = pending.get("tool_name")
                     p_params = pending.get("params", {})
                     if p_status == "approved" and p_tool:
+                        # The approved handoff is another admission boundary:
+                        # enqueue may have raced the preceding drain/read.
+                        if not self.instruction_revision.claim(task_id, snapshot.revision):
+                            continue
+                        approval_binding = None
+                        if isinstance(pending, dict):
+                            approval_binding = pending.get("action_id") or pending.get(
+                                "binding_token"
+                            )
                         logger.info(f"Executing approved pending action: {p_tool}")
-                        await self.runner.clear_pending_action(task_id)
                         budget.record_action()
-                        await self._execute_tool(
+                        result = await self._execute_tool(
                             task_id,
                             {"tool_name": p_tool, "params": p_params},
                             approved_by_user=True,
+                            action_id=str(approval_binding) if approval_binding else None,
                         )
-                        continue
+                        # Internal approved evidence is not independently
+                        # authenticated consent. Stop after the truthful diagnostic
+                        # rather than looping over the pending event.
+                        break
                     elif p_status == "denied":
                         logger.info(f"Skipping denied pending action: {p_tool}")
                         await self.runner.clear_pending_action(task_id)
@@ -175,7 +289,11 @@ class TaskExecutionLoop:
                         )
                         continue
 
-                # Get event history for context
+                # Refresh after the drain so inference sees every committed edit.
+                snapshot = self.instruction_revision.open(task_id)
+                if snapshot is None:
+                    await self._mark_reviewed_followups_not_applied(task_id, "stopped_after_safe_point")
+                    break
                 events = self._get_event_history(task_id)
 
                 # Request decision from model
@@ -183,8 +301,8 @@ class TaskExecutionLoop:
                 try:
                     decision_type, params = await self.model_engine.make_decision(
                         task_id=task.id,
-                        original_request=task.original_request,
-                        normalized_goal=task.normalized_goal,
+                        original_request=snapshot.original_request,
+                        normalized_goal=snapshot.normalized_goal,
                         event_history=events,
                         current_state=task.state,
                         pending_question=task.pending_question,
@@ -194,11 +312,17 @@ class TaskExecutionLoop:
                     repair_attempts = 0  # Reset on successful decision
 
                 except BudgetExceededError as e:
+                    if not self.instruction_revision.claim(task_id, snapshot.revision):
+                        self.model_engine.pop_pending_tool_calls()
+                        continue
                     # Budget exhaustion is terminal: fail honestly, never repair.
                     logger.warning(f"Task {task_id} exceeded budget {e.code}: {e.message}")
                     await self._fail_task(task_id, code=e.code, message=e.message)
                     break
                 except ModelDecisionError as e:
+                    if not self.instruction_revision.claim(task_id, snapshot.revision):
+                        self.model_engine.pop_pending_tool_calls()
+                        continue
                     if e.code in self._NON_REPAIRABLE_CODES:
                         # Provider-side (rate limit, cloud outage, retired
                         # model): fail honestly on the first attempt instead of
@@ -235,12 +359,20 @@ class TaskExecutionLoop:
                     continue
 
 
+                # Linearize response admission against instruction append. This
+                # fences every decision type and the entire sequential batch,
+                # not just mutating tools or a check before an awaited action.
+                if not self.instruction_revision.claim(task_id, snapshot.revision):
+                    self.model_engine.pop_pending_tool_calls()
+                    continue
+
                 # Re-check cancellation before executing: a cancel request may
                 # have arrived during the (slow) model call. A cancelled task
                 # must never trigger an OS action.
                 task = await self.runner.get_task(task_id)
                 if task.state == TaskState.CANCELLED.value:
                     logger.info(f"Task {task_id} was cancelled during decision; not executing")
+                    await self._mark_reviewed_followups_not_applied(task_id, "cancelled")
                     break
 
                 # Repeat-failure / spin guards (ExecutionGuard): identical
@@ -312,9 +444,16 @@ class TaskExecutionLoop:
                     params=params
                 )
 
-                # Execute any pending tool calls from the same model response
+                # Execute any pending tool calls from the same model response.
+                # A task that is waiting for user input must not be driven to a
+                # terminal completion by trailing calls from the same response.
                 if success:
-                    pending = self.model_engine.pop_pending_tool_calls()
+                    task = await self.runner.get_task(task_id)
+                    if task is not None and task.state == TaskState.WAITING_FOR_USER.value:
+                        self.model_engine.pop_pending_tool_calls()
+                        pending = []
+                    else:
+                        pending = self.model_engine.pop_pending_tool_calls()
                     for pending_call in pending:
                         p_type = pending_call["decision_type"]
                         p_args = pending_call["args"]
@@ -383,15 +522,26 @@ class TaskExecutionLoop:
                         await self.post_task_pipeline.consolidate_memory_from_trace(task_id)
                     elif task.state == TaskState.FAILED.value:
                         await self.post_task_pipeline.save_conversation_turn(task_id)
+                    await self._mark_reviewed_followups_not_applied(task_id, task.state)
                     break
 
-        except Exception as e:
+        except BaseException as e:
+            primary_error = e
+            if terminal_retry or not isinstance(e, Exception):
+                # Preserve the existing refusal contract for completed/failed
+                # retries without trying to fail an already-settled task again.
+                raise
             logger.error(f"Critical error in task execution: {e}", exc_info=True)
-            await self._fail_task(
-                task_id,
-                code="EXECUTION_ERROR",
-                message=str(e)
-            )
+            if not recording_failure:
+                try:
+                    await self._fail_task(
+                        task_id,
+                        code="EXECUTION_ERROR",
+                        message=str(e)
+                    )
+                except Exception as failure_error:
+                    e.add_note(f"Task failure recording also failed: {failure_error!r}")
+                    logger.error("Task failure recording failed for task %s", task_id, exc_info=True)
             raise
         finally:
             heartbeat.cancel()
@@ -399,7 +549,18 @@ class TaskExecutionLoop:
                 await heartbeat
             except (asyncio.CancelledError, Exception):
                 pass
-
+            if ownership_acquired and self.runner is not None:
+                try:
+                    released = await self.runner.release_task_ownership(
+                        task_id=task_id, outcome="execute_task_finished"
+                    )
+                    if released is not True:
+                        raise RuntimeError(f"Task ownership release refused for task {task_id}")
+                except Exception as release_error:
+                    logger.error("Task ownership release failed for task %s", task_id, exc_info=True)
+                    if primary_error is None:
+                        raise
+                    primary_error.add_note(f"Task ownership release also failed: {release_error!r}")
     async def _propose_skill_from_trace(self, task_id: str) -> None:
         """Delegate post-task skill proposal growth to the PostTaskPipeline."""
         await self.post_task_pipeline.propose_skill_from_trace(task_id)
@@ -422,16 +583,84 @@ class TaskExecutionLoop:
         """
         try:
             while True:
-                if not await self.runner.renew_lease(task_id):
+                if self.runner is not None and not await self.runner.renew_task_ownership(task_id=task_id):
                     logger.warning(
-                        f"Lease lost during execution of task {task_id}; "
-                        "another runner may have taken over"
+                        "Task ownership lost during execution of task %s; "
+                        "further decisions and actions stopped",
+                        task_id,
                     )
+                    self._ownership_lost = True
                     return
                 await asyncio.sleep(settings.lease_heartbeat_seconds)
         except asyncio.CancelledError:
             raise
     
+    async def _apply_reviewed_followups(self, task_id: str) -> bool:
+        """Drain at a worker safe point; refuse progress if anything remains.
+
+        Only requests that pass the same safe-point, ownership, permission, and
+        uncertain-action gates are applied.  A busy/failing application is left
+        pending for a later safe point instead of losing the request.
+        """
+        try:
+            from backend.services.conversation_runtime import ConversationRuntime
+            from backend.runtime.followup_instruction_ledger import (
+                FollowupInstructionLedgerManager,
+            )
+
+            ledger = FollowupInstructionLedgerManager(db=self.db, runner=self.runner)
+            pending = ledger.pending(task_id=task_id)
+            if not pending:
+                return True
+            runtime = ConversationRuntime(self.db)
+            await self.instruction_revision.apply_pending_followups(
+                task_id=task_id,
+                runner=self.runner,
+                runtime=runtime,
+                commit=True,
+            )
+            return not ledger.pending(task_id=task_id)
+        except Exception:
+            self.db.rollback()
+            logger.warning("Reviewed follow-up application blocked for task %s", task_id, exc_info=True)
+            return False
+
+    async def _mark_reviewed_followups_not_applied(self, task_id: str, reason: str) -> None:
+        # Cleanup is still a runner mutation. Do not commit/roll back an
+        # unrelated caller's raw SQL, autoflush, or live savepoint transaction.
+        self.runner._refuse_caller_owned_pending_transaction()
+        owned = False
+        try:
+            from backend.runtime.followup_instruction_ledger import (
+                FollowupInstructionLedgerManager,
+            )
+
+            self.runner._ensure_transaction()
+            owned = self.runner._runner_owns_db_transaction()
+            if not owned:
+                raise RuntimeError("Follow-up cleanup requires a runner-owned transaction")
+            ledger = FollowupInstructionLedgerManager(db=self.db, runner=self.runner)
+            ledger.on_task_terminal(task_id, reason=reason)
+            self.db.commit()
+        except BaseException as error:
+            if owned:
+                # Ownership was proven before the write. Unlike a post-error
+                # physical-state probe, this also covers failed ORM flushes.
+                try:
+                    self.db.rollback()
+                except Exception as rollback_error:
+                    error.add_note(f"Follow-up cleanup rollback also failed: {rollback_error!r}")
+                    logger.error("Follow-up cleanup rollback failed for task %s", task_id, exc_info=True)
+            logger.error(
+                "Could not mark reviewed follow-ups not applied for task %s",
+                task_id,
+                exc_info=True,
+            )
+            raise
+        finally:
+            if owned:
+                self.runner._clear_runner_transaction_ownership()
+
     def _get_event_history(self, task_id: str) -> List[Dict[str, Any]]:
         """Get event history for a task via the runtime EventLedger."""
         events = self.runner.ledger.event_history(task_id)
@@ -497,6 +726,22 @@ class TaskExecutionLoop:
                 logger.error(f"Unknown decision type: {decision_type}")
                 return False
                 
+        except UnresolvedActionEvidenceError as e:
+            # Prior unresolved external-action evidence blocks staging any new
+            # permission. Fail honestly and preserve that evidence; do not
+            # treat this as an ordinary retryable action failure.
+            logger.warning(
+                "Task %s cannot stage a new permission: unresolved prior "
+                "external-action evidence: %s",
+                task_id,
+                e,
+            )
+            await self._fail_task(
+                task_id,
+                code="UNRESOLVED_ACTION_EVIDENCE",
+                message=str(e),
+            )
+            return False
         except Exception as e:
             logger.error(f"Decision execution failed: {e}", exc_info=True)
             return False
@@ -507,6 +752,10 @@ class TaskExecutionLoop:
         params: Dict[str, Any]
     ) -> bool:
         """Mark a task completed only when durable evidence permits it."""
+        task = await self.runner.get_task(task_id)
+        if task is not None and task.state == TaskState.WAITING_FOR_USER.value:
+            logger.warning("Refusing completion for task %s: task is waiting for user input", task_id)
+            return False
         completion_error = self._completion_precondition_error(task_id)
         if completion_error:
             logger.warning("Refusing completion for task %s: %s", task_id, completion_error)
@@ -595,7 +844,8 @@ class TaskExecutionLoop:
         """Request input from user."""
         question = params.get('question', 'I need more information')
         required_fields = params.get('required_fields', [])
-        
+        if not isinstance(required_fields, list):
+            required_fields = []
         await self.runner.transition_state(
             task_id=task_id,
             new_state=TaskState.WAITING_FOR_USER,
@@ -605,7 +855,7 @@ class TaskExecutionLoop:
                 "required_fields": required_fields,
                 "waiting_since": datetime.utcnow().isoformat()
             },
-            pending_question=question
+            pending_question=question,
         )
         
         logger.info(f"Task {task_id} waiting for user: {question}")
@@ -663,6 +913,7 @@ class TaskExecutionLoop:
         task_id: str,
         params: Dict[str, Any],
         approved_by_user: bool = False,
+        action_id: Optional[str] = None,
     ) -> bool:
         """Execute a tool."""
         tool_name = params.get('tool_name')
@@ -682,6 +933,8 @@ class TaskExecutionLoop:
         policy = tool.get_policy_requirements() if tool else {}
         mutating = bool(policy.get("mutating") or policy.get("destructive") or
                         policy.get("risk_level") in {"medium", "high"})
+        if approved_by_user and not mutating:
+            raise RuntimeError("Approved action policy is missing or changed; pending evidence preserved")
 
         task = await self.runner.get_task(task_id)
         if not task:
@@ -690,23 +943,47 @@ class TaskExecutionLoop:
             logger.info(f"Task {task_id} cancelled before tool '{tool_name}'; not executing")
             return False
 
+        # Non-authorizing guard: internally approved pending/evidence status is
+        # not authenticated human consent. Diagnose it truthfully first, then
+        # block before admission, runner handoff, permission consumption, or any
+        # external dispatch. This keeps pending rows recoverable.
+        if approved_by_user:
+            diagnostics_action_id = str(action_id).strip() if isinstance(action_id, str) and action_id.strip() else None
+            evidence_error = self.verifier.action_evidence_error(
+                task_id,
+                mutation=True,
+                include_pending=False,
+                consuming_action_id=diagnostics_action_id if diagnostics_action_id else None,
+            )
+            if evidence_error:
+                raise UnresolvedActionEvidenceError(evidence_error)
+            logger.warning(
+                " refusing dispatch for task %s tool '%s': no independently authenticated human consent",
+                task_id,
+                tool_name,
+            )
+            return False
+
         from backend.core.config import settings
         from backend.core.importance_classifier import Importance, classify_action
-        active_autonomy = os.environ.get("SYTHION_AUTONOMY_LEVEL", settings.autonomy_level)
+        # Persisted/runtime config (including env overrides) is not authenticated
+        # human consent; fail closed on consequential actions regardless.
+        active_autonomy = settings.autonomy_level
         classification = classify_action(
             tool_name,
             policy,
             tool_params,
             autonomy_level=active_autonomy,
-            direct_user_instruction=bool(task.original_request.strip()),
+            direct_user_instruction=False,
         )
         if classification == Importance.FORBIDDEN:
             logger.warning("Action %s blocked: forbidden by importance classifier", tool_name)
             return False
+        # Consequential actions require approval even in autonomous mode; an
+        # environmental/config flag is not trusted human consent.
         needs_approval = (
             classification == Importance.CONSEQUENTIAL
             and not approved_by_user
-            and active_autonomy != "autonomous"
         )
         if needs_approval:
             events = self._get_event_history(task_id)
@@ -719,29 +996,71 @@ class TaskExecutionLoop:
                 logger.info(f"Skipping execution of tool '{tool_name}' because it was previously denied by user")
                 return False
 
+            permission_action_id = str(uuid.uuid4())
+            # This is execution linkage for the proposed action, not a
+            # cryptographic or user-consent binding to the exact parameters or
+            # task version. It gives the approved handoff one stable action ID;
+            # the runner also checks the durable proposal payload before use.
             pending_data = json.dumps({
+                "kind": "permission",
                 "tool_name": tool_name,
                 "params": tool_params,
                 "status": "awaiting",
+                "action_id": permission_action_id,
             })
-            await self.runner.transition_state(
-                task_id=task_id,
-                new_state=TaskState.WAITING_FOR_USER,
-                event_type="action.pending_approval",
-                event_data={"tool_name": tool_name, "params": tool_params},
-                pending_question=f"Do you approve executing tool '{tool_name}'?",
-                pending_action=pending_data,
-            )
+            # Staging another permission must not overwrite evidence from an
+            # unresolved action. Recheck under the transition's writer lock.
+            self.runner._refuse_caller_owned_pending_transaction()
+            started_transaction = self.runner._ensure_transaction()
+            try:
+                error = self.verifier.action_evidence_error(task_id, mutation=True)
+                if error:
+                    # Do not stage another permission question over unresolved
+                    # prior external-action evidence. Fail honestly on the first
+                    # blocked proposal instead of burning retries into a generic
+                    # repeated failure. Existing evidence is left untouched.
+                    raise UnresolvedActionEvidenceError(error)
+                await self.runner.transition_state(
+                    task_id=task_id,
+                    new_state=TaskState.WAITING_FOR_USER,
+                    event_type="action.pending_approval",
+                    event_data={"tool_name": tool_name, "params": tool_params, "action_id": permission_action_id},
+                    pending_question=f"Do you approve executing tool '{tool_name}'?",
+                    pending_action=pending_data,
+                )
+            finally:
+                if started_transaction:
+                    self.runner._rollback_owned_transaction()
             return False
 
-        action_id = str(uuid.uuid4()) if mutating else None
+        if mutating:
+            if action_id is None:
+                action_id = str(uuid.uuid4())
+            else:
+                action_id = str(action_id)
+        else:
+            action_id = None
+
         if action_id:
-            await self.runner.record_action_started(
-                task_id=task_id,
-                action_id=action_id,
-                tool_name=tool_name,
-                parameter_keys=list(tool_params.keys()),
+            # Task-scoped ownership gate: an expired or stolen ownership row
+            # must not start an external mutation.
+            if not self.runner.verify_task_ownership(task_id=task_id):
+                logger.warning(
+                    "Refusing mutating tool '%s' for task %s: task ownership not held",
+                    tool_name,
+                    task_id,
+                )
+                return False
+            await self.runner.start_mutating_action(
+                task_id, action_id, tool_name, tool_params, approved=approved_by_user,
             )
+
+        if action_id:
+            try:
+                if not await self.runner.begin_task_action(task_id=task_id, action_id=action_id):
+                    return False
+            except Exception:
+                return False
 
         # Pre-action governance gate: check for prior failures on same target
         gate_warning = await self._pre_action_gate(task_id, tool_name, tool_params)
@@ -759,12 +1078,76 @@ class TaskExecutionLoop:
         # THIS task only (CancellationController), installed by the executor.
         policy_context = await self.cancellation.policy_context(task_id)
 
-        # Execute tool
-        result: ToolOutput = await self.tool_executor.execute_tool(
-            tool_name=tool_name,
-            input_data=tool_params,
-            policy_context=policy_context,
-        )
+        # Conservative action-bound serialization: only the actual external
+        # tool execution (and its immediate record) may overlap across tasks.
+        if mutating:
+            async def _guarded_operation():
+                if self._ownership_lost:
+                    raise RuntimeError("task ownership lost")
+                fresh_task = await self.runner.get_task(task_id)
+                if fresh_task is None or fresh_task.state == TaskState.CANCELLED.value:
+                    raise RuntimeError("task cancelled")
+                # Revalidate exact fenced handoff and all uncertainty under a
+                # writer transaction after waiting for the process-local guard.
+                # This does not start another action or permit replay.
+                if not await self.runner.begin_task_action(task_id=task_id, action_id=action_id):
+                    raise RuntimeError("task action handoff no longer valid")
+                return await self.tool_executor.execute_tool(
+                    tool_name=tool_name,
+                    input_data=tool_params,
+                    policy_context=policy_context,
+                )
+
+            try:
+                result: ToolOutput = await _OS_ACTION_GUARD.run(_guarded_operation)
+            except RuntimeError as exc:
+                logger.warning(
+                    "Refusing mutating tool '%s' for task %s: %s",
+                    tool_name,
+                    task_id,
+                    exc,
+                )
+                return False
+        else:
+            result: ToolOutput = await self.tool_executor.execute_tool(
+                tool_name=tool_name,
+                input_data=tool_params,
+                policy_context=policy_context,
+            )
+        # Only commit the operation as runtime progress if ownership and task
+        # state are still valid after the external operation has completed.
+        # A cancelled or ownership-lost in-flight action is left uncertain and
+        # is not reported as successful.
+        if self._ownership_lost:
+            logger.warning(
+                "Not committing mutating tool '%s' for task %s: task ownership lost",
+                tool_name,
+                task_id,
+            )
+            self.runner._rollback_owned_transaction()
+            return False
+        # Serialize the final authorization decision under the runner's transaction
+        # so a concurrent stop cannot win between reading task state and
+        # completing the action.
+        self.runner._ensure_transaction()
+        post_task = await self.runner.get_task(task_id)
+        if post_task is None or post_task.state != TaskState.RUNNING.value:
+            logger.warning(
+                "Not committing mutating tool '%s' for task %s: task state changed to %s",
+                tool_name,
+                task_id,
+                getattr(post_task, "state", None),
+            )
+            self.runner._rollback_owned_transaction()
+            return False
+        if action_id and not self.runner.verify_task_ownership(task_id=task_id, action_id=action_id):
+            logger.warning(
+                "Not committing mutating tool '%s' for task %s: task ownership not held",
+                tool_name,
+                task_id,
+            )
+            self.runner._rollback_owned_transaction()
+            return False
         
         # Record event
         model_summary = result.model_summary
@@ -772,12 +1155,7 @@ class TaskExecutionLoop:
             model_summary = json.dumps(result.data, default=str)[:1500]
         if not model_summary and result.error is not None:
             model_summary = json.dumps(result.error, default=str)[:1500]
-        await self.runner.transition_state(
-
-            task_id=task_id,
-            new_state=TaskState.RUNNING,  # Stay in running
-            event_type="tool.executed",
-            event_data={
+        event_data = {
                 "tool_name": tool_name,
                 "params": tool_params,
                 "success": result.success,
@@ -788,10 +1166,15 @@ class TaskExecutionLoop:
                 "duration_ms": result.duration_ms,
                 "mutating": mutating,
                 "verification": "passed" if result.success else "failed",
-            },
-            active_action_id=None,
-        )
-        
+            }
+        if action_id:
+            await self.runner.finish_mutating_action(task_id, action_id, event_data)
+        else:
+            await self.runner.transition_state(
+                task_id=task_id, new_state=TaskState.RUNNING,
+                event_type="tool.executed", event_data=event_data,
+            )
+
         if result.success:
             logger.info(f"Tool {tool_name} executed successfully")
             return True
@@ -921,15 +1304,9 @@ async def run_task(db_session: Session, task_id: str, tool_executor: ToolExecuto
     runner = TaskRunner(session)
 
     try:
-        # Acquire lease
-        if not await runner.acquire_lease(task_id=task_id):
-            raise RuntimeError("Another task runner is currently active")
-
+        # Task scope is owned by TaskExecutionLoop itself; no whole-task global
+        # runner lease is held here, allowing independent background work.
         loop = TaskExecutionLoop(session, runner, tool_executor)
         await loop.execute_task(task_id)
     finally:
-        try:
-            await runner.release_lease()
-        except Exception:
-            pass
         session.close()

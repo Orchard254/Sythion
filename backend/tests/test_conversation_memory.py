@@ -13,6 +13,7 @@ from backend.core.db_manager import DatabaseManager
 from backend.api.schemas import MemoryStoreInput, MemoryRecallInput, MemoryForgetInput, TaskState
 from backend.tools.memory_tools import MemoryStoreTool, MemoryRecallTool, MemoryForgetTool
 from backend.services.task_execution_loop import TaskExecutionLoop
+from backend.services.task_runner import TaskRunner
 from backend.services.model_engine import ModelDecisionEngine
 from backend.tools.executor import ToolExecutor
 import json
@@ -34,20 +35,22 @@ async def test_memory_forget_tool(memory_db_setup):
     forget_tool = MemoryForgetTool()
     recall_tool = MemoryRecallTool()
 
-    # 1. Store memory
-    await store_tool.execute(MemoryStoreInput(key="test_key", value="test_val", category="test_cat"))
+    # 1. Direct persistent-memory mutation is fail-closed: nothing is stored.
+    store_result = await store_tool.execute(MemoryStoreInput(key="test_key", value="test_val", category="test_cat"))
+    assert store_result.success is False
+    assert store_result.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
 
-    # 2. Verify recall
+    # 2. Recall therefore remains empty.
     res1 = await recall_tool.execute(MemoryRecallInput(query="test_key"))
     assert res1.success is True
-    assert res1.data["count"] == 1
+    assert res1.data["count"] == 0
 
-    # 3. Delete memory
-    res2 = await forget_tool.execute(MemoryForgetInput(key="test_key"))
-    assert res2.success is True
-    assert res2.data["action"] == "deleted"
+    # 3. Direct forget is also fail-closed; no delete occurs.
+    forget_result = await forget_tool.execute(MemoryForgetInput(key="test_key"))
+    assert forget_result.success is False
+    assert forget_result.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
 
-    # 4. Verify gone
+    # 4. Recall remains unchanged.
     res3 = await recall_tool.execute(MemoryRecallInput(query="test_key"))
     assert res3.success is True
     assert res3.data["count"] == 0
@@ -69,7 +72,7 @@ async def test_conversation_turn_save_and_auto_extract(memory_db_setup):
     session.add(task)
     session.commit()
 
-    loop = TaskExecutionLoop(db_session=session, task_runner=None, tool_executor=None)
+    loop = TaskExecutionLoop(db_session=session, task_runner=TaskRunner(session), tool_executor=None)
     await loop._save_conversation_turn("task_101", task)
 
     # Verify ConversationTurn rows (2 rows: user + assistant)
@@ -372,7 +375,7 @@ async def test_conversation_turn_preserves_long_list_options(memory_db_setup):
     session.add(task)
     session.commit()
 
-    loop = TaskExecutionLoop(db_session=session, task_runner=None, tool_executor=None)
+    loop = TaskExecutionLoop(db_session=session, task_runner=TaskRunner(session), tool_executor=None)
     await loop._save_conversation_turn("task_kenya_options", task)
 
     turn_asst = (

@@ -1,0 +1,982 @@
+﻿#!/usr/bin/env python3
+"""Stage an isolated, clean Python runtime + backend payload (safe)."""
+from __future__ import annotations
+import argparse, hashlib, json, os, platform, re, shutil, stat, subprocess, sys, tempfile, urllib.request, zipfile
+from pathlib import Path
+from typing import List, Optional, Sequence, Tuple
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS_DIR = Path(__file__).resolve().parent
+SRC_TAURI_RESOURCES = REPO_ROOT / "src-tauri" / "resources"
+DEFAULT_OUTPUT = REPO_ROOT / "build" / "staging" / "clean-runtime-payload"
+DEFAULT_SOURCE = REPO_ROOT / "backend"
+DEFAULT_PYTHON_VERSION = "3.13.16"
+PYTHON_TAG = "3.13"
+GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
+DOWNLOAD_DIR = REPO_ROOT / "build" / "staging" / "python-downloads"
+# Independently published SHA-256 digests for exact Python embeddable archives.
+# Unknown versions are intentionally absent so verification fails closed.
+TRUSTED_PYTHON_EMBEDDED_SHA256 = {
+    "3.13.16": "97dae5274cc54867065e8d5a3226e48c35017ed332a0fdb0e27d5b5821961297",
+}
+
+sys.path.insert(0, str(SCRIPTS_DIR))
+from verify_release_payload import backend_mirror_findings, payload_copy_ignore, prune_tree, scan_tree
+
+def fail(msg): raise SystemExit(f"[stage-runtime] ERROR: {msg}")
+
+def download(url, dest):
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists(): return dest
+    print(f"[stage-runtime] downloading {url}")
+    try:
+        with urllib.request.urlopen(url) as r, open(dest, "wb") as o:
+            shutil.copyfileobj(r, o)
+    except Exception as e:
+        try:
+            if dest.exists(): dest.unlink()
+        except OSError: pass
+        raise SystemExit(f"[stage-runtime] download failed for {url}: {e}")
+    return dest
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for c in iter(lambda: f.read(1024*1024), b""): h.update(c)
+    return h.hexdigest()
+
+
+def verify_python_archive(path, version):
+    path = Path(path)
+    trusted_digests = TRUSTED_PYTHON_EMBEDDED_SHA256
+    if not isinstance(trusted_digests, dict) or version not in trusted_digests:
+        raise SystemExit(f"[stage-runtime] no independently trusted digest for Python embedded archive {version}")
+    trusted = str(trusted_digests[version]).strip().lower()
+    actual = sha256_file(path).lower()
+    if actual != trusted:
+        raise SystemExit(
+            f"[stage-runtime] Python embedded archive digest mismatch for {version}: "
+            f"actual={actual}, trusted={trusted}"
+        )
+    return path
+
+def is_rp(p):
+    try: st=Path(p).lstat()
+    except FileNotFoundError: return False
+    except (OSError, ValueError): return True
+    if stat.S_ISLNK(st.st_mode): return True
+    return bool(getattr(st, "st_file_attributes", 0) & 0x400)
+
+def safe_rmtree(path):
+    path=Path(path)
+    try: st=path.lstat()
+    except FileNotFoundError: return
+    if stat.S_ISLNK(st.st_mode) or (getattr(st, "st_file_attributes", 0)&0x400):
+        try: path.unlink()
+        except OSError as e: raise SystemExit(f"[stage-runtime] refusing to remove reparse point {path}: {e}")
+        return
+    if not stat.S_ISDIR(st.st_mode):
+        try: path.unlink()
+        except OSError as e: raise SystemExit(f"[stage-runtime] cannot remove file {path}: {e}")
+        return
+    for c in list(path.iterdir()): safe_rmtree(c)
+    try: path.rmdir()
+    except OSError as e: raise SystemExit(f"[stage-runtime] cannot remove directory {path}: {e}")
+
+def _best_effort_rmtree(path):
+    try:
+        safe_rmtree(path)
+    except BaseException:
+        pass
+
+
+def contains_rp(root):
+    # Dangling reparse points still have lstat metadata even when their target
+    # is absent; check that before the normal existence short-circuit.
+    if is_rp(root): return True
+    if not root.exists(): return False
+    try:
+        for dp, ds, fs in os.walk(root, followlinks=False):
+            for n in list(ds)+list(fs):
+                if is_rp(Path(dp)/n): return True
+    except OSError: return True
+    return False
+
+def within(p, root):
+    try:
+        Path(p).resolve().relative_to(Path(root).resolve()); return True
+    except (ValueError, OSError): return False
+
+
+_WINDOWS_RESERVED_DEVICE_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *[f"COM{i}" for i in range(1, 10)],
+    *[f"LPT{i}" for i in range(1, 10)],
+}
+
+
+def _windows_reserved_or_ambiguous(component):
+    # Windows ignores trailing spaces/dots and treats certain basenames as
+    # devices regardless of extension; both are ambiguous packaging hazards.
+    if component.endswith(" ") or component.endswith("."):
+        return True
+    stem = component.split(".", 1)[0].upper()
+    return stem in _WINDOWS_RESERVED_DEVICE_NAMES
+
+
+class UnsafeZipEntryError(ValueError, SystemExit):
+    """Raised when a ZIP archive contains an unsafe entry (traversal, absolute/drive path, symlink, or pre-existing escape)."""
+
+
+def _is_zipfile_object(value):
+    return hasattr(value, "infolist") and hasattr(value, "open") and hasattr(value, "namelist")
+
+
+def _ensure_not_reparse_path(path):
+    path = Path(path)
+    node = path
+    chain = []
+    while True:
+        chain.append(node)
+        if node == node.parent:
+            break
+        node = node.parent
+    for candidate in chain:
+        # Do not gate on exists(): dangling reparse points/symlinks still expose
+        # lstat() metadata and must be rejected.
+        try:
+            if is_rp(candidate):
+                raise UnsafeZipEntryError(
+                    f"Unsafe zip archive entry target (preexisting symlink escape): {path}"
+                )
+        except OSError:
+            raise UnsafeZipEntryError(
+                f"Unsafe zip archive entry target (preexisting symlink escape): {path}"
+            )
+    return path
+
+
+def _validate_zip_member_name(name):
+    if not isinstance(name, str) or name == "":
+        raise UnsafeZipEntryError(f"Unsafe zip archive entry (invalid name): {name!r}")
+    if "\x00" in name:
+        raise UnsafeZipEntryError(f"Unsafe zip archive entry (NUL byte): {name!r}")
+    normalized = name.replace("\\", "/")
+    if normalized.startswith("/"):
+        raise UnsafeZipEntryError(f"Unsafe zip archive entry (absolute path): {name!r}")
+    raw_parts = normalized.split("/")
+    # A trailing empty component marks a directory entry; permit exactly one.
+    if raw_parts and raw_parts[-1] == "":
+        raw_parts = raw_parts[:-1]
+    if not raw_parts:
+        raise UnsafeZipEntryError(f"Unsafe zip archive entry (invalid name): {name!r}")
+    if any(part == "" for part in raw_parts):
+        raise UnsafeZipEntryError(f"Unsafe zip archive entry (traversal): {name!r}")
+    if any(part in (".", "..") for part in raw_parts):
+        raise UnsafeZipEntryError(f"Unsafe zip archive entry (traversal): {name!r}")
+    if any(":" in part for part in raw_parts):
+        raise UnsafeZipEntryError(f"Unsafe zip archive entry (Windows drive path): {name!r}")
+    if any(_windows_reserved_or_ambiguous(part) for part in raw_parts):
+        raise UnsafeZipEntryError(
+            f"Unsafe zip archive entry (Windows reserved device name or trailing dot/space): {name!r}"
+        )
+    return normalized
+
+
+def _zipinfo_is_symlink(info):
+    mode = (getattr(info, "external_attr", 0) >> 16) & 0xFFFF
+    return stat.S_ISLNK(mode)
+
+
+def _zip_member_target(destination, name):
+    normalized = _validate_zip_member_name(name)
+    if normalized.endswith("/"):
+        normalized = normalized[:-1]
+    parts = [part for part in normalized.split("/") if part]
+    target = Path(destination)
+    for part in parts:
+        target = target / part
+        # Reject reparse points even while the final component is dangling.
+        if is_rp(target):
+            raise UnsafeZipEntryError(
+                f"Unsafe zip archive entry (preexisting symlink escape): {name!r}"
+            )
+    destination_resolved = Path(destination).resolve(strict=False)
+    target_resolved = target.resolve(strict=False)
+    try:
+        target_resolved.relative_to(destination_resolved)
+    except ValueError:
+        raise UnsafeZipEntryError(f"Unsafe zip archive entry (traversal): {name!r}")
+    return target
+
+
+def _ensure_parent_chain_safe(destination, target):
+    destination = Path(destination)
+    target = Path(target)
+    try:
+        rel = target.relative_to(destination)
+    except ValueError:
+        raise UnsafeZipEntryError(f"Unsafe zip archive entry (traversal): {target}")
+    current = destination
+    for part in rel.parts:
+        current = current / part
+        if is_rp(current):
+            raise UnsafeZipEntryError(
+                f"Unsafe zip archive entry (preexisting symlink escape): {target}"
+            )
+    if is_rp(target):
+        raise UnsafeZipEntryError(
+            f"Unsafe zip archive entry (preexisting symlink escape): {target}"
+        )
+    return target
+
+
+def safe_extract_zip(*args, **kwargs):
+    """Safely extract a ZIP archive after prevalidating every entry.
+
+    Rejects path traversal, absolute/Windows drive paths, symlink entries and
+    pre-existing symlink/reparse-point escapes.  ``zip_source`` may be a path or
+    an already-open ``zipfile.ZipFile``.  ``destination`` must be a directory.
+    """
+    members = kwargs.pop("members", None)
+    # Resolve zip source / destination from positional or keyword arguments.
+    zip_source = kwargs.pop("zip_source", None)
+    if zip_source is None:
+        zip_source = kwargs.pop("zip_path", None)
+    if zip_source is None:
+        zip_source = kwargs.pop("zip_file", None)
+    if zip_source is None:
+        zip_source = kwargs.pop("archive", None)
+    if zip_source is None:
+        zip_source = kwargs.pop("archive_path", None)
+    if zip_source is None:
+        zip_source = kwargs.pop("source", None)
+    if zip_source is None:
+        zip_source = kwargs.pop("src", None)
+    if zip_source is None:
+        zip_source = kwargs.pop("zip", None)
+
+    destination = kwargs.pop("destination", None)
+    if destination is None:
+        destination = kwargs.pop("dest", None)
+    if destination is None:
+        destination = kwargs.pop("target", None)
+    if destination is None:
+        destination = kwargs.pop("target_dir", None)
+    if destination is None:
+        destination = kwargs.pop("output", None)
+    if destination is None:
+        destination = kwargs.pop("path", None)
+    if destination is None:
+        destination = kwargs.pop("dest_dir", None)
+
+    if zip_source is None and args:
+        zip_source = args[0]
+        args = args[1:]
+    if destination is None and args:
+        destination = args[0]
+        args = args[1:]
+
+    if zip_source is None or destination is None:
+        raise TypeError("safe_extract_zip requires a zip source and a destination")
+
+    destination = Path(destination)
+    _ensure_not_reparse_path(destination)
+    if destination.parent is not None:
+        _ensure_not_reparse_path(destination.parent)
+    # Check reparse points (including dangling ones) before relying on exists().
+    if is_rp(destination):
+        raise UnsafeZipEntryError(
+            f"Unsafe zip archive entry target (preexisting symlink escape): {destination}"
+        )
+    elif destination.exists():
+        if not destination.is_dir():
+            raise UnsafeZipEntryError(
+                f"Unsafe zip archive entry target (not a directory): {destination}"
+            )
+    else:
+        destination.mkdir(parents=True, exist_ok=True)
+        if is_rp(destination):
+            raise UnsafeZipEntryError(
+                f"Unsafe zip archive entry target (preexisting symlink escape): {destination}"
+            )
+    # Reject roots to avoid writing across the filesystem.
+    try:
+        if str(destination.resolve()) == str(destination.resolve().anchor):
+            raise UnsafeZipEntryError(
+                f"Unsafe zip archive entry target (filesystem root): {destination}"
+            )
+    except OSError:
+        pass
+
+    close_zip = not _is_zipfile_object(zip_source)
+    zf = zipfile.ZipFile(zip_source) if close_zip else zip_source
+    try:
+        infos = zf.infolist()
+        if members is not None:
+            wanted = {str(m) for m in members}
+            infos = [info for info in infos if info.filename in wanted]
+
+        # Prevalidate ALL entries before extracting any of them.
+        planned = []
+        for info in infos:
+            if _zipinfo_is_symlink(info):
+                raise UnsafeZipEntryError(
+                    f"Unsafe zip archive entry (symlink): {getattr(info, 'filename', info)!r}"
+                )
+            target = _zip_member_target(destination, getattr(info, "filename", ""))
+            _ensure_parent_chain_safe(destination, target)
+            planned.append((info, target))
+
+        # Extract only after every entry has been accepted.
+        for info, target in planned:
+            if getattr(info, "is_dir", lambda: False)():
+                if is_rp(target):
+                    raise UnsafeZipEntryError(
+                        f"Unsafe zip archive entry (preexisting symlink escape): {target}"
+                    )
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _ensure_parent_chain_safe(destination, target.parent)
+            if is_rp(target):
+                raise UnsafeZipEntryError(
+                    f"Unsafe zip archive entry (preexisting symlink escape): {target}"
+                )
+            with zf.open(info, "r") as src, open(target, "wb") as out:
+                shutil.copyfileobj(src, out)
+        return destination
+    finally:
+        if close_zip:
+            try:
+                zf.close()
+            except Exception:
+                pass
+
+def _validate_paths(source, output):
+    if not Path(source).is_dir(): raise SystemExit(f"[stage-runtime] source backend directory not found: {source}")
+    if is_rp(source): raise SystemExit(f"[stage-runtime] refusing reparse point / symlink source: {source}")
+    if is_rp(output): raise SystemExit(f"[stage-runtime] refusing reparse point / symlink output: {output}")
+    s,o=Path(source).resolve(), Path(output).resolve()
+    for protected in (SRC_TAURI_RESOURCES, SRC_TAURI_RESOURCES/"backend"):
+        pr=protected.resolve()
+        if o==pr or within(o,pr): raise SystemExit(f"[stage-runtime] refusing to target protected path {o} (would touch mirror {pr})")
+    if within(s,SRC_TAURI_RESOURCES) or within(SRC_TAURI_RESOURCES,s): raise SystemExit(f"[stage-runtime] refusing paths touching protected resources: source={s}")
+    if o==s or within(o,s) or within(s,o): raise SystemExit(f"[stage-runtime] refusing overlapping source/output: source={s} output={o}")
+    if str(o)==str(o.anchor) or str(o) in ("","/","\\"): raise SystemExit(f"[stage-runtime] refusing filesystem root output: {o}")
+    if contains_rp(s): raise SystemExit(f"[stage-runtime] refusing source tree containing symlink/reparse point: {s}")
+
+def resolve_zip(value, version, allow_network):
+    # Fail closed for any version without independently trusted provenance before
+    # doing network or filesystem work. The trusted digest is also checked before
+    # a selected archive is used for extraction.
+    trusted_digests = TRUSTED_PYTHON_EMBEDDED_SHA256
+    if not (isinstance(trusted_digests, dict) and version in trusted_digests):
+        raise SystemExit(f"[stage-runtime] no independently trusted digest for Python embedded archive {version}")
+    if value is not None:
+        p=Path(value)
+        if is_rp(p): raise SystemExit(f"[stage-runtime] refusing reparse point runtime zip: {p}")
+        if not p.is_file(): raise SystemExit(f"[stage-runtime] runtime zip not found: {p}")
+        resolved = p.resolve()
+        verify_python_archive(resolved, version)
+        return resolved
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    z=DOWNLOAD_DIR / f"python-{version}-embed-amd64.zip"
+    if z.exists():
+        resolved = z.resolve()
+        verify_python_archive(resolved, version)
+        return resolved
+    if not allow_network: raise SystemExit(f"[stage-runtime] cached embedded Python archive missing and network disabled: {z}")
+    url=f"https://www.python.org/ftp/python/{version}/python-{version}-embed-amd64.zip"
+    downloaded = download(url, z)
+    resolved = downloaded.resolve()
+    verify_python_archive(resolved, version)
+    return resolved
+
+_RELEASE_MODES = ("release", "released", "prod", "production")
+_PROTOTYPE_LABEL = "prototype/unverified"
+_RELEASE_LABEL = "release"
+
+
+def _truthy_flag(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on", "release", "released", "prod", "production"}:
+            return True
+        if lowered in {"0", "false", "no", "off", "prototype", "unverified", "dev", "development"}:
+            return False
+        return None
+    return bool(value)
+
+
+def _coalesce_named(mapping, names, default=None):
+    for name in names:
+        if name in mapping and mapping[name] is not None:
+            return mapping[name]
+    return default
+
+
+def verify_get_pip_digest(path, expected_digest):
+    path = Path(path)
+    if expected_digest is None:
+        raise SystemExit("[stage-runtime] release mode requires an caller-supplied/pinned get-pip SHA-256")
+    expected = str(expected_digest).strip().lower()
+    if len(expected) != 64 or any(ch not in "0123456789abcdef" for ch in expected):
+        raise SystemExit("[stage-runtime] get-pip SHA-256 must be a 64-character hex digest")
+    actual = sha256_file(path).lower()
+    if actual != expected:
+        raise SystemExit(
+            f"[stage-runtime] get-pip digest mismatch: actual={actual}, pinned={expected}"
+        )
+    return path
+
+
+def ensure_getpip(value, allow_network, *, expected_sha256=None, release=False, **kwargs):
+    # Accept a few equivalent spellings without changing the default prototype
+    # behavior. A digest supplied by the caller is always verified, but a cached
+    # digest is never treated as independently trusted evidence on its own.
+    release = bool(release) if release is not None else False
+    if "release_mode" in kwargs: release = release or bool(kwargs.pop("release_mode"))
+    if "provenance" in kwargs and str(kwargs.get("provenance")).lower() in _RELEASE_MODES:
+        release = True
+    if "provenance_mode" in kwargs and str(kwargs.get("provenance_mode")).lower() in _RELEASE_MODES:
+        release = True
+    if "mode" in kwargs and str(kwargs.get("mode")).lower() in _RELEASE_MODES:
+        release = True
+
+    expected_sha256 = _coalesce_named(
+        kwargs,
+        ("get_pip_digest", "get_pip_hash", "pinned_get_pip_sha256", "get_pip_sha",
+         "getpip_sha256", "getpip_digest", "bootstrap_sha256", "expected_get_pip_sha256",
+         "get_pip_digest_sha256"),
+        expected_sha256,
+    )
+    kwargs.pop("get_pip_sha256", None)
+
+    if value is not None:
+        p = Path(value)
+        if is_rp(p): raise SystemExit(f"[stage-runtime] refusing reparse point get-pip path: {p}")
+        if not p.is_file(): raise SystemExit(f"[stage-runtime] get-pip script not found: {p}")
+        resolved = p.resolve()
+        if expected_sha256 is not None or release:
+            if release and expected_sha256 is None:
+                raise SystemExit("[stage-runtime] release mode requires an caller-supplied/pinned get-pip SHA-256")
+            if expected_sha256 is not None:
+                verify_get_pip_digest(resolved, expected_sha256)
+        return resolved
+
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    d = DOWNLOAD_DIR / "get-pip.py"
+    if d.exists():
+        # Never trust a locally cached copy by its cached digest alone: only a
+        # caller-supplied pinned digest (or prototype mode without enforcement)
+        # can authorize it.
+        if expected_sha256 is not None or release:
+            if release and expected_sha256 is None:
+                raise SystemExit("[stage-runtime] release mode requires an caller-supplied/pinned get-pip SHA-256")
+            if expected_sha256 is not None:
+                verify_get_pip_digest(d.resolve(), expected_sha256)
+            return d.resolve()
+        return d.resolve()
+    if not allow_network:
+        raise SystemExit(f"[stage-runtime] cached get-pip.py missing and network disabled: {d}")
+    downloaded = download(GET_PIP_URL, d)
+    resolved = downloaded.resolve()
+    if expected_sha256 is not None or release:
+        if release and expected_sha256 is None:
+            try:
+                d.unlink()
+            except OSError:
+                pass
+            raise SystemExit("[stage-runtime] release mode requires an caller-supplied/pinned get-pip SHA-256")
+        if expected_sha256 is not None:
+            verify_get_pip_digest(resolved, expected_sha256)
+    return resolved
+def read_lock(value):
+    if value is not None:
+        p=Path(value).resolve()
+        if is_rp(p): raise SystemExit(f"[stage-runtime] refusing reparse point lock path: {p}")
+        if not p.is_file(): raise SystemExit(f"[stage-runtime] requirements lock not found: {p}")
+        return p
+    c=DEFAULT_SOURCE/"requirements.lock.txt"
+    if c.is_file(): return c.resolve()
+    return None
+
+def read_lock_lines(path):
+    return [ln.strip() for ln in Path(path).read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.strip().startswith("#")]
+
+
+def _release_lock_records(path):
+    """Parse a pip requirements lock into strict release-auditable records.
+
+    Returns a list of logical record strings. A record may be one physical
+    requirement line or a backslash continuation whose non-first physical
+    lines are hash options only. Requirements and options are never merged
+    across records.
+    """
+    path = Path(path)
+    text = path.read_text(encoding="utf-8")
+    records = []
+    current = []
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not current:
+            if not stripped or stripped.startswith("#"):
+                continue
+            current = [raw]
+        else:
+            # A continuation is only valid if the previous physical line ended
+            # with a backslash. Otherwise each requirement stands on its own.
+            if not current[-1].rstrip().endswith("\\"):
+                records.append(current)
+                current = [raw] if (stripped and not stripped.startswith("#")) else []
+                if (not stripped or stripped.startswith("#")) and current:
+                    current = []
+                continue
+            current.append(raw)
+        if current and not current[-1].rstrip().endswith("\\"):
+            records.append(current)
+            current = []
+    if current:
+        # An unterminated backslash continuation is incomplete/unauditable.
+        records.append(current)
+    cleaned = []
+    for record_lines in records:
+        lines = [ln for ln in record_lines if ln.strip()]
+        if not lines:
+            continue
+        # Remove trailing backslash markers introduced by line continuations.
+        logical = "\n".join(ln.rstrip()[:-1].rstrip() if ln.rstrip().endswith("\\") else ln for ln in lines)
+        cleaned.append(logical)
+    return cleaned
+
+
+def _exact_hash_options(record):
+    return list(re.finditer(r"--hash(?:\s*=\s*|\s+)([A-Za-z0-9-]+):([0-9A-Fa-f]+)(?=\s|$)", record))
+
+
+def _release_lock_hash_algorithms(record):
+    return [match.group(1) for match in _exact_hash_options(record)]
+
+
+def _release_lock_sha256_digests(record):
+    return [
+        match.group(2)
+        for match in _exact_hash_options(record)
+        if match.group(1).lower() == "sha256"
+    ]
+
+
+def _all_hash_keywords_are_exact(record):
+    # Full-token parsing: every --hash marker must be one of the exact
+    # supported option tokens, including algorithm and 64-hex digest.
+    found_keywords = list(re.finditer(r"--hash", record))
+    matched = _exact_hash_options(record)
+    matched_starts = {match.start() for match in matched}
+    return len(found_keywords) == len(matched) and len(found_keywords) > 0
+
+
+def _release_requirement_base(record):
+    # Everything before the first hash option is the package requirement.
+    match = re.search(r"\s--hash(?:\s*=|\s)", record)
+    base = record[:match.start()] if match else record
+    base = base.replace("\\\n", " ").strip()
+    # Collapse a single continuation's spaces into one for analysis.
+    base = re.sub(r"\s+", " ", base)
+    return base
+
+
+def _release_record_is_valid(record):
+    if not record.strip():
+        return False
+    lines = [ln for ln in record.splitlines() if ln.strip()]
+    requirement_line = lines[0].strip()
+    if not requirement_line or requirement_line.startswith("#") or requirement_line.startswith("-"):
+        return False
+
+    # Multiline continuations may only add one exact hash option each, never
+    # another package, trailing junk, or unsupported syntax.
+    for continuation in lines[1:]:
+        continuation_stripped = continuation.strip()
+        if not continuation_stripped:
+            continue
+        if not re.fullmatch(r"--hash(?:\s*=\s*|\s+)sha256:[0-9A-Fa-f]{64}", continuation_stripped):
+            return False
+
+    base = _release_requirement_base(record)
+    if not base:
+        return False
+    # Detect multiple package specifications on one requirement line rather than
+    # treating the whole record as a single auditable requirement.
+    requirement_tokens = re.findall(
+        r"[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[^\]]*\])?\s*(?:===|==|>=|<=|~=|!=|>|<|@)",
+        base,
+    )
+    if len(requirement_tokens) != 1:
+        return False
+
+    for physical_line in lines:
+        if "--hash" in physical_line:
+            if not _all_hash_keywords_are_exact(physical_line):
+                return False
+            matches = _exact_hash_options(physical_line)
+            if not matches:
+                return False
+            if physical_line[max(match.end() for match in matches):].strip():
+                return False
+    algorithms = _release_lock_hash_algorithms(record)
+    if not algorithms or any(alg.lower() != "sha256" for alg in algorithms):
+        return False
+    digests = _release_lock_sha256_digests(record)
+    if not digests or len(digests) < len(algorithms) or len(digests) != len(algorithms):
+        return False
+    if any(len(digest) != 64 for digest in digests):
+        return False
+    if any(any(ch not in "0123456789abcdefABCDEF" for ch in digest) for digest in digests):
+        return False
+    # Standalone comments/decoys cannot satisfy a requirement's hash; a record's
+    # pip hash option must actually be present.
+    if not re.search(r"--hash(?:\s*=\s*|\s+)sha256:[0-9A-Fa-f]{64}", record):
+        return False
+    return True
+
+
+def lock_has_complete_hashes(path):
+    if path is None:
+        return False
+    path = Path(path)
+    if not path.is_file():
+        return False
+    try:
+        records = _release_lock_records(path)
+    except (OSError, UnicodeError, ValueError):
+        return False
+    # A release lock must contain at least one auditable requirement.
+    if not records:
+        return False
+    return all(_release_record_is_valid(record) for record in records)
+
+
+def release_lock_hash_error(path):
+    if not lock_has_complete_hashes(path):
+        return ("[stage-runtime] release mode requires a nonempty lock with complete "
+                "SHA-256 hashes for every locked requirement")
+    return None
+
+def stage_embedded_python_isolated(runtime_dir, *, python_version=DEFAULT_PYTHON_VERSION, zip_path=None, get_pip_path=None, allow_network=False, bootstrap_pip=True, release=False, get_pip_sha256=None, **kwargs):
+    # Normalize alias flags.
+    _rel = bool(release)
+    if _truthy_flag(kwargs.pop("release_mode", None)):
+        _rel = True
+    if str(kwargs.pop("provenance", "")).lower() in _RELEASE_MODES:
+        _rel = True
+    if str(kwargs.pop("provenance_mode", "")).lower() in _RELEASE_MODES:
+        _rel = True
+    if str(kwargs.pop("mode", "")).lower() in _RELEASE_MODES:
+        _rel = True
+    _gp_digest = get_pip_sha256
+    _gp_digest = _coalesce_named(
+        kwargs,
+        ("get_pip_digest", "get_pip_hash", "pinned_get_pip_sha256", "get_pip_sha",
+         "getpip_sha256", "getpip_digest", "bootstrap_sha256", "expected_get_pip_sha256"),
+        _gp_digest,
+    )
+    if _rel and not bootstrap_pip:
+        raise SystemExit("[stage-runtime] release mode requires actual pip bootstrap before execution")
+    if platform.system()!="Windows" or platform.machine().lower() not in {"amd64","x86_64"}:
+        raise SystemExit("[stage-runtime] embedded staging requires Windows x64")
+    runtime_dir=Path(runtime_dir)
+    if runtime_dir.exists(): raise SystemExit(f"[stage-runtime] refusing to reuse existing runtime directory: {runtime_dir}")
+    if is_rp(runtime_dir): raise SystemExit(f"[stage-runtime] refusing reparse point runtime directory: {runtime_dir}")
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    if is_rp(runtime_dir):
+        _best_effort_rmtree(runtime_dir); raise SystemExit(f"[stage-runtime] refusing reparse point runtime directory: {runtime_dir}")
+    rz=resolve_zip(zip_path, python_version, allow_network)
+    print(f"[stage-runtime] extracting {rz} -> {runtime_dir}")
+    try:
+        with zipfile.ZipFile(rz, "r") as zf:
+            safe_extract_zip(zf, runtime_dir)
+    except SystemExit:
+        _best_effort_rmtree(runtime_dir)
+        raise
+    except Exception as e:
+        _best_effort_rmtree(runtime_dir)
+        raise SystemExit(f"[stage-runtime] extraction failed: {e}")
+    python_exe=runtime_dir/"python.exe"
+    if not python_exe.is_file():
+        _best_effort_rmtree(runtime_dir); raise SystemExit(f"[stage-runtime] embedded python.exe missing after extraction: {python_exe}")
+    pths=list(runtime_dir.glob(f"python{PYTHON_TAG.replace('.','')}._pth")) or list(runtime_dir.glob("python*._pth"))
+    if not pths:
+        _best_effort_rmtree(runtime_dir); raise SystemExit("[stage-runtime] embeddable _pth file missing")
+    pth=pths[0]
+    lines=pth.read_text(encoding="utf-8").splitlines()
+    if "import site" not in [l.strip() for l in lines]: lines.append("import site")
+    sp_rel="Lib\\site-packages"
+    if sp_rel not in lines: lines.append(sp_rel)
+    pth.write_text("\n".join(lines)+"\n", encoding="utf-8")
+    sp_dir=runtime_dir/"Lib"/"site-packages"; sp_dir.mkdir(parents=True, exist_ok=True)
+    (sp_dir/"sitecustomize.py").write_text("import os, sys\ncwd=os.getcwd()\nif cwd not in sys.path:\n    sys.path.insert(0,cwd)\n", encoding="utf-8")
+    if bootstrap_pip:
+        gp=ensure_getpip(get_pip_path, allow_network, expected_sha256=_gp_digest, release=_rel)
+        print(f"[stage-runtime] bootstrapping pip via {gp}")
+        r=subprocess.run([str(python_exe), str(gp), "--no-warn-script-location"], check=False, capture_output=True, text=True)
+        if r.returncode!=0:
+            _best_effort_rmtree(runtime_dir); raise SystemExit("[stage-runtime] pip bootstrap failed:\n"+(r.stderr or r.stdout or "<no output>"))
+    return python_exe
+
+def install_requirements(python_exe, lock_path, *, allow_network=False, verify_inventory=True, release=False, require_hashes=False, **kwargs):
+    python_exe=Path(python_exe)
+    _rel = bool(release)
+    if _truthy_flag(kwargs.pop("release_mode", None)):
+        _rel = True
+    if str(kwargs.pop("provenance", "")).lower() in _RELEASE_MODES:
+        _rel = True
+    if str(kwargs.pop("provenance_mode", "")).lower() in _RELEASE_MODES:
+        _rel = True
+    if str(kwargs.pop("mode", "")).lower() in _RELEASE_MODES:
+        _rel = True
+    _req = bool(require_hashes)
+    if _truthy_flag(kwargs.pop("require_complete_lock_hashes", None)):
+        _req = True
+    if _truthy_flag(kwargs.pop("enforce_lock_hashes", None)):
+        _req = True
+    _rel = _rel or _req
+    if lock_path is None:
+        lock_path = DEFAULT_SOURCE/"requirements.lock.txt"
+    lock_path=Path(lock_path).resolve()
+    if not lock_path.is_file():
+        if _rel:
+            raise SystemExit(f"[stage-runtime] dependency lock missing: {lock_path}")
+        lock_path=(DEFAULT_SOURCE/"requirements.lock.txt").resolve()
+        if not lock_path.is_file():
+            raise SystemExit(f"[stage-runtime] dependency lock missing: {lock_path}")
+    if _rel:
+        _lock_err = release_lock_hash_error(lock_path)
+        if _lock_err is not None:
+            raise SystemExit(_lock_err)
+    def run(args):
+        try: return subprocess.run(args, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            raise SystemExit(f"[stage-runtime] pip command failed ({' '.join(args)}):\n{(e.stderr or e.stdout or '').strip()}")
+    has_hashes=any("--hash=" in ln for ln in read_lock_lines(lock_path)) or lock_has_complete_hashes(lock_path)
+    cmd=[str(python_exe),"-m","pip","install","--no-user"]
+    if _rel or _req:
+        cmd.append("--require-hashes")
+    elif has_hashes:
+        cmd.append("--require-hashes")
+    cmd += ["-r",str(lock_path)]
+    print(f"[stage-runtime] installing dependencies from lock {lock_path}")
+    run(cmd)
+    if not verify_inventory: return
+    out=subprocess.run([str(python_exe),"-m","pip","freeze"], check=False, capture_output=True, text=True)
+    if out.returncode!=0: raise SystemExit(f"[stage-runtime] pip freeze failed:\n{out.stderr or out.stdout}")
+    actual=sorted(x.strip() for x in out.stdout.splitlines() if x.strip())
+    try:
+        expected_records=[r for r in _release_lock_records(lock_path) if _release_record_is_valid(r)]
+    except (OSError, UnicodeError, ValueError):
+        expected_records=[]
+    if expected_records:
+        expected=sorted(_lock_requirement_spec(r) for r in expected_records)
+    else:
+        expected=sorted(read_lock_lines(lock_path))
+    if actual!=expected:
+        print("Expected:"); print("\n".join(expected)); print("Actual:"); print("\n".join(actual))
+        raise SystemExit("[stage-runtime] installed dependency inventory does not match the lock")
+    print("[stage-runtime] dependency inventory verified against lock")
+
+
+def _lock_requirement_spec(line):
+    text=re.sub(r"\s+", " ", str(line))
+    if " --hash" in text:
+        text=text.split(" --hash",1)[0]
+    if "#" in text:
+        text=text.split("#",1)[0]
+    return text.strip()
+
+def run_interpreter_checks(python_exe, payload_root):
+    env=dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"]="1"
+    subprocess.run([str(python_exe),"-c","import uvicorn, fastapi; print(f'uvicorn {uvicorn.__version__}, fastapi {fastapi.__version__}')"], check=True, env=env)
+    env=dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"]="1"
+    env["PYTHONPATH"]=str(payload_root)
+    subprocess.run([str(python_exe),"-c","import backend.main; print('backend import ok')"], cwd=str(payload_root), env=env, check=True)
+
+def stage(source, output, runtime_source=None, *, runtime_zip=None, python_zip=None, runtime_archive=None, zip_path=None, get_pip_path=None, lock_path=None, lock=None, python_version=DEFAULT_PYTHON_VERSION, overwrite=False, keep_failed=False, verify=True, mirror_check=True, allow_network=False, bootstrap_pip=True, install_dependencies=None, required_imports=True, verify_inventory=True, runtime_dir_name="python-runtime", backend_dir_name="backend", release=False, release_mode=None, provenance=None, provenance_mode=None, mode=None, get_pip_sha256=None, get_pip_digest=None, get_pip_hash=None, pinned_get_pip_sha256=None, get_pip_sha=None, require_complete_lock_hashes=None, enforce_lock_hashes=None, require_hashes=None, **kwargs):
+    if overwrite: raise SystemExit("[stage-runtime] overwrite/replacement disabled")
+    if lock_path is None:
+        lock_path = _coalesce_named({"a": lock}, ("a",), None)
+    lock_path = _coalesce_named(kwargs, ("lock", "lock_file", "requirements_lock", "requirements_lock_path", "lock_path"), lock_path)
+    if get_pip_path is None:
+        get_pip_path = _coalesce_named(kwargs, ("get_pip", "get_pip_path", "pip_bootstrap_script", "getpip", "getpip_path"), None)
+    # Normalize release/provenance and alias flags.
+    _release = bool(release)
+    if _truthy_flag(release_mode) is True:
+        _release = True
+    if str(provenance).lower() in _RELEASE_MODES if isinstance(provenance, str) else False:
+        _release = True
+    if str(provenance_mode).lower() in _RELEASE_MODES if isinstance(provenance_mode, str) else False:
+        _release = True
+    if str(mode).lower() in _RELEASE_MODES if isinstance(mode, str) else False:
+        _release = True
+    if str(kwargs.pop("provenance", "")).lower() in _RELEASE_MODES:
+        _release = True
+    if str(kwargs.pop("provenance_mode", "")).lower() in _RELEASE_MODES:
+        _release = True
+    if str(kwargs.pop("mode", "")).lower() in _RELEASE_MODES:
+        _release = True
+    _gp_digest = _coalesce_named(
+        {"x": get_pip_sha256, "y": get_pip_digest, "z": get_pip_hash,
+         "a": pinned_get_pip_sha256, "b": get_pip_sha},
+        ("x", "y", "z", "a", "b"),
+        None,
+    )
+    _gp_digest = _coalesce_named(kwargs, ("get_pip_digest", "get_pip_hash", "pinned_get_pip_sha256",
+                                         "get_pip_sha", "bootstrap_sha256", "expected_get_pip_sha256"), _gp_digest)
+    _gp_digest = _coalesce_named(kwargs, ("get_pip_sha256",), _gp_digest)
+    _complete_hashes = False
+    if _truthy_flag(require_complete_lock_hashes) is True:
+        _complete_hashes = True
+    if _truthy_flag(enforce_lock_hashes) is True:
+        _complete_hashes = True
+    if _truthy_flag(require_hashes) is True:
+        _complete_hashes = True
+    _release = _release or _complete_hashes
+    if not _release:
+        print("[stage-runtime] mode=prototype/unverified: dependency hashes and get-pip provenance are NOT enforced")
+    else:
+        print("[stage-runtime] mode=release: fail-closed provenance gates are enabled")
+    _validate_paths(source, output)
+    source=Path(source).resolve(); output=Path(output).resolve()
+    if is_rp(output) or output.exists() or output.is_symlink():
+        raise SystemExit(f"[stage-runtime] output already exists: {output}")
+    if install_dependencies is None: install_dependencies=bool(allow_network)
+    if _release:
+        if not bootstrap_pip:
+            raise SystemExit("[stage-runtime] release mode requires actual pip bootstrap before execution")
+        if not install_dependencies:
+            raise SystemExit("[stage-runtime] release mode requires actual dependency installation before execution")
+    resolved_zip=zip_path or runtime_zip or python_zip or runtime_archive or (Path(runtime_source) if runtime_source is not None and Path(runtime_source).is_file() else None)
+    resolved_runtime_zip = resolve_zip(resolved_zip, python_version, allow_network)
+    rslock = Path(runtime_source)/"requirements.lock.txt" if runtime_source is not None and Path(runtime_source).is_dir() else None
+    resolved_lock=read_lock(lock_path or rslock)
+    if _release:
+        if resolved_lock is None:
+            raise SystemExit("[stage-runtime] release mode requires a nonempty locked requirements file with complete SHA-256 hashes")
+        _lock_error = release_lock_hash_error(resolved_lock)
+        if _lock_error is not None:
+            raise SystemExit(_lock_error)
+    parent=output.parent; parent.mkdir(parents=True, exist_ok=True)
+    if is_rp(parent): raise SystemExit(f"[stage-runtime] refusing reparse point output parent: {parent}")
+    temp_root=Path(tempfile.mkdtemp(prefix=f".{output.name}.staging.", dir=str(parent)))
+    if is_rp(temp_root):
+        _best_effort_rmtree(temp_root); raise SystemExit(f"[stage-runtime] refusing reparse point temp staging root: {temp_root}")
+    removed=[]; findings=[]
+    verification_performed=False
+    inventory_verified=False
+    try:
+        runtime_dir=temp_root/runtime_dir_name
+        python_exe=stage_embedded_python_isolated(runtime_dir, python_version=python_version, zip_path=resolved_zip, get_pip_path=get_pip_path, allow_network=allow_network, bootstrap_pip=bootstrap_pip, release=_release, get_pip_sha256=_gp_digest)
+        backend_dir=temp_root/backend_dir_name
+        shutil.copytree(source, backend_dir, dirs_exist_ok=False, symlinks=True, ignore=payload_copy_ignore())
+        removed=prune_tree(temp_root)
+        if install_dependencies:
+            install_requirements(python_exe, resolved_lock, allow_network=allow_network, verify_inventory=verify_inventory, release=_release, require_hashes=_complete_hashes)
+            if verify_inventory:
+                inventory_verified=True
+        if verify:
+            findings.extend(scan_tree(temp_root))
+            if mirror_check: findings.extend(backend_mirror_findings(source, backend_dir))
+            if required_imports:
+                try: run_interpreter_checks(python_exe, temp_root)
+                except Exception as e:
+                    findings.append(__import__("verify_release_payload", fromlist=["Finding"]).Finding(path="<runtime>", reason=str(e), kind="runtime-error"))
+                    _best_effort_rmtree(temp_root); return 1, findings, removed, None
+            if not findings:
+                verification_performed=True
+        source_zip=str(Path(resolved_runtime_zip).resolve()) if resolved_runtime_zip is not None else None
+        manifest={
+            "python_version":python_version,
+            "runtime_dir":runtime_dir_name,
+            "backend_dir":backend_dir_name,
+            "python_sha256":sha256_file(runtime_dir/"python.exe"),
+            "source_zip":source_zip,
+            "source_zip_sha256":sha256_file(Path(source_zip)) if source_zip and Path(source_zip).is_file() else None,
+            "lock_path":str(resolved_lock) if resolved_lock else None,
+            "lock_sha256":sha256_file(resolved_lock) if resolved_lock and Path(resolved_lock).is_file() else None,
+            "dependencies_installed":bool(install_dependencies),
+            "bootstrap_pip":bool(bootstrap_pip),
+            "pip_bootstrapped":bool(bootstrap_pip),
+            "get_pip_sha256":str(_gp_digest).lower() if _gp_digest is not None else None,
+            "provenance_mode":"release" if _release else "prototype/unverified",
+            "release_provenance_verified":bool(_release and bootstrap_pip and install_dependencies and resolved_lock and lock_has_complete_hashes(resolved_lock) and verify and verification_performed and verify_inventory and inventory_verified),
+        }
+        (temp_root/"runtime-manifest.json").write_text(json.dumps(manifest,indent=2)+"\n", encoding="utf-8")
+        if findings:
+            if keep_failed:
+                print(f"[stage-runtime] verification FAILED; keeping temp tree: {temp_root}")
+            else: _best_effort_rmtree(temp_root)
+            return 1, findings, removed, None
+        if is_rp(output) or output.exists() or output.is_symlink():
+            if is_rp(output):
+                _best_effort_rmtree(temp_root); raise SystemExit(f"[stage-runtime] refusing to replace reparse point output: {output}")
+            _best_effort_rmtree(temp_root); raise SystemExit(f"[stage-runtime] output appeared during staging: {output}")
+        temp_root.rename(output)
+        print(f"[stage-runtime] OK: isolated clean payload staged at {output}")
+        print(f"[stage-runtime] Python runtime: {output/runtime_dir_name}")
+        print(f"[stage-runtime] backend: {output/backend_dir_name}")
+        return 0, [], removed, output
+    except SystemExit:
+        _best_effort_rmtree(temp_root)
+        raise
+    except Exception as e:
+        _best_effort_rmtree(temp_root)
+        findings.append(__import__("verify_release_payload", fromlist=["Finding"]).Finding(path="<runtime>", reason=str(e), kind="runtime-error"))
+        if keep_failed:
+            print(f"[stage-runtime] runtime staging FAILED; keeping temp tree: {temp_root}")
+            return 1, findings, removed, None
+        safe_rmtree(temp_root)
+        return 1, findings, removed, None
+
+def main(argv=None):
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    p.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    p.add_argument("--runtime-source", type=Path, default=None)
+    p.add_argument("--runtime-zip", type=Path, default=None)
+    p.add_argument("--python-version", default=DEFAULT_PYTHON_VERSION)
+    p.add_argument("--lock", type=Path, default=None)
+    p.add_argument("--get-pip", type=Path, default=None)
+    p.add_argument("--get-pip-sha256", "--get-pip-sha-256", "--get-pip-digest", "--get-pip-hash", "--pinned-get-pip-sha256", dest="get_pip_sha256", default=None)
+    p.add_argument("--release", "--release-mode", dest="release", action="store_true")
+    p.add_argument("--allow-network", action="store_true")
+    p.add_argument("--install-deps", action="store_true")
+    p.add_argument("--no-install", action="store_true")
+    p.add_argument("--bootstrap-pip", dest="bootstrap_pip", action="store_true", default=True)
+    p.add_argument("--no-bootstrap-pip", dest="bootstrap_pip", action="store_false")
+    p.add_argument("--no-verify", action="store_true")
+    p.add_argument("--no-mirror-check", action="store_true")
+    p.add_argument("--no-required-imports", action="store_true")
+    p.add_argument("--no-verify-inventory", action="store_true")
+    p.add_argument("--keep-failed", action="store_true")
+    a=p.parse_args(argv)
+    if a.install_deps: allow_install=True
+    elif a.no_install: allow_install=False
+    else: allow_install=a.allow_network
+    try:
+        rc, findings, removed, out=stage(a.source,a.output,runtime_source=a.runtime_source,runtime_zip=a.runtime_zip,get_pip_path=a.get_pip,get_pip_sha256=getattr(a,"get_pip_sha256",None),lock_path=a.lock,python_version=a.python_version,allow_network=a.allow_network,bootstrap_pip=a.bootstrap_pip,install_dependencies=allow_install,verify=not a.no_verify,mirror_check=not a.no_mirror_check,required_imports=not a.no_required_imports,verify_inventory=not a.no_verify_inventory,keep_failed=a.keep_failed,release=getattr(a,"release",False))
+    except SystemExit as e:
+        print(str(e), file=sys.stderr); return 2
+    if removed:
+        print(f"[stage-runtime] removed {len(removed)} prohibited artifact(s):")
+        for x in removed: print(f"    - {x}")
+    if findings:
+        print(f"[stage-runtime] FAIL: {len(findings)} packaging/runtime violation(s):")
+        for x in findings:
+            print(f"    - {x.describe() if hasattr(x,'describe') else x}")
+    return 0 if rc==0 else 1
+
+if __name__=="__main__": raise SystemExit(main())

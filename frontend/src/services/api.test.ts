@@ -5,7 +5,7 @@ import {
   type InternalAxiosRequestConfig,
 } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import apiClient from './api';
+import apiClient, { assistantService } from './api';
 
 /**
  * The control token the request interceptor attaches. The response
@@ -192,5 +192,53 @@ describe('the axios response interceptor', () => {
       apiClient.post('/onboarding/inference', { model_id: 'm1' }, { adapter })
     );
     expect(error.message).not.toContain(CONTROL_TOKEN);
+  });
+});
+
+const TRANSPORT_MESSAGE =
+  'Connection lost. The request outcome is unknown; it was not automatically retried. Your draft is still here.';
+
+describe('assistantService.turn transport boundary', () => {
+  afterEach(() => {
+    delete apiClient.defaults.adapter;
+  });
+
+  it('maps a network failure with no response to the honest transport message', async () => {
+    const adapter: AxiosAdapter = (config) =>
+      Promise.reject(new AxiosError('Network Error', AxiosError.ERR_NETWORK, config, undefined));
+    apiClient.defaults.adapter = adapter;
+    await expect(assistantService.turn('hello', 'request-1')).rejects.toThrow(TRANSPORT_MESSAGE);
+  });
+
+  it('maps a timeout with no response to the honest transport message', async () => {
+    const adapter: AxiosAdapter = (config) =>
+      Promise.reject(new AxiosError('timeout of 5000ms exceeded', 'ECONNABORTED', config, undefined));
+    apiClient.defaults.adapter = adapter;
+    await expect(assistantService.turn('hello', 'request-1')).rejects.toThrow(TRANSPORT_MESSAGE);
+  });
+
+  it('preserves a known 503 detail unchanged', async () => {
+    const adapter = errorAdapter(503, JSON.stringify({ detail: 'Service Unavailable' }));
+    apiClient.defaults.adapter = adapter;
+    await expect(assistantService.turn('hello', 'request-1')).rejects.toMatchObject({
+      message: 'Service Unavailable',
+      response: { status: 503 },
+    });
+  });
+
+  it('does not rewrite a 401 with an HTTP response as a network failure', async () => {
+    const adapter = errorAdapter(401, JSON.stringify({ detail: 'Authentication required' }));
+    apiClient.defaults.adapter = adapter;
+    let thrown: unknown = null;
+    try {
+      await assistantService.turn('hello', 'request-1');
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const error = thrown as { message: string; response?: { status?: number } };
+    expect(error.message).not.toBe(TRANSPORT_MESSAGE);
+    expect(error.message).toBe('Authentication required');
+    expect(error.response?.status).toBe(401);
   });
 });

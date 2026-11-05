@@ -440,8 +440,20 @@ class TestExecutionIntegration:
             "mutating": True, "verification": "failed",
         })
         await runner.transition_state(task_id, TaskState.RUNNING, "task.execution_started", {})
-        await runner.transition_state(task_id, TaskState.COMPLETED, "task.completed",
-                                {"summary": "done anyway"})
+        # Guard: public completion of a task whose final mutating action failed
+        # verification is rejected; it never lands the COMPLETED state.
+        with pytest.raises(RuntimeError, match="final mutating tool action failed"):
+            await runner.transition_state(task_id, TaskState.COMPLETED, "task.completed",
+                                    {"summary": "done anyway"})
+
+        # Explicit legacy corrupt terminal fixture for outcome handling only: a
+        # persisted task that already claims COMPLETED despite the failed
+        # mutating evidence.  This state is not produced by the public API.
+        from backend.models.database import Task
+        corrupt = db_session.query(Task).filter_by(id=task_id).first()
+        corrupt.state = TaskState.COMPLETED.value
+        db_session.commit()
+
         result = await orchestrator.apply_task_outcome(task_id, completion_precondition_error_fn=error_fn)
         assert result["outcome"] == "failed"
 

@@ -466,9 +466,9 @@ export function OverviewScreen() {
                         v: (
                           <span className="row" style={{ gap: 6 }}>
                             <span
-                              className={`dot dot--${health.data && !health.isError ? 'ok' : 'danger'}`}
+                              className={`dot dot--${health.data && !health.isError ? (health.data.status === 'degraded' ? 'warn' : 'ok') : 'danger'}`}
                             />
-                            {health.data && !health.isError ? `v${health.data.version}` : 'unreachable'}
+                            {health.data && !health.isError ? `${health.data.status === 'degraded' ? 'degraded · ' : ''}v${health.data.version}` : 'unreachable'}
                           </span>
                         ),
                       },

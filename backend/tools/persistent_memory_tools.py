@@ -162,60 +162,21 @@ class MemoryStoreTool(BaseTool[MemoryStoreInput]):
     input_schema = MemoryStoreInput
 
     async def execute(self, input_data: MemoryStoreInput) -> ToolOutput:
-        key = (input_data.key or "").strip()
-        if not key:
-            return ToolOutput(
-                success=False,
-                error={
-                    "code": "MEMORY_KEY_REQUIRED",
-                    "message": "memory key must be a non-empty string",
-                },
-                duration_ms=0,
-            )
-        rejection = _rejects_live_state(key, input_data.value, input_data.category)
-        if rejection:
-            return ToolOutput(
-                success=False,
-                error={
-                    "code": "MEMORY_STATE_STORAGE_REJECTED",
-                    "message": rejection,
-                },
-                duration_ms=0,
-            )
-        try:
-            db_mgr = get_db_manager()
-            with db_mgr.get_session() as session:
-                existing = session.query(MemoryEntry).filter_by(key=key, status="ACTIVE").first()
-                cat = input_data.category or "user_preference"
-                if existing:
-                    existing.value = input_data.value
-                    existing.category = cat
-                    existing.updated_at = datetime.utcnow()
-                    action = "updated"
-                else:
-                    entry = MemoryEntry(
-                        key=key,
-                        value=input_data.value,
-                        category=cat,
-                    )
-                    session.add(entry)
-                    action = "created"
-
-                session.commit()
-
-                summary = f"Successfully {action} memory [{cat}] '{key}': '{input_data.value}'"
-                return ToolOutput(
-                    success=True,
-                    data={"action": action, "key": key, "value": input_data.value, "category": cat},
-                    model_summary=summary,
-                    evidence={"source": "database_memory_store"},
-                )
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "MEMORY_STORE_ERROR", "message": str(e)},
-                duration_ms=0,
-            )
+        # Fail closed before any DB/session lookup, validation side effect,
+        # write, or other effect: direct persistent-memory mutation has no
+        # trusted mutation/provenance boundary available in this context.
+        return ToolOutput(
+            success=False,
+            error={
+                "code": "DIRECT_INSTRUCTION_REQUIRED",
+                "message": (
+                    "A state-changing or sensitive built-in action requires a "
+                    "trusted consent boundary, not identity, metadata, "
+                    "app_internal status, configuration, or a caller flag"
+                ),
+            },
+            duration_ms=0,
+        )
 
     async def verify(self, input_data: MemoryStoreInput, output: ToolOutput) -> bool:
         if not output.success:
@@ -321,31 +282,21 @@ class MemoryForgetTool(BaseTool[MemoryForgetInput]):
     input_schema = MemoryForgetInput
 
     async def execute(self, input_data: MemoryForgetInput) -> ToolOutput:
-        try:
-            db_mgr = get_db_manager()
-            with db_mgr.get_session() as session:
-                entry = session.query(MemoryEntry).filter_by(key=input_data.key, status="ACTIVE").first()
-                if not entry:
-                    return ToolOutput(
-                        success=False,
-                        error={"code": "MEMORY_NOT_FOUND", "message": f"No memory entry with key '{input_data.key}'"},
-                        duration_ms=0,
-                    )
-                session.delete(entry)
-                session.commit()
-                summary = f"Deleted memory entry '{input_data.key}'"
-                return ToolOutput(
-                    success=True,
-                    data={"action": "deleted", "key": input_data.key},
-                    model_summary=summary,
-                    evidence={"source": "database_memory_forget"},
-                )
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "MEMORY_FORGET_ERROR", "message": str(e)},
-                duration_ms=0,
-            )
+        # Fail closed before any DB/session lookup, model call, delete, or
+        # other effect: direct persistent-memory mutation has no trusted
+        # mutation/provenance boundary available in this context.
+        return ToolOutput(
+            success=False,
+            error={
+                "code": "DIRECT_INSTRUCTION_REQUIRED",
+                "message": (
+                    "A state-changing or sensitive built-in action requires a "
+                    "trusted consent boundary, not identity, metadata, "
+                    "app_internal status, configuration, or a caller flag"
+                ),
+            },
+            duration_ms=0,
+        )
 
     async def verify(self, input_data: MemoryForgetInput, output: ToolOutput) -> bool:
         if not output.success:
@@ -376,97 +327,22 @@ class MemoryLinkTool(BaseTool[MemoryLinkInput]):
     input_schema = MemoryLinkInput
 
     async def execute(self, input_data: MemoryLinkInput) -> ToolOutput:
-        source_key = (input_data.source_key or "").strip()
-        target_key = (input_data.target_key or "").strip()
-        relation = (input_data.relation or "").strip()
-
-        for label, key in (("source_key", source_key), ("target_key", target_key)):
-            if not key:
-                return ToolOutput(
-                    success=False,
-                    error={
-                        "code": "MEMORY_LINK_EMPTY_ENDPOINT",
-                        "message": f"{label} must be a non-empty string",
-                    },
-                    duration_ms=0,
-                )
-            rejection = _rejects_live_state(key, "", None)
-            if rejection:
-                return ToolOutput(
-                    success=False,
-                    error={
-                        "code": "MEMORY_LINK_STATE_REJECTED",
-                        "message": f"{label}: {rejection}",
-                    },
-                    duration_ms=0,
-                )
-        if not relation or not _RELATION_RE.match(relation):
-            return ToolOutput(
-                success=False,
-                error={
-                    "code": "MEMORY_LINK_INVALID_RELATION",
-                    "message": (
-                        f"relation '{relation}' must be lowercase snake_case "
-                        "starting with a letter (max 50 chars)"
-                    ),
-                },
-                duration_ms=0,
-            )
-        if source_key == target_key:
-            return ToolOutput(
-                success=False,
-                error={
-                    "code": "MEMORY_LINK_SELF_LOOP",
-                    "message": "a memory link cannot connect a key to itself",
-                },
-                duration_ms=0,
-            )
-        try:
-            db_mgr = get_db_manager()
-            with db_mgr.get_session() as session:
-                existing = session.query(MemoryEdge).filter_by(
-                    source_key=source_key,
-                    relation=relation,
-                    target_key=target_key,
-                ).first()
-                if existing:
-                    existing.weight = input_data.weight
-                    existing.status = "active"
-                    existing.updated_at = datetime.utcnow()
-                    action = "updated"
-                else:
-                    session.add(MemoryEdge(
-                        source_key=source_key,
-                        relation=relation,
-                        target_key=target_key,
-                        weight=input_data.weight,
-                    ))
-                    action = "created"
-
-                session.commit()
-
-                summary = (
-                    f"Successfully {action} memory link "
-                    f"'{source_key} --{relation}--> {target_key}'"
-                )
-                return ToolOutput(
-                    success=True,
-                    data={
-                        "action": action,
-                        "source_key": source_key,
-                        "relation": relation,
-                        "target_key": target_key,
-                        "weight": input_data.weight,
-                    },
-                    model_summary=summary,
-                    evidence={"source": "database_memory_link"},
-                )
-        except Exception as e:
-            return ToolOutput(
-                success=False,
-                error={"code": "MEMORY_LINK_ERROR", "message": str(e)},
-                duration_ms=0,
-            )
+        # Fail closed before any input interpretation, DB/session lookup,
+        # ORM insert/update, commit, or other effect: direct persistent-memory
+        # mutation has no trusted mutation/provenance boundary available in
+        # this context.
+        return ToolOutput(
+            success=False,
+            error={
+                "code": "DIRECT_INSTRUCTION_REQUIRED",
+                "message": (
+                    "A state-changing or sensitive built-in action requires a "
+                    "trusted consent boundary, not identity, metadata, "
+                    "app_internal status, configuration, or a caller flag"
+                ),
+            },
+            duration_ms=0,
+        )
 
     async def verify(self, input_data: MemoryLinkInput, output: ToolOutput) -> bool:
         if not output.success:

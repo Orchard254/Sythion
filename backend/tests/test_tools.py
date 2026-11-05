@@ -53,13 +53,15 @@ class TestToolExecutor:
     @pytest.mark.asyncio
     async def test_register_and_execute_tool(self, executor):
         """Test registering and executing a tool"""
-        tool = MockTool()
+        from backend.tools.system_tools import SystemTimeTool
+
+        tool = SystemTimeTool()
         executor.register_tool(tool)
-        
-        result = await executor.execute_tool("mock_tool", {"value": "test"})
-        
+
+        result = await executor.execute_tool("system_time", {})
+
         assert result.success is True
-        assert result.data == {"result": "success"}
+        assert "datetime" in result.data
     
     @pytest.mark.asyncio
     async def test_execute_nonexistent_tool(self, executor):
@@ -72,13 +74,15 @@ class TestToolExecutor:
     @pytest.mark.asyncio
     async def test_execute_with_invalid_input(self, executor):
         """Test tool execution with invalid input"""
-        tool = MockTool()
+        from backend.tools.system_tools import SystemTimeTool
+
+        tool = SystemTimeTool()
         executor.register_tool(tool)
-        
-        # Empty input should work since value has default
-        result = await executor.execute_tool("mock_tool", {})
-        
-        assert result.success is True  # Mock tool succeeds with empty input
+
+        # Empty input should work since fields have defaults
+        result = await executor.execute_tool("system_time", {})
+
+        assert result.success is True  # Verified safe read-only tool succeeds
 
     @pytest.mark.asyncio
     async def test_mutating_tool_requires_trusted_direct_instruction(self, executor):
@@ -86,7 +90,7 @@ class TestToolExecutor:
         executor.register_tool(tool)
 
         denied = await executor.execute_tool("mutating_mock_tool", {"value": "test"})
-        allowed = await executor.execute_tool(
+        also_denied = await executor.execute_tool(
             "mutating_mock_tool",
             {"value": "test"},
             policy_context=PolicyContext(direct_user_instruction=True),
@@ -94,7 +98,9 @@ class TestToolExecutor:
 
         assert denied.success is False
         assert denied.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
-        assert allowed.success is True
+        # Caller-supplied direct-user consent is not an authenticated boundary.
+        assert also_denied.success is False
+        assert also_denied.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
     
     @pytest.mark.asyncio
     async def test_list_tools(self, executor):

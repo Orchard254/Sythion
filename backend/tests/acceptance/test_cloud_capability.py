@@ -19,7 +19,9 @@ def _transport(selected_model: str):
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": selected_model}]})
         if request.url.path == "/api/chat":
-            assert json.loads(request.content)["num_ctx"] == NUM_CTX
+            payload = json.loads(request.content)
+            assert payload["options"]["num_ctx"] == NUM_CTX
+            assert "num_ctx" not in payload
             return httpx.Response(200, json={
                 "message": {"tool_calls": [{"function": {"name": "sythion_capability_probe", "arguments": {}}}]}
             })

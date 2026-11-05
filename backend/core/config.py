@@ -7,6 +7,30 @@ from typing import List
 import secrets
 import os
 from .secrets import resolve_ollama_api_key
+from .secrets import resolve_secret_context
+
+
+# Prototype/ambiguous detection happens here, independently of Settings, so the
+# backend/.env file is never opened (and never read) in those modes.
+try:
+    _secret_namespace, _is_prototype_context, _fail_closed_context, _ = resolve_secret_context()
+    _PRODUCTION_ENV_FILE = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        ".env",
+    )
+    _USE_PRODUCTION_ENV_FILE = (
+        _secret_namespace == "Sythion (Synth)"
+        and not _is_prototype_context
+        and not _fail_closed_context
+    )
+except Exception:
+    _PRODUCTION_ENV_FILE = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        ".env",
+    )
+    _USE_PRODUCTION_ENV_FILE = False
+
+_SETTINGS_ENV_FILE = _PRODUCTION_ENV_FILE if _USE_PRODUCTION_ENV_FILE else None
 
 
 class Settings(BaseSettings):
@@ -172,11 +196,20 @@ class Settings(BaseSettings):
 
     model_config = {
         "env_prefix": "SYTHION_",
-        "env_file": os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"),
+        "env_file": _SETTINGS_ENV_FILE,
     }
 
 
 settings = Settings()
+
+# Prototype / ambiguous identity must never inherit a production credential
+# from SYTHION_OLLAMA_API_KEY or backend/.env.
+try:
+    _secret_namespace, _is_prototype, _fail_closed, _ = resolve_secret_context()
+    if _is_prototype or _fail_closed or _secret_namespace != "Sythion (Synth)":
+        settings.ollama_api_key = ""
+except Exception:
+    settings.ollama_api_key = ""
 
 
 def generate_control_token() -> str:

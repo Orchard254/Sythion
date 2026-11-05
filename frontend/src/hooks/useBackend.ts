@@ -1,7 +1,7 @@
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { useAppStore } from '../store/appStore';
-import type { DataOrigin, GoalDetail, GoalPlanVersion, GoalSummary } from '../types';
+import type { DataOrigin, GoalDetail, GoalPlanVersion, GoalSummary, MemoryItemsPage } from '../types';
 import * as api from '../services/api';
 import * as demo from '../data/demo';
 
@@ -240,6 +240,38 @@ export function useMemoryEdges() {
   });
 }
 
+export function useMemoryItems(params?: {
+  query?: string;
+  kind?: string;
+  kinds?: string[];
+  limit?: number;
+  offset?: number;
+}) {
+  const key = `memory-items:${JSON.stringify(params ?? {})}`;
+  const demoValue: MemoryItemsPage = {
+    items: demo.demoMemoryItems.map((m) => ({
+      id: Number(String(m.id).replace('mem-', '')) || 0,
+      kind: String(m.kind).toUpperCase(),
+      scope: 'USER',
+      key: m.key,
+      value: m.value,
+      confidence: m.confidence,
+      verification_status: (m.confidence ?? 0) >= 0.95 ? 'VERIFIED_USER' : 'UNVERIFIED',
+      source_type: 'USER_EXPLICIT',
+      observed_at: m.updated,
+      updated_at: m.updated,
+      score: 0,
+    })),
+    has_more: false,
+  };
+  return useSource<MemoryItemsPage>(
+    key,
+    () => api.memoryService.items(params ?? {}),
+    demoValue,
+    { staleMs: 30_000 }
+  );
+}
+
 export function useAppSettings() {
   return useSource('settings', api.settingsService.get, demo.demoSettings, { staleMs: 30_000 });
 }
@@ -278,9 +310,17 @@ export function useActions() {
     () => ({
       live,
 
-      async createTask(request: string) {
+      async interpretMessage(request: string, ignorePending = false) {
         if (!live) throw new Error('Not connected to a Sythion backend.');
-        return api.taskService.create(request);
+        return api.taskService.interpret(request, ignorePending);
+      },
+      async assistantTurn(text: string, clientRequestId?: string): Promise<import('../types').AssistantTurn> {
+        if (!live) throw new Error('Not connected to a Sythion backend.');
+        return api.assistantService.turn(text, clientRequestId);
+      },
+      async createTask(request: string, interactionHint?: 'conversation' | 'task') {
+        if (!live) throw new Error('Not connected to a Sythion backend.');
+        return api.taskService.create(request, interactionHint);
       },
       async cancelTask(taskId: string) {
         if (!live) throw new Error('Not connected to a Sythion backend.');
@@ -290,9 +330,9 @@ export function useActions() {
         if (!live) throw new Error('Not connected to a Sythion backend.');
         return api.taskService.resume(taskId);
       },
-      async replyToTask(taskId: string, answer: string) {
+      async replyToTask(taskId: string, answer: string, inferred = false, expectedVersion?: number) {
         if (!live) throw new Error('Not connected to a Sythion backend.');
-        return api.taskService.reply(taskId, answer);
+        return api.taskService.reply(taskId, answer, inferred, expectedVersion);
       },
       async setBackground(enabled: boolean) {
         if (!live) throw new Error('Not connected to a Sythion backend.');

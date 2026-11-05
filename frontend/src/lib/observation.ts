@@ -120,7 +120,7 @@ export function assessCompletion(
     case 'interrupted':
       return {
         verdict: 'held',
-        label: 'Held for authorization',
+        label: task.waiting_kind === 'permission' ? 'Held for authorization' : 'Execution interrupted',
         uncertain: false,
         limitation:
           'Execution continuity was lost. The recorded reason is not proof of the current outcome.',
@@ -191,7 +191,7 @@ export function assessCompletion(
 
 /* --- Attention ---------------------------------------------------------- */
 
-export type AttentionKind = 'approval' | 'failure' | 'unverified' | 'stalled' | 'blocked_step';
+export type AttentionKind = 'approval' | 'input' | 'failure' | 'unverified' | 'stalled' | 'blocked_step';
 
 export interface AttentionItem {
   id: string;
@@ -261,12 +261,18 @@ export function collectAttention(input: {
     //    terminal_reason; `waiting_for_user` in pending_question.
     if (task.state === 'waiting_for_user' || task.state === 'interrupted') {
       const held = task.state === 'interrupted';
+      // Approval is a permission property, not a state property. An interrupted
+      // worker is a lost execution, not itself evidence of an authorization
+      // request; only explicit permission metadata may advertise approval.
+      const approval = task.waiting_kind === 'permission';
       const reason = task.pending_question ?? task.terminal_reason;
       items.push({
-        id: `approval:${task.id}`,
-        kind: 'approval',
-        tone: held ? 'danger' : 'warn',
-        title: held ? 'Held for your approval' : 'Needs your answer',
+        id: `${approval ? 'approval' : 'input'}:${task.id}`,
+        kind: approval ? 'approval' : 'input',
+        tone: held ? 'danger' : approval ? 'warn' : 'info',
+        title: held
+          ? (approval ? 'Held for your approval' : 'Execution interrupted')
+          : (approval ? 'Needs your answer' : 'Needs your answer'),
         detail: reason ?? 'Sythion is paused on this and will not continue until you reply.',
         derived: false,
         taskId: task.id,
@@ -355,10 +361,11 @@ export function collectAttention(input: {
 
   const order: Record<AttentionKind, number> = {
     approval: 0,
-    failure: 1,
-    unverified: 2,
-    blocked_step: 3,
-    stalled: 4,
+    input: 1,
+    failure: 2,
+    unverified: 3,
+    blocked_step: 4,
+    stalled: 5,
   };
   return items.sort((a, b) => order[a.kind] - order[b.kind]);
 }

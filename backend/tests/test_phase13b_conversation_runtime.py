@@ -186,6 +186,20 @@ class TestConversationPersistence:
         # Verify context includes recent conversation
         assert "[RECENT CONVERSATION]" in context or len(context) > 0, "Context should include conversation history"
 
+    @pytest.mark.asyncio
+    async def test_context_selects_latest_six_turns_in_order_even_when_timestamps_match(self, test_db: Session):
+        from backend.core.session import set_current_session_id
+        set_current_session_id("recent-context-test")
+        runtime = ConversationRuntime(test_db)
+        timestamp = datetime(2026, 1, 1)
+        for i in range(10):
+            test_db.add(ConversationTurn(session_id=runtime.session_id, role="user" if i % 2 == 0 else "assistant", summary=f"unique-turn-{i}", created_at=timestamp))
+        test_db.commit()
+
+        context = await runtime._build_context("follow up")
+        lines = [line for line in context.splitlines() if 'unique-turn-' in line]
+        assert lines == [f"{'USER' if i % 2 == 0 else 'ASSISTANT'}: unique-turn-{i}" for i in range(4, 10)]
+
 
 class TestInformationalActionGoalRouting:
     """Test that INFORMATIONAL, ACTION, and GOAL still use task execution."""
@@ -424,3 +438,134 @@ class TestConversationErrorSemantics:
         # Ensure zero tasks created in DB
         assert test_db.query(Task).count() == 0
         assert test_db.query(Objective).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_unpersist_removes_only_identified_sibling_turns(test_db):
+    from backend.core.session import set_current_session_id
+    from backend.models.database import ConversationExchange, ConversationTurn
+
+    set_current_session_id("sibling-cleanup-session")
+    runtime = ConversationRuntime(test_db)
+
+    first = await runtime._persist_conversation("same text", "same answer")
+    second = await runtime._persist_conversation("same text", "same answer")
+
+    assert test_db.query(ConversationExchange).count() == 2
+    assert test_db.query(ConversationTurn).count() == 4
+
+    await runtime._unpersist_conversation(second)
+
+    assert test_db.query(ConversationExchange).count() == 1
+    assert test_db.query(ConversationTurn).count() == 2
+    remaining = test_db.query(ConversationExchange).one()
+    assert remaining.id == first["exchange_id"]
+
+
+@pytest.mark.asyncio
+async def test_unpersist_fail_closed_uses_original_persisted_identity(test_db):
+    from backend.core.session import set_current_session_id
+    from backend.models.database import ConversationExchange, ConversationTurn
+
+    set_current_session_id("fail-closed-cleanup-session")
+    runtime = ConversationRuntime(test_db)
+    original_assistant = "I started the work."
+    persisted = await runtime._persist_conversation("do work", original_assistant)
+
+    fail_closed_message = "Requested background work was not started."
+
+    # Exact persisted identity identifies the original rows even when the
+    # assistant text is later replaced by the fail-closed message.
+    await runtime._unpersist_conversation(persisted)
+
+    assert test_db.query(ConversationExchange).count() == 0
+    assert test_db.query(ConversationTurn).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_unpersist_cleanup_failure_propagates(test_db):
+    from backend.core.session import set_current_session_id
+
+    set_current_session_id("cleanup-failure-session")
+    runtime = ConversationRuntime(test_db)
+    persisted = await runtime._persist_conversation("text", "answer")
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("cleanup boom")
+
+    runtime._unpersist_conversation = _boom
+
+    with pytest.raises(RuntimeError, match="cleanup boom"):
+        await runtime._unpersist_conversation(persisted)
+
+
+@pytest.mark.asyncio
+async def test_unpersist_collision_timestamps_removes_only_exact_rows(test_db):
+    from backend.core.session import set_current_session_id
+    from unittest.mock import patch
+    from datetime import datetime
+
+    from backend.models.database import ConversationExchange
+    set_current_session_id("collision-cleanup-session")
+    runtime = ConversationRuntime(test_db)
+    fixed_now = datetime(2026, 2, 3, 4, 5, 6)
+
+    with patch("backend.services.conversation_runtime.datetime") as mock_datetime:
+        mock_datetime.utcnow.return_value = fixed_now
+        first = await runtime._persist_conversation("same text", "same answer")
+        second = await runtime._persist_conversation("same text", "same answer")
+
+    assert test_db.query(ConversationExchange).count() == 2
+    assert test_db.query(ConversationTurn).count() == 4
+
+    await runtime._unpersist_conversation(first)
+
+    assert test_db.query(ConversationExchange).count() == 1
+    assert test_db.query(ConversationTurn).count() == 2
+    remaining = test_db.query(ConversationExchange).one()
+    assert remaining.id == second["exchange_id"]
+    assert remaining.created_at == fixed_now
+
+
+@pytest.mark.asyncio
+async def test_unpersist_normal_repeated_calls_leave_no_rows(test_db):
+    from backend.core.session import set_current_session_id
+    from backend.models.database import ConversationExchange, ConversationTurn
+
+    set_current_session_id("repeated-cleanup-session")
+    runtime = ConversationRuntime(test_db)
+
+    identities = []
+    for index in range(3):
+        identity = await runtime._persist_conversation(
+            f"input {index}", f"answer {index}"
+        )
+        identities.append(identity)
+
+    assert test_db.query(ConversationExchange).count() == 3
+    assert test_db.query(ConversationTurn).count() == 6
+
+    for identity in identities:
+        await runtime._unpersist_conversation(identity)
+
+    assert test_db.query(ConversationExchange).count() == 0
+    assert test_db.query(ConversationTurn).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_unpersist_without_turn_ids_does_not_delete_rows(test_db):
+    from backend.core.session import set_current_session_id
+    from backend.models.database import ConversationExchange, ConversationTurn
+
+    set_current_session_id("missing-ids-cleanup-session")
+    runtime = ConversationRuntime(test_db)
+    persisted = await runtime._persist_conversation("text", "answer")
+
+    before_exchanges = test_db.query(ConversationExchange).count()
+    before_turns = test_db.query(ConversationTurn).count()
+
+    with pytest.raises(ValueError):
+        await runtime._unpersist_conversation(persisted["exchange_id"])
+
+    assert test_db.query(ConversationExchange).count() == before_exchanges
+    assert test_db.query(ConversationTurn).count() == before_turns

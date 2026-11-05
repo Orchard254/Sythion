@@ -359,6 +359,7 @@ function AttentionCard({
 }) {
   const KIND_LABEL: Record<string, string> = {
     approval: 'Approval',
+    input: 'Needs input',
     failure: 'Failure',
     unverified: 'Unverified',
     stalled: 'Watch',

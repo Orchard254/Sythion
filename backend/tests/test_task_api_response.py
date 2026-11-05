@@ -62,3 +62,69 @@ def test_task_read_preserves_null_question_and_result(task_client):
     response = client.get(f"/tasks/{task.id}").json()
     assert response["pending_question"] is None
     assert response["final_result"] == "Done"
+
+
+@pytest.mark.parametrize(('metadata', 'kind'), [
+    ('{"kind":"clarification","private":"hidden"}', 'clarification'),
+    ('{"kind":"permission"}', 'permission'),
+    ('{"kind":"other"}', 'unknown'),
+    ('[]', 'unknown'), ('broken', 'unknown'), (None, 'unknown'),
+])
+def test_waiting_kind_is_conservative_and_metadata_is_private(task_client, metadata, kind):
+    client, task, db = task_client
+    task.pending_action = metadata
+    db.commit()
+    response = client.get(f'/tasks/{task.id}').json()
+    assert response['waiting_kind'] == kind
+    assert 'pending_action' not in response
+
+
+def test_task_preparation_failure_is_recorded(test_db, monkeypatch):
+    from backend.cognitive.state import InteractionType
+    from backend.cognitive.intent import IntentInterpreter
+    from backend.services.cognitive_runtime import CognitiveDecisionAdapter
+    from backend.services.task_runner import TaskRunner
+
+    monkeypatch.setattr(IntentInterpreter, "determine_interaction", lambda *a, **k: InteractionType.ACTION)
+
+    async def fail_routing(*args, **kwargs):
+        raise RuntimeError("test preparation failure")
+
+    monkeypatch.setattr(CognitiveDecisionAdapter, "route_new_input", fail_routing)
+    monkeypatch.setattr(routes, "get_runner", lambda db: TaskRunner(db))
+    app = FastAPI()
+    app.include_router(routes.router)
+    app.dependency_overrides[get_db] = lambda: test_db
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post("/tasks", json={"original_request": "do a test action"})
+    assert response.status_code == 500
+    task = test_db.query(Task).filter_by(original_request="do a test action").one()
+    assert task.state == "failed"
+    assert "try sending it again" in task.terminal_reason
+
+
+def test_model_router_cannot_target_permission_wait(test_db, monkeypatch):
+    from backend.services.conversation_runtime import ModelClient
+
+    test_db.add(Task(id='permission', original_request='Do something', state='waiting_for_user',
+                     pending_question='Allow?', pending_action='{"kind":"permission"}', version=1,
+                     created_at=datetime.utcnow(), updated_at=datetime.utcnow()))
+    test_db.commit()
+
+    async def fake_chat(self, **kwargs):
+        return '{"kind":"reply","task_id":"permission"}'
+
+    monkeypatch.setattr(ModelClient, 'chat', fake_chat)
+    app = FastAPI()
+    app.include_router(routes.router)
+    app.dependency_overrides[get_db] = lambda: test_db
+    with TestClient(app) as client:
+        result = client.post('/assistant/interpret', json={'original_request':'yes'})
+        reply = client.post('/tasks/permission/reply', json={'answer':'yes', 'inferred':True})
+        stale = client.post('/tasks/permission/reply', json={'answer':'yes', 'expected_version':0})
+    assert result.status_code == 200
+    assert result.json() == {'kind':'ambiguous', 'task_id':None}
+    assert reply.status_code == 409
+    assert stale.status_code == 409
+    assert 'question changed' in stale.json()['detail']
+    assert test_db.query(Task).filter_by(id='permission').one().state == 'waiting_for_user'

@@ -21,7 +21,8 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from backend.models.database import MemoryEdge
-from backend.tools.persistent_memory_tools import _RELATION_RE
+from backend.tools.persistent_memory_tools import _RELATION_RE, _rejects_live_state
+from backend.services.memory_service import WRITE_AUTHORITY
 
 logger = logging.getLogger(__name__)
 
@@ -490,13 +491,10 @@ async def consolidate_memory(
             continue
         to_apply_edges.append(op)
 
-    from backend.api.schemas import MemoryLinkInput
-    from backend.tools.persistent_memory_tools import MemoryLinkTool
     from backend.services.memory_service import MemoryService
 
     EVAL_VERSION_REF = "consolidation-pass"
     service = MemoryService(db)
-    link = MemoryLinkTool()
     applied: List[Dict[str, Any]] = []
     for op in to_apply:
         try:
@@ -506,20 +504,38 @@ async def consolidate_memory(
             # everything else lands as ASSUMPTION/BELIEF via MODEL_INFERENCE —
             # never auto-verified.
             source = op.get("source", "model_inference").lower()
+            # Consolidation can never mint TOOL_EVIDENCE/VERIFIED_TOOL from a
+            # model label: genuine tool evidence must arrive through the service
+            # with independently validated provenance. Any tool-flavored claim
+            # coming out of consolidation is treated as an UNVERIFIED
+            # consolidation candidate, never verified tool evidence.
             src_type = {
                 "user_statement": "USER_CONVERSATION",
-                "verified_tool_result": "TOOL_EVIDENCE",
+                "verified_tool_result": "CONSOLIDATION",
                 "inference": "MODEL_INFERENCE",
             }.get(source, "CONSOLIDATION")
             kind = {
                 "profile": "FACT", "preference": "PREFERENCE",
                 "knowledge": "ASSUMPTION",
             }.get(op.get("category", ""), "ASSUMPTION")
-            if src_type == "TOOL_EVIDENCE":
-                kind = "FACT"
-            elif src_type == "USER_CONVERSATION" and kind == "ASSUMPTION":
+            if src_type == "USER_CONVERSATION" and kind == "ASSUMPTION":
                 kind = "PREFERENCE"
+            # Minimal authority coercion: model-inferred consolidations cannot
+            # mint kinds the source is not allowed to create (notably FACT from
+            # a "profile" label). Coerce any disallowed kind to a safe
+            # UNVERIFIED kind (ASSUMPTION) instead of rejecting the op — but
+            # never grant a verified kind/badge to a model label.
+            allowed_kinds = WRITE_AUTHORITY.get(src_type, {}).get("kinds", set())
+            if allowed_kinds and kind not in allowed_kinds:
+                if "ASSUMPTION" in allowed_kinds:
+                    kind = "ASSUMPTION"
+                elif "BELIEF" in allowed_kinds:
+                    kind = "BELIEF"
+                else:
+                    kind = sorted(allowed_kinds)[0] if allowed_kinds else "ASSUMPTION"
             confidence = 0.9 if op.get("confidence") == "high" else 0.6
+            if _rejects_live_state(op.get("key"), str(op.get("value", "")).strip(), op.get("category") or None):
+                continue
             service.create(
                 key=op["key"], value=op["value"], kind=kind,
                 source_type=src_type,
@@ -531,18 +547,46 @@ async def consolidate_memory(
         except Exception as exc:
             logger.warning("Memory store failed for %s: %s", op.get("key"), exc)
     for op in to_apply_edges:
+        source_key = (op.get("source_key") or "").strip()
+        target_key = (op.get("target_key") or "").strip()
+        relation = (op.get("relation") or "").strip()
+        if not source_key or not target_key:
+            continue
+        if _rejects_live_state(source_key, "", None) or _rejects_live_state(target_key, "", None):
+            continue
+        if not relation or not _RELATION_RE.match(relation):
+            continue
+        if source_key == target_key:
+            continue
+        # Weight is intentionally fixed for consolidation-created edges: model
+        # proposals cannot influence edge weight magnitude, and out-of-range
+        # values are not accepted or normalized into storage.
+        weight = 1.0
         try:
-            out = await link.execute(
-                MemoryLinkInput(
-                    source_key=op["source_key"],
-                    relation=op["relation"],
-                    target_key=op["target_key"],
-                )
-            )
-            if out.success:
-                applied.append(op)
+            existing = db.query(MemoryEdge).filter_by(
+                source_key=source_key,
+                relation=relation,
+                target_key=target_key,
+            ).first()
+            if existing:
+                existing.weight = weight
+                existing.status = "active"
+                existing.updated_at = datetime.utcnow()
+            else:
+                db.add(MemoryEdge(
+                    source_key=source_key,
+                    relation=relation,
+                    target_key=target_key,
+                    weight=weight,
+                ))
+            db.commit()
+            applied.append(op)
         except Exception as exc:
-            logger.warning("Memory link failed for %s: %s", op["source_key"], exc)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.warning("Memory link failed for %s: %s", source_key, exc)
     if applied:
         logger.info("Memory consolidation applied %d ops", len(applied))
     return applied

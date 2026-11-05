@@ -23,19 +23,42 @@ CONVERSATION must:
 import logging
 import uuid
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple, Union
 from sqlalchemy.orm import Session
 
-from backend.models.database import ConversationExchange, ConversationTurn, MemoryEntry
+from backend.models.database import (
+    ConversationExchange, ConversationTaskAssociation, ConversationTurn, MemoryEntry, Task,
+)
 from backend.core.session import get_current_session_id
 from backend.cognitive.state import InteractionType
 
 logger = logging.getLogger(__name__)
 
 
+def _first_not_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
 class ConversationModelError(RuntimeError):
     """Raised when the conversational model provider fails."""
     pass
+
+
+class PersistedConversation(dict):
+    """Identity of one persisted exchange and its turn rows.
+
+    Behaves like a mapping for compatibility while also allowing attribute
+    access.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
 
 
 class ModelClient:
@@ -60,15 +83,62 @@ class ModelClient:
         self,
         messages: List[Dict[str, Any]],
         model: Optional[str] = None,
-        temperature: float = 0.8,
+        temperature: Optional[float] = None,
         max_tokens: int = 4000,
         timeout: float = 60.0,
+        think=None,
+        format=None,
     ) -> str:
-        resp = await self.provider.chat(
-            messages=messages,
-            max_tokens=max_tokens,
-            timeout=timeout,
-        )
+        import inspect
+
+        # Only forward capabilities the provider's chat implementation
+        # actually accepts. This keeps unsupported providers working without
+        # an after-the-fact fallback/retry around the model call. Temperature
+        # is opt-in: callers that omit it (including all non-assistant paths)
+        # do not change prior default provider behavior.
+        call_kwargs: Dict[str, Any] = {
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "timeout": timeout,
+        }
+        if model is not None:
+            try:
+                sig = inspect.signature(self.provider.chat)
+                if "model" in sig.parameters or "model_id" in sig.parameters:
+                    if "model_id" in sig.parameters:
+                        call_kwargs["model_id"] = model
+                    else:
+                        call_kwargs["model"] = model
+            except (TypeError, ValueError):
+                pass
+
+        if temperature is not None:
+            try:
+                sig = inspect.signature(self.provider.chat)
+                params = sig.parameters
+                supports_var_keyword = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+                )
+                if "temperature" in params or supports_var_keyword:
+                    call_kwargs["temperature"] = temperature
+            except (TypeError, ValueError):
+                pass
+
+        for _optional_key, _optional_value in (("think", think), ("format", format)):
+            if _optional_value is None:
+                continue
+            try:
+                sig = inspect.signature(self.provider.chat)
+                params = sig.parameters
+                supports_var_keyword = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+                )
+                if _optional_key in params or supports_var_keyword:
+                    call_kwargs[_optional_key] = _optional_value
+            except (TypeError, ValueError):
+                pass
+
+        resp = await self.provider.chat(**call_kwargs)
         if isinstance(resp, dict):
             msg = resp.get("message", {})
             if isinstance(msg, dict) and "content" in msg:
@@ -83,10 +153,27 @@ class ModelClient:
 class ConversationRuntime:
     """Runtime for pure conversational interactions without task execution."""
     
-    def __init__(self, db: Session, model_client: Optional[ModelClient] = None):
+    def __init__(
+        self,
+        db: Session,
+        model_client: Optional[ModelClient] = None,
+        grounded_discussion_service: Any = None,
+        discussion_linkage_service: Any = None,
+        grounded_discussion_linker: Any = None,
+        discussion_linker: Any = None,
+        **kwargs: Any,
+    ):
         self.db = db
         self.session_id = get_current_session_id()
         self._model_client = model_client
+        self.grounded_discussion_service = _first_not_none(
+            grounded_discussion_service,
+            discussion_linkage_service,
+            grounded_discussion_linker,
+            discussion_linker,
+            kwargs.get("grounded_discussion_linkage_service"),
+            kwargs.get("discussion_linkage"),
+        )
 
     @property
     def model_client(self) -> ModelClient:
@@ -139,14 +226,14 @@ class ConversationRuntime:
             recent_turns = (
                 self.db.query(ConversationTurn)
                 .filter_by(session_id=self.session_id)
-                .order_by(ConversationTurn.created_at.desc())
-                .limit(10)
+                .order_by(ConversationTurn.created_at.desc(), ConversationTurn.id.desc())
+                .limit(6)
                 .all()
             )
-            
+
             if recent_turns:
                 context_parts.append("[RECENT CONVERSATION]")
-                for turn in reversed(recent_turns[-6:]):  # Last 3 exchanges
+                for turn in reversed(recent_turns):  # Last 3 exchanges
                     context_parts.append(f"{turn.role.upper()}: {turn.summary}")
         except Exception as e:
             logger.warning(f"Could not load recent conversation: {e}")
@@ -237,60 +324,414 @@ You are engaging in natural conversation - not executing tasks or commands. Be:
 This is a casual conversation, not a task execution. Respond naturally as you would
 in a friendly chat."""
     
-    async def _persist_conversation(self, user_input: str, assistant_response: str, conversation_id: Optional[str] = None) -> None:
+    async def _persist_conversation(
+        self, user_input: str, assistant_response: str,
+        conversation_id: Optional[str] = None, *, task_id: Optional[str] = None,
+        commit: bool = True, context_id: Optional[str] = None,
+        status: Optional[str] = None,
+        grounded_discussion_service: Any = None,
+        discussion_linkage_service: Any = None,
+        grounded_discussion_linker: Any = None,
+        discussion_linker: Any = None,
+        grounded_discussion_linkage: Any = None,
+        validated_discussion_linkage: Any = None,
+        validated_discussion_proposal: Any = None,
+        discussion_linkage: Any = None,
+        discussion_linkages: Any = None,
+        linkage: Any = None,
+        proposal: Any = None,
+        provenance_linkage: Any = None,
+    ) -> PersistedConversation:
         """
-        Persist conversation turn without task dependency.
-        
-        Unlike task-based persistence, this has no task_id.
+        Persist exact exchange/turn identity and optional initiating task link.
+
+        The link shares the exchange transaction; it never starts, modifies or
+        resumes a task. Duplicate identities fail rather than replaying work.
+        With commit=False, the caller owns the transaction and must commit or
+        roll back the returned row identities; no conversation-state update runs.
         """
         try:
-            # Truncate if necessary
+            operation_savepoint = None
+            _savepoint_rolled_back = False
+            if task_id is not None and self.db.query(Task.id).filter_by(id=task_id).first() is None:
+                raise ValueError("Unknown associated task")
             user_summary = user_input.strip()
             if len(user_summary) > 500:
                 user_summary = user_summary[:497] + "..."
-            
+
             assistant_summary = assistant_response.strip()
             if len(assistant_summary) > 2000:
                 assistant_summary = assistant_summary[:1997] + "..."
-            
-            # Create conversation turns (no task_id)
+
+            exchange_id = conversation_id or f"conv-{uuid.uuid4()}"
+            persisted_at = datetime.utcnow()
+
             turn_user = ConversationTurn(
                 session_id=self.session_id,
-                task_id=None,  # No task for pure conversation
+                task_id=None,
                 role="user",
                 summary=user_summary,
+                created_at=persisted_at,
             )
-            
+
             turn_assistant = ConversationTurn(
                 session_id=self.session_id,
-                task_id=None,  # No task for pure conversation
+                task_id=None,
                 role="assistant",
                 summary=assistant_summary,
+                created_at=persisted_at,
             )
-            
-            self.db.add(turn_user)
-            self.db.add(turn_assistant)
-            self.db.add(ConversationExchange(
-                id=conversation_id or f"conv-{uuid.uuid4()}",
+
+            exchange = ConversationExchange(
+                id=exchange_id,
                 session_id=self.session_id,
                 user_text=user_input,
                 assistant_text=assistant_response,
-            ))
-            self.db.commit()
-            
-            logger.info(f"Persisted conversation turn for session {self.session_id}")
-            
-            # Update conversation state
+                status=status,
+                created_at=persisted_at,
+            )
+
+            operation_savepoint = self.db.begin_nested()
+            try:
+                self.db.add(turn_user)
+                self.db.add(turn_assistant)
+                self.db.add(exchange)
+                self.db.flush()
+
+                turn_ids = (int(turn_user.id), int(turn_assistant.id))
+                from backend.services.discussion_contexts import ensure_exchange_context
+                ensure_exchange_context(
+                    self.db, self.session_id, exchange_id, *turn_ids, context_id=context_id,
+                )
+                if task_id is not None:
+                    self.db.add(ConversationTaskAssociation(
+                        exchange_id=exchange_id, task_id=task_id,
+                        user_turn_id=turn_ids[0], assistant_turn_id=turn_ids[1],
+                    ))
+                self.db.flush()
+
+                # Optional, explicitly injected grounded-discussion linkage.  It is
+                # validated only after canonical identities are flushed and remains
+                # inside this transaction until commit/rollback by the caller.
+                _linkage_service = _first_not_none(
+                    grounded_discussion_service,
+                    discussion_linkage_service,
+                    grounded_discussion_linker,
+                    discussion_linker,
+                    self.grounded_discussion_service,
+                )
+                _linkage_inputs = []
+                if discussion_linkages is not None:
+                    if isinstance(discussion_linkages, (list, tuple, set, frozenset)):
+                        _linkage_inputs.extend(list(discussion_linkages))
+                    else:
+                        _linkage_inputs.append(discussion_linkages)
+                for _candidate in (
+                    grounded_discussion_linkage,
+                    validated_discussion_linkage,
+                    validated_discussion_proposal,
+                    discussion_linkage,
+                    linkage,
+                    proposal,
+                    provenance_linkage,
+                ):
+                    if _candidate is not None:
+                        _linkage_inputs.append(_candidate)
+
+                if _linkage_inputs:
+                    if _linkage_service is None:
+                        raise ValueError("Grounded discussion service is required for linkage")
+                    for _linkage_input in _linkage_inputs:
+                        if hasattr(_linkage_service, "link_persisted_exchange"):
+                            _linkage_service.link_persisted_exchange(
+                                db=self.db,
+                                session_id=self.session_id,
+                                exchange_id=exchange_id,
+                                user_turn_id=turn_ids[0],
+                                assistant_turn_id=turn_ids[1],
+                                task_id=task_id,
+                                linkage=_linkage_input,
+                            )
+                        elif hasattr(_linkage_service, "link"):
+                            _linkage_service.link(
+                                exchange_id=exchange_id,
+                                session_id=self.session_id,
+                                user_turn_id=turn_ids[0],
+                                assistant_turn_id=turn_ids[1],
+                                task_id=task_id,
+                                proposal=_linkage_input,
+                            )
+                        else:
+                            raise ValueError("Grounded discussion service lacks a linkage method")
+
+            except Exception:
+                _savepoint_rolled_back = True
+                try:
+                    if operation_savepoint is not None:
+                        operation_savepoint.rollback()
+                except Exception:
+                    logger.error("Operation savepoint rollback failed")
+                raise
+
+            identity = PersistedConversation(
+                exchange_id=exchange_id,
+                conversation_id=exchange_id,
+                turn_ids=turn_ids,
+                user_turn_id=turn_ids[0],
+                assistant_turn_id=turn_ids[1],
+                session_id=self.session_id,
+            )
+            if task_id is not None:
+                identity["task_id"] = task_id
+
+            if commit:
+                self.db.commit()
+            else:
+                self.db.flush()
+
+            if commit:
+                logger.info(f"Persisted conversation turn for session {self.session_id}")
+
             try:
                 from backend.services.conversation_state import update_state
-                update_state(self.session_id, user_input, assistant_response)
+                if commit:
+                    update_state(self.session_id, user_input, assistant_response)
             except Exception as e:
                 logger.warning(f"Could not update conversation state: {e}")
-                
+
+            return identity
+
+        except Exception as exc:
+            # A failed persist must not leave half-written rows visible to the
+            # owning session. Roll back the operation savepoint unconditionally
+            # so this function's rows disappear, even when the failure happens
+            # after the savepoint body (e.g. commit/flush) or only invalidates
+            # a caller-owned transaction non-destructively. The savepoint has
+            # already been rolled back for errors raised inside its body.
+            if not _savepoint_rolled_back:
+                try:
+                    if operation_savepoint is not None:
+                        operation_savepoint.rollback()
+                except Exception:
+                    logger.error("Operation savepoint rollback failed")
+            # When this function owns the commit it also owns transaction
+            # rollback. For commit=False the caller owns the transaction, so do
+            # not roll back unrelated pending work; the savepoint rollback above
+            # removes this operation's rows.
+            if commit:
+                try:
+                    self.db.rollback()
+                except Exception:
+                    logger.error("Conversation persistence rollback failed")
+            logger.error("Error persisting conversation")
+            raise RuntimeError("Conversation persistence failed") from exc
+
+    def get_task_association(self, exchange_id: str) -> Optional[PersistedConversation]:
+        """Read durable identity, including terminal tasks, without scheduling.
+
+        This is not an authorization or an instruction to continue work. State
+        changes cannot make an initiating exchange point to a different task.
+        """
+        with self.db.no_autoflush:
+            row = (self.db.query(
+                       ConversationTaskAssociation.exchange_id,
+                       ConversationTaskAssociation.task_id,
+                       ConversationTaskAssociation.user_turn_id,
+                       ConversationTaskAssociation.assistant_turn_id,
+                   )
+                   .join(ConversationExchange, ConversationExchange.id == ConversationTaskAssociation.exchange_id)
+                   .filter(ConversationExchange.session_id == self.session_id,
+                           ConversationTaskAssociation.exchange_id == exchange_id)
+                   .first())
+            if row is None:
+                return None
+            return PersistedConversation(
+                exchange_id=row.exchange_id, conversation_id=row.exchange_id,
+                task_id=row.task_id, session_id=self.session_id,
+                turn_ids=(row.user_turn_id, row.assistant_turn_id),
+                user_turn_id=row.user_turn_id, assistant_turn_id=row.assistant_turn_id,
+            )
+
+    async def _unpersist_conversation(self, *args: Any, **kwargs: Any) -> None:
+        """Remove a persisted exchange using exact turn-row identities."""
+        exchange_id, turn_ids = self._resolve_conversation_identity(
+            self.db, self.session_id, *args, **kwargs
+        )
+
+        unique_turn_ids = tuple(dict.fromkeys(int(turn_id) for turn_id in turn_ids))
+        if not exchange_id or not unique_turn_ids:
+            raise ValueError(
+                "Cannot unpersist a conversation without exact exchange and "
+                "turn-row identities"
+            )
+
+        try:
+            from backend.services.discussion_contexts import unlink_exchange_context
+            unlink_exchange_context(self.db, self.session_id, exchange_id, unique_turn_ids)
+            association = self.get_task_association(exchange_id)
+            if association is not None:
+                if set(association.turn_ids) != set(unique_turn_ids):
+                    raise ValueError("Conversation association does not match exact turn identities")
+                (self.db.query(ConversationTaskAssociation)
+                 .filter_by(exchange_id=exchange_id)
+                 .delete(synchronize_session=False))
+            deleted_turns = (
+                self.db.query(ConversationTurn)
+                .filter(
+                    ConversationTurn.session_id == self.session_id,
+                    ConversationTurn.id.in_(unique_turn_ids),
+                )
+                .delete(synchronize_session=False)
+            )
+            deleted_exchanges = (
+                self.db.query(ConversationExchange)
+                .filter_by(session_id=self.session_id, id=exchange_id)
+                .delete(synchronize_session=False)
+            )
+
+            if deleted_exchanges != 1 or deleted_turns != len(unique_turn_ids):
+                self.db.rollback()
+                raise RuntimeError(
+                    "Conversation cleanup did not remove the expected persisted rows "
+                    f"(exchanges={deleted_exchanges}, turns={deleted_turns})"
+                )
+
+            self.db.commit()
         except Exception:
             try:
                 self.db.rollback()
             except Exception:
-                logger.error("Conversation persistence rollback failed")
-            logger.error("Error persisting conversation")
-            raise RuntimeError("Conversation persistence failed") from None
+                logger.exception("Conversation unpersistence rollback failed")
+            raise
+
+    @staticmethod
+    def _resolve_conversation_identity(
+        db: Any = None, session_id: Any = None, *args: Any, **kwargs: Any
+    ) -> Tuple[str, Tuple[int, ...]]:
+        legacy_text_call = (
+            len(args) >= 2
+            and isinstance(args[0], str)
+            and isinstance(args[1], str)
+        )
+
+        identity_candidates: List[Any] = []
+        turn_ids: List[int] = []
+
+        if legacy_text_call:
+            if len(args) >= 3:
+                identity_candidates.append(args[2])
+        else:
+            identity_candidates.extend(args)
+
+        for key in ("persisted", "identity", "exchange", "value", "conversation", "result"):
+            if key in kwargs and kwargs[key] is not None:
+                identity_candidates.append(kwargs[key])
+
+        for key in ("turn_ids", "turnIds", "turns"):
+            if key in kwargs and kwargs[key] is not None:
+                identity_candidates.append(kwargs[key])
+        for key in (
+            "turn_id",
+            "turnId",
+            "user_turn_id",
+            "assistant_turn_id",
+            "userTurnId",
+            "assistantTurnId",
+        ):
+            if key in kwargs and kwargs[key] is not None:
+                try:
+                    turn_ids.append(int(kwargs[key]))
+                except (TypeError, ValueError):
+                    identity_candidates.append(kwargs[key])
+
+        for key in ("exchange_id", "conversation_id", "conversationId", "id"):
+            if key in kwargs and kwargs[key] is not None:
+                identity_candidates.append(kwargs[key])
+
+        collected_exchange: Optional[str] = None
+        collected_turns: List[int] = list(turn_ids)
+        for candidate in identity_candidates:
+            exchange, turns = ConversationRuntime._extract_conversation_identity(candidate)
+            if exchange is not None and collected_exchange is None:
+                collected_exchange = exchange
+            collected_turns.extend(turns)
+
+        if collected_exchange is None or not collected_turns:
+            raise ValueError("Could not resolve persisted conversation identity")
+        return collected_exchange, tuple(dict.fromkeys(int(t) for t in collected_turns))
+
+    @staticmethod
+    def _extract_conversation_identity(candidate: Any) -> Tuple[Optional[str], List[int]]:
+        if candidate is None:
+            return None, []
+
+        if isinstance(candidate, str):
+            return candidate, []
+
+        if isinstance(candidate, int):
+            return None, [candidate]
+
+        if isinstance(candidate, (list, tuple, set, frozenset)):
+            exchange = None
+            turns = []
+            for item in candidate:
+                ex, item_turns = ConversationRuntime._extract_conversation_identity(item)
+                if ex is not None and exchange is None:
+                    exchange = ex
+                turns.extend(item_turns)
+            return exchange, turns
+
+        if isinstance(candidate, dict):
+            exchange = None
+            turns = []
+            for key in ("exchange_id", "conversation_id", "conversationId", "id"):
+                if key in candidate and candidate[key] is not None:
+                    ex, item_turns = ConversationRuntime._extract_conversation_identity(candidate[key])
+                    if ex is not None and exchange is None:
+                        exchange = ex
+                    turns.extend(item_turns)
+            for key in (
+                "turn_ids",
+                "turnIds",
+                "turns",
+                "turn_id",
+                "turnId",
+                "user_turn_id",
+                "assistant_turn_id",
+                "userTurnId",
+                "assistantTurnId",
+            ):
+                if key in candidate and candidate[key] is not None:
+                    ex, item_turns = ConversationRuntime._extract_conversation_identity(candidate[key])
+                    if ex is not None and exchange is None:
+                        exchange = ex
+                    turns.extend(item_turns)
+            return exchange, turns
+
+        exchange = None
+        turns = []
+        for key in ("exchange_id", "conversation_id", "conversationId", "id"):
+            value = getattr(candidate, key, None)
+            if value is not None:
+                ex, item_turns = ConversationRuntime._extract_conversation_identity(value)
+                if ex is not None and exchange is None:
+                    exchange = ex
+                turns.extend(item_turns)
+        for key in (
+            "turn_ids",
+            "turnIds",
+            "turns",
+            "turn_id",
+            "turnId",
+            "user_turn_id",
+            "assistant_turn_id",
+            "userTurnId",
+            "assistantTurnId",
+        ):
+            value = getattr(candidate, key, None)
+            if value is not None:
+                ex, item_turns = ConversationRuntime._extract_conversation_identity(value)
+                if ex is not None and exchange is None:
+                    exchange = ex
+                turns.extend(item_turns)
+        return exchange, turns

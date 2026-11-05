@@ -10,7 +10,6 @@ import {
   EmptyState,
   KV,
   LoadingBlock,
-  Notice,
   Panel,
   Rail,
   ScreenHead,
@@ -18,9 +17,8 @@ import {
   Segmented,
   Stat,
 } from '../components/ui';
-import { useActions, useMemoryEdges, useMemoryReport } from '../hooks/useBackend';
+import { useActions, useMemoryEdges, useMemoryItems, useMemoryReport } from '../hooks/useBackend';
 import { useAppStore } from '../store/appStore';
-import { demoMemoryItems } from '../data/demo';
 import { humanize, relTime } from '../lib/format';
 
 /* Memory & Knowledge.
@@ -51,6 +49,14 @@ export function MemoryScreen() {
   const [search, setSearch] = useState('');
   const [kind, setKind] = useState<'__all__' | string>('__all__');
   const [busyEdge, setBusyEdge] = useState<number | null>(null);
+  const [offset, setOffset] = useState(0);
+
+  const memoryItems = useMemoryItems({
+    query: search.trim(),
+    kind: kind !== '__all__' ? kind : undefined,
+    limit: 100,
+    offset,
+  });
 
   const stores = (report.data?.stores ?? {}) as Record<string, { count?: number }>;
   const storeEntries = Object.entries(stores).filter(([, v]) => typeof v?.count === 'number');
@@ -60,20 +66,20 @@ export function MemoryScreen() {
   const injection = (report.data?.memory_context_injection ?? {}) as Record<string, number>;
 
   const edgeList = edges.data ?? [];
-  const kinds = useMemo(() => Array.from(new Set(demoMemoryItems.map((m) => m.kind))), []);
+  const itemsData = useMemo(() => memoryItems.data?.items ?? [], [memoryItems.data]);
+  const hasMore = memoryItems.data?.has_more ?? false;
+  const kinds = useMemo(() => [
+    "ASSUMPTION",
+    "BELIEF",
+    "FACT",
+    "INSTRUCTION",
+    "EPISODIC",
+    "PREFERENCE",
+    "PROCEDURAL",
+    "UNKNOWN",
+  ], []);
 
-  const itemList = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return demoMemoryItems.filter((m) => {
-      if (kind !== '__all__' && m.kind !== kind) return false;
-      if (!q) return true;
-      return (
-        m.key.toLowerCase().includes(q) ||
-        m.value.toLowerCase().includes(q) ||
-        m.source.toLowerCase().includes(q)
-      );
-    });
-  }, [search, kind]);
+  const itemList = itemsData;
 
   const actOnEdge = async (id: number, action: 'reinforce' | 'remove') => {
     setBusyEdge(id);
@@ -153,22 +159,24 @@ export function MemoryScreen() {
 
         {tab === 'items' && (
           <>
-            <Notice tone="warn" icon="alert">
-              <span>
-                <strong>The item browser is a demonstration.</strong> Sythion has no REST endpoint that lists
-                individual remembered facts, so these rows illustrate the intended review experience. Store totals and
-                relation counts elsewhere on this screen are live.
-              </span>
-            </Notice>
+            {memoryItems.isLoading ? (
+              <LoadingBlock rows={3} />
+            ) : itemList.length === 0 ? (
+              <EmptyState
+                icon="memory"
+                title="No remembered items"
+                description="Memory entries appear here once Sythion has stored them."
+              />
+            ) : null}
 
             <div className="grid grid--aside">
               <div className="stack">
                 <Panel title="Search & filter" icon="search" tight>
                   <div className="stack stack--tight">
-                    <SearchInput value={search} onChange={setSearch} placeholder="Search memory…" />
+                    <SearchInput value={search} onChange={(v) => { setSearch(v); setOffset(0); }} placeholder="Search memory…" />
                     <Chips
                       value={kind}
-                      onChange={setKind}
+                      onChange={(v) => { setKind(v); setOffset(0); }}
                       options={kinds.map((k) => ({ value: k, label: k }))}
                     />
                   </div>
@@ -195,7 +203,7 @@ export function MemoryScreen() {
                 </Panel>
               </div>
 
-              <Panel title="Remembered items" icon="memory" flush actions={<DemoTag />}>
+              <Panel title="Remembered items" icon="memory" flush actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}>
                 {itemList.length === 0 ? (
                   <EmptyState
                     icon="search"
@@ -207,7 +215,7 @@ export function MemoryScreen() {
                     {itemList.map((m) => (
                       <div className="list__row" key={m.id}>
                         <Rail
-                          tone={m.confidence >= 0.9 ? 'ok' : m.confidence >= 0.7 ? 'accent' : 'warn'}
+                          tone={m.confidence == null ? 'idle' : (m.confidence ?? 0) >= 0.9 ? 'ok' : (m.confidence ?? 0) >= 0.7 ? 'accent' : 'warn'}
                         />
                         <div className="list__main">
                           <div className="row row--between" style={{ gap: 10 }}>
@@ -218,19 +226,23 @@ export function MemoryScreen() {
                           </div>
                           <span className="t-muted">{m.value}</span>
                           <div className="list__meta">
-                            <span>Source: {m.source}</span>
-                            <span>· used {m.used}×</span>
-                            <span>· {relTime(m.updated)}</span>
+                            <span>Source: {m.source_type}</span>
+                            <span>• {m.verification_status}</span>
+                            {m.updated_at ? <span>• {relTime(m.updated_at)}</span> : null}
                           </div>
-                          <div className="row" style={{ gap: 8, marginTop: 4, maxWidth: 240 }}>
-                            <div style={{ flex: 1 }}>
-                              <Bar
-                                value={m.confidence * 100}
-                                tone={m.confidence >= 0.9 ? 'ok' : m.confidence >= 0.7 ? 'accent' : 'warn'}
-                              />
+                          {m.confidence != null ? (
+                            <div className="row" style={{ gap: 8, marginTop: 4, maxWidth: 240 }}>
+                              <div style={{ flex: 1 }}>
+                                <Bar
+                                  value={m.confidence * 100}
+                                  tone={(m.confidence ?? 0) >= 0.9 ? 'ok' : (m.confidence ?? 0) >= 0.7 ? 'accent' : 'warn'}
+                                />
+                              </div>
+                              <span className="t-faint t-mono">{Math.round(m.confidence * 100)}%</span>
                             </div>
-                            <span className="t-faint t-mono">{Math.round(m.confidence * 100)}%</span>
-                          </div>
+                          ) : (
+                            <span className="t-faint t-mono">Confidence unassessed</span>
+                          )}
                         </div>
                         <div className="list__trail">
                           <Button size="sm" variant="ghost" disabled>
@@ -239,6 +251,31 @@ export function MemoryScreen() {
                         </div>
                       </div>
                     ))}
+                  </div>
+                )}
+                {itemList.length > 0 && (
+                  <div className="panel__body row row--between" style={{ gap: 8 }}>
+                    <span className="t-faint">
+                      Showing up to 100 items (offset {offset}). The memory listing is not capped at 500; search is a keyword (substring) match over key and value, paginated in stable order. Semantic retrieval used in chat uses a separate bounded recent pool.
+                    </span>
+                    <div className="row" style={{ gap: 6 }}>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={offset === 0}
+                        onClick={() => setOffset((v) => Math.max(0, v - 100))}
+                      >
+                        Previous
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={!hasMore}
+                        onClick={() => setOffset((v) => v + 100)}
+                      >
+                        Next
+                      </Button>
+                    </div>
                   </div>
                 )}
               </Panel>

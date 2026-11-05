@@ -139,12 +139,12 @@ AVAILABLE TOOLS (call one directly by its exact name):
 {available_tools}
 
 DECISION TYPES:
-1. complete_task - MANDATORY for all completion and conversational turns. You MUST call complete_task for EVERY response, conversational remark, or task result (e.g. call complete_task(result="Understood! What would you like to work on next?")). NEVER output raw text without a tool call.
+1. complete_task - Use ONLY when the task is fully finished and the result needs no further user answer. complete_task ends the task permanently. NEVER put a question requiring an answer in a complete_task result; if required information, confirmation, or scope must come from the user before finishing, call request_user_input instead and then continue after the answer.
 2. fail_task - When you cannot complete the task (after max 2 repair attempts)
-3. {confirmation_tool_usage}
+3. {confirmation_tool_usage} - This alone pauses the task as WAITING_FOR_USER and must not be combined with complete_task or fail_task
 4. run_skill - To execute a registered skill workflow
 
-Call any listed tool directly with its parameters. To finish, call complete_task with the final result message. To ask a question or request confirmation, call request_user_input.
+Call any listed tool directly with its parameters. To finish, call complete_task with the final result message. To ask or wait for a needed user answer, call request_user_input alone; that pauses the task until the user answers. It is forbidden to combine request_user_input with complete_task or fail_task in one response; asking always takes priority and must not be hidden in a completing result.
 
 EFFICIENCY & ACTION BUDGET:
 - Each task has a bounded per-task action budget (default 50 executed actions) and FAILS when it is exhausted. Conserve actions.

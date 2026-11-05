@@ -3,7 +3,9 @@ File System Tools for Sythion (Synth)
 Implements file operations: read, write, list, create, delete, move, copy
 """
 import os
+import errno
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable, Awaitable, Generic, TypeVar
 try:
@@ -92,13 +94,33 @@ async def _atomic_write_text(
     overwrite: bool,
     cancelled_check: Optional[Callable[[], Awaitable[bool]]] = None,
 ) -> str:
-    """Write `content` to `path` atomically: temp file + os.replace.
+    """Write `content` to `path` atomically: temp file + os.replace/rename.
 
     The target only ever appears as either the old content or the new content
-    (never a partial write). When a `cancelled_check` is supplied it is awaited
-    immediately before the final `os.replace` so a cancel that arrives during
-    the (potentially large) write still prevents the swap. Returns the final
-    content written so the caller can verify it read back identically.
+    (never a partial write) for the final rename/replace. When a
+    `cancelled_check` is supplied it is awaited immediately before the final
+    swap so a cancel that arrives during the (potentially large) write still
+    prevents the swap. Returns the final content written so the caller can
+    verify it read back identically.
+
+    Concurrency guarantees and limits:
+    - overwrite=False, append=False (create-only): publication uses an atomic
+      os.link of the uniquely/exclusively created temp file, which fails when
+      the destination already exists on the supported platforms (Windows and
+      POSIX). It does not re-check containment or reparse/parent properties
+      at swap time; those gates run before mutation. Where the platform lacks
+      an atomic no-replace primitive, this call fails rather than clobbering.
+    - overwrite=True or append=True: os.replace deliberately clobbers any
+      target, including one created by another actor, as explicitly requested.
+    - Crash/partial-write limits: a process killed while writing the temp file
+      leaves a `.sythion-tmp` sibling that the next call's finally cleanup
+      cannot remove; the committed target is never partial because the swap is
+      atomic within the same volume. Parent directory fsync is not performed,
+      so durability across OS/hardware crash is not guaranteed.
+    - Parent/reparse race is not fully closed: the approved-root, reparse and
+      containment checks happen before the swap. This function does not
+      re-validate them or solve permissions; it only prevents clobbering an
+      existing target for the create-only case.
     """
     if len(content.encode('utf-8')) > MAX_WRITE_BYTES:
         raise _WriteTooLarge(content)
@@ -117,23 +139,76 @@ async def _atomic_write_text(
         raise ValueError(f"Target is a directory: {path}")
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".sythion-tmp")
+
+    # Create a UNIQUE temp file, opened exclusively (O_CREAT|O_EXCL under
+    # the hood by tempfile.mkstemp), in the same directory so publication
+    # is a same-volume atomic operation. The fixed ".sythion-tmp" sibling
+    # name is no longer used: it could collide with another actor or with a
+    # stale file left by a crashed process.
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".sythion-tmp",
+        dir=str(path.parent),
+    )
+    tmp = Path(tmp_name)
+    created_tmp = tmp
     try:
-        with open(tmp, "w", encoding="utf-8", newline="") as f:
-            f.write(final_content)
-            f.flush()
-            os.fsync(f.fileno())
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+                f.write(final_content)
+                f.flush()
+                os.fsync(f.fileno())
+        except BaseException:
+            # Make sure the descriptor is closed even if fdopen itself
+            # failed; then remove only THIS call's temp file.
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                created_tmp.unlink()
+            except OSError:
+                pass
+            created_tmp = None
+            raise
+
         # Cancel may have arrived while the temp file was being written: the
-        # original target is still untouched, so stop before the swap.
+        # original target is still untouched, so stop before publication.
         if cancelled_check is not None:
             if await cancelled_check():
                 raise _CancelledError()
-        # Final irreversible swap. os.replace is atomic on the same volume.
-        os.replace(tmp, path)
-    finally:
-        if tmp.exists():
+
+        # Publication step.
+        if overwrite or append:
+            # Explicit mutation: atomically replace any existing target.
+            os.replace(tmp, path)
+            tmp = None  # os.replace consumes the temp path
+        else:
+            # Create-only: publish WITHOUT replacing. Use a directory-entry
+            # link, which is atomic and fails if the destination already
+            # exists on both POSIX and Windows. os.rename's no-replace
+            # behaviour is POSIX-specific and is therefore not assumed.
             try:
-                tmp.unlink()
+                os.link(created_tmp, path)
+            except FileExistsError:
+                raise _ExistsError(str(path))
+            except OSError as exc:
+                if exc.errno in (errno.EEXIST, errno.ENOTEMPTY) or \
+                        getattr(exc, "winerror", None) == 183:
+                    raise _ExistsError(str(path))
+                raise
+            # Publication succeeded via an extra name. Remove OUR temp name
+            # only; never attempt to delete a path we did not create.
+            try:
+                created_tmp.unlink()
+            except OSError:
+                pass
+            created_tmp = None
+    finally:
+        # Clean up only the temp file this call created and still owns.
+        if created_tmp is not None:
+            try:
+                created_tmp.unlink()
             except OSError:
                 pass
     return final_content
@@ -195,18 +270,48 @@ def _approved_roots() -> List[Path]:
         return []
 
 
+def _is_prototype_build() -> bool:
+    """Whether this backend runs as an isolated prototype build.
+
+    Coordinated with the secret-isolation layer: a prototype launches with
+    SYTHION_PROTECT_BUILD=1 (and corroborating build identity markers). A
+    fresh prototype profile must not receive the production home/cwd fallback
+    or the silently appended repository root. Delegate to the secret module so
+    file-root identity can never disagree with secret identity.
+    """
+    try:
+        try:
+            from backend.core.secrets import is_prototype_build as _proto
+        except ImportError:
+            from core.secrets import is_prototype_build as _proto
+    except Exception:
+        _proto = None
+    if _proto is not None:
+        try:
+            return bool(_proto())
+        except Exception:
+            pass
+    value = os.environ.get("SYTHION_PROTECT_BUILD", "")
+    return value.strip().lower() in {"1", "true", "yes", "on", "prototype"}
+
+
 def _effective_roots(roots: List[str]) -> List[Path]:
-    """Apply the file-tool fallback and implicit backend directory policy."""
+    """Apply the file-tool fallback and implicit backend directory policy.
+
+    Production behavior is unchanged. A prototype build is isolated instead:
+    no home/cwd fallback and no silent backend root, so a fresh profile starts
+    with no file access unless roots are explicitly granted.
+    """
     roots = list(roots)
+    prototype = _is_prototype_build()
     if roots:
-        # Non-empty configured roots: always include the repo root (backend
-        # directory) alongside them.
-        repo_root = Path(__file__).resolve().parent.parent
-        if str(repo_root) not in roots:
-            roots.append(str(repo_root))
+        if not prototype:
+            repo_root = Path(__file__).resolve().parent.parent
+            if str(repo_root) not in roots:
+                roots.append(str(repo_root))
         return [Path(r).expanduser().resolve() for r in roots]
-    # Fallback only: empty configured roots approve home + cwd (safe user-local
-    # defaults, no repo root). This is NOT "no file access" -- see docstring.
+    if prototype:
+        return []
     return [Path.home().resolve(), Path.cwd().resolve()]
 
 
@@ -388,30 +493,57 @@ def _normalize_final(final_path: str) -> str:
 
 def _canonical_of_existing(path: Path) -> Optional[str]:
     """OS-reported final location of an existing file/directory."""
-    if not _CTYPES_READY:
+    # Fail closed on Windows: if the native (ctypes) layer is unavailable or
+    # any native call fails, we cannot establish a trustworthy canonical path,
+    # so report no canonical location instead of an unverified one.
+    if os.name != "nt" or not _CTYPES_READY:
         return None
-    handle = _open_follow(path)
+    try:
+        handle = _open_follow(path)
+    except Exception:
+        return None
     if not handle:
         return None
     try:
         final = _final_path_by_handle(handle)
         return _normalize_final(final) if final else None
+    except Exception:
+        return None
     finally:
-        _kernel32.CloseHandle(handle)
+        try:
+            _kernel32.CloseHandle(handle)
+        except Exception:
+            pass
 
 
 def _is_reparse_point(path: Path) -> bool:
     """True when the existing target itself is a link/junction/reparse point."""
+    # Non-Windows keeps the existing (string/policy) behaviour unchanged.
+    if os.name != "nt":
+        return False
+    # Fail closed on Windows: if the native (ctypes) layer is unavailable, a
+    # target cannot be proven to be free of reparse-point semantics, so treat
+    # it as a reparse point (rejected) rather than as a safe ordinary file.
     if not _CTYPES_READY:
-        return False
-    handle = _open_no_follow(path)
+        return True
+    try:
+        handle = _open_no_follow(path)
+    except Exception:
+        return True
     if not handle:
-        return False
+        return True
     try:
         attrs = _file_attributes(handle)
-        return bool(attrs and (attrs & _FILE_ATTRIBUTE_REPARSE_POINT))
+        if attrs is None:
+            return True
+        return bool(attrs & _FILE_ATTRIBUTE_REPARSE_POINT)
+    except Exception:
+        return True
     finally:
-        _kernel32.CloseHandle(handle)
+        try:
+            _kernel32.CloseHandle(handle)
+        except Exception:
+            pass
 
 
 def _is_under_canonical(canonical: str, roots: List[str]) -> bool:
@@ -432,11 +564,21 @@ def _canonical_contained(path: Path) -> bool:
     so short names, case, and reparse-point targets cannot bypass the string
     gate. Returns True on non-Windows where the string gate is authoritative.
     """
-    if not _CTYPES_READY:
+    # Platform guard: non-Windows keeps the previous behaviour, where the
+    # string/path gate is authoritative and this check always succeeds.
+    if os.name != "nt":
         return True
+    # Fail closed on Windows when the native layer is unavailable: the
+    # defense-in-depth containment check cannot be completed, so deny rather
+    # than silently treating the path as contained.
+    if not _CTYPES_READY:
+        return False
     root_finals = []
     for root in _approved_roots():
-        final = _canonical_of_existing(root)
+        try:
+            final = _canonical_of_existing(root)
+        except Exception:
+            return False
         if final:
             root_finals.append(final)
     if not root_finals:
@@ -447,7 +589,10 @@ def _canonical_contained(path: Path) -> bool:
         if parent == probe:
             return False
         probe = parent
-    target = _canonical_of_existing(probe)
+    try:
+        target = _canonical_of_existing(probe)
+    except Exception:
+        return False
     if not target:
         return False
     return _is_under_canonical(target, root_finals)
@@ -1255,35 +1400,77 @@ class FileSearchTool(BaseTool[FileSearchInput]):
         max_results = input_data.max_results
         include_hidden = input_data.include_hidden
         extensions = input_data.file_extensions
+        # Bounded traversal: never follow junctions/symlinks/reparse points.
+        # Prune dangerous directories BEFORE descending, instead of rglob()
+        # which can expand a cyclic junction before a filter sees it.
+        for dirpath, dirnames, filenames in os.walk(path, topdown=True, followlinks=False):
+            # Prune in place, before descent.
+            pruned_dirnames = []
+            for dirname in list(dirnames):
+                child = Path(dirpath) / dirname
+                try:
+                    if child.is_symlink():
+                        continue
+                except OSError:
+                    continue
+                try:
+                    if _is_reparse_point(child):
+                        continue
+                except OSError:
+                    continue
+                try:
+                    if not _contained(child):
+                        continue
+                except Exception:
+                    continue
+                pruned_dirnames.append(dirname)
+            dirnames[:] = pruned_dirnames
 
-        for file_path in path.rglob("*"):
-            if not file_path.is_file():
-                continue
+            for filename in filenames:
+                file_path = Path(dirpath) / filename
+                # Final per-file gates (containment and reparse check).
+                try:
+                    if file_path.is_symlink():
+                        continue
+                except OSError:
+                    continue
+                try:
+                    if _is_reparse_point(file_path):
+                        continue
+                except OSError:
+                    continue
+                try:
+                    if not _contained(file_path):
+                        continue
+                except Exception:
+                    continue
+                if not file_path.is_file():
+                    continue
 
-            # Skip hidden files unless requested
-            if not include_hidden and any(part.startswith('.') for part in file_path.relative_to(path).parts):
-                continue
+                rel = file_path.relative_to(path)
+                if not include_hidden and any(part.startswith(".") for part in rel.parts):
+                    continue
+                if extensions and file_path.suffix.lower() not in [ext.lower() for ext in extensions]:
+                    continue
 
-            # Filter by extension if specified
-            if extensions and file_path.suffix.lower() not in [ext.lower() for ext in extensions]:
-                continue
-
-            try:
-                content = file_path.read_text(encoding='utf-8', errors='ignore')
-                lines = content.splitlines()
-                for line_num, line in enumerate(lines, 1):
-                    if pattern in line.lower():
-                        matches.append({
-                            "file": str(file_path),
-                            "line": line_num,
-                            "content": line.strip()
-                        })
-                        if len(matches) >= max_results:
-                            break
-                if len(matches) >= max_results:
-                    break
-            except (UnicodeDecodeError, PermissionError, OSError):
-                continue
+                try:
+                    content = file_path.read_text(encoding='utf-8', errors='ignore')
+                    lines = content.splitlines()
+                    for line_num, line in enumerate(lines, 1):
+                        if pattern in line.lower():
+                            matches.append({
+                                "file": str(file_path),
+                                "line": line_num,
+                                "content": line.strip()
+                            })
+                            if len(matches) >= max_results:
+                                break
+                    if len(matches) >= max_results:
+                        break
+                except (UnicodeDecodeError, PermissionError, OSError):
+                    continue
+            if len(matches) >= max_results:
+                break
 
         return ToolOutput(
             success=True,

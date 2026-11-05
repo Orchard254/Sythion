@@ -37,6 +37,8 @@ class ModelProvider(Protocol):
         messages: List[Dict[str, Any]],
         max_tokens: int = 4000,
         timeout: float = 300.0,
+        temperature: Optional[float] = None,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """Free-form completion (used by background services like memory
         consolidation that need a judgment, not a tool-call decision)."""

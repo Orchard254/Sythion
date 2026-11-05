@@ -1519,6 +1519,55 @@ class GUIScreenshotTool(BaseTool[GUIScreenshotInput]):
         if not _IS_WINDOWS:
             return ToolOutput(success=False, error={"code": "NOT_SUPPORTED", "message": "Windows only"})
 
+        # Fail fast in prototype builds before any screen capture: an explicit
+        # save path must stay inside approved roots / the isolated profile.
+        if input_data.save_path:
+            _proto = False
+            try:
+                try:
+                    from backend.core.secrets import is_prototype_build as _ipb
+                except ImportError:
+                    from core.secrets import is_prototype_build as _ipb
+                _proto = bool(_ipb())
+            except Exception:
+                _proto = os.environ.get("SYTHION_PROTECT_BUILD", "").strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                    "prototype",
+                }
+            if _proto:
+                try:
+                    from backend.tools.file_tools import _contained as _contained_path
+                    from backend.core.storage import data_dir as _gui_data_dir
+                except ImportError:
+                    from tools.file_tools import _contained as _contained_path
+                    from core.storage import data_dir as _gui_data_dir
+                candidate = Path(input_data.save_path).resolve()
+                try:
+                    data_root = Path(_gui_data_dir()).resolve()
+                except Exception:
+                    return ToolOutput(
+                        success=False,
+                        error={
+                            "code": "DATA_DIR_UNAVAILABLE",
+                            "message": "Prototype profile data directory could not be resolved; refusing screenshot.",
+                        },
+                    )
+                if not (
+                    _contained_path(candidate)
+                    or str(candidate).lower().startswith(str(data_root).lower() + os.sep)
+                    or candidate == data_root
+                ):
+                    return ToolOutput(
+                        success=False,
+                        error={
+                            "code": "TARGET_OUTSIDE_ROOTS",
+                            "message": f"Screenshot target is outside approved prototype roots: {candidate}",
+                        },
+                    )
+
         from datetime import datetime
         import io
 
@@ -1647,9 +1696,69 @@ class GUIScreenshotTool(BaseTool[GUIScreenshotInput]):
                 width, height = screen_width, screen_height
 
             if input_data.save_path:
-                save_path = Path(input_data.save_path)
+                candidate = Path(input_data.save_path).resolve()
+                _proto = False
+                try:
+                    from backend.core.secrets import is_prototype_build as _ipb
+
+                    _proto = bool(_ipb())
+                except Exception:
+                    _proto = os.environ.get("SYTHION_PROTECT_BUILD", "").strip().lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                        "prototype",
+                    }
+                if _proto:
+                    try:
+                        from backend.tools.file_tools import _contained as _contained_path
+                        from backend.core.storage import data_dir as _gui_data_dir
+                    except ImportError:
+                        from tools.file_tools import _contained as _contained_path
+                        from core.storage import data_dir as _gui_data_dir
+                    data_root = Path(_gui_data_dir()).resolve()
+                    if not (
+                        _contained_path(candidate)
+                        or str(candidate).lower().startswith(str(data_root).lower() + os.sep)
+                        or candidate == data_root
+                    ):
+                        return ToolOutput(
+                            success=False,
+                            error={
+                                "code": "TARGET_OUTSIDE_ROOTS",
+                                "message": f"Screenshot target is outside approved prototype roots: {candidate}",
+                            },
+                            model_summary="Screenshot save path rejected (prototype isolation).",
+                        )
+                save_path = candidate
             else:
-                screenshots_dir = Path(os.environ.get("LOCALAPPDATA", ".")) / "Sythion" / "screenshots"
+                _proto = False
+                try:
+                    try:
+                        from backend.core.secrets import is_prototype_build as _ipb
+                    except ImportError:
+                        from core.secrets import is_prototype_build as _ipb
+                    _proto = bool(_ipb())
+                except Exception:
+                    _proto = os.environ.get("SYTHION_PROTECT_BUILD", "").strip().lower() in {"1", "true", "yes", "on", "prototype"}
+                if _proto:
+                    try:
+                        try:
+                            from backend.core.storage import data_dir as _sd
+                        except ImportError:
+                            from core.storage import data_dir as _sd
+                        screenshots_dir = Path(_sd()) / "screenshots"
+                    except Exception:
+                        return ToolOutput(
+                            success=False,
+                            error={
+                                "code": "DATA_DIR_UNAVAILABLE",
+                                "message": "Prototype profile data directory could not be resolved; refusing to write screenshot.",
+                            },
+                        )
+                else:
+                    screenshots_dir = Path(os.environ.get("LOCALAPPDATA", ".")) / "Sythion" / "screenshots"
                 screenshots_dir.mkdir(parents=True, exist_ok=True)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 save_path = screenshots_dir / f"screenshot_{timestamp}.png"
@@ -1894,3 +2003,62 @@ def create_gui_tools() -> List[BaseTool]:
         GUIScreenshotTool(),
         GUIBatchFormTool(),
     ]
+
+
+def _is_prototype_build() -> bool:
+    try:
+        from backend.core.secrets import is_prototype_build as _proto
+    except Exception:
+        try:
+            from core.secrets import is_prototype_build as _proto
+        except Exception:
+            _proto = None
+    if _proto is None:
+        return True
+    try:
+        return bool(_proto())
+    except Exception:
+        return True
+
+
+_PROTOTYPE_HOST_DATA_GUI_TOOL_CLASSES = (GUIObserveTool, GUIScreenshotTool)
+
+
+def _prototype_host_data_guard(method):
+    async def wrapped(self, input_data):
+        if _is_prototype_build():
+            try:
+                from backend.api.schemas import ToolOutput
+            except Exception:
+                from api.schemas import ToolOutput
+            return ToolOutput(
+                success=False,
+                error={"code": "PROTOTYPE_HOST_DATA_DISABLED", "message": "Host data observation is disabled in prototype builds."},
+                duration_ms=0,
+            )
+        return await method(self, input_data)
+    wrapped.__name__ = getattr(method, "__name__", "execute")
+    wrapped.__doc__ = getattr(method, "__doc__", None)
+    return wrapped
+
+
+try:
+    from backend.api.schemas import ToolOutput as _ToolOutput
+except Exception:
+    from api.schemas import ToolOutput as _ToolOutput
+
+for _cls in _PROTOTYPE_HOST_DATA_GUI_TOOL_CLASSES:
+    _execute = getattr(_cls, "execute", None)
+    if callable(_execute):
+        _cls.execute = _prototype_host_data_guard(_execute)
+    _policy = getattr(_cls, "get_policy_requirements", None)
+    if callable(_policy):
+        def _make_policy(orig):
+            def _policy(self):
+                reqs = orig(self)
+                if isinstance(reqs, dict) and _is_prototype_build():
+                    reqs = dict(reqs)
+                    reqs["privacy_sensitive"] = True
+                return reqs
+            return _policy
+        _cls.get_policy_requirements = _make_policy(_policy)
