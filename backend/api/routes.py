@@ -1149,7 +1149,7 @@ async def assistant_turn(
 
                 else:
                     raise ValueError("unknown or forbidden command type")
-            except HTTPException:
+            except HTTPException as original_exc:
                 task_to_mark = created_task_id if created_task_id is not None else (background_task_ids[0] if background_task_ids else None)
                 if task_to_mark is not None:
                     await _mark_task_failed(db, task_to_mark)
@@ -1163,10 +1163,11 @@ async def assistant_turn(
                         if composer_receipt_id is not None and receipt_manager is not None:
                             try:
                                 receipt_manager.transition(composer_receipt_id, session_id, status="failed")
+                                db.commit()
                             except Exception:
                                 pass
-                raise HTTPException(status_code=500, detail="Could not remove assistant conversation persisted before dispatch failure") from None
-                raise
+                        raise HTTPException(status_code=500, detail="Could not remove assistant conversation persisted before dispatch failure") from original_exc
+                raise original_exc
             except ValueError as exc:
                 assistant_failed_closed = True
                 assistant_text = str(exc) if str(exc).strip() else fail_closed_message

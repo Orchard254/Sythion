@@ -784,3 +784,124 @@ async def test_named_discussion_contexts_are_session_scoped_in_assistant_turn(re
     assert names == ["Same named discussion"]
     assert all(item.get("session_id") == current for item in ENGINE_STATE["discussion_contexts_seen"])
     assert "Foreign named discussion" not in names
+
+
+
+@pytest.mark.asyncio
+async def test_http_exception_preserves_original_detail_after_successful_cleanup(request, _patch_engine, monkeypatch):
+    db = request.getfixturevalue("test_db")
+    ENGINE_STATE["assistant_text"] = "I started the work."
+    ENGINE_STATE["commands"] = [{"type": "start_task", "request": "Do background work"}]
+
+    from backend.services.task_runner import TaskRunner
+
+    original_transition = TaskRunner.transition_state
+    async def _transition_boom(self, *args, **kwargs):
+        if kwargs.get("new_state") == TaskState.RUNNING:
+            raise RuntimeError("transition boom")
+        return await original_transition(self, *args, **kwargs)
+
+    monkeypatch.setattr(TaskRunner, "transition_state", _transition_boom)
+
+    from backend.api.schemas import AssistantTurnRequest
+    client_request_id = f"test-{__import__('uuid').uuid4()}"
+    from fastapi import BackgroundTasks, HTTPException
+
+    bg = BackgroundTasks()
+    with pytest.raises(HTTPException) as excinfo:
+        await assistant_turn(
+            AssistantTurnRequest(client_request_id=client_request_id, text="start"), bg, db, None
+        )
+    assert excinfo.value.status_code == 500
+    assert excinfo.value.detail == "Could not start background work"
+    assert "Could not remove assistant conversation persisted before dispatch failure" not in str(excinfo.value.detail)
+    assert db.query(ConversationExchange).count() == 0
+    assert db.query(ConversationTurn).count() == 0
+
+    from backend.runtime.composer_request_receipt import ComposerRequestReceiptManager
+
+    receipt = ComposerRequestReceiptManager(db).get(
+        request_id=client_request_id, session_id="assistant-turn-test-session"
+    )
+    assert receipt is not None
+    assert receipt.status == "resolving"
+
+
+@pytest.mark.asyncio
+async def test_task_outcome_uncertain_http_503_is_not_masked(request, _patch_engine, monkeypatch):
+    db = request.getfixturevalue("test_db")
+    ENGINE_STATE["assistant_text"] = "I started the work."
+    ENGINE_STATE["commands"] = [{"type": "start_task", "request": "Do background work"}]
+
+    from backend.services.task_runner import TaskRunner
+    from backend.api.schemas import TaskState
+
+    original_create_task = TaskRunner.create_task
+    async def _create_not_created(self, *args, **kwargs):
+        import types
+        task = await original_create_task(self, *args, **kwargs)
+        if task is not None:
+            return types.SimpleNamespace(id=task.id, state=TaskState.RUNNING.value)
+        return task
+
+    monkeypatch.setattr(TaskRunner, "create_task", _create_not_created)
+
+    client_request_id = f"test-{__import__('uuid').uuid4()}"
+    from fastapi import BackgroundTasks, HTTPException
+    from backend.api.schemas import AssistantTurnRequest
+
+    bg = BackgroundTasks()
+    with pytest.raises(HTTPException) as excinfo:
+        await assistant_turn(
+            AssistantTurnRequest(client_request_id=client_request_id, text="start"), bg, db, None
+        )
+    assert excinfo.value.status_code == 503
+    assert "Task outcome is uncertain" in excinfo.value.detail
+
+
+@pytest.mark.asyncio
+async def test_start_task_cleanup_failure_transitions_receipt_to_failed_and_persists(request, _patch_engine, monkeypatch):
+    db = request.getfixturevalue("test_db")
+    ENGINE_STATE["assistant_text"] = "I started the work."
+    ENGINE_STATE["commands"] = [{"type": "start_task", "request": "Do background work"}]
+
+    from backend.services.task_runner import TaskRunner
+    from backend.api.schemas import TaskState
+
+    original_transition = TaskRunner.transition_state
+    async def _transition_boom(self, *args, **kwargs):
+        if kwargs.get("new_state") == TaskState.RUNNING:
+            raise RuntimeError("transition boom")
+        return await original_transition(self, *args, **kwargs)
+
+    monkeypatch.setattr(TaskRunner, "transition_state", _transition_boom)
+
+    async def _cleanup_boom(*args, **kwargs):
+        raise RuntimeError("cleanup boom")
+    monkeypatch.setattr("backend.services.conversation_runtime.ConversationRuntime._unpersist_conversation", _cleanup_boom)
+
+    client_request_id = f"test-{__import__('uuid').uuid4()}"
+    from fastapi import BackgroundTasks, HTTPException
+    from backend.api.schemas import AssistantTurnRequest
+
+    bg = BackgroundTasks()
+    with pytest.raises(HTTPException) as excinfo:
+        await assistant_turn(
+            AssistantTurnRequest(client_request_id=client_request_id, text="start"), bg, db, None
+        )
+    assert excinfo.value.status_code == 500
+    assert "Could not remove assistant conversation persisted before dispatch failure" in excinfo.value.detail
+
+    from backend.runtime.composer_request_receipt import ComposerRequestReceiptManager
+
+    receipt = ComposerRequestReceiptManager(db).get(
+        request_id=client_request_id, session_id="assistant-turn-test-session"
+    )
+    assert receipt is not None
+    assert receipt.status == "failed"
+    db.commit()
+    followup = ComposerRequestReceiptManager(db).get(
+        request_id=client_request_id, session_id="assistant-turn-test-session"
+    )
+    assert followup is not None
+    assert followup.status == "failed"
