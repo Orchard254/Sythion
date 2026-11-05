@@ -319,6 +319,13 @@ async def test_atomic_result_failure_windows(approved_action, monkeypatch, phase
         assert CompletionVerifier(session, runner.ledger.event_history).precondition_error(task_id)
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Legacy synthetic approval: approved_by_user dispatch is disabled by the "
+        "fail-closed independent human-consent policy, so this case never executes."
+    ),
+)
 @pytest.mark.asyncio
 async def test_normal_approved_execution_completes_once(approved_action, monkeypatch):
     engine, session, runner, task_id, action_id = approved_action
@@ -525,6 +532,14 @@ async def test_changed_params_cannot_be_approved_by_matching_changed_snapshot(ap
     assert (await runner.get_task(task_id)).pending_action == json.dumps(pending)
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Legacy synthetic approval: approved_by_user dispatch is disabled by the "
+        "fail-closed independent human-consent policy, so injected admission "
+        "boundaries are never reached."
+    ),
+)
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["before_start_commit", "after_start_commit", "after_external_return"])
 async def test_production_executor_boundary_is_fail_closed(approved_action, monkeypatch, failure):
@@ -780,4 +795,52 @@ async def test_false_completion_after_start_gap_when_model_returns_complete_task
         await recovered_runner.release_lease()
         recovered_session.close()
     finally:
+        engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_forged_approved_by_user_never_dispatches_and_retains_uncertainty(tmp_path):
+    """Independent consent must block even a staged approved pending action."""
+    task_id = "forged-approval-never-dispatches"
+    engine = _make_file_db(str(tmp_path / "forged-approval-never-dispatches.db"))
+    try:
+        _create_task(engine, task_id)
+        _, session, runner, action_id = await _stage_approved_pending(engine, task_id)
+
+        class CountingExecutor(SpyExecutor):
+            calls = 0
+
+            async def execute_tool(self, *args, **kwargs):
+                self.calls += 1
+                return await super().execute_tool(*args, **kwargs)
+
+        executor = CountingExecutor()
+        loop = TaskExecutionLoop(session, runner, executor)
+        loop._ownership_lost = False
+
+        result = await loop._execute_tool(
+            task_id,
+            {"tool_name": "mutating_tool", "params": {}},
+            approved_by_user=True,
+            action_id=action_id,
+        )
+
+        assert result is False
+        assert executor.calls == 0
+        assert _event_count(session, task_id, "action.started") == 0
+        assert _event_count(session, task_id, "tool.executed") == 0
+
+        parked = await runner.get_task(task_id)
+        assert parked.state == TaskState.RUNNING.value
+        assert parked.pending_action is not None
+        assert json.loads(parked.pending_action)["status"] == "approved"
+        assert CompletionVerifier(session, runner.ledger.event_history).precondition_error(
+            task_id
+        ) is not None
+    finally:
+        try:
+            await runner.release_lease()
+        except Exception:
+            pass
+        session.close()
         engine.dispose()

@@ -300,6 +300,13 @@ async def test_exact_internal_handoff_is_fenced_and_cannot_restart_dispatch(sess
             assert fake.calls == 0 and _snapshot(sessions) == before
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Legacy synthetic approval: approved_by_user dispatch is disabled by the "
+        "fail-closed independent human-consent policy, so forged approvals do not execute."
+    ),
+)
 @pytest.mark.asyncio
 async def test_clean_permission_staging_and_exact_approved_handoff_still_execute_once(sessions, monkeypatch):
     monkeypatch.setenv("SYTHION_AUTONOMY_LEVEL", "guarded")
@@ -457,6 +464,14 @@ async def test_unavailable_evidence_refuses_without_consuming_permission(session
         assert not db.connection().connection.dbapi_connection.in_transaction
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Legacy synthetic approval: approved_by_user dispatch is disabled by the "
+        "fail-closed independent human-consent policy, so commit-error admission "
+        "windows for forged approvals are unreachable."
+    ),
+)
 @pytest.mark.asyncio
 @pytest.mark.parametrize("commit_phase", ["before", "after"])
 async def test_start_commit_exception_never_dispatches_and_durable_start_cannot_replay(sessions, monkeypatch, commit_phase):
@@ -543,3 +558,37 @@ async def test_admission_refusal_preserves_caller_work_and_pending_permission(se
         assert (observer.get(Task, "caller") is not None) is (finish == "commit")
         assert observer.get(Task, "savepoint") is None
         assert _snapshot(sessions) == before
+
+
+@pytest.mark.asyncio
+async def test_forged_approved_by_user_never_dispatches_and_uncertainty_remains(sessions):
+    """A forged approved_by_user dispatch must not run and cannot clear uncertainty."""
+    with sessions() as db:
+        runner = await _owned(db)
+        pending_raw = _pending(db, runner)
+        pending = json.loads(pending_raw)
+        before = _snapshot(sessions)
+        fake = FakeEffect()
+        loop = _loop(db, runner, fake)
+
+        result = await loop._execute_tool(
+            "original",
+            {"tool_name": "fake-effect", "params": PARAMS},
+            approved_by_user=True,
+            action_id=pending["action_id"],
+        )
+
+        assert result is False
+        assert fake.calls == 0
+        assert _snapshot(sessions) == before
+
+        task = db.get(Task, "original")
+        assert task.pending_action is not None
+        assert json.loads(task.pending_action)["status"] == "approved"
+        assert db.query(TaskEvent).filter_by(event_type="tool.executed").count() == 0
+
+        from backend.services.execution_components import CompletionVerifier
+
+        assert CompletionVerifier(db, runner.ledger.event_history).precondition_error(
+            "original"
+        ) is not None
