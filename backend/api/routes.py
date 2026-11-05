@@ -1716,32 +1716,36 @@ async def get_task_objective(task_id: str, db: Session = Depends(get_db)):
 async def cancel_task(task_id: str, db: Session = Depends(get_db)):
     """Cancel a running task."""
     runner = get_runner(db)
-    
-    # Acquire lease
-    if not await runner.acquire_lease():
+
+    task = await runner.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    # Check if task can be cancelled
+    if task.state in [TaskState.COMPLETED.value, TaskState.FAILED.value, TaskState.CANCELLED.value]:
         raise HTTPException(
-            status_code=409,
-            detail="Cannot cancel task while another runner is active"
+            status_code=400,
+            detail=f"Cannot cancel task in state {task.state}"
         )
-    
+
     try:
-        task = await runner.get_task(task_id)
-        if not task:
-            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        
-        # Check if task can be cancelled
-        if task.state in [TaskState.COMPLETED.value, TaskState.FAILED.value, TaskState.CANCELLED.value]:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot cancel task in state {task.state}"
-            )
-        
-        updated_task = await runner.cancel_task(task_id)
-        
-        return TaskResponse.model_validate(updated_task)
-        
-    finally:
-        await runner.release_lease()
+        updated_task = await runner.force_cancel(task_id, via="cancel_task")
+    except RuntimeError as exc:
+        detail = str(exc)
+        lowered = detail.lower()
+        if "not found" in lowered:
+            raise HTTPException(status_code=404, detail=detail) from exc
+        if "invalid task state transition" in lowered:
+            raise HTTPException(status_code=400, detail=detail) from exc
+        if (
+            "try again" in lowered
+            or "changed while stopping" in lowered
+            or "changed during state transition" in lowered
+        ):
+            raise HTTPException(status_code=409, detail=detail) from exc
+        raise
+
+    return TaskResponse.model_validate(updated_task)
 
 
 @router.post("/stop", response_model=TaskResponse)
@@ -1778,10 +1782,15 @@ async def stop_active_task(db: Session = Depends(get_db)):
         updated_task = await runner.force_cancel(task.id)
     except RuntimeError as exc:
         detail = str(exc)
+        lowered = detail.lower()
+        if "not found" in lowered:
+            raise HTTPException(status_code=404, detail=detail) from exc
+        if "invalid task state transition" in lowered:
+            raise HTTPException(status_code=400, detail=detail) from exc
         if (
-            "try again" in detail.lower()
-            or "changed while stopping" in detail.lower()
-            or "changed during state transition" in detail.lower()
+            "try again" in lowered
+            or "changed while stopping" in lowered
+            or "changed during state transition" in lowered
         ):
             raise HTTPException(status_code=409, detail=detail) from exc
         raise

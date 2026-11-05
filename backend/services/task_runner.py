@@ -992,7 +992,7 @@ class TaskRunner:
             terminal_reason="cancelled_by_user",
         )
 
-    async def force_cancel(self, task_id: str) -> Task:
+    async def force_cancel(self, task_id: str, via: str = "global_stop") -> Task:
         self._refuse_caller_owned_pending_transaction()
 
         """Cancel a task without owning the runner lease.
@@ -1021,13 +1021,41 @@ class TaskRunner:
         ):
             raise RuntimeError(f"Invalid task state transition: {old_state} -> cancelled")
 
-        task.state = TaskState.CANCELLED.value
-        task.version += 1
-        task.updated_at = datetime.utcnow()
-        task.terminal_reason = "cancelled_by_user"
+        expected_version = task.version
+        now = datetime.utcnow()
+
+        from sqlalchemy import update as _sa_update
+        result = self.db.execute(
+            _sa_update(Task).where(
+                Task.id == task_id,
+                Task.state == old_state,
+                Task.version == expected_version,
+            ).values(
+                state=TaskState.CANCELLED.value,
+                version=expected_version + 1,
+                updated_at=now,
+                terminal_reason="cancelled_by_user",
+            )
+        )
+        if getattr(result, "rowcount", 1) != 1:
+            fresh = self.db.query(Task).filter_by(id=task_id).populate_existing().first()
+            if fresh is None:
+                raise RuntimeError(f"Task {task_id} not found")
+            if fresh.state in (
+                TaskState.COMPLETED.value,
+                TaskState.FAILED.value,
+                TaskState.CANCELLED.value,
+            ):
+                raise RuntimeError(f"Invalid task state transition: {fresh.state} -> cancelled")
+            raise RuntimeError("Task changed while stopping; try again.")
+
+        task = self.db.query(Task).filter_by(id=task_id).populate_existing().first()
+        if not task:
+            raise RuntimeError(f"Task {task_id} not found")
+
         self._append_event(task_id, "task.cancelled", {
             "reason": "user_requested",
-            "via": "global_stop",
+            "via": via,
         })
         try:
             from backend.runtime.followup_instruction_ledger import FollowupInstructionLedgerManager as _FollowupLedger
@@ -1050,7 +1078,7 @@ class TaskRunner:
                 event_type="task.cancelled",
                 event_data={
                     "reason": "user_requested",
-                    "via": "global_stop",
+                    "via": via,
                 },
             )
         except Exception as exc:
