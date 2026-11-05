@@ -314,6 +314,52 @@ def test_delete_journal_mode_database_is_backed_up_before_wal_conversion(tmp_pat
     bconn.close()
 
 
+def test_missing_or_empty_main_database_backup_fails_closed(tmp_path):
+    # Sidecar-only or empty-main states are ambiguous and must fail closed.
+    # Nothing is deleted or modified; the sidecars remain untouched.
+    sidecar_only_path = str(tmp_path / "sidecar-only.db")
+    sidecar = sidecar_only_path + "-wal"
+    with open(sidecar, "w", encoding="utf-8") as f:
+        f.write("pending")
+    with pytest.raises(RuntimeError, match="missing or empty"):
+        backup_existing_database(sidecar_only_path)
+    assert os.path.exists(sidecar), "sidecar was removed despite fail-closed policy"
+
+    empty_main_path = str(tmp_path / "empty-main.db")
+    with open(empty_main_path, "w", encoding="utf-8"):
+        pass
+    empty_sidecar = empty_main_path + "-wal"
+    with open(empty_sidecar, "w", encoding="utf-8") as f:
+        f.write("pending")
+    with pytest.raises(RuntimeError, match="missing or empty"):
+        backup_existing_database(empty_main_path)
+    assert os.path.exists(empty_sidecar), "sidecar was removed despite fail-closed policy"
+
+
+def test_backup_is_self_contained_and_preserves_user_version(tmp_path):
+    db_path = str(tmp_path / "wal-source.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE t(x)")
+    conn.execute("INSERT INTO t VALUES (42)")
+    conn.execute("PRAGMA user_version = 123")
+    conn.commit()
+    conn.close()
+
+    backup_path = backup_existing_database(db_path)
+    assert not os.path.exists(backup_path + "-wal")
+    assert not os.path.exists(backup_path + "-shm")
+    assert not os.path.exists(backup_path + "-journal")
+
+    bconn = sqlite3.connect(backup_path)
+    try:
+        assert bconn.execute("SELECT x FROM t").fetchone() == (42,)
+        assert str(bconn.execute("PRAGMA journal_mode").fetchone()[0]).upper() == "DELETE"
+        assert bconn.execute("PRAGMA user_version").fetchone()[0] == 123
+    finally:
+        bconn.close()
+
+
 def test_profile_lock_ordering(tmp_path):
     from backend.core.profile_lock import ProfileLock
 

@@ -416,14 +416,25 @@ def backup_existing_database(database_path: str, backup_path: str = None, *, int
     dst_conn = None
     try:
         # Source integrity is checked first: a corrupt source must not be
-        # silently preserved as a "good" pre-migration backup.
+        # silently preserved as a "good" pre-migration backup.  Ambiguous
+        # sources (missing or zero-byte main file, including sidecar-only
+        # WAL states) are fail-closed: never connect/create an empty
+        # database, which would discard uncheckpointed WAL data.
+        if not os.path.exists(source_path) or os.path.getsize(source_path) <= 0:
+            raise RuntimeError(
+                f"Cannot back up missing or empty database: {source_path}"
+            )
         if integrity_check and not os.path.exists(source_path):
             raise RuntimeError(f"Cannot back up missing database: {source_path}")
         if integrity_check and os.path.exists(source_path):
             if not verify_sqlite_integrity(source_path):
                 raise RuntimeError(f"Source database integrity check failed: {source_path}")
 
-        src_conn = sqlite3.connect(source_path, timeout=30)
+        # Read-only open prevents SQLite from creating a replacement main file.
+        from pathlib import Path as _Path
+
+        _source_uri = _Path(source_path).resolve().as_uri() + "?mode=ro"
+        src_conn = sqlite3.connect(_source_uri, uri=True, timeout=30)
         src_conn.execute("PRAGMA busy_timeout=30000")
         dst_conn = sqlite3.connect(backup_path, timeout=30)
         dst_conn.execute("PRAGMA busy_timeout=30000")
@@ -434,14 +445,23 @@ def backup_existing_database(database_path: str, backup_path: str = None, *, int
         dst_conn.commit()
 
         # Make the backup a single self-contained file instead of inheriting
-        # an uncheckpointed WAL sidecar.
+        # an uncheckpointed WAL sidecar.  These steps are required, not
+        # optional: an ignored conversion failure would leave a backup with
+        # WAL sidecars and undermine the self-contained guarantee.
         try:
-            dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            dst_conn.execute("PRAGMA journal_mode=DELETE")
+            checkpoint_result = dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if checkpoint_result is not None and len(checkpoint_result) > 0:
+                if int(checkpoint_result[0]) != 0:
+                    raise RuntimeError(
+                        "SQLite backup checkpoint did not complete cleanly"
+                    )
+            mode_result = dst_conn.execute("PRAGMA journal_mode=DELETE").fetchone()
             dst_conn.commit()
-        except sqlite3.Error:
-            # Not fatal: the backup still contains committed data.
-            pass
+            actual_mode = dst_conn.execute("PRAGMA journal_mode").fetchone()
+            if actual_mode is None or str(actual_mode[0]).upper() != "DELETE":
+                raise RuntimeError("SQLite backup could not be made self-contained")
+        except Exception:
+            raise
 
         if integrity_check and not verify_sqlite_integrity(backup_path):
             raise RuntimeError(f"Backup integrity check failed: {backup_path}")
