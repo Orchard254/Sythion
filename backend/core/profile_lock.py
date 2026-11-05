@@ -30,39 +30,42 @@ class ProfileLock:
 
     def acquire(self) -> bool:
         """Acquire the lock. Returns True if acquired, False if another live
-        sidecar holds it. Stale locks (dead owner or past grace period) are
-        reclaimed."""
+        sidecar holds it.
+
+        Advisory locking is authoritative: a dead owner releases the OS lock
+        automatically, so a stale lock file can be reclaimed by simply locking
+        it. We never unlink or recreate the path, which avoids racing with
+        another process that may hold or create that path. When the advisory
+        lock is contended, ownership cannot be verified (including for an
+        unreadable/malformed file or an unknown PID), so acquisition fails
+        closed rather than risking displacement of a live holder.
+        """
         if self._fd is not None:
             return True
 
-        # msvcrt.locking needs at least one byte present to lock a range.
+        # Advisory byte-range locks are attempted directly, even on an empty
+        # file. Verified on Windows: msvcrt.locking LK_NBLCK succeeds for a
+        # one-byte range at EOF+ (creating no written byte), so a contended
+        # acquire never mutates the incumbent's owner record.
         try:
             fd = os.open(self.path, os.O_CREAT | os.O_RDWR)
         except OSError:
             return False
 
-        try:
-            os.write(fd, b"0")
-        except OSError:
-            os.close(fd)
-            return False
-
         if self._try_lock(fd):
-            self._write_owner(fd)
+            try:
+                self._write_owner(fd)
+            except OSError:
+                self._unlock_fd(fd)
+                self._close_fd(fd)
+                return False
             self._fd = fd
             logger.info(f"Acquired profile lock at {self.path}")
             return True
 
-        os.close(fd)
-
-        # Lock is held. If the owner is gone (stale), reclaim it.
-        if self._is_stale():
-            try:
-                os.remove(self.path)
-            except OSError:
-                return False
-            return self.acquire()
-
+        # Lock is held by someone else: close our descriptor and fail closed.
+        # The path is never deleted or recreated here (see class docstring).
+        self._close_fd(fd)
         return False
 
     def _try_lock(self, fd: int) -> bool:
@@ -89,25 +92,32 @@ class ProfileLock:
         os.fsync(fd)
 
     def _is_stale(self) -> bool:
-        """Check whether an existing lock file's owner process is gone."""
+        """Check whether an existing lock file's owner process is gone.
+
+        Fail closed: an unreadable, malformed, or otherwise unverifiable lock
+        is never reported as stale, because its owner liveness cannot be
+        established. Only a successfully parsed PID that is definitively gone
+        makes the lock stale.
+        """
         try:
             with open(self.path, "r", encoding="utf-8") as fh:
                 raw = fh.read().strip()
-        except OSError:
-            return True
+        except (OSError, UnicodeError, UnicodeDecodeError):
+            return False
         if not raw:
-            return True
+            return False
         try:
             pid_str, ts_str = raw.split()
             pid, ts = int(pid_str), float(ts_str)
-        except (ValueError, TypeError):
-            return True
-        if pid == os.getpid():
-            return True
-        if not _pid_alive(pid):
-            return True
-        if time.time() - ts > STALE_GRACE_SECONDS:
-            logger.warning(f"Profile lock held by live pid {pid} past grace period")
+        except (ValueError, TypeError, AttributeError):
+            return False
+        try:
+            # Only a definitively dead owner is stale. Any uncertainty in
+            # _pid_alive is treated as "alive" (fail closed).
+            alive = _pid_alive(pid)
+        except Exception:
+            alive = True
+        if not alive:
             return True
         return False
 
@@ -125,11 +135,26 @@ class ProfileLock:
                 fcntl.flock(self._fd, fcntl.LOCK_UN)
         except OSError:
             pass
+        self._close_fd(self._fd)
+        self._fd = None
+
+    def _close_fd(self, fd: int) -> None:
         try:
-            os.close(self._fd)
+            os.close(fd)
         except OSError:
             pass
-        self._fd = None
+
+    def _unlock_fd(self, fd: int) -> None:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:  # pragma: no cover
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
 
     def __enter__(self) -> "ProfileLock":
         self.acquire()
@@ -139,28 +164,50 @@ class ProfileLock:
         self.release()
 
 
-def _pid_alive(pid: int) -> bool:
-    """Return True if a process with the given PID is running."""
+def _pid_alive(pid) -> bool:
+    """Return True if a process with the given PID is running.
+
+    Fail closed: whenever liveness cannot be established definitively, report
+    the process as alive so a lock is never reclaimed based on uncertainty.
+    """
+    try:
+        pid_int = int(pid)
+    except (ValueError, TypeError):
+        return True
+    if pid_int <= 0:
+        return True
+
     if os.name == "nt":
         try:
             import ctypes
 
             PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            handle = ctypes.windll.kernel32.OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid)
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid_int
             )
-            if not handle:
+            if handle:
+                kernel32.CloseHandle(handle)
+                return True
+            err = kernel32.GetLastError()
+            # ERROR_INVALID_PARAMETER (87): the pid does not correspond to a
+            # running process. Anything else (access denied, unknown) is
+            # treated as live (fail closed).
+            if err == 87:
                 return False
-            ctypes.windll.kernel32.CloseHandle(handle)
             return True
         except Exception:
-            return False
-    else:  # pragma: no cover
+            return True
+    else:  # pragma: no cover - v1 targets Windows
         try:
-            os.kill(pid, 0)
+            os.kill(pid_int, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
             return True
         except OSError:
-            return False
+            return True
 
 
 def acquire_profile_lock() -> Optional[ProfileLock]:
