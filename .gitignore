@@ -60,3 +60,6 @@ build/staging/test-runtime-offline/
 # Local investigation scratchpads (not application source)
 /scratchpad/
 /backend/scratchpad/
+
+# Generated Tauri resources are created by the clean staging workflow
+/src-tauri/resources/
