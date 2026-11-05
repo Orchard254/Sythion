@@ -42,3 +42,9 @@ local_data/
 
 # Generated test reports
 backend/pytest-report.xml
+
+# Generated staging build outputs (not source)
+build/staging/audit-clean-*/
+build/staging/clean-*/
+build/staging/prototype-*/
+build/staging/test-runtime-offline/
