@@ -504,6 +504,241 @@ describe('assistant turns', () => {
     const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
     expect(secondId).toBe(firstId);
   });
+
+  it('restores the draft from a persisted request pair on reload when safe', async () => {
+    const storage = new Map<string, string>();
+    storage.set('sythion.composer.clientRequestText', 'Hello Synth');
+    storage.set('sythion.composer.clientRequestId', 'persisted-reload-id');
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value); },
+      removeItem: (key: string) => { storage.delete(key); },
+    });
+    await settle(() => { view.unmount(); view = create(<QueryClientProvider client={client}><AssistantScreen /></QueryClientProvider>); });
+    expect(useAppStore.getState().transcriptDraft).toBe('Hello Synth');
+
+    mock.turn.mockRejectedValueOnce(new Error('503 Service Unavailable'));
+    await send();
+    const reusedId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(reusedId).toBe('persisted-reload-id');
+  });
+
+  it('does not clobber a non-empty draft when restoring from storage', async () => {
+    const storage = new Map<string, string>();
+    storage.set('sythion.composer.clientRequestText', 'Stored text');
+    storage.set('sythion.composer.clientRequestId', 'stored-id');
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value); },
+      removeItem: (key: string) => { storage.delete(key); },
+    });
+    await settle(() => useAppStore.setState({ transcriptDraft: 'User text already typed' }));
+    await settle(() => { view.unmount(); view = create(<QueryClientProvider client={client}><AssistantScreen /></QueryClientProvider>); });
+    expect(useAppStore.getState().transcriptDraft).toBe('User text already typed');
+  });
+
+  it('preserves prior scheduling uncertainty through a later failed retry', async () => {
+    mock.turn.mockResolvedValueOnce({
+      exchange_id: 'turn-unknown',
+      user_text: 'Hello Synth',
+      assistant_text: 'Requested background work.',
+      status: 'completed',
+      background_task_ids: ['task-unknown'],
+      scheduling_established: false,
+    });
+    await draft();
+    await send();
+    expect(text()).toContain('Scheduling is unknown');
+
+    const transportMessage = 'Connection lost. The request outcome is unknown; it was not automatically retried. Your draft is still here.';
+    mock.turn.mockRejectedValueOnce(new Error(transportMessage));
+    await draft();
+    await send();
+    expect(text()).toContain('Scheduling is unknown');
+  });
+
+  it('does not imply continuity when storage is unavailable', async () => {
+    vi.stubGlobal('sessionStorage', {
+      getItem: () => { throw new Error('storage unavailable'); },
+      setItem: () => { throw new Error('storage unavailable'); },
+      removeItem: () => { throw new Error('storage unavailable'); },
+    });
+
+    mock.turn.mockRejectedValueOnce(new Error('503 Service Unavailable'));
+    await draft();
+    await send();
+    const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+
+    await settle(() => useAppStore.setState({ transcriptDraft: '' }));
+    await settle(() => { view.unmount(); view = create(<QueryClientProvider client={client}><AssistantScreen /></QueryClientProvider>); });
+
+    // Draft is not restored from unavailable storage.
+    expect(useAppStore.getState().transcriptDraft).toBe('');
+
+    mock.turn.mockRejectedValueOnce(new Error('503 Service Unavailable'));
+    await draft();
+    await send();
+    const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(secondId).not.toBe(firstId);
+  });
+
+  it('mints a new request id on reload after successful turn when removeItem fails', async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value); },
+      removeItem: () => { throw new Error('removeItem failed'); },
+    });
+
+    mock.turn.mockResolvedValueOnce({ exchange_id: 'turn-success-remove-fail', user_text: 'Hello Synth', assistant_text: 'Done', status: 'completed', background_task_ids: [] });
+    await draft();
+    await send();
+    const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+
+    await settle(() => useAppStore.setState({ transcriptDraft: '' }));
+    await settle(() => { view.unmount(); view = create(<QueryClientProvider client={client}><AssistantScreen /></QueryClientProvider>); });
+
+    mock.turn.mockResolvedValueOnce({ exchange_id: 'turn-second-remove-fail', user_text: 'Hello Synth', assistant_text: 'Done again', status: 'completed', background_task_ids: [] });
+    await draft();
+    await send();
+    const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(secondId).not.toBe(firstId);
+  });
+
+  it('mints a new request id on reload after successful turn when removeItem is ignored', async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value); },
+      removeItem: () => {
+        // Intentionally does not delete: simulate a backend that ignores removal.
+      },
+    });
+
+    mock.turn.mockResolvedValueOnce({ exchange_id: 'turn-success-remove-noop', user_text: 'Hello Synth', assistant_text: 'Done', status: 'completed', background_task_ids: [] });
+    await draft();
+    await send();
+    const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+
+    await settle(() => useAppStore.setState({ transcriptDraft: '' }));
+    await settle(() => { view.unmount(); view = create(<QueryClientProvider client={client}><AssistantScreen /></QueryClientProvider>); });
+
+    mock.turn.mockResolvedValueOnce({ exchange_id: 'turn-second-remove-noop', user_text: 'Hello Synth', assistant_text: 'Done again', status: 'completed', background_task_ids: [] });
+    await draft();
+    await send();
+    const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(secondId).not.toBe(firstId);
+  });
+
+  it('does not reuse a mismatched stored id slot for different draft text', async () => {
+    const storage = new Map<string, string>();
+    storage.set('sythion.composer.clientRequestText', 'Different persisted text');
+    storage.set('sythion.composer.clientRequestId', 'wrong-id-for-different-text');
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value); },
+      removeItem: (key: string) => { storage.delete(key); },
+    });
+
+    await settle(() => useAppStore.setState({ transcriptDraft: '' }));
+    await settle(() => { view.unmount(); view = create(<QueryClientProvider client={client}><AssistantScreen /></QueryClientProvider>); });
+
+    await settle(() => view.root.findByProps({ 'aria-label': 'Message Sythion' }).props.onChange({ target: { value: 'Hello Synth' } }));
+    mock.turn.mockResolvedValueOnce({ exchange_id: 'turn-mismatch', user_text: 'Hello Synth', assistant_text: 'Hi', status: 'completed', background_task_ids: [] });
+    await send();
+    const usedId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(usedId).not.toBe('wrong-id-for-different-text');
+  });
+
+  it('preserves pair-level scheduling warning after storage-unavailable failure handling', async () => {
+    // Exercise both scheduling uncertainty and no storage continuity together.
+    vi.stubGlobal('sessionStorage', {
+      getItem: () => { throw new Error('storage unavailable'); },
+      setItem: () => { throw new Error('storage unavailable'); },
+      removeItem: () => { throw new Error('storage unavailable'); },
+    });
+
+    mock.turn.mockResolvedValueOnce({
+      exchange_id: 'turn-unknown-storage',
+      user_text: 'Hello Synth',
+      assistant_text: 'Requested background work.',
+      status: 'completed',
+      background_task_ids: ['task-unknown-storage'],
+      scheduling_established: false,
+    });
+    await draft();
+    await send();
+    expect(text()).toContain('Scheduling is unknown');
+  });
+
+  it('warns while mounted and does not reuse when removal and guard both fail', async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        if (value === '') throw new Error('guard setItem failed');
+        storage.set(key, value);
+      },
+      removeItem: () => { throw new Error('removeItem failed'); },
+    });
+
+    mock.turn.mockResolvedValueOnce({ exchange_id: 'turn-success-double-fail', user_text: 'Hello Synth', assistant_text: 'Done', status: 'completed', background_task_ids: [] });
+    await draft();
+    await send();
+    const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(text()).toContain('could not be verified');
+    expect(storage.get('sythion.composer.clientRequestText')).toBe('Hello Synth');
+
+    mock.turn.mockResolvedValueOnce({ exchange_id: 'turn-second-double-fail', user_text: 'Hello Synth', assistant_text: 'Done again', status: 'completed', background_task_ids: [] });
+    await draft();
+    await send();
+    const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(secondId).not.toBe(firstId);
+  });
+
+  it('warns while mounted and does not reuse when removal and guard are both ignored', async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        if (value === '') return;
+        storage.set(key, value);
+      },
+      removeItem: () => {
+        // Intentionally does nothing.
+      },
+    });
+
+    mock.turn.mockResolvedValueOnce({ exchange_id: 'turn-success-double-noop', user_text: 'Hello Synth', assistant_text: 'Done', status: 'completed', background_task_ids: [] });
+    await draft();
+    await send();
+    expect(text()).toContain('could not be verified');
+
+    mock.turn.mockResolvedValueOnce({ exchange_id: 'turn-second-double-noop', user_text: 'Hello Synth', assistant_text: 'Done again', status: 'completed', background_task_ids: [] });
+    await draft();
+    await send();
+    const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 2][1];
+    const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(secondId).not.toBe(firstId);
+  });
+
+  it('records the cross-reload limitation for unverifiable deletion', async () => {
+    // If both removeItem and the empty-key guard fail or no-op, the completed
+    // pair may survive in browser storage. A reload creates a fresh component,
+    // so the mounted fail-closed flag cannot persist; the guarded behavior is
+    // intentionally limited to the current mount without auto-replaying.
+    const storage = new Map<string, string>();
+    storage.set('sythion.composer.clientRequestText', 'Hello Synth');
+    storage.set('sythion.composer.clientRequestId', 'reload-limited-id');
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value); },
+      removeItem: (key: string) => { storage.delete(key); },
+    });
+    await settle(() => useAppStore.setState({ transcriptDraft: '' }));
+    await settle(() => { view.unmount(); view = create(<QueryClientProvider client={client}><AssistantScreen /></QueryClientProvider>); });
+    expect(useAppStore.getState().transcriptDraft).toBe('Hello Synth');
+  });
 });
 
 let view: ReactTestRenderer;

@@ -46,6 +46,7 @@ export function AssistantScreen() {
   const [speechHelpOpen, setSpeechHelpOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [unconfirmedSchedulingTaskIds, setUnconfirmedSchedulingTaskIds] = useState<string[] | null>(null);
+  const [composerStorageCompromised, setComposerStorageCompromised] = useState(false);
 
   const queryClient = useQueryClient();
   const [replyMode] = useState<'text' | 'voice'>(() => localStorage.getItem('sythion.replyMode') === 'text' ? 'text' : 'voice');
@@ -53,21 +54,38 @@ export function AssistantScreen() {
   const playbackBusy = useRef(false);
   const submittedIds = useRef(new Set<string>());
   const narratedIds = useRef(new Set<string>());
-  const hydratedComposerRequest = (() => {
+  type PersistedComposerRequest = { text: string; id: string };
+  const readPersistedComposerRequest = (): PersistedComposerRequest | null => {
     try {
       if (typeof sessionStorage === 'undefined') return null;
       const storedText = sessionStorage.getItem('sythion.composer.clientRequestText');
       const storedId = sessionStorage.getItem('sythion.composer.clientRequestId');
-      if (storedText !== null && storedId) {
-        return { text: storedText, id: storedId };
-      }
+      if (typeof storedText !== 'string' || storedText.length === 0) return null;
+      if (typeof storedId !== 'string' || storedId.length === 0) return null;
+      return { text: storedText, id: storedId };
     } catch {
       // Storage may be unavailable; in-memory tracking still applies.
+      return null;
     }
-    return null;
-  })();
-  const clientRequestIdRef = useRef<string | null>(hydratedComposerRequest?.id ?? null);
-  const clientRequestTextRef = useRef<string | null>(hydratedComposerRequest?.text ?? null);
+  };
+  const hydratedComposerRequest = readPersistedComposerRequest();
+  const clientComposerRequestRef = useRef<PersistedComposerRequest | null>(hydratedComposerRequest);
+useLayoutEffect(() => {
+  try {
+    const storedPair = readPersistedComposerRequest();
+    if (storedPair) {
+      if (!clientComposerRequestRef.current) {
+        clientComposerRequestRef.current = storedPair;
+      }
+      if (useAppStore.getState().transcriptDraft === '') {
+        useAppStore.getState().setTranscriptDraft(storedPair.text);
+      }
+    }
+  } catch {
+    // Storage may be unavailable; in-memory tracking still applies and no
+    // continuity is implied.
+  }
+}, []);
   const [captureBusy, setCaptureBusy] = useState(false);
   const tasks = useTasks();
   const agent = useAgent();
@@ -295,6 +313,12 @@ export function AssistantScreen() {
           </div>
         )}
 
+        {composerStorageCompromised && (
+          <div className="ac__composer-storage-warning" role="status" aria-live="polite">
+            Request identity storage could not be verified as cleared after sending. It will not be reused automatically while this page stays open, but reloading may reopen the previous request; it was not automatically retried or assumed complete.
+          </div>
+        )}
+
         <div className="chat chat--assistant">
               <div className="chat__scroll" ref={scrollRef}>
                 {dataMode === 'live' && conversationQuery.isError && (
@@ -365,6 +389,7 @@ export function AssistantScreen() {
                     };
                     setSubmitting(true);
                     setVoiceError(null);
+                    const priorUnconfirmedSchedulingTaskIds = unconfirmedSchedulingTaskIds;
                     setUnconfirmedSchedulingTaskIds(null);
                     // Capture the submission time before the request completes so the
                     // initiating exchange stays ahead of any background task that
@@ -374,41 +399,39 @@ export function AssistantScreen() {
                     // It survives an in-flight retry within this tab and is
                     // persisted until the backend accepts the turn, so a reload
                     // does not mint a second request for the same composer text.
-                    let storedText: string | null = null;
-                    let storedId: string | null = null;
-                    try {
-                      if (typeof sessionStorage !== 'undefined') {
-                        storedText = sessionStorage.getItem('sythion.composer.clientRequestText');
-                        storedId = sessionStorage.getItem('sythion.composer.clientRequestId');
+                    const readStoredComposerRequest = (): PersistedComposerRequest | null => {
+                      // Fail closed while mounted if an earlier successful turn could
+                      // not verify deletion of its persisted request identity.
+                      if (composerStorageCompromised) return null;
+                      try {
+                        if (typeof sessionStorage === 'undefined') return null;
+                        const storedText = sessionStorage.getItem('sythion.composer.clientRequestText');
+                        const storedId = sessionStorage.getItem('sythion.composer.clientRequestId');
+                        if (typeof storedText !== 'string' || storedText.length === 0) return null;
+                        if (typeof storedId !== 'string' || storedId.length === 0) return null;
+                        return { text: storedText, id: storedId };
+                      } catch {
+                        return null;
                       }
-                    } catch {
-                      storedText = null;
-                      storedId = null;
-                    }
-                    const hasValidStoredPair = storedText !== null && !!storedId;
-
-                    if (clientRequestIdRef.current === null && clientRequestTextRef.current === null && hasValidStoredPair) {
-                      clientRequestIdRef.current = storedId;
-                      clientRequestTextRef.current = storedText;
-                    }
+                    };
+                    const storedComposerRequest = readStoredComposerRequest();
+                    const refComposerRequest = clientComposerRequestRef.current;
 
                     let clientRequestId = '';
-                    if (clientRequestTextRef.current === text && clientRequestIdRef.current) {
-                      clientRequestId = clientRequestIdRef.current;
-                    } else if (hasValidStoredPair && storedText === text && storedId) {
-                      clientRequestId = storedId;
-                      clientRequestIdRef.current = storedId;
-                      clientRequestTextRef.current = storedText;
+                    if (refComposerRequest && refComposerRequest.text === text) {
+                      clientRequestId = refComposerRequest.id;
+                    } else if (storedComposerRequest && storedComposerRequest.text === text) {
+                      clientRequestId = storedComposerRequest.id;
+                      clientComposerRequestRef.current = storedComposerRequest;
                     }
                     if (!clientRequestId) {
                       clientRequestId = createClientRequestId();
-                      clientRequestIdRef.current = clientRequestId;
-                      clientRequestTextRef.current = text;
+                      clientComposerRequestRef.current = { text, id: clientRequestId };
                     }
                     try {
-                      if (typeof sessionStorage !== 'undefined') {
-                        sessionStorage.setItem('sythion.composer.clientRequestText', text);
-                        sessionStorage.setItem('sythion.composer.clientRequestId', clientRequestId);
+                      if (typeof sessionStorage !== 'undefined' && clientComposerRequestRef.current) {
+                        sessionStorage.setItem('sythion.composer.clientRequestText', clientComposerRequestRef.current.text);
+                        sessionStorage.setItem('sythion.composer.clientRequestId', clientComposerRequestRef.current.id);
                       }
                     } catch {
                       // Storage may be unavailable; in-memory tracking still applies.
@@ -455,17 +478,47 @@ export function AssistantScreen() {
                       }
                       clearSubmittedDraft();
                       const completedRequestId = clientRequestId;
-                      if (clientRequestTextRef.current === text && clientRequestIdRef.current === completedRequestId) {
-                        clientRequestIdRef.current = null;
-                        clientRequestTextRef.current = null;
+                      const completedPair = clientComposerRequestRef.current;
+                      if (completedPair && completedPair.text === text && completedPair.id === completedRequestId) {
+                        clientComposerRequestRef.current = null;
                       }
                       try {
                         if (typeof sessionStorage !== 'undefined') {
                           const currentStoredText = sessionStorage.getItem('sythion.composer.clientRequestText');
                           const currentStoredId = sessionStorage.getItem('sythion.composer.clientRequestId');
                           if (currentStoredText === text && currentStoredId === completedRequestId) {
-                            sessionStorage.removeItem('sythion.composer.clientRequestId');
-                            sessionStorage.removeItem('sythion.composer.clientRequestText');
+                            let removed = false;
+                            try {
+                              sessionStorage.removeItem('sythion.composer.clientRequestId');
+                              sessionStorage.removeItem('sythion.composer.clientRequestText');
+                              removed =
+                                sessionStorage.getItem('sythion.composer.clientRequestText') === null &&
+                                sessionStorage.getItem('sythion.composer.clientRequestId') === null;
+                            } catch {
+                              removed = false;
+                            }
+                            if (!removed) {
+                              let guarded = false;
+                              try {
+                                sessionStorage.setItem('sythion.composer.clientRequestText', '');
+                                sessionStorage.setItem('sythion.composer.clientRequestId', '');
+                                guarded =
+                                  sessionStorage.getItem('sythion.composer.clientRequestText') === '' &&
+                                  sessionStorage.getItem('sythion.composer.clientRequestId') === '';
+                              } catch {
+                                guarded = false;
+                              }
+                              if (!guarded) {
+                                // Deletion could not be verified. Fail closed while
+                                // mounted so the stale pair is not reused. If both
+                                // removeItem and setItem fail or no-op, the pair
+                                // may survive a page reload; that cannot be repaired
+                                // from inside the browser without a writable durable
+                                // marker, so the limitation is documented here and
+                                // in tests rather than over-claiming continuity.
+                                setComposerStorageCompromised(true);
+                              }
+                            }
                           }
                         }
                       } catch {
@@ -482,7 +535,7 @@ export function AssistantScreen() {
                       const message = err instanceof Error ? err.message : 'Failed to send the message';
                       notify({ tone: 'danger', title: 'Could not send', body: message });
                       setVoiceError(message);
-                      setUnconfirmedSchedulingTaskIds(null);
+                      setUnconfirmedSchedulingTaskIds(priorUnconfirmedSchedulingTaskIds);
                     } finally {
                       setSubmitting(false);
                     }
