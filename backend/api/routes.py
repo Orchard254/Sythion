@@ -898,6 +898,49 @@ async def assistant_turn(
             "shape",
             "command_validation",
         }
+
+        # Model responses are not trustworthy solely because they arrived. A
+        # json_malformed result can never be dispatched as a command; convert a
+        # normal assistant turn into an honest answer-only result instead of
+        # returning a hard 503 when the model finally emitted ordinary prose.
+        if (
+            safe_reason == "json_malformed"
+            and getattr(exc, "ordinary_prose", False)
+            and receipt_manager is not None
+        ):
+            _syntax_status = "unknown"
+            assistant_text = (
+                "I could not produce a properly formatted answer this time, so no "
+                "background work was started or changed. This response is "
+                "informative only."
+            )
+            try:
+                runtime = ConversationRuntime(db)
+                runtime._persist_conversation(
+                    user_text, assistant_text, exchange_id, task_id=None, status="completed",
+                )
+                db.commit()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            return AssistantTurnResponse(
+                exchange_id=deterministic_exchange_id,
+                user_text=user_text,
+                assistant_text=assistant_text,
+                status="completed",
+                background_task_ids=[],
+                background_task_scheduling_status=_syntax_status,
+                scheduling_status=_syntax_status,
+                task_scheduling_status=_syntax_status,
+                dispatch_status=_syntax_status,
+                scheduling_established=False,
+                receipt_id=client_request_id,
+                request_receipt_id=client_request_id,
+                composer_receipt_id=client_request_id,
+            )
+
         durable_model_rejection = False
         attempted_durable_rejection = False
         if (
@@ -946,6 +989,45 @@ async def assistant_turn(
                 status_code=503,
                 detail="Request outcome is uncertain; it was not rerun.",
             ) from None
+
+        # When the model emits ordinary prose but not the required JSON, no
+        # command can be dispatched. Rather than surfacing a hard failure, give
+        # an honest answer-only response. JSON/structured-looking output still
+        # fails closed so no suspicious content is echoed back.
+        if safe_reason == "json_malformed" and getattr(exc, "ordinary_prose", False):
+            _syntax_status = "unknown"
+            assistant_text = (
+                "I could not produce a properly formatted answer this time, so no "
+                "background work was started or changed. This response is "
+                "informative only."
+            )
+            try:
+                runtime = ConversationRuntime(db)
+                await runtime._persist_conversation(
+                    user_text, assistant_text, exchange_id, task_id=None, status="completed"
+                )
+                db.commit()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            return AssistantTurnResponse(
+                exchange_id=deterministic_exchange_id,
+                user_text=user_text,
+                assistant_text=assistant_text,
+                status="completed",
+                background_task_ids=[],
+                background_task_scheduling_status=_syntax_status,
+                scheduling_status=_syntax_status,
+                task_scheduling_status=_syntax_status,
+                dispatch_status=_syntax_status,
+                scheduling_established=False,
+                receipt_id=client_request_id,
+                request_receipt_id=client_request_id,
+                composer_receipt_id=client_request_id,
+            )
+
         raise HTTPException(status_code=503, detail="Assistant turn engine unavailable") from None
     except ConversationModelError:
         _assistant_turn_elapsed_ms = (time.perf_counter() - _assistant_turn_started_at) * 1000.0

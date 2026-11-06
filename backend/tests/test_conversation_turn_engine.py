@@ -500,7 +500,7 @@ async def test_plain_prose_without_descriptors_returns_informative_fallback():
 
 
 @pytest.mark.asyncio
-async def test_plain_prose_with_descriptors_remains_strict_malformed():
+async def test_plain_prose_with_descriptors_uses_prose_fallback_with_disclosure():
     prose = "I can help with that in ordinary language."
     fake = FakeModel(prose)
     engine = ConversationTurnEngine(fake)

@@ -286,6 +286,14 @@ class ConversationTurnEngine:
                     # that limitation explicit in the ordinary-prose answer.
                     assistant_text = assistant_text.strip() + PLAIN_PROSE_NO_ACTION_DISCLOSURE
                     return ConversationTurnResult(assistant_text, [])
+                import logging as _runtime_logging
+                _runtime_logging.getLogger(__name__).warning(
+                    "json_malformed not eligible for prose fallback: descriptors=%s ordinary_prose=%s attempt=%s/%s",
+                    len(descriptors),
+                    self._is_ordinary_prose(raw) if isinstance(raw, str) else "unknown",
+                    attempt + 1,
+                    self.MAX_TOTAL_MODEL_CALLS,
+                )
                 # Retry json_malformed only, and only before any task dispatch.
                 if (
                     exc.reason_code == "json_malformed"
@@ -2148,11 +2156,17 @@ class ConversationTurnEngine:
         except (json.JSONDecodeError, ValueError) as exc:
             import logging as _logging
 
+            # Keep credentials out of logs: record only metadata about the failed
+            # model output, never its text.
+            _exc = ConversationTurnValidationError("malformed JSON output", reason_code="json_malformed")
+            setattr(_exc, "ordinary_prose", self._is_ordinary_prose(raw))
             _logging.getLogger(__name__).warning(
-                "json_malformed raw preview=%r",
-                (raw.strip() if isinstance(raw, str) else raw)[:500],
+                "json_malformed raw len=%s descriptors=%s ordinary_prose=%s",
+                len(raw.strip() if isinstance(raw, str) else ""),
+                len(descriptors),
+                _exc.ordinary_prose,
             )
-            raise ConversationTurnValidationError("malformed JSON output", reason_code="json_malformed") from exc
+            raise _exc from exc
         if not isinstance(parsed, Mapping):
             raise ConversationTurnValidationError("output must be a JSON object", reason_code="shape")
         if set(parsed.keys()) != {"assistant_text", "commands"}:
