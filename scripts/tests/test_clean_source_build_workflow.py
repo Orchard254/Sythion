@@ -13,6 +13,7 @@ import os
 import pathlib
 import shutil
 import sys
+import tempfile
 
 import pytest
 
@@ -273,6 +274,29 @@ def test_clean_checkout_workflow_resources_absent_after_run(tmp_path):
     assert not (repo / "src-tauri" / "resources").exists()
 
 
+def _cross_drive_temp_dir(root):
+    try:
+        return tempfile.TemporaryDirectory(prefix="oc-clean-workflow-cross-drive-", dir=root)
+    except OSError as exc:
+        pytest.skip(f"cross-drive temporary directory unavailable: {exc}")
+
+
+def test_cross_drive_temp_dir_preserves_existing_directory(tmp_path):
+    existing = tmp_path / "oc-clean-workflow-cross-drive-test"
+    existing.mkdir()
+    sentinel = existing / "sentinel"
+    sentinel.write_text("keep", encoding="utf-8")
+    with _cross_drive_temp_dir(tmp_path) as first, _cross_drive_temp_dir(tmp_path) as second:
+        assert pathlib.Path(first) != pathlib.Path(second)
+        assert pathlib.Path(first) != existing
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_cross_drive_temp_dir_skips_unavailable_root(tmp_path):
+    with pytest.raises(pytest.skip.Exception):
+        _cross_drive_temp_dir(tmp_path / "missing")
+
+
 @pytest.mark.skipif(not pathlib.Path("E:/").exists(), reason="synthetic E: drive unavailable")
 def test_clean_checkout_workflow_cross_drive_resources_fail_closed(tmp_path):
     if not TEST_ZIP.is_file():
@@ -295,10 +319,8 @@ def test_clean_checkout_workflow_cross_drive_resources_fail_closed(tmp_path):
     )
     assert not _result_is_failure(seed), seed.message
 
-    e_payload = pathlib.Path("E:/oc-clean-workflow-cross-drive-test")
-    try:
-        if e_payload.exists():
-            shutil.rmtree(e_payload)
+    with _cross_drive_temp_dir(pathlib.Path("E:/")) as owned_dir:
+        e_payload = pathlib.Path(owned_dir) / "payload"
         shutil.copytree(staging_root, e_payload)
 
         try:
@@ -319,9 +341,6 @@ def test_clean_checkout_workflow_cross_drive_resources_fail_closed(tmp_path):
         assert failed, "cross-drive payload must fail closed"
         assert ("cross-drive" in message) or ("same windows drive" in message) or ("same drive" in message), message
         assert not (tmp_path / "cross-installer" / "tauri.conf.json").exists()
-    finally:
-        if e_payload.exists():
-            shutil.rmtree(e_payload, ignore_errors=True)
 
 
 def test_clean_checkout_workflow_no_mirror_file_reads(tmp_path, monkeypatch):
