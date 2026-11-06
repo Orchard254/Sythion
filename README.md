@@ -61,6 +61,7 @@ Start here:
 - [`docs/QUALITY_GATES.md`](docs/QUALITY_GATES.md) — definition of a professional change in this repo
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — startup, smoke-test, and validation runbook
 - [`docs/acceptance-test-map.md`](docs/acceptance-test-map.md) — release gates
+- [`Documentation index — current references, plans, and historical records`](docs/README.md)
 
 ## Development
 
