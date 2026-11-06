@@ -50,6 +50,14 @@ agency, but those layers must sit above this runtime rather than bypassing it.
 
 ## Source of truth
 
+Documentation authority note: only the documents listed below in this section,
+plus `docs/PROJECT_STATUS.md` and `docs/ROADMAP.md`, are current runtime
+references. Other files under `docs/` are historical/aspirational design records
+and may describe layers V1 explicitly excludes (multi-agent, persistent agents,
+vector memory, autonomous monitoring, autonomous planning that bypasses the
+runtime). Verify scope and behaviour against source and tests; a banner marks the
+most commonly misleading ones. `docs/README.md` is structural grouping only.
+
 Start here:
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — runtime contract
