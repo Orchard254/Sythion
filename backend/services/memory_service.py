@@ -16,7 +16,7 @@ Core invariants ():
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as _dataclass_fields
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -98,6 +98,254 @@ class RetrievedMemory:
     observed_at: Optional[datetime]
     updated_at: Optional[datetime]
     score: float = 0.0
+
+
+# --- read access context (minimal) -----------------------------------------
+
+_SCOPED_REF_FIELDS = {
+    "USER": "user_id",
+    "GLOBAL": None,
+    "SESSION": "session_id",
+    "TASK": "task_id",
+    "GOAL": "goal_id",
+    "ENTITY": "entity_id",
+}
+
+
+@dataclass(frozen=True)
+class MemoryAccessContext:
+    """Minimal scope identity used to filter memory reads.
+
+    An active memory entry is readable when its ``scope`` is permitted and,
+    for scoped scopes (TASK/SESSION/GOAL/ENTITY), its ``scope_ref`` exactly
+    matches the corresponding identity carried here.  USER/GLOBAL scopes are
+    treated as scope-wide unless explicitly disabled.
+    """
+
+    session_id: Optional[str] = None
+    session: Optional[str] = None
+    task_id: Optional[str] = None
+    task: Optional[str] = None
+    goal_id: Optional[str] = None
+    goal: Optional[str] = None
+    user_id: Optional[str] = None
+    user: Optional[str] = None
+    entity_id: Optional[str] = None
+    entity: Optional[str] = None
+    profile_id: Optional[str] = None
+    profile: Optional[str] = None
+
+    scopes: Optional[Any] = None
+    allowed_scopes: Optional[Any] = None
+    readable_scopes: Optional[Any] = None
+
+    scope: Optional[str] = None
+    scope_ref: Optional[str] = None
+    scope_refs: Optional[Any] = None
+    accessible_scope_refs: Optional[Any] = None
+
+    include_global: bool = True
+    include_user: bool = True
+    include_session: bool = True
+    include_task: bool = True
+    include_goal: bool = True
+    include_entity: bool = True
+    include_profile: bool = True
+    allow_global: Optional[bool] = None
+
+    @property
+    def resolved_session_id(self) -> Optional[str]:
+        return self.session_id if self.session_id is not None else self.session
+
+    @property
+    def resolved_task_id(self) -> Optional[str]:
+        return self.task_id if self.task_id is not None else self.task
+
+    @property
+    def resolved_goal_id(self) -> Optional[str]:
+        return self.goal_id if self.goal_id is not None else self.goal
+
+    @property
+    def resolved_user_id(self) -> Optional[str]:
+        return self.user_id if self.user_id is not None else self.user
+
+    @property
+    def resolved_entity_id(self) -> Optional[str]:
+        return self.entity_id if self.entity_id is not None else self.entity
+
+    @property
+    def resolved_profile_id(self) -> Optional[str]:
+        return self.profile_id if self.profile_id is not None else self.profile
+
+    @property
+    def resolved_global_allowed(self) -> bool:
+        if self.allow_global is not None:
+            return bool(self.allow_global)
+        return bool(self.include_global)
+
+    def _ref_for_scope(self, scope: str) -> Optional[str]:
+        scope = scope.upper()
+        if isinstance(self.scope_refs, dict):
+            if scope in self.scope_refs:
+                return self.scope_refs.get(scope)
+        if isinstance(self.accessible_scope_refs, dict):
+            if scope in self.accessible_scope_refs:
+                return self.accessible_scope_refs.get(scope)
+        if self.scope is not None and self.scope.strip().upper() == scope:
+            return self.scope_ref
+        if scope == "SESSION":
+            return self.resolved_session_id
+        if scope == "TASK":
+            return self.resolved_task_id
+        if scope == "GOAL":
+            return self.resolved_goal_id
+        if scope == "USER":
+            return self.resolved_user_id
+        if scope == "ENTITY":
+            return self.resolved_entity_id
+        if scope == "PROFILE":
+            return self.resolved_profile_id
+        return None
+
+    def _explicit_scope_list(self) -> Optional[List[str]]:
+        raw = None
+        if self.allowed_scopes is not None:
+            raw = self.allowed_scopes
+        elif self.readable_scopes is not None:
+            raw = self.readable_scopes
+        elif self.scopes is not None:
+            raw = self.scopes
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            raw = [raw]
+        try:
+            return [str(x).strip().upper() for x in raw if str(x).strip()]
+        except TypeError:
+            return None
+
+    def allowed_pairs(self) -> set:
+        """Return {(scope, ref or None)} readable under this context."""
+        pairs: set = set()
+        explicit = self._explicit_scope_list()
+        if explicit is not None:
+            scopes = explicit
+        else:
+            scopes = []
+            if self.include_user:
+                scopes.append("USER")
+            if self.resolved_global_allowed:
+                scopes.append("GLOBAL")
+            if self.include_session and self.resolved_session_id is not None:
+                scopes.append("SESSION")
+            if self.include_task and self.resolved_task_id is not None:
+                scopes.append("TASK")
+            if self.include_goal and self.resolved_goal_id is not None:
+                scopes.append("GOAL")
+            if self.include_entity and self.resolved_entity_id is not None:
+                scopes.append("ENTITY")
+            if self.include_profile and self.resolved_profile_id is not None:
+                scopes.append("PROFILE")
+            # A context with no positive identities still permits USER memory by
+            # default; empty derived sets collapse to USER only.
+            if not scopes:
+                scopes = ["USER"] if self.include_user else []
+        # Single-scope convenience form.
+        if self.scope is not None and self.scope.strip():
+            scopes = [self.scope.strip().upper()]
+
+        for scope in scopes:
+            scope = scope.upper()
+            if scope in ("USER", "GLOBAL"):
+                pairs.add((scope, None))
+            elif scope in ("SESSION", "TASK", "GOAL", "ENTITY", "PROFILE"):
+                ref = self._ref_for_scope(scope)
+                if ref is not None:
+                    pairs.add((scope, ref))
+            else:
+                # Unknown scopes are not readable by default.
+                pass
+        return pairs
+
+    @property
+    def visible_scopes(self) -> set:
+        return {p[0] for p in self.allowed_pairs()}
+
+    def allows(self, entry: Any) -> bool:
+        scope = getattr(entry, "scope", None)
+        if scope is None and isinstance(entry, dict):
+            scope = entry.get("scope")
+        scope = (scope or "").upper()
+        ref = getattr(entry, "scope_ref", None)
+        if ref is None and isinstance(entry, dict):
+            ref = entry.get("scope_ref")
+        for p_scope, p_ref in self.allowed_pairs():
+            if scope != p_scope:
+                continue
+            if p_scope in ("USER", "GLOBAL"):
+                return True
+            if p_ref is None or p_ref == ref:
+                return True
+        return False
+
+    def can_read(self, entry: Any) -> bool:
+        return self.allows(entry)
+
+    def readable(self, entry: Any) -> bool:
+        return self.allows(entry)
+
+    def is_readable(self, entry: Any) -> bool:
+        return self.allows(entry)
+
+    def visible(self, entry: Any) -> bool:
+        return self.allows(entry)
+
+    def filter(self, entries: Any) -> List[Any]:
+        return [e for e in (entries or []) if self.allows(e)]
+
+    def filter_entries(self, entries: Any) -> List[Any]:
+        return self.filter(entries)
+
+    def filter_readable(self, entries: Any) -> List[Any]:
+        return self.filter(entries)
+
+    def readable_entries(self, entries: Any) -> List[Any]:
+        return self.filter(entries)
+
+
+def _coerce_memory_access_context(value: Any) -> Optional["MemoryAccessContext"]:
+    if value is None:
+        return None
+    if isinstance(value, MemoryAccessContext):
+        return value
+    if isinstance(value, dict):
+        names = {f.name for f in _dataclass_fields(MemoryAccessContext)}
+        kwargs = {k: v for k, v in value.items() if k in names}
+        try:
+            return MemoryAccessContext(**kwargs)
+        except (TypeError, ValueError):
+            return None
+    # Duck-typed source object.
+    names = {f.name for f in _dataclass_fields(MemoryAccessContext)}
+    kwargs = {}
+    for name in names:
+        if hasattr(value, name):
+            kwargs[name] = getattr(value, name)
+    # Common aliases not spelled as dataclass fields.
+    alias_map = {
+        "session": "session",
+        "task": "task",
+        "goal": "goal",
+        "user": "user",
+        "entity": "entity",
+        "profile": "profile",
+    }
+    if not kwargs:
+        return None
+    try:
+        return MemoryAccessContext(**kwargs)
+    except (TypeError, ValueError):
+        return None
 
 
 def _norm(text: str) -> str:
@@ -491,15 +739,41 @@ class MemoryService:
         min_confidence: Optional[float] = None,
         require_verified: bool = False,
         recency_preference: bool = True,
+        access_context: Any = None,
+        context: Any = None,
+        memory_access_context: Any = None,
     ) -> List[RetrievedMemory]:
         """Deterministic retrieval over ACTIVE memories only.
 
         FORGOTTEN/SUPERSEDED/INVALIDATED/ARCHIVED are structurally excluded.
         """
+        ctx = _coerce_memory_access_context(
+            access_context if access_context is not None else
+            (context if context is not None else memory_access_context)
+        )
         q = self.db.query(MemoryEntry).filter(MemoryEntry.status == "ACTIVE")
         if kinds:
             q = q.filter(MemoryEntry.kind.in_([k.upper() for k in kinds]))
-        if scopes:
+        if ctx is not None:
+            from sqlalchemy import or_ as _or
+            pairs = ctx.allowed_pairs()
+            if scopes is not None:
+                allowed_scopes = {str(s).upper() for s in scopes}
+                pairs = {(s, r) for (s, r) in pairs if s in allowed_scopes}
+            if pairs:
+                conditions = []
+                for scope, ref in pairs:
+                    if scope in ("USER", "GLOBAL"):
+                        conditions.append(MemoryEntry.scope == scope)
+                    else:
+                        conditions.append(
+                            (MemoryEntry.scope == scope)
+                            & (MemoryEntry.scope_ref == ref)
+                        )
+                q = q.filter(_or(*conditions))
+            else:
+                q = q.filter(MemoryEntry.id.is_(None))
+        elif scopes:
             q = q.filter(MemoryEntry.scope.in_([s.upper() for s in scopes]))
         if min_confidence is not None:
             q = q.filter(MemoryEntry.confidence >= min_confidence)
@@ -535,11 +809,37 @@ class MemoryService:
         scored.sort(key=lambda m: (-m.score, -(m.updated_at or now).timestamp()))
         return scored[:max_results]
 
-    def get_active(self, key: str) -> Optional[MemoryEntry]:
-        return (
-            self.db.query(MemoryEntry)
-            .filter_by(key=key, status="ACTIVE").first()
+    def get_active(
+        self,
+        key: str,
+        *,
+        access_context: Any = None,
+        context: Any = None,
+        memory_access_context: Any = None,
+    ) -> Optional[MemoryEntry]:
+        ctx = _coerce_memory_access_context(
+            access_context if access_context is not None else
+            (context if context is not None else memory_access_context)
         )
+        q = self.db.query(MemoryEntry).filter_by(key=key, status="ACTIVE")
+        if ctx is not None:
+            from sqlalchemy import or_ as _or
+            pairs = ctx.allowed_pairs()
+            if pairs:
+                conditions = []
+                for scope, ref in pairs:
+                    if scope in ("USER", "GLOBAL"):
+                        conditions.append(MemoryEntry.scope == scope)
+                    else:
+                        conditions.append(
+                            (MemoryEntry.scope == scope)
+                            & (MemoryEntry.scope_ref == ref)
+                        )
+                q = q.filter(_or(*conditions))
+            else:
+                return None
+        row = q.first()
+        return row
 
     # ------------------------------------------------------------------ #
     # Listing / browsing (truthful, paginated, scope-safe)                 #
@@ -568,7 +868,14 @@ class MemoryService:
         offset: int = 0,
         min_confidence: Optional[float] = None,
         require_verified: bool = False,
+        access_context: Any = None,
+        context: Any = None,
+        memory_access_context: Any = None,
     ) -> List[RetrievedMemory]:
+        ctx = _coerce_memory_access_context(
+            access_context if access_context is not None else
+            (context if context is not None else memory_access_context)
+        )
         page_size = 25
         if limit is not None:
             page_size = limit
@@ -581,7 +888,26 @@ class MemoryService:
         q = self.db.query(MemoryEntry).filter(MemoryEntry.status == "ACTIVE")
         if kinds:
             q = q.filter(MemoryEntry.kind.in_([k.upper() for k in kinds]))
-        if scopes:
+        if ctx is not None:
+            from sqlalchemy import or_ as _or
+            pairs = ctx.allowed_pairs()
+            if scopes is not None:
+                allowed_scopes = {str(s).upper() for s in scopes}
+                pairs = {(s, r) for (s, r) in pairs if s in allowed_scopes}
+            if pairs:
+                conditions = []
+                for scope, ref in pairs:
+                    if scope in ("USER", "GLOBAL"):
+                        conditions.append(MemoryEntry.scope == scope)
+                    else:
+                        conditions.append(
+                            (MemoryEntry.scope == scope)
+                            & (MemoryEntry.scope_ref == ref)
+                        )
+                q = q.filter(_or(*conditions))
+            else:
+                q = q.filter(MemoryEntry.id.is_(None))
+        elif scopes:
             q = q.filter(MemoryEntry.scope.in_([s.upper() for s in scopes]))
         if min_confidence is not None:
             q = q.filter(MemoryEntry.confidence >= min_confidence)
@@ -626,11 +952,37 @@ class MemoryService:
         scopes: Optional[List[str]] = None,
         min_confidence: Optional[float] = None,
         require_verified: bool = False,
+        access_context: Any = None,
+        context: Any = None,
+        memory_access_context: Any = None,
     ) -> int:
+        ctx = _coerce_memory_access_context(
+            access_context if access_context is not None else
+            (context if context is not None else memory_access_context)
+        )
         q = self.db.query(MemoryEntry).filter(MemoryEntry.status == "ACTIVE")
         if kinds:
             q = q.filter(MemoryEntry.kind.in_([k.upper() for k in kinds]))
-        if scopes:
+        if ctx is not None:
+            from sqlalchemy import or_ as _or
+            pairs = ctx.allowed_pairs()
+            if scopes is not None:
+                allowed_scopes = {str(s).upper() for s in scopes}
+                pairs = {(s, r) for (s, r) in pairs if s in allowed_scopes}
+            if pairs:
+                conditions = []
+                for scope, ref in pairs:
+                    if scope in ("USER", "GLOBAL"):
+                        conditions.append(MemoryEntry.scope == scope)
+                    else:
+                        conditions.append(
+                            (MemoryEntry.scope == scope)
+                            & (MemoryEntry.scope_ref == ref)
+                        )
+                q = q.filter(_or(*conditions))
+            else:
+                q = q.filter(MemoryEntry.id.is_(None))
+        elif scopes:
             q = q.filter(MemoryEntry.scope.in_([s.upper() for s in scopes]))
         if min_confidence is not None:
             q = q.filter(MemoryEntry.confidence >= min_confidence)

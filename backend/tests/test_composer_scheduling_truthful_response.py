@@ -130,10 +130,10 @@ async def test_exact_replay_aligns_scheduling_fields_and_does_not_rerun(request)
     ) == {"unknown"}, replay
 
 
-def test_empty_work_list_remains_true(test_db):
-    assert _composer_scheduling_established(test_db, None) is True
-    assert _composer_scheduling_established(test_db, []) is True
-    assert _composer_scheduling_established(test_db, ()) is True
+def test_empty_work_list_is_false(test_db):
+    assert _composer_scheduling_established(test_db, None) is False
+    assert _composer_scheduling_established(test_db, []) is False
+    assert _composer_scheduling_established(test_db, ()) is False
 
 
 def test_malformed_nonempty_work_list_is_unproven(test_db):

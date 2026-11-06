@@ -50,6 +50,7 @@ from sqlalchemy import (
     UniqueConstraint,
     CheckConstraint,
     func,
+    JSON,
 )
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -76,6 +77,47 @@ ALL_STATUSES: Tuple[str, ...] = (STATUS_PENDING, STATUS_APPROVED, STATUS_DENIED)
 TERMINAL_STATUSES: Tuple[str, ...] = (STATUS_APPROVED, STATUS_DENIED)
 
 DIGEST_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
+
+# Nullable, additive provenance fields for decision receipts. These carry trusted
+# issuance/provenance metadata opaquely; they never grant authorization, are not
+# required for legacy rows, and do not alter the core decision binding. Stored
+# as JSON-compatible nullable columns so both scalar identifiers and structured
+# provenance objects remain possible without inventing receipt semantics here.
+PROVENANCE_FIELDS: Tuple[str, ...] = (
+    "provenance",
+    "trusted",
+    "principal",
+    "principal_id",
+    "issuer",
+    "issuer_id",
+    "issued_by",
+    "issued_by_principal",
+    "trusted_issuer",
+    "trust_source",
+    "trusted_source",
+    "authenticator",
+    "authenticator_id",
+    "auth_method",
+    "auth_assurance",
+    "authentication_method",
+    "authentication_assurance",
+    "authenticator_method",
+    "authenticator_reason",
+    "assurance",
+    "assurance_class",
+    "assurance_level",
+    "identity_method",
+    "identity_assurance",
+    "credential_method",
+    "approved_by",
+    "approved_by_user",
+    "actor",
+    "actor_id",
+    "subject",
+    "verified_by",
+)
+
+ALL_PROVENANCE_FIELDS: Tuple[str, ...] = PROVENANCE_FIELDS
 
 _DECISION_SYNONYMS = {
     "approve": STATUS_APPROVED,
@@ -152,6 +194,37 @@ class PermissionDecisionReceiptRow(Base):  # type: ignore[misc]
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     decided_at = Column(DateTime, nullable=True)
     terminal_reason = Column(String, nullable=True)
+    provenance = Column(JSON, nullable=True)
+    trusted = Column(JSON, nullable=True)
+    principal = Column(JSON, nullable=True)
+    principal_id = Column(JSON, nullable=True)
+    issuer = Column(JSON, nullable=True)
+    issuer_id = Column(JSON, nullable=True)
+    issued_by = Column(JSON, nullable=True)
+    issued_by_principal = Column(JSON, nullable=True)
+    trusted_issuer = Column(JSON, nullable=True)
+    trust_source = Column(JSON, nullable=True)
+    trusted_source = Column(JSON, nullable=True)
+    authenticator = Column(JSON, nullable=True)
+    authenticator_id = Column(JSON, nullable=True)
+    auth_method = Column(JSON, nullable=True)
+    auth_assurance = Column(JSON, nullable=True)
+    authentication_method = Column(JSON, nullable=True)
+    authentication_assurance = Column(JSON, nullable=True)
+    authenticator_method = Column(JSON, nullable=True)
+    authenticator_reason = Column(JSON, nullable=True)
+    assurance = Column(JSON, nullable=True)
+    assurance_class = Column(JSON, nullable=True)
+    assurance_level = Column(JSON, nullable=True)
+    identity_method = Column(JSON, nullable=True)
+    identity_assurance = Column(JSON, nullable=True)
+    credential_method = Column(JSON, nullable=True)
+    approved_by = Column(JSON, nullable=True)
+    approved_by_user = Column(JSON, nullable=True)
+    actor = Column(JSON, nullable=True)
+    actor_id = Column(JSON, nullable=True)
+    subject = Column(JSON, nullable=True)
+    verified_by = Column(JSON, nullable=True)
 
     __table_args__ = (
         CheckConstraint(
@@ -196,6 +269,39 @@ class PermissionDecisionReceipt:
     updated_at: Optional[datetime] = None
     decided_at: Optional[datetime] = None
     terminal_reason: Optional[str] = None
+    # Nullable, additive provenance (non-authorizing). Kept as Any to support
+    # opaque composite provenance values supplied by a trusted boundary.
+    provenance: Any = None
+    trusted: Any = None
+    principal: Any = None
+    principal_id: Any = None
+    issuer: Any = None
+    issuer_id: Any = None
+    issued_by: Any = None
+    issued_by_principal: Any = None
+    trusted_issuer: Any = None
+    trust_source: Any = None
+    trusted_source: Any = None
+    authenticator: Any = None
+    authenticator_id: Any = None
+    auth_method: Any = None
+    auth_assurance: Any = None
+    authentication_method: Any = None
+    authentication_assurance: Any = None
+    authenticator_method: Any = None
+    authenticator_reason: Any = None
+    assurance: Any = None
+    assurance_class: Any = None
+    assurance_level: Any = None
+    identity_method: Any = None
+    identity_assurance: Any = None
+    credential_method: Any = None
+    approved_by: Any = None
+    approved_by_user: Any = None
+    actor: Any = None
+    actor_id: Any = None
+    subject: Any = None
+    verified_by: Any = None
 
     @property
     def id(self) -> str:
@@ -234,7 +340,7 @@ class PermissionDecisionReceipt:
 
     @classmethod
     def from_row(cls, row: "PermissionDecisionReceiptRow") -> "PermissionDecisionReceipt":
-        return cls(
+        receipt = cls(
             decision_id=row.decision_id,
             task_id=row.task_id,
             source_task_id=row.source_task_id,
@@ -250,6 +356,13 @@ class PermissionDecisionReceipt:
             decided_at=row.decided_at,
             terminal_reason=row.terminal_reason,
         )
+        # Populate nullable additive provenance fields without breaking older rows.
+        for _prov_field in PROVENANCE_FIELDS:
+            try:
+                setattr(receipt, _prov_field, getattr(row, _prov_field, None))
+            except Exception:
+                setattr(receipt, _prov_field, None)
+        return receipt
 
 
 def _session_of(db: Any) -> Session:
@@ -680,7 +793,7 @@ class PermissionDecisionReceiptManager:
         values.setdefault("task_id", task_id if task_id is not None else source_task_id)
 
     def _row_values(self, values: dict[str, Any]) -> dict[str, Any]:
-        return {
+        insert_values = {
             "decision_id": values["decision_id"],
             "task_id": values.get("task_id"),
             "source_task_id": values.get("source_task_id"),
@@ -696,6 +809,9 @@ class PermissionDecisionReceiptManager:
             "decided_at": self._now() if values["status"] in TERMINAL_STATUSES else None,
             "terminal_reason": values.get("terminal_reason"),
         }
+        for _prov_field in PROVENANCE_FIELDS:
+            insert_values[_prov_field] = values.get(_prov_field, None)
+        return insert_values
 
     def _same_binding(self, existing: "PermissionDecisionReceipt", values: dict[str, Any]) -> bool:
         return (
@@ -1067,4 +1183,6 @@ __all__ = [
     "PermissionReceipt",
     "DecisionReceipt",
     "PermissionDecisionManager",
+    "PROVENANCE_FIELDS",
+    "ALL_PROVENANCE_FIELDS",
 ]

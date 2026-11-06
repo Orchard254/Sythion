@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -123,7 +124,18 @@ class VoskSTT:
         self._tried = False
 
     def _load(self) -> None:
-        if self._tried:
+        if self._ready:
+            return
+        # Keep the honest "not installed" fast path cached, but retry once a
+        # pinned model is installed after a prior failed attempt (owner-initiated
+        # install must not require a process restart to take effect).
+        try:
+            from backend.core.voice_assets import stt_model_installed
+
+            installed_now = bool(stt_model_installed())
+        except Exception:  # pragma: no cover - import path compatibility
+            installed_now = False
+        if self._tried and not installed_now:
             return
         self._tried = True
         try:
@@ -142,6 +154,8 @@ class VoskSTT:
             logger.info("vosk package not installed; STT unavailable")
         except Exception as e:  # pragma: no cover - model/load dependent
             logger.warning("Failed to load Vosk STT: %s", e)
+            # Forget the failed attempt so a corrected model path can recover.
+            self._tried = False
 
     def available(self) -> bool:
         self._load()
@@ -151,6 +165,11 @@ class VoskSTT:
         if not self.available():
             return ""
         try:
+            if self._recognizer is not None:
+                try:
+                    self._recognizer.Reset()
+                except Exception:  # pragma: no cover
+                    pass
             self._recognizer.AcceptWaveform(pcm16_mono, sample_rate)
             result = self._recognizer.FinalResult()
             import json
@@ -170,37 +189,110 @@ class VoskSTT:
 
 
 class SAPI5TTS:
-    """Local/offline Windows SAPI5 TTS via pyttsx3."""
+    """Local/offline Windows SAPI5 TTS via pyttsx3.
 
-    def __init__(self) -> None:
+    The engine is created lazily on the first ``speak`` call (never at import or
+    construction time). Initialization failures and playback failures are not
+    cached as permanent state, so a later retry or an owner-installed/changed
+    voice configuration can recover without a process restart.
+    """
+
+    # Default bound for a single playback; pyttsx3's runAndWait() can block
+    # forever on a wedged SAPI5 driver, which would otherwise pin the sidecar.
+    DEFAULT_SPEAK_TIMEOUT_SECONDS: float = 5.0
+
+    def __init__(
+        self,
+        speak_timeout_seconds: Optional[float] = None,
+        voice_name: Optional[str] = None,
+    ) -> None:
         self._engine = None
+        self._engine_lock = threading.Lock()
+        self._speak_timeout = (
+            float(speak_timeout_seconds)
+            if speak_timeout_seconds is not None
+            else self.DEFAULT_SPEAK_TIMEOUT_SECONDS
+        )
+        if self._speak_timeout <= 0:
+            self._speak_timeout = self.DEFAULT_SPEAK_TIMEOUT_SECONDS
+        self._voice_name = voice_name
 
     def _get_engine(self):
-        if self._engine is None:
+        """Lazily initialize the pyttsx3 engine; failures are retryable."""
+        with self._engine_lock:
+            if self._engine is not None:
+                return self._engine
             try:
-                import pyttsx3
+                import pyttsx3  # type: ignore
 
-                self._engine = pyttsx3.init()
-                self._engine.setProperty("rate", 175)
+                engine = pyttsx3.init()
+                engine.setProperty("rate", 175)
+                if self._voice_name:
+                    try:
+                        for voice in engine.getProperty("voices") or []:
+                            name = getattr(voice, "name", "") or ""
+                            if self._voice_name.lower() in str(name).lower():
+                                engine.setProperty("voice", getattr(voice, "id", None) or voice.id)
+                                break
+                    except Exception:  # pragma: no cover - engine dependent
+                        logger.debug("Could not apply SAPI5 voice %r", self._voice_name)
+                self._engine = engine
+                logger.info("SAPI5 TTS loaded")
+                return self._engine
             except Exception as e:  # pragma: no cover - OS dependent
                 logger.warning("SAPI5 TTS unavailable: %s", e)
                 self._engine = None
-        return self._engine
+                return None
 
     def speak(self, text: str) -> bool:
-        """Speak ``text``. Only call with concise evidence-based results."""
+        """Speak ``text``. Only call with concise evidence-based results.
+
+        A wedged ``runAndWait()`` is abandoned after the configured timeout and
+        the cached engine is invalidated so the next call reinitializes.
+        """
         if not text or not text.strip():
             return False
-        engine = self._get_engine()
-        if engine is None:
-            return False
-        try:
-            engine.say(text)
-            engine.runAndWait()
-            return True
-        except Exception as e:  # pragma: no cover - OS dependent
-            logger.error("TTS playback failed: %s", e)
-            return False
+        cleaned = text.strip()
+
+        for _attempt in range(2):
+            engine = self._get_engine()
+            if engine is None:
+                return False
+
+            outcome = {"ok": False, "error": None}
+
+            def _worker() -> None:
+                try:
+                    engine.say(cleaned)
+                    engine.runAndWait()
+                    outcome["ok"] = True
+                except Exception as exc:  # pragma: no cover - OS dependent
+                    outcome["error"] = exc
+
+            worker = threading.Thread(target=_worker, daemon=True)
+            worker.start()
+            worker.join(self._speak_timeout)
+
+            if worker.is_alive():
+                logger.warning(
+                    "SAPI5 TTS playback timed out after %.2fs; invalidating engine",
+                    self._speak_timeout,
+                )
+                self._invalidate_engine()
+                continue
+
+            if outcome["error"] is not None:
+                logger.error("TTS playback failed: %s", outcome["error"])
+                self._invalidate_engine()
+                continue
+
+            return bool(outcome["ok"])
+
+        return False
+
+    def _invalidate_engine(self) -> None:
+        with self._engine_lock:
+            self._engine = None
 
 
 def detect_stop_phrase(text: str) -> bool:
@@ -318,16 +410,26 @@ class VoiceSessionManager:
 
     def _flush_pending(self, session: VoiceSessionState) -> Optional[SegmentResult]:
         """Transcribe the accumulated utterance, then delete its raw audio."""
+        # Drain any trailing partial frame so the capture loop / manual stop
+        # does not drop the tail of the utterance.
+        if session.pending_frame_buffer:
+            session.pending_audio += session.pending_frame_buffer
+            session.pending_frame_buffer = b""
+
         if not session.pending_audio or not session.speaking:
             session.pending_audio = b""
+            session.pending_frame_buffer = b""
             session.speaking = False
             session.silence_frames = 0
+            session.raw_bytes_retained = 0
             return None
 
         audio = session.pending_audio
         session.pending_audio = b""
+        session.pending_frame_buffer = b""
         session.speaking = False
         session.silence_frames = 0
+        session.raw_bytes_retained = 0
         session.segment_counter += 1
 
         stt_available = self._stt.available()

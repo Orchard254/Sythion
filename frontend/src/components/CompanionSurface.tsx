@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Companion } from './Companion';
 import { useActions, useVoiceAssets } from '../hooks/useBackend';
 import { useAppStore } from '../store/appStore';
+import { voiceService } from '../services/api';
 import { isTauri } from '../services/bridge';
 
 /* Companion overlay surface.
@@ -69,6 +70,8 @@ export function CompanionSurface() {
 
   const [submitting, setSubmitting] = useState(false);
   const [surfaceError, setSurfaceError] = useState<string | null>(null);
+  const [caption, setCaption] = useState<string | null>(null);
+  const [speaking, setSpeaking] = useState(false);
   const reducedMotionRef = useRef(false);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
@@ -105,8 +108,38 @@ export function CompanionSurface() {
       setSubmitting(true);
       setSurfaceError(null);
       try {
-        await actions.createTask(text);
+        // Prefer the conversational turn endpoint: it returns the assistant's
+        // reply as text in the same request, which is what allows the Companion
+        // to speak it without a second round-trip or manual intervention.
+        // Fall back to task creation for runtimes that only expose that path.
+        const turn =
+          typeof actions.assistantTurn === 'function'
+            ? await actions.assistantTurn(text)
+            : await actions.createTask(text).then((task) => ({
+                assistant_text: (task as { final_result?: string | null })?.final_result ?? '',
+              }));
+        const reply = turn?.assistant_text?.trim() ?? '';
+        setCaption(reply || null);
         setTranscriptDraft('');
+        setSubmitting(false);
+
+        // Spoken reply by default, mirroring the Assistant screen: unavailable
+        // TTS is a known, expected condition on machines without a usable voice,
+        // so a missing speaker never becomes an alarming status line. Genuine,
+        // unrelated playback failures still surface honestly.
+        if (reply) {
+          setSpeaking(true);
+          try {
+            const result = await voiceService.speak(reply.slice(0, 1000));
+            if (!result?.success) return;
+          } catch (err) {
+            const message = err instanceof Error ? err.message : 'Playback failed. Read the reply below.';
+            if (/playback is unavailable|TTS (is )?unavailable|no (usable )?voice/i.test(message)) return;
+            setSurfaceError(message);
+          } finally {
+            setSpeaking(false);
+          }
+        }
       } catch (err) {
         // Honest failure: the text was NOT submitted.
         setSurfaceError(err instanceof Error ? err.message : 'Could not send to Sythion.');
@@ -239,6 +272,8 @@ useEffect(() => {
         submitting={submitting}
         sttAvailable={sttAvailable}
         error={surfaceError}
+        caption={caption}
+        speaking={speaking}
         reducedMotion={reducedMotionRef.current}
       />
     </div>

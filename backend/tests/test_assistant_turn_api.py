@@ -10,14 +10,20 @@ try:
     from backend.api.schemas import AssistantTurnRequest, TaskState
     from backend.core.session import set_current_session_id
     from backend.models.database import Task, ConversationTurn, ConversationExchange
-    from backend.services.conversation_turn_engine import ConversationTurnValidationError
+    from backend.services.conversation_turn_engine import (
+        ConversationTurnValidationError,
+        PLAIN_PROSE_NO_ACTION_DISCLOSURE,
+    )
     from backend.services.conversation_runtime import ConversationModelError
 except ImportError:
     from api.routes import assistant_turn
     from api.schemas import AssistantTurnRequest, TaskState
     from core.session import set_current_session_id
     from models.database import Task, ConversationTurn, ConversationExchange
-    from services.conversation_turn_engine import ConversationTurnValidationError
+    from services.conversation_turn_engine import (
+        ConversationTurnValidationError,
+        PLAIN_PROSE_NO_ACTION_DISCLOSURE,
+    )
     from services.conversation_runtime import ConversationModelError
 
 
@@ -758,7 +764,7 @@ async def test_assistant_turn_real_engine_plain_prose_fallback_completed_no_task
     )
 
     assert resp.status == "completed"
-    assert resp.assistant_text == "Beam says hello"
+    assert resp.assistant_text == "Beam says hello" + PLAIN_PROSE_NO_ACTION_DISCLOSURE
     assert resp.background_task_ids == []
     assert len(bg.tasks) == 0
     assert db.query(Task).count() == 0

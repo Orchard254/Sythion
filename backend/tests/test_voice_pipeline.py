@@ -243,3 +243,242 @@ class TestVoskSTTAvailability:
         if not stt.available():
             assert stt.transcribe(b"\x00" * 960, 16000) == ""
             assert stt.reset() is None
+
+    def test_vosk_stt_retries_after_model_becomes_installed(self, monkeypatch):
+        import sys
+        import types
+
+        from backend.services.voice_pipeline import VoskSTT
+
+        installed = {"value": False}
+
+        def _installed():
+            return installed["value"]
+
+        # Provide a Vosk module even though the test env may not have one.
+        fake_vosk = types.ModuleType("vosk")
+        fake_vosk.Model = lambda model_path: object()
+        fake_vosk.KaldiRecognizer = lambda model, rate: types.SimpleNamespace(
+            AcceptWaveform=lambda *a, **k: None,
+            FinalResult=lambda: '{"text": "ok"}',
+            Reset=lambda: None,
+        )
+        monkeypatch.setitem(sys.modules, "vosk", fake_vosk)
+        monkeypatch.setattr("backend.core.voice_assets.stt_model_installed", _installed)
+        monkeypatch.setattr("backend.core.voice_assets.stt_model_path", lambda: "dummy-model")
+
+        stt = VoskSTT()
+        stt._load()
+        assert stt.available() is False
+
+        # Simulate an owner-initiated install completing after the first load.
+        installed["value"] = True
+        stt._load()
+        assert stt.available() is True
+        assert stt.transcribe(b"\x00" * 960, 16000) == "ok"
+
+
+class TestSAPI5TTSReliability:
+    """Offline TTS must initialize lazily, retry transient failures, and time out."""
+
+    @staticmethod
+    def _fake_pyttsx3(monkeypatch, init_factory):
+        import sys
+        import types
+
+        module = types.ModuleType("pyttsx3")
+        module.init = init_factory
+        monkeypatch.setitem(sys.modules, "pyttsx3", module)
+
+    def test_empty_text_is_not_spoken(self):
+        from backend.services.voice_pipeline import SAPI5TTS
+
+        assert SAPI5TTS().speak("") is False
+        assert SAPI5TTS().speak("   ") is False
+
+    def test_engine_is_not_created_at_construction(self, monkeypatch):
+        from backend.services.voice_pipeline import SAPI5TTS
+
+        calls = {"init": 0}
+
+        def init():
+            calls["init"] += 1
+            raise RuntimeError("must not be called during construction")
+
+        self._fake_pyttsx3(monkeypatch, init)
+        tts = SAPI5TTS()
+        assert tts._engine is None
+        assert calls["init"] == 0
+
+    def test_lazy_initialization_on_first_speak(self, monkeypatch):
+        from backend.services.voice_pipeline import SAPI5TTS
+
+        class Engine:
+            def __init__(self):
+                self.said = []
+
+            def setProperty(self, *args, **kwargs):
+                pass
+
+            def getProperty(self, name):
+                if name == "voices":
+                    return []
+                return None
+
+            def say(self, text):
+                self.said.append(text)
+
+            def runAndWait(self):
+                pass
+
+        engine = Engine()
+        self._fake_pyttsx3(monkeypatch, lambda: engine)
+
+        tts = SAPI5TTS()
+        assert tts.speak("hello") is True
+        assert engine.said == ["hello"]
+
+    def test_retries_initialization_after_failure(self, monkeypatch):
+        from backend.services.voice_pipeline import SAPI5TTS
+
+        class Engine:
+            def setProperty(self, *args, **kwargs):
+                pass
+
+            def getProperty(self, name):
+                return [] if name == "voices" else None
+
+            def say(self, text):
+                pass
+
+            def runAndWait(self):
+                pass
+
+        calls = {"init": 0}
+
+        def init():
+            calls["init"] += 1
+            if calls["init"] == 1:
+                raise RuntimeError("temporary init failure")
+            return Engine()
+
+        self._fake_pyttsx3(monkeypatch, init)
+
+        tts = SAPI5TTS()
+        assert tts.speak("hello") is False
+        assert tts.speak("hello") is True
+        assert calls["init"] == 2
+
+    def test_retries_playback_once_within_a_single_speak(self, monkeypatch):
+        from backend.services.voice_pipeline import SAPI5TTS
+
+        class FailingEngine:
+            def setProperty(self, *args, **kwargs):
+                pass
+
+            def getProperty(self, name):
+                return [] if name == "voices" else None
+
+            def say(self, text):
+                pass
+
+            def runAndWait(self):
+                raise RuntimeError("playback boom")
+
+        class WorkingEngine:
+            def __init__(self):
+                self.play_calls = 0
+
+            def setProperty(self, *args, **kwargs):
+                pass
+
+            def getProperty(self, name):
+                return [] if name == "voices" else None
+
+            def say(self, text):
+                pass
+
+            def runAndWait(self):
+                self.play_calls += 1
+
+        inits = {"n": 0}
+        created = []
+
+        def init():
+            inits["n"] += 1
+            if inits["n"] == 1:
+                return FailingEngine()
+            engine = WorkingEngine()
+            created.append(engine)
+            return engine
+
+        self._fake_pyttsx3(monkeypatch, init)
+
+        tts = SAPI5TTS()
+        assert tts.speak("hello") is True
+        # First engine failed playback and was invalidated; second engine succeeded.
+        assert inits["n"] == 2
+        assert created and created[-1].play_calls == 1
+
+    def test_speak_times_out_and_returns_false(self, monkeypatch):
+        import time
+
+        from backend.services.voice_pipeline import SAPI5TTS
+
+        class Engine:
+            def setProperty(self, *args, **kwargs):
+                pass
+
+            def getProperty(self, name):
+                return [] if name == "voices" else None
+
+            def say(self, text):
+                pass
+
+            def runAndWait(self):
+                time.sleep(10)
+
+        self._fake_pyttsx3(monkeypatch, lambda: Engine())
+
+        tts = SAPI5TTS(speak_timeout_seconds=0.1)
+        started = time.time()
+        assert tts.speak("hello") is False
+        assert time.time() - started < 1.0
+
+    def test_pinned_voice_is_applied(self, monkeypatch):
+        from backend.services.voice_pipeline import SAPI5TTS
+
+        class Voice:
+            def __init__(self, vid, name):
+                self.id = vid
+                self.name = name
+
+        class Engine:
+            def __init__(self):
+                self.rate = None
+                self.voice = None
+                self.voices = [Voice("v1", "Microsoft Zira Desktop")]
+
+            def setProperty(self, key, value):
+                if key == "rate":
+                    self.rate = value
+                elif key == "voice":
+                    self.voice = value
+
+            def getProperty(self, name):
+                if name == "voices":
+                    return self.voices
+                return None
+
+            def say(self, text):
+                pass
+
+            def runAndWait(self):
+                pass
+
+        engine = Engine()
+        self._fake_pyttsx3(monkeypatch, lambda: engine)
+
+        tts = SAPI5TTS(voice_name="Microsoft Zira Desktop")
+        assert tts.speak("hello") is True
+        assert engine.voice == "v1"

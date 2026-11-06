@@ -325,11 +325,12 @@ def _composer_scheduling_established(db: Session, task_ids: List[str]) -> bool:
     presence are never used to infer current progress, completion, clearance
     or producer quiescence.  An absent event does not mean no worker ran.
     """
-    # Only an actual absence of work is vacuously true.  A non-list scalar, a
-    # malformed (non-string/blank) ID, or any database miss is unproven rather
-    # than silently filtered into an empty/vacuously-true result.
+    # An empty/None/non-list input carries no scheduling evidence of its own:
+    # do not treat "no tasks supplied" as vacuously scheduled. Callers that
+    # intend the pure "no work pending" case must handle that explicitly rather
+    # than relying on this helper.
     if task_ids is None:
-        return True
+        return False
     if isinstance(task_ids, str):
         return False
     try:
@@ -337,7 +338,7 @@ def _composer_scheduling_established(db: Session, task_ids: List[str]) -> bool:
     except TypeError:
         return False
     if not items:
-        return True
+        return False
     ids = []
     for item in items:
         if not isinstance(item, str):
@@ -609,7 +610,7 @@ async def assistant_turn(
                 from backend.models.database import Task as _SchedulingTask
                 start_key = "assistant_turn_start_task:" + deterministic_exchange_id[len("conv-"):]
                 try:
-                    request_created_tasks = all(
+                    request_created_tasks = bool(associated_task_ids) and all(
                         db.query(_SchedulingTask).filter_by(
                             id=task_id, idempotency_key=start_key
                         ).first() is not None
@@ -1382,10 +1383,15 @@ async def assistant_turn(
         except Exception:
             logger.warning("Partial recall indexing skipped: scheduling_error")
 
-    # Existing task events cannot prove this particular clarification resumed.
+    # Empty background-task lists (pure conversation) remain "established" by
+    # absence of work, but that is handled explicitly here; the scheduling
+    # helper itself must not return True vacuously for an empty list.
     _fresh_scheduling_established = (
-        (not background_task_ids or background_task_ids == [created_task_id])
-        and _composer_scheduling_established(db, background_task_ids)
+        (not background_task_ids)
+        or (
+            background_task_ids == [created_task_id]
+            and _composer_scheduling_established(db, background_task_ids)
+        )
     )
     _fresh_scheduling_status = "established" if _fresh_scheduling_established else "unknown"
     return AssistantTurnResponse(
