@@ -188,6 +188,8 @@ class OllamaCloudAdapter:
 
     async def list_models(self) -> List[Dict[str, Any]]:
         """List available models from Ollama Cloud."""
+        if not self.api_key:
+            raise ProviderCapabilityError("Cloud API key is not configured")
         try:
             client = await self._get_client()
             response = await client.get("/api/tags")
