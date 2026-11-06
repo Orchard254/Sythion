@@ -56,7 +56,7 @@ export function AssistantScreen() {
   const submittedIds = useRef(new Set<string>());
   const narratedIds = useRef(new Set<string>());
   type PersistedComposerRequest = { text: string; id: string };
-  const readPersistedComposerRequest = (): PersistedComposerRequest | null => {
+  const readPersistedComposerRequest = useCallback((): PersistedComposerRequest | null => {
     try {
       if (typeof sessionStorage === 'undefined') return null;
       const storedText = sessionStorage.getItem('sythion.composer.clientRequestText');
@@ -68,7 +68,7 @@ export function AssistantScreen() {
       // Storage may be unavailable; in-memory tracking still applies.
       return null;
     }
-  };
+  }, []);
   const hydratedComposerRequest = readPersistedComposerRequest();
   const clientComposerRequestRef = useRef<PersistedComposerRequest | null>(hydratedComposerRequest);
 useLayoutEffect(() => {
@@ -86,7 +86,7 @@ useLayoutEffect(() => {
     // Storage may be unavailable; in-memory tracking still applies and no
     // continuity is implied.
   }
-}, []);
+}, [readPersistedComposerRequest]);
   const [captureBusy, setCaptureBusy] = useState(false);
   const tasks = useTasks();
   const agent = useAgent();
@@ -166,16 +166,33 @@ useLayoutEffect(() => {
 
   // Poll only recovered terminal tasks whose diagnostic repair is still pending.
   // Terminal completed/cancelled tasks and repaired failures do not need refresh.
-  const pendingDiagnosticTaskIds = recoveredTasks
-    .filter((task) => task.state === 'failed' && !(task.final_result ?? '').includes('Diagnostic:'))
-    .map((task) => task.id);
+  const pendingDiagnosticTaskIds = useMemo(
+    () => recoveredTasks
+      .filter((task) => task.state === 'failed' && !(task.final_result ?? '').includes('Diagnostic:'))
+      .map((task) => task.id),
+    [recoveredTasks]
+  );
+  // Keep the latest pending ids reachable from the polling interval without
+  // changing the interval's identity. Serializing the ids gives a stable key so
+  // that recovered-task updates which do not change the pending set do not reset
+  // the timer. JSON.stringify preserves ids containing commas or other
+  // characters without ambiguity.
+  const pendingDiagnosticTaskIdsRef = useRef(pendingDiagnosticTaskIds);
   useEffect(() => {
-    if (dataMode !== 'live' || !pendingDiagnosticTaskIds.length) return;
+    pendingDiagnosticTaskIdsRef.current = pendingDiagnosticTaskIds;
+  }, [pendingDiagnosticTaskIds]);
+  const pendingDiagnosticTaskIdsKey = useMemo(
+    () => JSON.stringify(pendingDiagnosticTaskIds),
+    [pendingDiagnosticTaskIds]
+  );
+  useEffect(() => {
+    if (dataMode !== 'live' || pendingDiagnosticTaskIdsKey === '[]') return;
     const timer = setInterval(() => {
-      void recoverTasksById(pendingDiagnosticTaskIds);
+      const ids = pendingDiagnosticTaskIdsRef.current;
+      if (ids.length) void recoverTasksById(ids);
     }, 5000);
     return () => clearInterval(timer);
-  }, [dataMode, pendingDiagnosticTaskIds.join(','), recoverTasksById]);
+  }, [dataMode, pendingDiagnosticTaskIdsKey, recoverTasksById]);
   useEffect(() => {
     if (!storedConversations.length || !recentResponses.length) return;
     const persisted = new Set(storedConversations.map((item) => item.id));
@@ -213,7 +230,7 @@ useLayoutEffect(() => {
         // No analyser is attached, so no level is claimed.
         audioLevel: null,
       }),
-    [dataMode, isConnected, isListening, isSpeaking, submitting, allTasks, voiceError, tasks.error]
+    [dataMode, isConnected, isListening, isSpeaking, submitting, allTasksWithRecovered, voiceError, tasks.error]
   );
 
   // Tasks blocked on the owner. Pinned, and excluded from the thread so they
