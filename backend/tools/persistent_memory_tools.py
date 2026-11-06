@@ -16,6 +16,8 @@ import re
 from datetime import datetime
 from typing import Any, Generic, TypeVar
 
+from sqlalchemy import String, cast, func, or_
+
 try:
     from backend.api.schemas import (
         MemoryForgetInput,
@@ -44,6 +46,29 @@ except ImportError:
     from tools.executor import BaseTool
 
 _RELATION_RE = re.compile(r"^[a-z][a-z0-9_]{0,49}$")
+
+
+def _visible_edges(session):
+    """Keep non-removed edges unless their text identifies non-visible memory.
+
+    Endpoints may be keys, numeric entry IDs, or free text.  Suppress
+    ambiguous matches rather than exposing a non-visible key or value.
+    """
+    fields = (MemoryEdge.source_key, MemoryEdge.target_key, MemoryEdge.relation)
+    mentions = []
+    for field in fields:
+        for column in (MemoryEntry.key, MemoryEntry.value):
+            mentions.append((column != "") & (func.instr(func.lower(field), func.lower(column)) > 0))
+    mentions.extend(
+        field == cast(MemoryEntry.id, String)
+        for field in (MemoryEdge.source_key, MemoryEdge.target_key)
+    )
+    inactive_mention = session.query(MemoryEntry.id).filter(
+        or_(MemoryEntry.status != "ACTIVE", MemoryEntry.scope != "USER"), or_(*mentions)
+    ).correlate(MemoryEdge).exists()
+    return session.query(MemoryEdge).filter(
+        MemoryEdge.status != "removed", ~inactive_mention
+    )
 
 _DEVICE_IDENTITY_KEYS = frozenset({
     "approved_roots", "file_roots", "root_path", "system_root_path",
@@ -214,7 +239,7 @@ class MemoryRecallTool(BaseTool[MemoryRecallInput]):
         try:
             db_mgr = get_db_manager()
             with db_mgr.get_session() as session:
-                query = session.query(MemoryEntry)
+                query = session.query(MemoryEntry).filter_by(status="ACTIVE", scope="USER")
                 if input_data.category:
                     query = query.filter_by(category=input_data.category)
                 entries = query.all()
@@ -379,13 +404,13 @@ class MemoryRecallRelatedTool(BaseTool[MemoryRecallRelatedInput]):
         try:
             db_mgr = get_db_manager()
             with db_mgr.get_session() as session:
-                entry = session.query(MemoryEntry).filter_by(key=input_data.key, status="ACTIVE").first()
+                entry = session.query(MemoryEntry).filter_by(key=input_data.key, status="ACTIVE", scope="USER").first()
                 resolved_key = input_data.key
                 if not entry:
                     tokens = _query_tokens(input_data.key)
                     best = None
                     best_score = 0
-                    for e in session.query(MemoryEntry).all():
+                    for e in session.query(MemoryEntry).filter_by(status="ACTIVE", scope="USER").all():
                         s = _entry_match_score(e, tokens)
                         if s > best_score:
                             best, best_score = e, s
@@ -408,9 +433,8 @@ class MemoryRecallRelatedTool(BaseTool[MemoryRecallRelatedInput]):
                 for hop in range(1, hops + 1):
                     if not frontier:
                         break
-                    rows = session.query(MemoryEdge).filter(
+                    rows = _visible_edges(session).filter(
                         MemoryEdge.source_key.in_(frontier),
-                        MemoryEdge.status != "removed",
                     ).all()
                     next_frontier = set()
                     for e in rows:
@@ -429,7 +453,7 @@ class MemoryRecallRelatedTool(BaseTool[MemoryRecallRelatedInput]):
                 entry_map = {
                     e.key: e
                     for e in session.query(MemoryEntry)
-                    .filter(MemoryEntry.key.in_(keys - {resolved_key}))
+                    .filter(MemoryEntry.key.in_(keys - {resolved_key}), MemoryEntry.status == "ACTIVE", MemoryEntry.scope == "USER")
                     .all()
                 }
                 entry_map[resolved_key] = entry
@@ -518,17 +542,15 @@ class MemoryStatsTool(BaseTool[MemoryStatsInput]):
         try:
             db_manager = get_db_manager()
             with db_manager.get_session() as session:
-                total_entries = session.query(MemoryEntry).count()
-                total_edges = session.query(MemoryEdge).filter(
-                    MemoryEdge.status != "removed"
-                ).count()
+                total_entries = session.query(MemoryEntry).filter_by(status="ACTIVE", scope="USER").count()
+                total_edges = _visible_edges(session).count()
 
                 category_counts = {}
-                for entry in session.query(MemoryEntry).all():
+                for entry in session.query(MemoryEntry).filter_by(status="ACTIVE", scope="USER").all():
                     cat = entry.category or "uncategorized"
                     category_counts[cat] = category_counts.get(cat, 0) + 1
 
-                recent_entries = session.query(MemoryEntry).order_by(
+                recent_entries = session.query(MemoryEntry).filter_by(status="ACTIVE", scope="USER").order_by(
                     MemoryEntry.updated_at.desc()
                 ).limit(5).all()
 
@@ -582,7 +604,7 @@ class MemoryExportTool(BaseTool[MemoryExportInput]):
         try:
             db_manager = get_db_manager()
             with db_manager.get_session() as session:
-                query = session.query(MemoryEntry)
+                query = session.query(MemoryEntry).filter_by(status="ACTIVE", scope="USER")
                 if input_data.category:
                     query = query.filter(MemoryEntry.category == input_data.category)
 
@@ -590,11 +612,9 @@ class MemoryExportTool(BaseTool[MemoryExportInput]):
 
                 edges = []
                 if input_data.include_edges:
-                    edge_query = session.query(MemoryEdge).filter(
-                        MemoryEdge.status != "removed"
-                    )
+                    edge_query = _visible_edges(session)
                     if input_data.category:
-                        entry_keys = [e.key for e in entries]
+                        entry_keys = [key for e in entries for key in (e.key, str(e.id))]
                         edge_query = edge_query.filter(
                             MemoryEdge.source_key.in_(entry_keys) |
                             MemoryEdge.target_key.in_(entry_keys)
