@@ -14,7 +14,7 @@ import uuid
 # of the current working directory.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from .core.config import settings, generate_control_token
+from .core.config import settings, generate_control_token, effective_development_mode
 from .core.logging_config import configure_logging
 from .core.db_manager import init_database, DatabaseManager
 from .models.database import set_db_manager, get_db_manager
@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI):
     from .core.handshake import read_launch_token, write_handshake
     handshake_token = read_launch_token()
     control_token = handshake_token or generate_control_token()
-    logger.info(f"Sythion (Synth) starting with control token: {control_token[:8]}...")
+    logger.info("Sythion (Synth) starting with per-launch control token initialized")
 
     # Validate critical configuration early so misconfig is obvious at boot
     from .core.config import validate_startup_config
@@ -287,17 +287,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Both security layers use the same frozen origin allowlist; never derive them
+# independently from ambient environment at different points during import.
+_trusted_origins = control_origins(effective_development_mode(settings.development_mode))
+
 app.add_middleware(
     LocalControlBoundaryMiddleware,
     token_provider=lambda: control_token,
-    allowed_origins=control_origins(
-        (
-            os.environ.get("SYTHION_DEVELOPMENT_MODE", "").strip().lower()
-            in {"1", "true", "yes", "on"}
-        )
-        if os.environ.get("SYTHION_DEVELOPMENT_MODE", "").strip() != ""
-        else settings.development_mode
-    ),
+    allowed_origins=_trusted_origins,
 )
 
 # Include API routes
@@ -313,16 +310,7 @@ app.include_router(learning_router, prefix="/api/v1")
 # CORS middleware - only allow local origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=list(
-        control_origins(
-            (
-                os.environ.get("SYTHION_DEVELOPMENT_MODE", "").strip().lower()
-                in {"1", "true", "yes", "on"}
-            )
-            if os.environ.get("SYTHION_DEVELOPMENT_MODE", "").strip() != ""
-            else settings.development_mode
-        )
-    ),
+    allow_origins=sorted(_trusted_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

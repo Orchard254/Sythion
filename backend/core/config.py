@@ -24,6 +24,19 @@ def development_mode_from_env() -> bool:
     }
 
 
+def effective_development_mode(configured: bool) -> bool:
+    """Resolve trusted development mode with an explicit environment override.
+
+    A non-empty SYTHION_DEVELOPMENT_MODE value takes precedence over Settings,
+    including explicit false or unrecognized values (fail closed). Empty or
+    whitespace-only values retain the configured setting. The same result must
+    drive both the authorization boundary and CORS.
+    """
+    if not os.environ.get("SYTHION_DEVELOPMENT_MODE", "").strip():
+        return bool(configured)
+    return development_mode_from_env()
+
+
 # Prototype/ambiguous detection happens here, independently of Settings, so the
 # backend/.env file is never opened (and never read) in those modes.
 try:
