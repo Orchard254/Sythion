@@ -1,7 +1,7 @@
 """Memory Service (Phase 7) — single authoritative interface over typed,
 provenance-bearing memory.
 
-Core invariants (docs/MEMORY_ARCHITECTURE.md):
+Core invariants ():
 - Memory is DATA. It never overrides runtime state, permissions, evidence,
   or completion authority.
 - Write authority is enforced deterministically by source_type × kind

@@ -1,7 +1,7 @@
 """
 Acceptance tests for the write-only secret storage policy.
 
-Maps to docs/ACCEPTANCE_TESTS.md SEC-2 (No secrets in SQLite; Secrets in
+Maps to  SEC-2 (No secrets in SQLite; Secrets in
 Credential Manager mock) and the architecture rule that secrets never enter
 .env, SQLite, logs, task events, exports, or model context.
 

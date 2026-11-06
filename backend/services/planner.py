@@ -2,7 +2,7 @@
 
 Phase 2 planning layer. The Planner determines WHAT should happen; it never
 executes anything. Tool execution, policy, verification, budgets and task
-state remain owned by the Runtime Kernel (docs/RUNTIME_KERNEL_ARCHITECTURE.md).
+state remain owned by the Runtime Kernel ().
 
 Model boundary: candidate plans may come from an LLM through the Phase 1
 ``ModelClient`` interface only (see ``request_model_plan``). Raw model output

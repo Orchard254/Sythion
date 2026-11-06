@@ -202,7 +202,7 @@ async def lifespan(app: FastAPI):
     # so that path was removed entirely. Approved proposals remain inert
     # review artifacts; executable enablement of custom tools requires a
     # genuine out-of-process isolation boundary (future phase). See
-    # docs/PROTECTED_RUNTIME_CONTRACT.md ("Process isolation").
+    #  ("Process isolation").
     try:
         from .models.database import ProposedTool
         db_mgr = get_db_manager()

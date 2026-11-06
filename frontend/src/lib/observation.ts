@@ -4,7 +4,7 @@ import { parseTimestamp } from './format';
 /* Observation layer.
  *
  * Every value produced here is DERIVED from durable backend state. This module
- * implements the rules in docs/CONTROL_CENTER_OBSERVATION_CONTRACT.md:
+ * implements the rules in :
  *
  *  - Report persisted state and sequences as fact; derive everything else and
  *    label it as derived.

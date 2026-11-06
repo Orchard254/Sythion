@@ -1,7 +1,7 @@
 """
 Write-only secret storage for Sythion (Synth).
 
-Policy (docs/ARCHITECTURE.md): secrets never enter `.env`, SQLite, logs, task
+Policy (): secrets never enter `.env`, SQLite, logs, task
 events, exports, or model context. The production backend is Windows Credential
 Manager (win32cred). A non-persistent in-memory backend is used for dev/test so
 tests never touch the real credential vault.

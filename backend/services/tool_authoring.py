@@ -12,7 +12,7 @@ untrusted data everywhere in this process. They are stored verbatim for review
 but are never compiled, executed, imported, or registered as live tools.
 Executable enablement of custom tools requires a genuine out-of-process
 isolation boundary and is deferred to a later phase. See
-docs/PROTECTED_RUNTIME_CONTRACT.md ("Process isolation").
+ ("Process isolation").
 """
 
 import ast

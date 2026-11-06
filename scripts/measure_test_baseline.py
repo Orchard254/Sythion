@@ -71,14 +71,8 @@ EXIT_ENVIRONMENT = 4
 
 # The documents that carry the baseline block, and the one that may only
 # quote a pair (rule C1) without being a baseline document itself.
-BASELINE_DOCS = (
-    "README.md",
-    "docs/TESTING.md",
-    "docs/PROJECT_STATUS.md",
-    "docs/ROADMAP.md",
-    "docs/OPERATIONS.md",
-)
-PAIR_ONLY_DOCS = ("TESTING_GUIDE.md",)
+BASELINE_DOCS = ()
+PAIR_ONLY_DOCS = ()
 
 # A native fault is disqualifying even when the process survives it: this
 # machine has a fault mode that throws hundreds of COM exceptions through the

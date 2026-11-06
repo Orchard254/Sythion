@@ -4,7 +4,7 @@ Manages single task execution with durable state.
 
 PHASE 1 KERNEL OWNERSHIP:
 - TaskRunner is the authoritative writer of task lifecycle state
-  (docs/PROTECTED_RUNTIME_CONTRACT.md, "State ownership").
+  (, "State ownership").
 - Lease mechanics are delegated to runtime.leases.LeaseManager.
 - Event appends/reads are delegated to runtime.events.DbEventLedger.
   The ledger participates in transition transactions so state change + event

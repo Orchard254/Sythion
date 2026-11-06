@@ -40,7 +40,7 @@ states. The Companion communicates presence through its animation and does not
 display the Sythion name or logo.
 
 Some surface and finish details remain in progress. Current verified state
-lives in `docs/PROJECT_STATUS.md` and `docs/ROADMAP.md`.
+lives in the source tree, tests, and runtime behavior.
 
 ## What this repo is not
 
@@ -50,18 +50,8 @@ agency, but those layers must sit above this runtime rather than bypassing it.
 
 ## Source of truth
 
-Start here:
-
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — runtime contract
-- [`docs/INTELLIGENCE_ARCHITECTURE.md`](docs/INTELLIGENCE_ARCHITECTURE.md) — system layering
-- [`docs/CODEBASE_BOUNDARIES.md`](docs/CODEBASE_BOUNDARIES.md) — module classification and refactor map
-- [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) — current verified status
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — near-term priorities and repo scope boundaries
-- [`docs/DECISIONS.md`](docs/DECISIONS.md) — compact index of active architectural decisions
-- [`docs/QUALITY_GATES.md`](docs/QUALITY_GATES.md) — definition of a professional change in this repo
-- [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — startup, smoke-test, and validation runbook
-- [`docs/acceptance-test-map.md`](docs/acceptance-test-map.md) — release gates
-- [`Documentation index — current references, plans, and historical records`](docs/README.md)
+Source code, tests, scripts, and configuration in this repository are the
+authority; no Markdown documentation files remain alongside this README.
 
 ## Development
 
@@ -79,8 +69,7 @@ From `backend/`:
 python -m pytest tests -q
 ```
 
-See [`docs/TESTING.md`](docs/TESTING.md) for the current baseline and related
-commands.
+See the test commands below for the current baseline.
 
 ### Frontend
 
@@ -115,7 +104,7 @@ Important current rules:
 ## Recorded test baseline
 
 > This is a recorded baseline from the noted measurement date, not a fresh
-> verification. For current state, use `docs/PROJECT_STATUS.md`; the counts
+> verification. For current state, use the source and tests; the counts
 > here may conflict with other documents.
 
 - Full backend suite: **1569 passed, 45 skipped** (1648 collected)

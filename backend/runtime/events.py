@@ -1,7 +1,7 @@
 """SQLite-backed implementation of the EventLedger interface.
 
 The immutable ``task_events`` table remains the single source of execution
-truth (docs/PROTECTED_RUNTIME_CONTRACT.md, "Audit"). This class is a narrow
+truth (, "Audit"). This class is a narrow
 read/append facade over that table; it deliberately does NOT commit -- appends
 participate in the caller's state-transition transaction so event + state
 change stay atomic. Read methods are side-effect free.
