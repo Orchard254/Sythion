@@ -471,3 +471,46 @@ def test_the_endpoint_contract_is_unchanged(monkeypatch):
     res = _post_inference(monkeypatch, NATIVE_BODY)
     assert res.status_code == 200
     assert set(res.json().keys()) == {"success", "model", "response_preview"}
+
+def test_setup_inference_uses_provider_normal_default(monkeypatch):
+    """The route must not impose its own inference token budget.
+
+    The provider's own normal default applies.  The test provider simulates
+    the old 16-token behaviour when any route-specific cap is present and
+    answers normally only when the route omits max_tokens.
+    """
+
+    _not_passed = object()
+
+    class _ProviderUsingItsDefault(_Provider):
+        seen_max_tokens = _not_passed
+
+        async def chat(self, messages, max_tokens=_not_passed, timeout=300.0):
+            self.seen_max_tokens = max_tokens
+            if max_tokens is not _not_passed:
+                return {
+                    "model": "m1",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "thinking": "first 16 tokens",
+                    },
+                    "done": True,
+                    "done_reason": "length",
+                    "eval_count": 16,
+                }
+            return self.body
+
+    provider = _ProviderUsingItsDefault(NATIVE_BODY)
+    client, previous_token, backend_main = _client(monkeypatch, provider)
+    try:
+        res = client.post(
+            "/api/v1/onboarding/inference",
+            json={"model_id": "m1"},
+        )
+        assert res.status_code == 200
+        assert provider.seen_max_tokens is _not_passed
+        assert res.json()["response_preview"] == "OK"
+    finally:
+        backend_main.control_token = previous_token
+        app.dependency_overrides.clear()

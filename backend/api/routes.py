@@ -3691,7 +3691,6 @@ async def onboarding_inference(request: Request, db=Depends(get_db)):
             raise HTTPException(status_code=400, detail=f"Model '{model_id}' is not available")
         resp = await provider.chat(
             messages=[{"role": "user", "content": "Reply with OK"}],
-            max_tokens=16,
         )
         text = _extract_inference_text(resp)
         if not str(text).strip():

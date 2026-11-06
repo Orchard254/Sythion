@@ -1,6 +1,6 @@
 # Sythion (Synth) Project Status
 
-## User-outcome checklist — updated 2026-11-03
+## User-outcome checklist â€” updated 2026-11-03
 
 **Goal:** A dependable, always-available AI on Windows initially, using cloud
 models and current internet information, with continuity and useful autonomous
@@ -55,9 +55,22 @@ Independent evidence so far:
   separate, unfixed defect.
 - Real isolated source/model evidence observed through `http://localhost:3000`:
   - clean setup inference returned HTTP 502 (empty model body);
+  - setup gate no longer hardcodes a 16-token cap and now uses the provider's
+    established normal default. Controlled Beam probe showed `done_reason=length`
+    and empty content at a `16` token cap (`16` eval tokens; 52 thinking
+    characters), while the same `Reply with OK` prompt returned non-empty `OK`
+    with a `256` cap. Focused regression and existing onboarding tests now
+    pass (`30 passed` in
+    `backend/tests/test_onboarding_inference_response_shape.py` and
+    `backend/tests/test_setup_readiness.py`, 16 warnings).
+  - restarted actual isolated endpoint had one HTTP 502 ReadError transport
+    failure during inference, so live setup readiness remains unverified.
   - first actual Beam assistant answer returned HTTP 200 and was persisted;
   - second follow-up returned HTTP 503 `json_malformed` (not fixed by the
     timestamp-tie change).
+- The user's reported historical later-chat failure remains evidence of a
+  repeated-turn/context degradation issue; it is not explained by the fixed
+  timestamp-ordering defect.
 - The user's reported historical later-chat failure remains evidence of a
   repeated-turn/context degradation issue; it is not explained by the fixed
   timestamp-ordering defect.
@@ -114,15 +127,15 @@ The Companion communicates presence through animation rather than branding.
 
 Use these documents in order:
 
-1. [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — runtime boundary and execution contract
-2. [`docs/INTELLIGENCE_ARCHITECTURE.md`](INTELLIGENCE_ARCHITECTURE.md) — layered system framing above the runtime
-3. [`docs/CODEBASE_BOUNDARIES.md`](CODEBASE_BOUNDARIES.md) — current module classification and refactor map
-4. [`docs/PROJECT_STATUS.md`](PROJECT_STATUS.md) — current verified repo state
-5. [`docs/ROADMAP.md`](ROADMAP.md) — near-term priorities and scope boundaries for this repo
-6. [`docs/DECISIONS.md`](DECISIONS.md) — compact index of active architectural decisions
-7. [`docs/QUALITY_GATES.md`](QUALITY_GATES.md) — definition of professional change quality in this repo
-8. [`docs/OPERATIONS.md`](OPERATIONS.md) — startup, smoke-test, and validation runbook
-9. [`docs/acceptance-test-map.md`](acceptance-test-map.md) — release gates and acceptance criteria
+1. [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) â€” runtime boundary and execution contract
+2. [`docs/INTELLIGENCE_ARCHITECTURE.md`](INTELLIGENCE_ARCHITECTURE.md) â€” layered system framing above the runtime
+3. [`docs/CODEBASE_BOUNDARIES.md`](CODEBASE_BOUNDARIES.md) â€” current module classification and refactor map
+4. [`docs/PROJECT_STATUS.md`](PROJECT_STATUS.md) â€” current verified repo state
+5. [`docs/ROADMAP.md`](ROADMAP.md) â€” near-term priorities and scope boundaries for this repo
+6. [`docs/DECISIONS.md`](DECISIONS.md) â€” compact index of active architectural decisions
+7. [`docs/QUALITY_GATES.md`](QUALITY_GATES.md) â€” definition of professional change quality in this repo
+8. [`docs/OPERATIONS.md`](OPERATIONS.md) â€” startup, smoke-test, and validation runbook
+9. [`docs/acceptance-test-map.md`](acceptance-test-map.md) â€” release gates and acceptance criteria
 
 ## Verified test baseline
 
