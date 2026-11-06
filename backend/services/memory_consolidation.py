@@ -7,7 +7,7 @@ memory operations (ADD / UPDATE / DELETE / NOOP). The model distills durable
 understanding -- who the user is, preferences, habits, domain knowledge --
 rather than dumping raw conversation text into the store.
 
-Safety gate (kept deliberately strict; see docs/KNOWLEDGE.md):
+Safety gate (kept deliberately strict; see README.md):
 - Only `high`-confidence ops are auto-applied.
 - DELETE is NEVER auto-applied; it is logged for human review.
 - Ops are capped per run so one noisy consolidation cannot flood the store.

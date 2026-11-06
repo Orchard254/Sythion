@@ -31,7 +31,7 @@ import {
  *   3. Readiness   — runtime/model/capability, compact when healthy.
  *
  * Every value comes from the observation layer, which follows
- * docs/CONTROL_CENTER_OBSERVATION_CONTRACT.md. Nothing here invents an alert,
+ * README.md. Nothing here invents an alert,
  * a percentage, a progress figure or a health verdict. Where the backend cannot
  * answer a question the UI says so.
  *

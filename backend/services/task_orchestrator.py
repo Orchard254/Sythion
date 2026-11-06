@@ -453,7 +453,7 @@ class TaskOrchestrator:
     def recover_step(self, step_id: int) -> Dict[str, Any]:
         """Deterministically resolve one RUNNING plan step after a crash.
 
-        Rules (see docs/WORK_ORCHESTRATION_ARCHITECTURE.md):
+        Rules (see README.md):
           - evidence task terminal-completed + clean verifier → COMPLETED
           - evidence task failed                              → FAILED (+retry policy)
           - evidence task interrupted/cancelled               → READY (recoverable;

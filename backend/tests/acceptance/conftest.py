@@ -2,7 +2,7 @@
 Shared fixtures for the Sythion (Synth) acceptance-test suite.
 
 These are the runnable versions of the "planned" gates in
-docs/acceptance-test-map.md. Each test file maps to one acceptance area and
+README.md. Each test file maps to one acceptance area and
 must be deterministic: background model calls are stubbed so results depend
 only on the code under test.
 """

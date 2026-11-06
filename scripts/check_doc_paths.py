@@ -15,7 +15,7 @@ WHAT COUNTS AS A REFERENCE
 --------------------------
 1. A reference is written in CODE FONT. The script scans inline code spans
    (backticks) and fenced code blocks. It does not scan plain prose. That is
-   not an arbitrary choice: ``docs/PROJECT_STATUS.md`` used to contain the
+   not an arbitrary choice: ``README.md`` used to contain the
    prose shorthand "backend/acceptance", which is not a path to anything (the
    real one is ``backend/tests/acceptance``). A prose scanner false-alarms on
    it. A document references a module by writing it in code font.
@@ -74,12 +74,9 @@ from pathlib import Path
 # The documents that are checked by default: the four that name modules as
 # modules. Other documents legitimately contain paths that were never built
 # (a plan proposes them), which is exactly why the scope is explicit.
-DEFAULT_DOCS = (
-    "docs/CODEBASE_BOUNDARIES.md",
-    "backend/services/README.md",
-    "docs/ROADMAP.md",
-    "docs/PROJECT_STATUS.md",
-)
+# All module-naming documents have been removed; there is nothing to check by
+# default. Keep the script available for explicit `--docs` arguments.
+DEFAULT_DOCS = ()
 
 SOURCE_EXTENSIONS = frozenset(
     {
