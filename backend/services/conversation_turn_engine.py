@@ -38,6 +38,15 @@ except Exception:  # pragma: no cover - import path compatibility
             validate_discussion_resolution_selection,
         )
 
+from .conversation_text_policy import (
+    PLAIN_PROSE_NO_ACTION_DISCLOSURE,
+    looks_like_machine_readable_payload as _looks_like_machine_readable_payload,
+    strip_legacy_no_action_disclosure as _strip_legacy_no_action_disclosure,
+    is_ordinary_prose as _is_ordinary_prose,
+    unwrap_machine_readable_payload as _unwrap_machine_readable_payload,
+    is_empty_indexed_session_discovery as _is_empty_indexed_session_discovery,
+)
+
 MAX_COMMANDS = 3
 MAX_RECENT_TURNS = 6
 MAX_PENDING_DESCRIPTORS = 50
@@ -45,10 +54,6 @@ MAX_USER_TEXT = 12000
 MAX_TURN_TEXT = 2000
 MAX_DISCUSSION_CONTEXTS = 20
 MAX_ASSISTANT_TEXT = 8000
-PLAIN_PROSE_NO_ACTION_DISCLOSURE = (
-    "\n\nNo background task, clarification, or other action was started or "
-    "scheduled. This response is informative only."
-)
 MAX_COMMAND_TEXT = 4000
 
 ALLOWED_COMMAND_TYPES = {"start_task", "answer_clarification", "append_task_instruction"}
@@ -617,84 +622,23 @@ class ConversationTurnEngine:
 
     @staticmethod
     def _looks_like_machine_readable_payload(text: str) -> bool:
-        stripped = text.lstrip()
-        if stripped.startswith("```"):
-            return True
-        return stripped.startswith("{") or stripped.startswith("[")
+        return _looks_like_machine_readable_payload(text)
 
     @staticmethod
     def _strip_legacy_no_action_disclosure(text: Any) -> Any:
-        if not isinstance(text, str):
-            return text
-        legacy_constant = PLAIN_PROSE_NO_ACTION_DISCLOSURE
-        legacy_core = (
-            "No background task, clarification, or other action was started or "
-            "scheduled. This response is informative only."
-        )
-        result = text
-        # Exact historical marker, including its leading blank lines.
-        result = result.replace(legacy_constant, "")
-        # Handle common whitespace/newline presentation drift around the same
-        # exact legacy marker without classifying natural language.
-        result = re.sub(
-            r"(?:\r?\n)+\s*" + re.escape(legacy_core),
-            "",
-            result,
-        )
-        # Finally remove any bare marker occurrences that have already lost
-        # their leading newlines in persisted or model-echoed history.
-        result = result.replace(legacy_core, "")
-        return result
+        return _strip_legacy_no_action_disclosure(text)
 
     @staticmethod
     def _is_ordinary_prose(raw: Any) -> bool:
-        text = raw.strip() if isinstance(raw, str) else ""
-        if not text:
-            return False
-        if ConversationTurnEngine._looks_like_machine_readable_payload(text):
-            return False
-        # Ordinary conversational prose must not carry JSON-like control fragments,
-        # including embedded objects or arrays.
-        if "{" in text or "[" in text:
-            return False
-        return True
+        return _is_ordinary_prose(raw)
 
     @staticmethod
     def _unwrap_machine_readable_payload(text: str) -> str:
-        stripped = text.strip()
-        if stripped.startswith("```"):
-            lines = stripped.splitlines()
-            if lines:
-                lines = lines[1:]
-            if lines and lines[-1].strip().startswith("```"):
-                lines = lines[:-1]
-            return "\n".join(lines).strip()
-        return stripped
+        return _unwrap_machine_readable_payload(text)
 
     @staticmethod
     def _is_empty_indexed_session_discovery(discovery_input: Any) -> bool:
-        if discovery_input is None:
-            return False
-        if getattr(discovery_input, "discovery_complete", False) is not True:
-            return False
-        for field_name in (
-            "available_count",
-            "returned_count",
-            "omitted_count",
-            "unresolved_discussion_count",
-            "unresolved_task_proof_count",
-        ):
-            if getattr(discovery_input, field_name, None) != 0:
-                return False
-        candidate_ids = getattr(discovery_input, "candidate_discussion_ids", ())
-        if isinstance(candidate_ids, (str, bytes, bytearray)):
-            return False
-        try:
-            if any(True for _ in candidate_ids):
-                return False
-        except TypeError:
-            return False
-        return True
+        return _is_empty_indexed_session_discovery(discovery_input)
 
     async def _run_empty_indexed_session_bootstrap(
         self,
