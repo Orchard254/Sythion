@@ -43,6 +43,8 @@ python -m pytest tests -q
 - Full backend suite: **1569 passed, 45 skipped** (1648 collected)
 - Acceptance suite: **191 passed, 2 skipped**
 
+Note: this is a recorded historical snapshot, not a freshly verified baseline. Counts differ across docs; see the [documentation index](README.md) for the known discrepancy. Run the maintained verification before relying on these counts.
+
 Measured on CPython 3.14.7 / Windows by
 `python scripts/measure_test_baseline.py` on 2026-10-20.
 CI pins Python 3.11.
