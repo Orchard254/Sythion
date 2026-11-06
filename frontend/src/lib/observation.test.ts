@@ -12,7 +12,7 @@ import type { Objective, Task } from '../types';
 /* Tests for the observation layer.
  *
  * These exist because this module is what stops the Control Center from making
- * claims the backend cannot support (README.md).
+ * claims the backend cannot support (docs/CONTROL_CENTER_OBSERVATION_CONTRACT.md).
  * It is pure, so the tests are fast and need no DOM or network.
  */
 

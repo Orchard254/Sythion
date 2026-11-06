@@ -8,7 +8,7 @@ Design rules:
 - Narrow interfaces, no service locator.
 - No raw DB sessions exposed for runtime writes.
 - Implementations must preserve the invariants in
-  README.md.
+  docs/PROTECTED_RUNTIME_CONTRACT.md.
 """
 
 from __future__ import annotations

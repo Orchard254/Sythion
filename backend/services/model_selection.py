@@ -8,7 +8,7 @@ Truthfulness invariants:
   prompts — no tools, no filesystem, no arbitrary code execution.
 
 Selection policy (deterministic, documented order — see
-README.md):
+docs/MODEL_SELECTION_ARCHITECTURE.md):
   1. filter capability-incompatible models      → rejected: lacks <cap>
   2. filter unavailable models                  → rejected: unavailable
   3. configured primary kept if compatible+available

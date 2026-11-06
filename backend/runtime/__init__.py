@@ -1,6 +1,6 @@
 """Protected runtime kernel: explicit interfaces for the Sythion runtime.
 
-Dependency direction (see README.md):
+Dependency direction (see docs/RUNTIME_KERNEL_ARCHITECTURE.md):
 
     Interfaces / UI  ->  Intelligence  ->  Runtime Interfaces (this package)
         ->  Protected Runtime implementations  ->  Operating System
