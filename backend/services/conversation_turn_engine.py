@@ -2146,6 +2146,12 @@ class ConversationTurnEngine:
         try:
             parsed = json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
         except (json.JSONDecodeError, ValueError) as exc:
+            import logging as _logging
+
+            _logging.getLogger(__name__).warning(
+                "json_malformed raw preview=%r",
+                (raw.strip() if isinstance(raw, str) else raw)[:500],
+            )
             raise ConversationTurnValidationError("malformed JSON output", reason_code="json_malformed") from exc
         if not isinstance(parsed, Mapping):
             raise ConversationTurnValidationError("output must be a JSON object", reason_code="shape")
