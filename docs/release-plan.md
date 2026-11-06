@@ -1,5 +1,12 @@
 # Sythion (Synth) Release Plan
 
+> **Historical/planning document.** This is a release plan and aspirational
+> planning artifact, not a verified installed-release or end-to-end-readiness
+> statement. Any "feature-complete", "Phase F", milestone, checklist, or
+> completion language below describes intended/planned scope, not independently
+> verified installed-product behavior. For the current human-readable status, use
+> [`docs/PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 **Status:** Plan (Phase F). The sidecar backend, dashboard, voice, and skills
 are feature-complete and test-backed; the packaged desktop shell is scaffolded
 (`src-tauri/`, CI-buildable via the `tauri-build` job). Remaining gates: the

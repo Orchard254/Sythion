@@ -1,5 +1,12 @@
 # Conversational Protocol Implementation Plan
 
+> **Historical/planning document.** This is an implementation plan, not a
+> current product-status or readiness statement. "COMPLETED" phase labels and
+> implemented-file notes below are implementation-history markers; they are not
+> independently verified installed-runtime or end-to-end behavior claims. For the
+> current user-outcome checklist, use
+> [`docs/PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 ## Overview
 
 Add conversational intelligence to Sythion so it participates in conversations rather than constantly extracting information or waiting for instructions.
