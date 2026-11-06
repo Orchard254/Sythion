@@ -370,37 +370,42 @@ def _composer_scheduling_established(db: Session, task_ids: List[str]) -> bool:
             if not events:
                 established = False
                 continue
-            if expected_key not in (None, ""):
-                matched = False
-                for event in events:
-                    event_data = getattr(event, "event_data", "")
-                    payload = {}
-                    if isinstance(event_data, dict):
-                        payload = event_data
-                    elif isinstance(event_data, str):
-                        try:
-                            import json as _attempt_json
-                            parsed = _attempt_json.loads(event_data)
-                            if isinstance(parsed, dict):
-                                payload = parsed
-                        except (TypeError, ValueError):
-                            payload = {}
-                    if any(
-                        payload.get(field) == expected_key
-                        for field in (
-                            "task_idempotency_key",
-                            "dispatch_attempt_key",
-                            "attempt_id",
-                            "dispatch_attempt_id",
-                            "start_task_idempotency_key",
-                            "composer_request_id",
-                            "composer_request_key",
-                        )
-                    ):
-                        matched = True
-                        break
-                if not matched:
-                    established = False
+            # Exact binding only: a missing/empty idempotency key is not a
+            # shortcut. Fail closed when no exact key can be matched, including
+            # historical events whose payload does not carry the task/attempt key.
+            if not expected_key:
+                established = False
+                continue
+            matched = False
+            for event in events:
+                event_data = getattr(event, "event_data", "")
+                payload = {}
+                if isinstance(event_data, dict):
+                    payload = event_data
+                elif isinstance(event_data, str):
+                    try:
+                        import json as _attempt_json
+                        parsed = _attempt_json.loads(event_data)
+                        if isinstance(parsed, dict):
+                            payload = parsed
+                    except (TypeError, ValueError):
+                        payload = {}
+                if any(
+                    payload.get(field) == expected_key
+                    for field in (
+                        "task_idempotency_key",
+                        "dispatch_attempt_key",
+                        "attempt_id",
+                        "dispatch_attempt_id",
+                        "start_task_idempotency_key",
+                        "composer_request_id",
+                        "composer_request_key",
+                    )
+                ):
+                    matched = True
+                    break
+            if not matched:
+                established = False
         return bool(established)
     except Exception:
         return False

@@ -48,27 +48,69 @@ except ImportError:
 _RELATION_RE = re.compile(r"^[a-z][a-z0-9_]{0,49}$")
 
 
-def _visible_edges(session):
-    """Keep non-removed edges unless their text identifies non-visible memory.
+def _tokens(text: Any) -> set[str]:
+    return {t for t in re.split(r"[^a-z0-9]+", str(text or "").lower()) if t}
 
-    Endpoints may be keys, numeric entry IDs, or free text.  Suppress
-    ambiguous matches rather than exposing a non-visible key or value.
+
+def _visible_edges(session):
+    """Keep non-removed edges whose endpoints do not reference non-visible memory.
+
+    Endpoints may be keys, numeric entry IDs, or free text.  Structured
+    endpoints are matched exactly by key/ID; free-text endpoints are also
+    checked for token-boundary references to inactive/non-user memory.  This
+    avoids exposing an inactive anchor, neighbor, or relation merely because
+    its key/value was embedded in edge text.
     """
-    fields = (MemoryEdge.source_key, MemoryEdge.target_key, MemoryEdge.relation)
-    mentions = []
-    for field in fields:
-        for column in (MemoryEntry.key, MemoryEntry.value):
-            mentions.append((column != "") & (func.instr(func.lower(field), func.lower(column)) > 0))
-    mentions.extend(
-        field == cast(MemoryEntry.id, String)
-        for field in (MemoryEdge.source_key, MemoryEdge.target_key)
+    inactive_entries = (
+        session.query(MemoryEntry)
+        .filter(or_(MemoryEntry.status != "ACTIVE", MemoryEntry.scope != "USER"))
+        .all()
     )
-    inactive_mention = session.query(MemoryEntry.id).filter(
-        or_(MemoryEntry.status != "ACTIVE", MemoryEntry.scope != "USER"), or_(*mentions)
-    ).correlate(MemoryEdge).exists()
-    return session.query(MemoryEdge).filter(
-        MemoryEdge.status != "removed", ~inactive_mention
-    )
+    if not inactive_entries:
+        return session.query(MemoryEdge).filter(MemoryEdge.status != "removed")
+
+    invisible_ids: list[int] = []
+    for edge in session.query(MemoryEdge).filter(MemoryEdge.status != "removed").all():
+        endpoints = (edge.source_key, edge.target_key, edge.relation)
+        is_invisible = False
+        # Exact endpoint identity against inactive/non-user entries.
+        for endpoint in endpoints:
+            endpoint_text = str(endpoint or "")
+            for entry in inactive_entries:
+                if endpoint_text == entry.key or endpoint_text == str(entry.id):
+                    is_invisible = True
+                    break
+            if is_invisible:
+                break
+        # Token-boundary references to inactive/non-user entry keys or values.
+        if not is_invisible:
+            for endpoint in endpoints:
+                endpoint_tokens = _tokens(endpoint)
+                for entry in inactive_entries:
+                    for candidate in (entry.key, entry.value):
+                        candidate_tokens = _tokens(candidate)
+                        if candidate_tokens and candidate_tokens.issubset(endpoint_tokens):
+                            is_invisible = True
+                            break
+                    if is_invisible:
+                        break
+                if is_invisible:
+                    break
+        # Source-tagged inactive handling: an edge tied to a hidden memory task.
+        if not is_invisible and getattr(edge, "source_task_id", None):
+            edge_task_id = edge.source_task_id
+            if any(
+                getattr(entry, "source_task_id", None) == edge_task_id
+                for entry in inactive_entries
+            ):
+                is_invisible = True
+        if is_invisible:
+            invisible_ids.append(edge.id)
+
+    query = session.query(MemoryEdge).filter(MemoryEdge.status != "removed")
+    if invisible_ids:
+        query = query.filter(~MemoryEdge.id.in_(invisible_ids))
+    return query
 
 _DEVICE_IDENTITY_KEYS = frozenset({
     "approved_roots", "file_roots", "root_path", "system_root_path",
@@ -286,6 +328,12 @@ class MemoryRecallTool(BaseTool[MemoryRecallInput]):
             "category": entry.category,
             "updated_at": entry.updated_at.isoformat() if entry.updated_at else None,
             "match_score": score,
+            "id": entry.id,
+            "scope": entry.scope,
+            "scope_ref": entry.scope_ref,
+            "source_type": entry.source_type,
+            "source_ref": entry.source_ref,
+            "source_task_id": entry.source_task_id,
         }
 
     async def verify(self, input_data: MemoryRecallInput, output: ToolOutput) -> bool:

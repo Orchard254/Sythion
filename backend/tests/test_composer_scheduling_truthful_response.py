@@ -151,6 +151,7 @@ def test_helper_requires_durable_worker_started_entry(test_db):
         original_request="helper request",
         state="running",
         version=1,
+        idempotency_key="helper-key",
         created_at=__import__("datetime").datetime.utcnow(),
         updated_at=__import__("datetime").datetime.utcnow(),
     )
@@ -163,7 +164,7 @@ def test_helper_requires_durable_worker_started_entry(test_db):
         TaskEvent(
             task_id=task.id,
             event_type="task.worker_started",
-            event_data="{}",
+            event_data='{"task_idempotency_key": "helper-key"}',
             sequence_num=1,
             created_at=__import__("datetime").datetime.utcnow(),
         )

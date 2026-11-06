@@ -424,31 +424,142 @@ pub fn data_dir() -> PathBuf {
     }
 }
 
-fn generate_token() -> String {
+fn generate_token() -> Result<String, String> {
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes).expect("crypto RNG unavailable");
+    getrandom::getrandom(&mut bytes).map_err(|e| format!("crypto RNG unavailable: {e}"))?;
     let mut token = String::with_capacity(64);
     for byte in bytes {
         use std::fmt::Write;
         let _ = write!(token, "{byte:02x}");
     }
-    token
+    Ok(token)
 }
 
-fn pick_free_port() -> u16 {
-    TcpListener::bind(("127.0.0.1", 0))
-        .expect("failed to probe a loopback port")
-        .local_addr()
-        .expect("probed loopback address")
-        .port()
+fn pick_free_port() -> Result<u16, String> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("failed to probe a loopback port: {e}"))?;
+    let port = listener.local_addr().map_err(|e| format!("probed loopback address: {e}"))?.port();
+    // Keep the listener alive briefly to reduce the bind/drop race; close before spawn.
+    drop(listener);
+    Ok(port)
 }
 
-fn write_token_file(dir: &PathBuf, token: &str) -> PathBuf {
+fn is_reparse_point(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        std::fs::symlink_metadata(path)
+            .map(|m| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::symlink_metadata(path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    }
+}
+
+fn safe_storage_path(path: &Path) -> Result<(), String> {
+    for ancestor in path.ancestors() {
+        if is_reparse_point(ancestor) {
+            return Err(format!("refusing reparse point in storage path: {}", ancestor.display()));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn restrict_file_acl_windows(path: &Path) -> Result<(), String> {
+    use std::process::Command;
+    let user = std::env::var("USERNAME").map_err(|e| format!("resolve current user: {e}"))?;
+    // Remove inherited permissions first.
+    let inheritance = Command::new("icacls")
+        .arg(path)
+        .arg("/inheritance:r")
+        .output()
+        .map_err(|e| format!("run icacls: {e}"))?;
+    if !inheritance.status.success() {
+        return Err(format!(
+            "icacls /inheritance:r failed: {}",
+            String::from_utf8_lossy(&inheritance.stderr)
+        ));
+    }
+    // Grant only the current user full control.
+    let grant = Command::new("icacls")
+        .arg(path)
+        .arg("/grant:r")
+        .arg(format!("{user}:(F)"))
+        .output()
+        .map_err(|e| format!("run icacls: {e}"))?;
+    if !grant.status.success() {
+        return Err(format!(
+            "icacls /grant:r failed: {}",
+            String::from_utf8_lossy(&grant.stderr)
+        ));
+    }
+    Ok(())
+}
+
+fn write_token_file(dir: &Path, token: &str) -> Result<PathBuf, String> {
+    safe_storage_path(dir)?;
     let path = dir.join(TOKEN_FILE_NAME);
+    // Never overwrite or read through a reparse point / unsafe storage path.
+    safe_storage_path(&path)?;
+    if is_reparse_point(&path) {
+        return Err(format!("refusing to write token through reparse point: {}", path.display()));
+    }
+
     let payload = serde_json::json!({ "token": token, "version": 1 });
-    let content = serde_json::to_vec_pretty(&payload).expect("serialize token file");
-    std::fs::write(&path, content).expect("write token file");
-    path
+    let content = serde_json::to_vec_pretty(&payload).map_err(|e| format!("serialize token file: {e}"))?;
+
+    // Private unpredictable temp file in the same directory (atomic replace).
+    let mut random = [0u8; 16];
+    getrandom::getrandom(&mut random).map_err(|e| format!("crypto RNG unavailable: {e}"))?;
+    let tmp_name = format!(
+        ".{}-{}.tmp",
+        std::process::id(),
+        random.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    );
+    let tmp_path = dir.join(tmp_name);
+    if is_reparse_point(&tmp_path) {
+        return Err(format!(
+            "refusing to write token through reparse point: {}",
+            tmp_path.display()
+        ));
+    }
+    safe_storage_path(&tmp_path)?;
+
+    // Write content to the temp file first (no plaintext in the final path yet).
+    if let Err(e) = std::fs::write(&tmp_path, &content) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("write token temp file: {e}"));
+    }
+
+    // Apply user-only ACL to the temp file BEFORE atomic replace. On failure,
+    // delete the temp and do not publish a plaintext token.
+    #[cfg(windows)]
+    {
+        if let Err(e) = restrict_file_acl_windows(&tmp_path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(format!("restrict token temp ACL: {e}"));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = tmp_path;
+        // Best-effort private mode on the temp file.
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    // Atomic replace temp -> final. On failure, delete temp.
+    if let Err(e) = std::fs::rename(&tmp_path, &path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("atomically replace token file: {e}"));
+    }
+
+    Ok(path)
 }
 
 fn python_override_workdir(cwd: &Path) -> Result<PathBuf, String> {
@@ -568,14 +679,22 @@ pub fn spawn_sidecar_for_build(
     let dir = dir.to_path_buf();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create data dir: {e}"))?;
 
-    // Remove a stale handshake so a previous launch's file is never mistaken
-    // for this launch (mirrors scripts/launch_sidecar.py).
-    let _ = std::fs::remove_file(dir.join(HANDSHAKE_FILE_NAME));
+    // Remove a stale handshake only through a safe (non-reparse) path, checking
+    // `_safe_storage_path`/ancestors plus the reparse point (not reparse alone).
+    let handshake_path = dir.join(HANDSHAKE_FILE_NAME);
+    if safe_storage_path(&handshake_path).is_ok() && !is_reparse_point(&handshake_path) {
+        let _ = std::fs::remove_file(&handshake_path);
+    } else {
+        return Err(format!("refusing to remove reparse handshake path: {}", handshake_path.display()));
+    }
 
-    let token = generate_token();
-    let token_file = write_token_file(&dir, &token);
+    let token = generate_token().map_err(|e| format!("generate token: {e}"))?;
+    if let Some(state) = app_handle.try_state::<crate::AppState>() {
+        *state.launch_token.lock().unwrap() = Some(token.clone());
+    }
+    let token_file = write_token_file(&dir, &token).map_err(|e| format!("write token file: {e}"))?;
 
-    let port = pick_free_port();
+    let port = pick_free_port().map_err(|e| format!("pick free port: {e}"))?;
     let (python, workdir) = match resolve_python(app_handle) {
         Ok(pair) => pair,
         Err(e) => return Err(e),
@@ -685,16 +804,37 @@ pub fn spawn_sidecar_for_build(
 
 pub fn spawn_watcher(app_handle: tauri::AppHandle) {
     std::thread::spawn(move || {
+        let expected_token = app_handle
+            .state::<AppState>()
+            .launch_token
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_default();
         let deadline = Instant::now() + Duration::from_secs(HANDSHAKE_TIMEOUT_SECS);
         while Instant::now() < deadline {
             if let Some(payload) = read_handshake() {
-                let config = BridgeConfig {
-                    base_url: format!("http://127.0.0.1:{}", payload.port),
-                    control_token: payload.token,
-                };
-                let state = app_handle.state::<AppState>();
-                *state.bridge.lock().unwrap() = Some(config);
-                return;
+                if payload.token != expected_token {
+                    crate::shell_log("[sythion] sidecar handshake token mismatch");
+                    // Remove the stale handshake file, but only after the same
+                    // reparse-point safety checks used elsewhere. Never follow
+                    // a reparse point or delete through an unsafe storage path.
+                    let handshake_path = data_dir().join(HANDSHAKE_FILE_NAME);
+                    if safe_storage_path(&handshake_path).is_ok() && !is_reparse_point(&handshake_path) {
+                        let _ = std::fs::remove_file(&handshake_path);
+                    } else {
+                        crate::shell_log("[sythion] refusing to remove reparse handshake path");
+                    }
+                    // Keep polling: a delayed sidecar rewrite can land later.
+                } else {
+                    let config = BridgeConfig {
+                        base_url: format!("http://127.0.0.1:{}", payload.port),
+                        control_token: payload.token,
+                    };
+                    let state = app_handle.state::<AppState>();
+                    *state.bridge.lock().unwrap() = Some(config);
+                    return;
+                }
             }
             let child_exited = app_handle
                 .state::<AppState>()
@@ -717,7 +857,7 @@ pub fn spawn_watcher(app_handle: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::{
-        data_dir_key, default_data_dir_for, development_mode_flag, development_mode_flag_for, is_prototype_build,
+        data_dir_key, default_data_dir_for, development_mode_flag, development_mode_flag_for,
         normalize_data_dir, python_override_workdir, resolve_data_dir_for_build, resolve_data_dir_from,
         sidecar_creation_flags, DATA_DIR_ENV, DEFAULT_DATA_DIR_NAME, LEGACY_DATA_DIR_ENV,
         PROTOTYPE_DATA_DIR_NAME,

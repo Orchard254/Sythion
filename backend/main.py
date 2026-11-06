@@ -290,7 +290,14 @@ app = FastAPI(
 app.add_middleware(
     LocalControlBoundaryMiddleware,
     token_provider=lambda: control_token,
-    allowed_origins=control_origins(settings.development_mode),
+    allowed_origins=control_origins(
+        (
+            os.environ.get("SYTHION_DEVELOPMENT_MODE", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        if os.environ.get("SYTHION_DEVELOPMENT_MODE", "").strip() != ""
+        else settings.development_mode
+    ),
 )
 
 # Include API routes
@@ -306,7 +313,16 @@ app.include_router(learning_router, prefix="/api/v1")
 # CORS middleware - only allow local origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=list(control_origins(settings.development_mode)),
+    allow_origins=list(
+        control_origins(
+            (
+                os.environ.get("SYTHION_DEVELOPMENT_MODE", "").strip().lower()
+                in {"1", "true", "yes", "on"}
+            )
+            if os.environ.get("SYTHION_DEVELOPMENT_MODE", "").strip() != ""
+            else settings.development_mode
+        )
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

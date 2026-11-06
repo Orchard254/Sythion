@@ -123,7 +123,7 @@ class TestLegacyMigration:
             .filter(PlanStep.plan_id.is_(None))
             .first()
         )
-        legacy_step.linked_task_id = "task-evidence"
+        legacy_step.evidence_task_id = "task-evidence"
         legacy_step.result_summary = "verified outcome"
         db_session.commit()
 
