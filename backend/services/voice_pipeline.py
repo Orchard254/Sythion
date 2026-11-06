@@ -217,11 +217,14 @@ class SAPI5TTS:
             self._speak_timeout = self.DEFAULT_SPEAK_TIMEOUT_SECONDS
         self._voice_name = voice_name
 
-    def _get_engine(self):
-        """Lazily initialize the pyttsx3 engine; failures are retryable."""
+    def _create_engine(self):
+        """Create a fresh pyttsx3 engine bound to the calling thread.
+
+        Engines are never cached or reused across threads: pyttsx3's SAPI5
+        driver is thread-affine and reusing an engine (or its (re)started event
+        loop) raises ``run loop already started`` or deadlocks in worker threads.
+        """
         with self._engine_lock:
-            if self._engine is not None:
-                return self._engine
             try:
                 import pyttsx3  # type: ignore
 
@@ -236,38 +239,80 @@ class SAPI5TTS:
                                 break
                     except Exception:  # pragma: no cover - engine dependent
                         logger.debug("Could not apply SAPI5 voice %r", self._voice_name)
-                self._engine = engine
                 logger.info("SAPI5 TTS loaded")
-                return self._engine
+                return engine
             except Exception as e:  # pragma: no cover - OS dependent
                 logger.warning("SAPI5 TTS unavailable: %s", e)
-                self._engine = None
                 return None
+
+    def _get_engine(self):
+        """Compatibility accessor; always returns a fresh thread-bound engine.
+
+        Retained for callers/tests that expect ``_get_engine``; it intentionally
+        performs no caching (see ``_create_engine``).
+        """
+        return self._create_engine()
 
     def speak(self, text: str) -> bool:
         """Speak ``text``. Only call with concise evidence-based results.
 
-        A wedged ``runAndWait()`` is abandoned after the configured timeout and
-        the cached engine is invalidated so the next call reinitializes.
+        A fresh pyttsx3 engine is created inside the worker thread on every
+        attempt so that COM state and the SAPI5 event loop stay thread-affine.
+        ``pythoncom`` is initialized and cleaned up around engine use. A wedged
+        ``runAndWait()`` is abandoned after the configured timeout; retry then
+        builds another fresh engine.
         """
         if not text or not text.strip():
             return False
         cleaned = text.strip()
 
         for _attempt in range(2):
-            engine = self._get_engine()
-            if engine is None:
-                return False
-
-            outcome = {"ok": False, "error": None}
+            outcome = {"ok": False, "error": None, "init_failed": False}
 
             def _worker() -> None:
+                com_initialized = False
                 try:
-                    engine.say(cleaned)
-                    engine.runAndWait()
-                    outcome["ok"] = True
+                    try:
+                        import pythoncom  # type: ignore
+
+                        pythoncom.CoInitialize()
+                        com_initialized = True
+                    except Exception as _exc:  # pragma: no cover - pythoncom optional
+                        logger.debug("pythoncom.CoInitialize unavailable: %s", _exc)
+                        com_initialized = False
+
+                    try:
+                        engine = self._get_engine()
+                    except Exception as exc:  # pragma: no cover - defensive
+                        engine = None
+                        outcome["error"] = exc
+                        return
+
+                    if engine is None:
+                        outcome["init_failed"] = True
+                        outcome["error"] = RuntimeError("SAPI5 TTS unavailable")
+                        return
+
+                    try:
+                        engine.say(cleaned)
+                        engine.runAndWait()
+                        outcome["ok"] = True
+                    except RuntimeError as exc:
+                        # A stale/restarted SAPI5 loop means this engine is no
+                        # good; signal the outer loop to build a fresh one.
+                        outcome["error"] = exc
+                        logger.warning("SAPI5 TTS run loop error: %s", exc)
+                        raise
                 except Exception as exc:  # pragma: no cover - OS dependent
                     outcome["error"] = exc
+                finally:
+                    if com_initialized:
+                        try:
+                            import pythoncom  # type: ignore
+
+                            pythoncom.CoUninitialize()
+                        except Exception:  # pragma: no cover - defensive
+                            pass
 
             worker = threading.Thread(target=_worker, daemon=True)
             worker.start()
@@ -275,15 +320,16 @@ class SAPI5TTS:
 
             if worker.is_alive():
                 logger.warning(
-                    "SAPI5 TTS playback timed out after %.2fs; invalidating engine",
+                    "SAPI5 TTS playback timed out after %.2fs; building fresh engine",
                     self._speak_timeout,
                 )
-                self._invalidate_engine()
                 continue
+
+            if outcome.get("init_failed"):
+                return False
 
             if outcome["error"] is not None:
                 logger.error("TTS playback failed: %s", outcome["error"])
-                self._invalidate_engine()
                 continue
 
             return bool(outcome["ok"])
@@ -291,6 +337,7 @@ class SAPI5TTS:
         return False
 
     def _invalidate_engine(self) -> None:
+        # No cached engine exists to invalidate; kept for API/tests compatibility.
         with self._engine_lock:
             self._engine = None
 
