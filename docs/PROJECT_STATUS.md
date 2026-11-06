@@ -9,7 +9,7 @@ system. Irreversible actions are excluded. Availability does not require
 continuous inference.
 
 This checklist is the current progress summary. Older descriptions and suite
-counts below are historical evidence, not verification of today's dirty tree.
+counts below are historical evidence, not verification of the current source state.
 Check a user outcome only after a representative end-to-end demonstration;
 source implementation, focused tests, integration, and deployment are distinct.
 
@@ -22,7 +22,7 @@ source implementation, focused tests, integration, and deployment are distinct.
 | Synth carries a goal forward in bounded background sessions without constant supervision. | Partial: wake/session foundations exist; protected work remains blocked. | One useful long-running goal with measured bounds, durable progress and honest blockers. |
 | My access toggles are real permissions, and turning one off prevents new covered actions. | Blocked: authenticated operator issuance and enforcement are unimplemented. | Principal/scope binding, revocation fence, resource-bound enforcement, adversarial tests. |
 | Pause/stop works, and crashes never silently repeat uncertain actions. | Partial: controls/recovery primitives exist; cross-process fencing and uncertainty gaps remain. | Process-kill and cancellation tests around actual effect windows without bypassing authorization. |
-| I can tell what is available, running, completed, blocked or uncertain. | In progress: lifecycle endpoint candidate in an isolated worktree; not integrated. | Independent review and verification, then conflict-safe integration and user-facing observation. |
+| I can tell what is available, running, completed, blocked or uncertain. | In progress: integrated UI/lifecycle experience under verification. | Independent review and verification, then conflict-safe integration and user-facing observation. |
 | Synth stays predictable during cloud outages and within resource/cost limits. | Partial: bounded retry foundations exist; runtime-wide resilience/budgets incomplete. | Outage/rate-limit/cancellation tests and measured session/daily limits. |
 | Installation and updates are reproducible and do not damage unrelated files. | Blocked: destructive staging, runtime/provenance and clean-machine release gaps remain. | Non-destructive packaging, dependency authenticity and clean-machine validation. |
 | Synth is genuinely isolated from the rest of my system except through granted interfaces. | Not implemented as the target isolation boundary. | Verified OS/process sandbox and controlled filesystem/network interfaces. |
@@ -35,21 +35,39 @@ source implementation, focused tests, integration, and deployment are distinct.
 - [x] Packaging secret-classification/copy callback fixes: independently accepted 23-test evidence.
 
 These results cover their specific changes only, not the whole current source,
-packaged application, or release. Mixed-provenance uncommitted changes are being
-preserved rather than swept into a baseline commit.
+packaged application, or release.
 
-### Current work and exact next step
+### Current work and exact next step (2026-11-06)
 
-Independent verification reproduced **9 passing tests** (8 lifecycle, 1 health)
-on the isolated candidate, but acceptance is **blocked**. Sandbox probes confirmed
-partial startup failure can still appear as aggregate completion; existing tests
-do not exercise the actual main lifespan. Static review also found hidden global
-boot state, internal lock-field access, and optimistic uptime on clock skew.
-The implementer is correcting these defects and adding real lifespan regression
-coverage. No commit or main-tree integration has occurred.
-Next: independently review and verify the corrected
-revision, and locally commit only explicit verified paths. Integration into the
-dirty working tree is a separate compatibility check, not assumed by that commit.
+Functional-first scope: open the app, complete the useful 30-minute Python
+checklist, apply a natural 15-minute correction, and keep persisted replies
+visible and recoverable.
+
+Independent evidence so far:
+- Frontend `Assistant.test.tsx`: 51 passed (observed by coordinator).
+- Backend `test_task_api_response.py` and `test_assistant_turn_api.py`: 42 passed
+  (verified by coordinator; isolated DB/model mocks only, no provider, server
+  restart, live database, or installed-app claim).
+- Interpret timestamp-tie regression fixed in `backend/api/routes.py`: equal
+  `ConversationTurn.created_at` values now break ties by descending ID, matching
+  the canonical assistant-turn path, preventing misordered recap context for
+  repeated turns. Other model-side JSON/conversation degradation remains a
+  separate, unfixed defect.
+- Real isolated source/model evidence observed through `http://localhost:3000`:
+  - clean setup inference returned HTTP 502 (empty model body);
+  - first actual Beam assistant answer returned HTTP 200 and was persisted;
+  - second follow-up returned HTTP 503 `json_malformed` (not fixed by the
+    timestamp-tie change).
+- The user's reported historical later-chat failure remains evidence of a
+  repeated-turn/context degradation issue; it is not explained by the fixed
+  timestamp-ordering defect.
+- Source UI observed through `http://localhost:3000` only, not an installed
+  application, release artifact, deployment, or end-to-end completed workflow.
+
+Not demonstrated: end-to-end follow-up success after correction, installed
+application, release artifact, 24-hour availability, soak/crash recovery, or
+live-provider robustness. Focused tests are bounded evidence, not full product
+proof, and no user outcome is marked complete here.
 
 Agents report directly and share memory; this existing status document is the
 single human-readable checklist, not a new orchestration framework. Update it

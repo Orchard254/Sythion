@@ -128,3 +128,40 @@ def test_model_router_cannot_target_permission_wait(test_db, monkeypatch):
     assert stale.status_code == 409
     assert 'question changed' in stale.json()['detail']
     assert test_db.query(Task).filter_by(id='permission').one().state == 'waiting_for_user'
+
+
+def test_interpret_recent_turns_preserve_insertion_order_on_equal_timestamp(test_db, monkeypatch):
+    import json
+    from backend.core import session as session_module
+    from backend.models.database import ConversationTurn
+    from backend.services.conversation_runtime import ModelClient
+
+    monkeypatch.setattr(session_module, "get_current_session_id", lambda: "session-tie")
+    captured = {}
+
+    async def fake_chat(self, **kwargs):
+        captured["messages"] = kwargs["messages"]
+        return '{"kind":"conversation","task_id":null}'
+
+    monkeypatch.setattr(ModelClient, "chat", fake_chat)
+
+    shared_time = datetime.utcnow().replace(microsecond=0)
+    test_db.add_all([
+        ConversationTurn(session_id="session-tie", role="user", summary="user 1", created_at=shared_time),
+        ConversationTurn(session_id="session-tie", role="assistant", summary="assistant 1", created_at=shared_time),
+        ConversationTurn(session_id="session-tie", role="user", summary="user 2", created_at=shared_time),
+        ConversationTurn(session_id="session-tie", role="assistant", summary="assistant 2", created_at=shared_time),
+    ])
+    test_db.commit()
+
+    app = FastAPI()
+    app.include_router(routes.router)
+    app.dependency_overrides[get_db] = lambda: test_db
+    with TestClient(app) as client:
+        response = client.post("/assistant/interpret", json={"original_request": "follow up"})
+    assert response.status_code == 200
+
+    context = json.loads(captured["messages"][1]["content"])
+    assert [item["text"] for item in context["recent"]] == [
+        "user 1", "assistant 1", "user 2", "assistant 2",
+    ]

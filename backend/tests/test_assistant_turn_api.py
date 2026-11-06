@@ -27,6 +27,7 @@ ENGINE_STATE = {
     "raise": None,
     "descriptors_seen": [],
     "discussion_contexts_seen": [],
+    "recent_turns_seen": [],
 }
 
 
@@ -37,6 +38,7 @@ class FakeEngine:
     async def run_turn(self, user_text, recent_turns=None, clarification_descriptors=None, discussion_contexts=None, **kwargs):
         ENGINE_STATE["descriptors_seen"] = list(clarification_descriptors or [])
         ENGINE_STATE["discussion_contexts_seen"] = list(discussion_contexts or [])
+        ENGINE_STATE["recent_turns_seen"] = list(recent_turns or [])
         if ENGINE_STATE["raise"] is not None:
             raise ENGINE_STATE["raise"]
         return {
@@ -51,6 +53,7 @@ def _reset_engine_state():
     ENGINE_STATE["raise"] = None
     ENGINE_STATE["descriptors_seen"] = []
     ENGINE_STATE["discussion_contexts_seen"] = []
+    ENGINE_STATE["recent_turns_seen"] = []
 
 
 def _make_waiting_task(db, task_id, kind, version=4):
@@ -905,3 +908,82 @@ async def test_start_task_cleanup_failure_transitions_receipt_to_failed_and_pers
     )
     assert followup is not None
     assert followup.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_pure_conversation_turns_persist_full_text_and_chronological_context(
+    request, _patch_engine
+):
+    """A plain conversation keeps its complete transcript and feeds prior turns to
+    the engine in chronological order. No task is created or scheduled."""
+    db = request.getfixturevalue("test_db")
+    from sqlalchemy.orm import sessionmaker
+
+    first_request = "plain-first-client-id"
+    first_user_text = "Help me plan a 30-minute beginner Python practice session. Give me a short checklist."
+    first_assistant_text = "30-minute beginner checklist: 1. variables, 2. if/else, 3. for loops."
+
+    ENGINE_STATE["assistant_text"] = first_assistant_text
+    ENGINE_STATE["commands"] = []
+    ENGINE_STATE["recent_turns_seen"] = []
+
+    first_bg = BackgroundTasks()
+    first_response = await assistant_turn(
+        AssistantTurnRequest(client_request_id=first_request, text=first_user_text),
+        first_bg,
+        db,
+        None,
+    )
+
+    assert first_response.status == "completed"
+    assert first_response.background_task_ids == []
+    assert first_bg.tasks == []
+    assert ENGINE_STATE["recent_turns_seen"] == []
+
+    exchanges = (
+        db.query(ConversationExchange)
+        .order_by(ConversationExchange.created_at.desc(), ConversationExchange.id.desc())
+        .all()
+    )
+    assert len(exchanges) == 1
+    assert exchanges[0].user_text == first_user_text
+    assert exchanges[0].assistant_text == first_assistant_text
+
+    second_request = "plain-second-client-id"
+    second_user_text = "I only have 15 minutes; revise it and keep the same beginner focus."
+    second_assistant_text = "15-minute beginner revision: focus only on variables and one if/else exercise."
+
+    ENGINE_STATE["assistant_text"] = second_assistant_text
+    ENGINE_STATE["commands"] = []
+    ENGINE_STATE["recent_turns_seen"] = []
+
+    second_bg = BackgroundTasks()
+    second_response = await assistant_turn(
+        AssistantTurnRequest(client_request_id=second_request, text=second_user_text),
+        second_bg,
+        db,
+        None,
+    )
+
+    assert second_response.status == "completed"
+    assert second_response.background_task_ids == []
+    assert second_bg.tasks == []
+    assert ENGINE_STATE["recent_turns_seen"] == [
+        {"role": "user", "content": first_user_text[:500]},
+        {"role": "assistant", "content": first_assistant_text[:2000]},
+    ]
+
+    refreshed_db = sessionmaker(bind=db.bind)()
+    try:
+        final_exchanges = (
+            refreshed_db.query(ConversationExchange)
+            .order_by(ConversationExchange.created_at.desc(), ConversationExchange.id.desc())
+            .all()
+        )
+        assert len(final_exchanges) == 2
+        by_user = {row.user_text: row.assistant_text for row in final_exchanges}
+        assert by_user[first_user_text] == first_assistant_text
+        assert by_user[second_user_text] == second_assistant_text
+        assert refreshed_db.query(Task).count() == 0
+    finally:
+        refreshed_db.close()

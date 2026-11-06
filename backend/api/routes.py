@@ -359,7 +359,7 @@ async def interpret_assistant_message(data: TaskCreate, db: Session = Depends(ge
     from backend.services.conversation_runtime import ModelClient
 
     turns = (db.query(ConversationTurn).filter_by(session_id=get_current_session_id())
-             .order_by(ConversationTurn.created_at.desc()).limit(6).all())
+             .order_by(ConversationTurn.created_at.desc(), ConversationTurn.id.desc()).limit(6).all())
     pending = db.query(Task).filter_by(state=TaskState.WAITING_FOR_USER.value).order_by(Task.updated_at.desc()).limit(20).all()
     # Only ordinary cognitive clarifications can be inferred automatically.
     # Permission and unclassified waits require explicit user selection.
