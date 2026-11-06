@@ -316,8 +316,10 @@ class ConversationTurnEngine:
         "proof that it ran or produced a result. Do not claim an action was "
         "started, completed, scheduled, changed, queued, cancelled, or that any "
         "result exists unless the verified server outcome says so. If you are not "
-        "returning an executable command, return only a normal conversational "
-        "answer with an empty commands array."
+        "returning an executable command, put your normal conversational answer "
+        "in the assistant_text string and use an empty commands array. The entire "
+        'response must still be exactly one JSON object, for example '
+        '{"assistant_text":"Your answer here.","commands":[]}.'
     )
 
     async def _call_model(self, messages):

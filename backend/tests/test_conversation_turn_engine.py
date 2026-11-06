@@ -1176,4 +1176,6 @@ async def test_malformed_retry_prompt_explicitly_forbids_unvalidated_action_clai
     retry_system = fake.calls[1][-1]["content"]
     assert "No action, completion, or result has been verified from" in retry_system
     assert "could not be parsed as JSON" in retry_system
+    assert "in the assistant_text string and use an empty commands array" in retry_system
+    assert '{"assistant_text":"Your answer here.","commands":[]}' in retry_system
     assert prose not in retry_system
