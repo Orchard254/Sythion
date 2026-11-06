@@ -502,10 +502,11 @@ class PostTaskPipeline:
     """Best-effort post-terminal hooks; failures must never rewrite
     execution truth or block completion reporting."""
 
-    def __init__(self, db_session, runner, tool_executor):
+    def __init__(self, db_session, runner, tool_executor, model_call_fn=None):
         self.db = db_session
         self.runner = runner
         self.tool_executor = tool_executor
+        self.model_call_fn = model_call_fn
 
     async def record_budget_snapshot(self, task_id: str, guard: BudgetGuard) -> None:
         try:
@@ -544,12 +545,62 @@ class PostTaskPipeline:
         except Exception as exc:  # pragma: no cover - best-effort
             logger.warning("Memory consolidation failed for task %s: %s", task_id, exc)
 
+    async def diagnose_failed_task(self, task_id: str, model_call_fn: Any = None) -> Any:
+        """Best-effort bounded diagnosis for a failed task."""
+        try:
+            from backend.services.failed_task_diagnostic import diagnose_failed_task as _diagnose
+
+            fn = model_call_fn if model_call_fn is not None else self.model_call_fn
+            return await _diagnose(self.db, task_id, self.runner, model_call_fn=fn)
+        except Exception as exc:
+            logger.warning("Failed-task diagnostic failed for task %s: %s", task_id, exc)
+            return "Diagnostic unavailable: diagnostic investigation failed."
+
+    async def investigate_failed_task(self, task_id: str, model_call_fn: Any = None) -> Any:
+        return await self.diagnose_failed_task(task_id, model_call_fn=model_call_fn)
+
+    async def run_diagnostic(self, task_id: str, model_call_fn: Any = None) -> Any:
+        return await self.diagnose_failed_task(task_id, model_call_fn=model_call_fn)
+
+    def set_model_call_fn(self, fn: Any) -> None:
+        self.model_call_fn = fn
+
+    async def schedule_failed_task_diagnostic(self, task_id: str, model_call_fn: Any = None) -> Any:
+        """Non-blocking: schedule one conversation-associated failed-task diagnosis."""
+        try:
+            from backend.services.failed_task_diagnostic import schedule_failed_task_diagnostic as _schedule
+
+            fn = model_call_fn if model_call_fn is not None else self.model_call_fn
+            return await _schedule(task_id, model_call_fn=fn)
+        except Exception as exc:
+            logger.warning("Could not schedule failed-task diagnostic for task %s: %s", task_id, exc)
+            return None
+
+    async def drain_pending_diagnostics(self) -> None:
+        """Await scheduled diagnostics (test/coordination helper)."""
+        try:
+            from backend.services.failed_task_diagnostic import await_pending_failed_task_diagnostics
+
+            await await_pending_failed_task_diagnostics()
+        except Exception as exc:
+            logger.warning("Draining pending diagnostics failed: %s", exc)
     async def apply_plan_outcome(self, task_id: str) -> None:
         """Deterministic goal/plan state update from terminal task evidence.
 
         Phase 2: plan steps complete ONLY through this evidence path. The
         model cannot mark plan-backed steps completed any other way.
         """
+        # Do not block finalization: schedule the diagnostic in an independent
+        # session. It remains idempotent and conversation-association-gated.
+        try:
+            initial_task = await self.runner.get_task(task_id)
+            if initial_task is not None and getattr(initial_task, "state", None) == "failed":
+                await self.schedule_failed_task_diagnostic(
+                    task_id, model_call_fn=self.model_call_fn
+                )
+        except Exception as exc:
+            logger.warning("Failed-task diagnostic scheduling failed for task %s: %s", task_id, exc)
+
         try:
             from backend.services.planner import Planner
             from backend.services.task_orchestrator import TaskOrchestrator

@@ -39,6 +39,7 @@ export interface ConversationExchange {
   user_text: string;
   assistant_text: string;
   created_at: string;
+  background_task_ids?: string[];
 }
 
 export const conversationService = {

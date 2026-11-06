@@ -270,16 +270,16 @@ class ConversationTurnEngine:
                     and self._is_ordinary_prose(raw)
                     and attempt + 1 >= self.MAX_TOTAL_MODEL_CALLS
                 ):
+                    assistant_text = self._strip_legacy_no_action_disclosure(
+                        raw.strip() if isinstance(raw, str) else ""
+                    ).strip()
+                    if not assistant_text:
+                        raise
                     assistant_text = self._bounded_text(
-                        raw.strip() if isinstance(raw, str) else "",
+                        assistant_text,
                         "assistant_text",
                         MAX_ASSISTANT_TEXT,
                     )
-                    if not assistant_text.strip():
-                        raise
-                    assistant_text = self._strip_legacy_no_action_disclosure(
-                        assistant_text
-                    ).strip()
                     if not assistant_text.strip():
                         raise
                     return ConversationTurnResult(assistant_text, [])

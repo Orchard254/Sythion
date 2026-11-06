@@ -1,6 +1,6 @@
 ﻿import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
-import { conversationService, voiceService } from '../services/api';
+import { conversationService, taskService, voiceService } from '../services/api';
 import { conversationTasks, nextSpokenReply } from '../lib/firstConversation';
 import { Icon } from '../components/icons';
 import { TaskDetailDrawer } from '../components/TaskDetailDrawer';
@@ -47,6 +47,7 @@ export function AssistantScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [unconfirmedSchedulingTaskIds, setUnconfirmedSchedulingTaskIds] = useState<string[] | null>(null);
   const [composerStorageCompromised, setComposerStorageCompromised] = useState(false);
+  const [recoveredTasks, setRecoveredTasks] = useState<Task[]>([]);
 
   const queryClient = useQueryClient();
   const [replyMode] = useState<'text' | 'voice'>(() => localStorage.getItem('sythion.replyMode') === 'text' ? 'text' : 'voice');
@@ -129,6 +130,52 @@ useLayoutEffect(() => {
       pending_question: null, terminal_reason: null,
       created_at: item.created_at, updated_at: item.created_at,
     })), [conversationQuery.data]);
+
+  const conversationAssociatedTaskIds = useMemo(() => {
+    const ids = (conversationQuery.data?.pages.flatMap((page) => page.conversations) ?? [])
+      .flatMap((conversation) => conversation.background_task_ids ?? [])
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    return Array.from(new Set(ids));
+  }, [conversationQuery.data]);
+
+  const recoverTasksById = useCallback(async (ids: string[]) => {
+    const unique = Array.from(new Set(ids));
+    const fetchOne = typeof taskService?.get === 'function'
+      ? (id: string) => taskService.get(id)
+      : null;
+    if (!fetchOne || !unique.length) return;
+    const fetched = await Promise.all(unique.map((id) => fetchOne(id).catch(() => null)));
+    const valid = fetched.filter((item): item is Task => !!item);
+    if (!valid.length) return;
+    setRecoveredTasks((current) => {
+      const merged = [...current];
+      for (const item of valid) {
+        const index = merged.findIndex((existing) => existing.id === item.id);
+        if (index >= 0) merged[index] = item;
+        else merged.push(item);
+      }
+      return merged;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (dataMode !== 'live') return;
+    if (!conversationAssociatedTaskIds.length) return;
+    void recoverTasksById(conversationAssociatedTaskIds);
+  }, [conversationAssociatedTaskIds, dataMode, recoverTasksById]);
+
+  // Poll only recovered terminal tasks whose diagnostic repair is still pending.
+  // Terminal completed/cancelled tasks and repaired failures do not need refresh.
+  const pendingDiagnosticTaskIds = recoveredTasks
+    .filter((task) => task.state === 'failed' && !(task.final_result ?? '').includes('Diagnostic:'))
+    .map((task) => task.id);
+  useEffect(() => {
+    if (dataMode !== 'live' || !pendingDiagnosticTaskIds.length) return;
+    const timer = setInterval(() => {
+      void recoverTasksById(pendingDiagnosticTaskIds);
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [dataMode, pendingDiagnosticTaskIds.join(','), recoverTasksById]);
   useEffect(() => {
     if (!storedConversations.length || !recentResponses.length) return;
     const persisted = new Set(storedConversations.map((item) => item.id));
@@ -142,11 +189,15 @@ useLayoutEffect(() => {
   const { startCapture, stopCapture } = useVoiceCapture();
 
   const allTasks = useMemo(() => tasks.data ?? [], [tasks.data]);
+  const allTasksWithRecovered = useMemo(() => {
+    const seen = new Set(allTasks.map((task) => task.id));
+    return [...allTasks, ...recoveredTasks.filter((task) => !seen.has(task.id))];
+  }, [allTasks, recoveredTasks]);
   const threadItems = useMemo(
-    () => dataMode === 'preview' ? allTasks : [...allTasks, ...Array.from(
+    () => dataMode === 'preview' ? allTasksWithRecovered : [...allTasksWithRecovered, ...Array.from(
       new Map([...storedConversations, ...recentResponses].map((item) => [item.id, item])).values()
     )],
-    [allTasks, storedConversations, recentResponses, dataMode]
+    [allTasksWithRecovered, storedConversations, recentResponses, dataMode]
   );
 
   const status = useMemo(
@@ -157,7 +208,7 @@ useLayoutEffect(() => {
         isListening,
         isSpeaking,
         submitting,
-        tasks: allTasks.filter((task) => !(task.state === 'waiting_for_user' && (task.waiting_kind === 'clarification' || task.waiting_kind === 'unknown'))),
+        tasks: allTasksWithRecovered.filter((task) => !(task.state === 'waiting_for_user' && (task.waiting_kind === 'clarification' || task.waiting_kind === 'unknown'))),
         error: voiceError ?? (tasks.error ? tasks.error.message : null),
         // No analyser is attached, so no level is claimed.
         audioLevel: null,
@@ -168,7 +219,7 @@ useLayoutEffect(() => {
   // Tasks blocked on the owner. Pinned, and excluded from the thread so they
   // are never shown twice. The predicate lives in lib/assistantStatus so the
   // status model and this view cannot disagree about what "blocked" means.
-  const awaitingTasks = useMemo(() => findAwaitingTasks(allTasks), [allTasks]);
+  const awaitingTasks = useMemo(() => findAwaitingTasks(allTasksWithRecovered), [allTasksWithRecovered]);
   // Only authorization, permission, and unknown holds are pinned. Ordinary
   // clarification questions render in the thread as normal assistant replies.
   const visibleAwaiting = awaitingTasks.filter((task) =>

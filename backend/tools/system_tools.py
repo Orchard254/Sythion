@@ -102,12 +102,14 @@ def _model_visible(reqs: Dict[str, Any], autonomy: str) -> bool:
             return False
         if reqs.get("risk_level") in {"medium", "high"}:
             return False
-        if (
-            reqs.get("privacy_sensitive")
-            or reqs.get("requires_screen_access")
-            or reqs.get("requires_ui_automation")
-        ):
-            return False
+    # engine never exposes privacy-, screen-, or UI-automation-sensitive tools,
+    # even in autonomous mode.
+    if (
+        reqs.get("privacy_sensitive")
+        or reqs.get("requires_screen_access")
+        or reqs.get("requires_ui_automation")
+    ):
+        return False
     return True
 
 

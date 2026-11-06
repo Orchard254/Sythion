@@ -262,9 +262,30 @@ async def list_conversations(limit: int = Query(50, ge=1, le=200), cursor: Optio
         next_cursor = base64.urlsafe_b64encode(json.dumps(
             [last.created_at.isoformat(), last.id], separators=(",", ":")
         ).encode("utf-8")).decode("ascii")
+
+    # One batch query keeps task association reads O(1) per request rather than N
+    # per conversation row. Associations only resolve to durable task rows.
+    associations_by_exchange: dict[str, list[str]] = {}
+    exchange_ids = [row.id for row in rows if row.id]
+    if exchange_ids:
+        from backend.models.database import ConversationTaskAssociation
+
+        association_rows = (
+            db.query(
+                ConversationTaskAssociation.exchange_id,
+                ConversationTaskAssociation.task_id,
+            )
+            .filter(ConversationTaskAssociation.exchange_id.in_(exchange_ids))
+            .all()
+        )
+        for exchange_id, task_id in association_rows:
+            if isinstance(exchange_id, str) and isinstance(task_id, str) and task_id.strip():
+                associations_by_exchange.setdefault(exchange_id, []).append(task_id.strip())
+
     return {"conversations": [
         {"id": row.id, "session_id": row.session_id, "user_text": row.user_text,
-         "assistant_text": row.assistant_text, "created_at": row.created_at.isoformat()}
+         "assistant_text": row.assistant_text, "created_at": row.created_at.isoformat(),
+         "background_task_ids": associations_by_exchange.get(row.id, [])}
         for row in rows
     ], "next_cursor": next_cursor}
 

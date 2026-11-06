@@ -127,6 +127,7 @@ class TaskExecutionLoop:
         terminal_retry = False
         primary_error = None
         recording_failure = False
+        repair_context = None
         try:
             # Transition to running state (no-op if the route already did)
             task = await self.runner.get_task(task_id)
@@ -297,7 +298,6 @@ class TaskExecutionLoop:
                 events = self._get_event_history(task_id)
 
                 # Request decision from model
-                repair_context = None
                 try:
                     decision_type, params = await self.model_engine.make_decision(
                         task_id=task.id,
@@ -310,6 +310,7 @@ class TaskExecutionLoop:
                         budget=budget.budget,
                     )
                     repair_attempts = 0  # Reset on successful decision
+                    repair_context = None
 
                 except BudgetExceededError as e:
                     if not self.instruction_revision.claim(task_id, snapshot.revision):
@@ -350,6 +351,16 @@ class TaskExecutionLoop:
                             "CRITICAL ERROR: You outputted raw text instead of a tool call. "
                             "You MUST call the 'complete_task' tool with your answer inside 'result' "
                             "(e.g. complete_task(result=\"...\")). Do NOT output raw text."
+                        )
+                    elif e.code == "INVALID_DECISION_TYPE":
+                        repair_context = (
+                            "Your previous tool name is not callable in the current autonomy "
+                            "mode (it is registered but gated/hidden). Do NOT retry gui_* or any other tool not "
+                            "listed in AVAILABLE TOOLS (app_launch only when listed). Consult "
+                            "system_capabilities for the model-visible subset, choose one of the "
+                            "listed read-only tools, or use tool_propose when a capability is "
+                            "genuinely missing. Do not assume an interactive approval or consent "
+                            "boundary exists for gated tools."
                         )
                     else:
                         repair_context = (

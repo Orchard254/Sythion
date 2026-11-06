@@ -272,3 +272,19 @@ async def consolidate_memory_from_trace(db, task_id: str) -> None:
             )
     except Exception as exc:  # pragma: no cover - best-effort
         logger.warning("Memory consolidation failed for task %s: %s", task_id, exc)
+
+
+async def diagnose_failed_task(db, task_id, runner=None, *, model_call_fn=None, **kwargs):
+    """Compatibility wrapper for failed-task diagnostics."""
+    try:
+        from backend.services.failed_task_diagnostic import diagnose_failed_task as _diagnose
+
+        return await _diagnose(db, task_id, runner, model_call_fn=model_call_fn, **kwargs)
+    except Exception as exc:
+        logger.warning("Failed-task diagnostic wrapper failed for task %s: %s", task_id, exc)
+        return "Diagnostic unavailable: diagnostic investigation failed."
+
+
+diagnose_failed_operation = diagnose_failed_task
+run_failed_task_diagnostic = diagnose_failed_task
+investigate_failed_task = diagnose_failed_task

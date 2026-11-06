@@ -8,6 +8,7 @@ try:
         ConversationTurnValidationError,
         MAX_RECENT_TURNS,
         PLAIN_PROSE_NO_ACTION_DISCLOSURE,
+        MAX_ASSISTANT_TEXT,
     )
     from backend.services.conversation_runtime import ConversationModelError
 except ImportError:
@@ -16,6 +17,7 @@ except ImportError:
         ConversationTurnValidationError,
         MAX_RECENT_TURNS,
         PLAIN_PROSE_NO_ACTION_DISCLOSURE,
+        MAX_ASSISTANT_TEXT,
     )
     from services.conversation_runtime import ConversationModelError
 
@@ -1107,6 +1109,27 @@ async def test_retry_cancellation_no_retry():
     assert fake.calls == 1
     assert engine.call_count == 1
 DISCLOSURE = PLAIN_PROSE_NO_ACTION_DISCLOSURE
+
+
+@pytest.mark.asyncio
+async def test_plain_prose_legacy_disclosure_is_stripped_before_truncation():
+    legacy_core = (
+        "No background task, clarification, or other action was started or "
+        "scheduled. This response is informative only."
+    )
+    # Start the legacy marker 50 characters before the bound so truncation in the
+    # original bound-first order would split the marker. Stripping first leaves
+    # only the harmless prefix and never a disclosure fragment.
+    raw = ("x" * (MAX_ASSISTANT_TEXT - 50)) + PLAIN_PROSE_NO_ACTION_DISCLOSURE
+    fake = FakeModel(raw)
+    engine = ConversationTurnEngine(fake)
+    result = await engine.run("hi", [], [])
+    assert result.commands == []
+    assert result["assistant_text"] == "x" * (MAX_ASSISTANT_TEXT - 50)
+    assert PLAIN_PROSE_NO_ACTION_DISCLOSURE not in result["assistant_text"]
+    assert legacy_core not in result["assistant_text"]
+    assert "scheduled. This response is informative only." not in result["assistant_text"]
+    assert len(fake.calls) == 2
 
 
 @pytest.mark.asyncio
