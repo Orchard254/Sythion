@@ -63,3 +63,7 @@ build/staging/test-runtime-offline/
 
 # Generated Tauri resources are created by the clean staging workflow
 /src-tauri/resources/
+
+# Local test and Vite temporary output
+/t.txt
+/frontend/vite.config.ts.timestamp-*.mjs
