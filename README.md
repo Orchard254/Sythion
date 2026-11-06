@@ -116,8 +116,8 @@ Important current rules:
 The following files are retained for historical context only and should not be
 used as the current status baseline:
 
-- `FINAL_STATUS.md`
-- `PHASE3_REPORT.md`
+- `docs/HISTORICAL_REPORTS.md` — consolidated archive of former root-level
+  historical reports
 - `docs/PROGRESS_REPORT.md`
 
 ## Current verified baseline
