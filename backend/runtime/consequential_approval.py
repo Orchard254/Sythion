@@ -558,22 +558,30 @@ class ConsequentialApprovalService:
     def _resolve_receipt(self, fields: Dict[str, Any], proposal: Optional[PermissionProposal] = None) -> Optional[PermissionDecisionReceipt]:
         mgr = PermissionDecisionReceiptManager(db=self._session, clock=self._clock)
         receipt = None
+        # An explicitly supplied decision_id pins the lookup.  If it does not
+        # resolve to a receipt we must NOT silently fall back to a different
+        # receipt identified by task/action/digest (that would let an unknown
+        # or wrong decision id attach to an unrelated approved receipt).
         if fields.get("decision_id") is not None:
             try:
-                receipt = mgr.get(decision_id=str(fields.get("decision_id")).strip())
+                return mgr.get(decision_id=str(fields.get("decision_id")).strip())
             except Exception:
-                receipt = None
-        if receipt is None and proposal is not None:
+                return None
+        if proposal is not None:
             try:
                 receipt = mgr.get(source_task_id=proposal.task_id, action_id=proposal.action_id,
                                  proposal_digest=proposal.proposal_digest)
+                if receipt is not None:
+                    return receipt
             except Exception:
                 receipt = None
-        if receipt is None and fields.get("task_id") and fields.get("action_id") and fields.get("proposal_digest"):
+        if fields.get("task_id") and fields.get("action_id") and fields.get("proposal_digest"):
             try:
                 receipt = mgr.get(source_task_id=str(fields.get("task_id")).strip(),
                                  action_id=str(fields.get("action_id")).strip(),
                                  proposal_digest=str(fields.get("proposal_digest")).strip())
+                if receipt is not None:
+                    return receipt
             except Exception:
                 receipt = None
         return receipt
@@ -757,7 +765,12 @@ class ConsequentialApprovalService:
                     version_ok = False
                     binding_ok = False
             if receipt is not None:
-                if receipt.source_task_id not in (None, task_id) and receipt.task_id not in (None, task_id):
+                # At least one task ID must match, and neither may disagree.
+                if (
+                    (receipt.source_task_id is None and receipt.task_id is None)
+                    or receipt.source_task_id not in (None, task_id)
+                    or receipt.task_id not in (None, task_id)
+                ):
                     binding_ok = False
                 if str(receipt.action_id).strip() != str(action_id).strip():
                     binding_ok = False
