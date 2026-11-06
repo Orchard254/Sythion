@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Reproduction script for skill_runtime.py silent-success bug."""
 import sys
-sys.path.insert(0, r"C:\Ai\sythion")
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
 import asyncio
 from backend.core.db_manager import DatabaseManager, init_database

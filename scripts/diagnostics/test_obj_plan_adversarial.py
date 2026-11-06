@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Adversarial test for objective_planning_tool.py - tests verification behavior."""
 import sys
-sys.path.insert(0, r"C:\Ai\sythion")
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
 import asyncio
 from unittest.mock import patch, MagicMock
@@ -141,7 +144,7 @@ if obj_id:
             print(f"  Pre-fix behavior: success={output.success}, error={output.error}")
 
 print("\n=== Check sessionmaker import ===")
-with open("C:\\Ai\\sythion\\backend\\tools\\objective_planning_tool.py", "r") as f:
+with open(REPO_ROOT / "backend" / "tools" / "objective_planning_tool.py", "r") as f:
     content = f.read()
     if "sessionmaker" in content:
         print("  SUCCESS: sessionmaker imported")

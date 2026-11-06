@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Reproduction script for work_state.py silent-success bugs."""
 import sys
-sys.path.insert(0, r"C:\Ai\sythion")
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
 from backend.core.db_manager import DatabaseManager, init_database
 from backend.models.database import Base, Task, Objective, PlanStep, set_db_manager

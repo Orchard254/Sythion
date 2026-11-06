@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Adversarial test for skill_proposals.py - tests verification behavior."""
 import sys
-sys.path.insert(0, r"C:\Ai\sythion")
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
 from unittest.mock import patch, MagicMock
 from backend.core.db_manager import DatabaseManager, init_database
@@ -146,7 +149,7 @@ else:
     print("  Pre-fix behavior: returns proposal (no verification)")
 
 print("\n=== Check sessionmaker import ===")
-with open("C:\\Ai\\sythion\\backend\\services\\skill_proposals.py", "r") as f:
+with open(REPO_ROOT / "backend" / "services" / "skill_proposals.py", "r") as f:
     content = f.read()
     if "sessionmaker" in content:
         print("  SUCCESS: sessionmaker imported")

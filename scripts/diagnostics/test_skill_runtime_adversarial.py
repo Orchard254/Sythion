@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Adversarial test for skill_runtime.py - tests verification behavior."""
 import sys
-sys.path.insert(0, r"C:\Ai\sythion")
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
 import asyncio
 from unittest.mock import patch, MagicMock
@@ -83,7 +86,7 @@ else:
     print("  Pre-fix behavior: different error handling")
 
 print("\n=== Check sessionmaker import ===")
-with open("C:\\Ai\\sythion\\backend\\services\\skill_runtime.py", "r") as f:
+with open(REPO_ROOT / "backend" / "services" / "skill_runtime.py", "r") as f:
     content = f.read()
     if "sessionmaker" in content:
         print("  SUCCESS: sessionmaker imported")

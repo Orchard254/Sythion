@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Adversarial test for model_context_builder.py - forces trim verification."""
 import sys
-sys.path.insert(0, r"C:\Ai\sythion")
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
 from backend.core.db_manager import DatabaseManager, init_database
 from backend.models.database import Base, MemoryEntry, MemoryContextLog, set_db_manager
@@ -80,7 +83,7 @@ else:
     print("  *** BUG: Verification code MISSING from select_memory_context")
 
 print("\n=== Adversarial Test 3: Verify sessionmaker import ===")
-if "sessionmaker" in open("C:\\Ai\\sythion\\backend\\services\\model_context_builder.py").read():
+if "sessionmaker" in open(REPO_ROOT / "backend" / "services" / "model_context_builder.py").read():
     print("  SUCCESS: sessionmaker imported")
 else:
     print("  *** BUG: sessionmaker NOT imported")

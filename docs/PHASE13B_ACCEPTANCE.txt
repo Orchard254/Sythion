@@ -1,3 +1,6 @@
+# Historical verification snapshot only - not current installed readiness or current test evidence.
+# Current status and checklist: docs/PROJECT_STATUS.md
+
 CONVERSATION_RUNTIME: VERIFIED
 NO_TASK_FOR_CONVERSATION: VERIFIED
 NO_TASK_EXECUTION_LOOP_FOR_CONVERSATION: VERIFIED
