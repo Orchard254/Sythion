@@ -1,13 +1,18 @@
 # Documentation index
 
-This is a lightweight grouping of the documentation in `docs/`; it is not a
-replacement for `ARCHITECTURE.md`, `PROJECT_STATUS.md`, or the source. The
-documents listed here include historical counts or dated status details that
-are not independently verified by this index; last-known status can go stale.
-References are structural grouping only, not new runtime, test, or release
-verification.
+This is structural grouping only, not replacement authority and not verified
+present behaviour. Documents in the current references section carry their
+own test and status details; those details may be dated or conflict across
+files. Use the current source, tests, and authoritative runtime contracts for
+verification. Historical reports and implemented proposals are archives, not
+active task lists.
 
 ## Current design and operations references
+
+> Known unresolved count discrepancy: `PROJECT_STATUS.md` reports 1583 passed,
+> 45 skipped (1628 collected), while `OPERATIONS.md`, `ROADMAP.md`, and
+> `TESTING.md` report 1569 passed, 45 skipped (1648 collected). This index does
+> not reconcile or validate either count; verify against source/tests.
 
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [CODEBASE_BOUNDARIES.md](CODEBASE_BOUNDARIES.md)
