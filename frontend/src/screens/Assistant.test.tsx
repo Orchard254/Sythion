@@ -739,6 +739,116 @@ describe('assistant turns', () => {
     await settle(() => { view.unmount(); view = create(<QueryClientProvider client={client}><AssistantScreen /></QueryClientProvider>); });
     expect(useAppStore.getState().transcriptDraft).toBe('Hello Synth');
   });
+
+  it('sends via keyboard Enter and keeps the composer usable on success', async () => {
+    mock.turn.mockResolvedValueOnce({ exchange_id: 'kbd-1', user_text: 'Hello Synth', assistant_text: 'Hi from keyboard', status: 'completed', background_task_ids: [] });
+    await draft();
+    await settle(() => {
+      view.root.findByProps({ 'aria-label': 'Message Sythion' }).props.onKeyDown({ key: 'Enter', shiftKey: false, preventDefault: vi.fn() });
+    });
+    expect(mock.turn).toHaveBeenCalledWith('Hello Synth', expect.any(String));
+    expect(useAppStore.getState().transcriptDraft).toBe('');
+    expect(text()).toContain('Hi from keyboard');
+  });
+
+  it('sends via click and keeps the composer usable on success', async () => {
+    mock.turn.mockResolvedValueOnce({ exchange_id: 'click-1', user_text: 'Hello Synth', assistant_text: 'Hi from click', status: 'completed', background_task_ids: [] });
+    await draft();
+    await send();
+    expect(mock.turn).toHaveBeenCalledWith('Hello Synth', expect.any(String));
+    expect(useAppStore.getState().transcriptDraft).toBe('');
+    expect(text()).toContain('Hi from click');
+  });
+
+  it('preserves the draft after a failed keyboard send', async () => {
+    mock.turn.mockRejectedValueOnce(new Error('Connection lost'));
+    await draft();
+    await settle(() => {
+      view.root.findByProps({ 'aria-label': 'Message Sythion' }).props.onKeyDown({ key: 'Enter', shiftKey: false, preventDefault: vi.fn() });
+    });
+    expect(useAppStore.getState().transcriptDraft).toBe('Hello Synth');
+  });
+
+  it('preserves the draft after a failed click send', async () => {
+    mock.turn.mockRejectedValueOnce(new Error('Connection lost'));
+    await draft();
+    await send();
+    expect(useAppStore.getState().transcriptDraft).toBe('Hello Synth');
+  });
+
+  it('reuses the same request id after an ambiguous uncertain send', async () => {
+    const uncertain = 'Request outcome is uncertain; it was not rerun.';
+    mock.turn.mockRejectedValueOnce(new Error(uncertain));
+    await draft();
+    await send();
+    const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+
+    mock.turn.mockRejectedValueOnce(new Error(uncertain));
+    await draft(); // not changed
+    await send();
+    const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(secondId).toBe(firstId);
+  });
+
+  it('preserves request id after a generic previously-failed send', async () => {
+    const failedMessage = 'Request previously failed; it was not rerun.';
+    mock.turn.mockRejectedValueOnce(new Error(failedMessage));
+    await draft();
+    await send();
+    const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+
+    mock.turn.mockRejectedValueOnce(new Error(failedMessage));
+    await draft(); // same text
+    await send();
+    const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(secondId).toBe(firstId);
+  });
+
+  it('preserves request id after a conflict response', async () => {
+    const conflict = new Error('boom') as Error & { response?: { status: number } };
+    conflict.response = { status: 409 };
+    mock.turn.mockRejectedValueOnce(conflict);
+    await draft();
+    await send();
+    const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+
+    mock.turn.mockRejectedValueOnce(conflict);
+    await draft(); // same text
+    await send();
+    const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(secondId).toBe(firstId);
+  });
+
+  it('mints a new request id after a model-output rejection, which has no task or exchange', async () => {
+    const modelRejection = 'Synth could not understand the model\'s reply. No conversation or action was recorded, and no background work was started.';
+    mock.turn.mockRejectedValueOnce(new Error(modelRejection));
+    await draft();
+    await send();
+    const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+
+    mock.turn.mockResolvedValueOnce({ exchange_id: 'model-retry', user_text: 'Hello Synth', assistant_text: 'Recovered', status: 'completed', background_task_ids: [] });
+    await draft(); // same text
+    await send();
+    const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(secondId).not.toBe(firstId);
+    expect(text()).toContain('Recovered');
+  });
+
+  it('mints a new request id for distinct text after an uncertain failure', async () => {
+    const uncertain = 'Request outcome is uncertain; it was not rerun.';
+    mock.turn.mockRejectedValueOnce(new Error(uncertain));
+    await draft();
+    await send();
+    const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+
+    mock.turn.mockResolvedValueOnce({ exchange_id: 'distinct-turn', user_text: 'different text', assistant_text: 'Handled distinct', status: 'completed', background_task_ids: [] });
+    await settle(() => view.root.findByProps({ 'aria-label': 'Message Sythion' }).props.onChange({ target: { value: 'different text' } }));
+    await send();
+    const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(secondId).not.toBe(firstId);
+    expect(text()).toContain('Handled distinct');
+  });
+
 });
 
 let view: ReactTestRenderer;

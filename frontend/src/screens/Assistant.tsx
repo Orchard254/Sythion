@@ -533,6 +533,57 @@ useLayoutEffect(() => {
                       });
                     } catch (err) {
                       const message = err instanceof Error ? err.message : 'Failed to send the message';
+                      // Only the model-output rejection is proven to have created
+                      // no conversation and no task; drop the reserved request
+                      // identity so an identical retry can run. All other
+                      // backend- or transport-reported failures retain the
+                      // reserved identity, because their message text does not
+                      // prove the absence of task/exchange side effects.
+                       const definiteBackendFailure =
+                         message.startsWith('Synth could not understand the model\'s reply.');
+                      if (definiteBackendFailure && clientRequestId) {
+                        const completedPair = clientComposerRequestRef.current;
+                        if (completedPair && completedPair.text === text && completedPair.id === clientRequestId) {
+                          clientComposerRequestRef.current = null;
+                        }
+                        if (!composerStorageCompromised) {
+                          try {
+                            if (typeof sessionStorage !== 'undefined') {
+                              const currentStoredText = sessionStorage.getItem('sythion.composer.clientRequestText');
+                              const currentStoredId = sessionStorage.getItem('sythion.composer.clientRequestId');
+                              if (currentStoredText === text && currentStoredId === clientRequestId) {
+                                let removed = false;
+                                try {
+                                  sessionStorage.removeItem('sythion.composer.clientRequestId');
+                                  sessionStorage.removeItem('sythion.composer.clientRequestText');
+                                  removed =
+                                    sessionStorage.getItem('sythion.composer.clientRequestText') === null &&
+                                    sessionStorage.getItem('sythion.composer.clientRequestId') === null;
+                                } catch {
+                                  removed = false;
+                                }
+                                if (!removed) {
+                                  let guarded = false;
+                                  try {
+                                    sessionStorage.setItem('sythion.composer.clientRequestText', '');
+                                    sessionStorage.setItem('sythion.composer.clientRequestId', '');
+                                    guarded =
+                                      sessionStorage.getItem('sythion.composer.clientRequestText') === '' &&
+                                      sessionStorage.getItem('sythion.composer.clientRequestId') === '';
+                                  } catch {
+                                    guarded = false;
+                                  }
+                                  if (!guarded) {
+                                    setComposerStorageCompromised(true);
+                                  }
+                                }
+                              }
+                            }
+                          } catch {
+                            // Storage may be unavailable; ignore.
+                          }
+                        }
+                      }
                       notify({ tone: 'danger', title: 'Could not send', body: message });
                       setVoiceError(message);
                       setUnconfirmedSchedulingTaskIds(priorUnconfirmedSchedulingTaskIds);
@@ -594,6 +645,11 @@ function AssistantComposer({
   onSubmit: (text: string) => Promise<void>;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const sendButtonRef = useRef<HTMLButtonElement>(null);
+  // Tracks whether the most recent state transition into `submitting === false`
+  // followed an actual submission, so focus restoration only runs after
+  // send/completion and never on initial mount or unrelated re-renders.
+  const didSubmitRef = useRef(false);
 
   useEffect(() => {
     const el = ref.current;
@@ -601,6 +657,35 @@ function AssistantComposer({
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 168)}px`;
   }, [value]);
+
+  // Keep/restore keyboard focus on the composer after a send completes, while
+  // never stealing focus from another control the user intentionally moved to
+  // during the in-flight request. The textarea is disabled while submitting, so
+  // without this the field goes unblurred-to-nothing and the next message
+  // requires an explicit click.
+  useEffect(() => {
+    if (submitting) return;
+    if (!didSubmitRef.current) return;
+    didSubmitRef.current = false;
+    const target = ref.current;
+    if (!target) return;
+    // Hidden documents must not take focus; screen readers/mobile should not be
+    // surprised by focus changes they cannot see.
+    if (typeof document !== 'undefined' && document.visibilityState && document.visibilityState !== 'visible') return;
+    const now = typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null;
+    const sendButton = sendButtonRef.current;
+    // Only restore when focus is on the body, the send button that initiated the
+    // action, or the field itself. Any other control means the user moved
+    // intentionally during submission and must keep focus.
+    const intentionalMove =
+      !!now && now !== document.body && now !== target && now !== sendButton;
+    if (intentionalMove) return;
+    try {
+      target.focus();
+    } catch {
+      // Defensive: focus() can throw in some test or constrained environments.
+    }
+  }, [submitting]);
 
   const canSend = value.trim().length > 0 && !blocked && !submitting && !voiceActive;
 
@@ -625,7 +710,10 @@ function AssistantComposer({
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
-              if (canSend) void onSubmit(value.trim());
+              if (canSend) {
+                didSubmitRef.current = true;
+                void onSubmit(value.trim());
+              }
             }
           }}
         />
@@ -657,8 +745,13 @@ function AssistantComposer({
             className="mic-btn mic-btn--send"
             aria-label="Send message"
             title={blocked ? 'Preview mode — messages are not sent' : 'Send message'}
+            ref={sendButtonRef}
             disabled={!canSend}
-            onClick={() => void onSubmit(value.trim())}
+            onClick={() => {
+              if (!canSend) return;
+              didSubmitRef.current = true;
+              void onSubmit(value.trim());
+            }}
           >
             <Icon name="send" size={16} />
           </button>
