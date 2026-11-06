@@ -14,11 +14,13 @@ PLAIN_PROSE_NO_ACTION_DISCLOSURE = (
     "scheduled. This response is informative only."
 )
 
+
 def looks_like_machine_readable_payload(text: str) -> bool:
     stripped = text.lstrip()
     if stripped.startswith("```"):
         return True
     return stripped.startswith("{") or stripped.startswith("[")
+
 
 def strip_legacy_no_action_disclosure(text: Any) -> Any:
     if not isinstance(text, str):
@@ -43,6 +45,7 @@ def strip_legacy_no_action_disclosure(text: Any) -> Any:
     result = result.replace(legacy_core, "")
     return result
 
+
 def is_ordinary_prose(raw: Any) -> bool:
     text = raw.strip() if isinstance(raw, str) else ""
     if not text:
@@ -55,6 +58,7 @@ def is_ordinary_prose(raw: Any) -> bool:
         return False
     return True
 
+
 def unwrap_machine_readable_payload(text: str) -> str:
     stripped = text.strip()
     if stripped.startswith("```"):
@@ -65,6 +69,7 @@ def unwrap_machine_readable_payload(text: str) -> str:
             lines = lines[:-1]
         return "\n".join(lines).strip()
     return stripped
+
 
 def is_empty_indexed_session_discovery(discovery_input: Any) -> bool:
     if discovery_input is None:
