@@ -189,7 +189,7 @@ async def test_false_completion_after_clear_gap_when_model_returns_complete_task
         assert recovered_calls["n"] >= 1
         assert _event_count(recovered_session, task_id, "action.started") == before_started
         assert _event_count(recovered_session, task_id, "tool.executed") == 0
-        # Safe expectation that currently FAILS (false success):
+        # Recovery must not report completion without successful execution.
         assert after.state != TaskState.COMPLETED.value, (
             "task was falsely reported completed despite no successful mutating tool execution"
         )
@@ -787,7 +787,7 @@ async def test_false_completion_after_start_gap_when_model_returns_complete_task
         assert _event_count(recovered_session, task_id, "action.started") == started_before
         assert _event_count(recovered_session, task_id, "tool.executed") == 0
         assert staged_action_id in recovered_runner.task_ownership.uncertain_actions(task_id)
-        # Safe expectation that currently FAILS (false success):
+        # Recovery must not report completion while the action is uncertain.
         assert after.state != TaskState.COMPLETED.value, (
             "task was falsely reported completed despite an interrupted uncertain mutating action"
         )
