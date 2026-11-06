@@ -184,28 +184,79 @@ def _stt_checksum_verified() -> bool:
     return os.path.isfile(marker)
 
 
+_TTS_VOICE_CACHE = None
+_TTS_VOICE_CHECKED = False
+_TTS_VOICE_LOCK = threading.Lock()
+
 def _detect_tts_voice() -> str:
     """Return the pinned SAPI5 voice name, or an empty string if unavailable."""
-    try:
-        import pyttsx3
-    except ImportError:
-        return ""
-    try:
-        engine = pyttsx3.init()
-        voices = engine.getProperty("voices")
-        engine.stop()
-    except Exception as e:  # pragma: no cover - OS/engine dependent
-        logger.warning("Could not enumerate SAPI5 voices: %s", e)
-        return ""
-    for preferred in TTS_PREFERRED_VOICES:
-        for voice in voices:
-            name = getattr(voice, "name", "") or ""
-            if preferred.lower() in name.lower():
-                return name
-    if voices:
-        return getattr(voices[0], "name", "") or ""
-    return ""
+    global _TTS_VOICE_CACHE, _TTS_VOICE_CHECKED
+    with _TTS_VOICE_LOCK:
+        if _TTS_VOICE_CHECKED:
+            return _TTS_VOICE_CACHE or ""
+    # Perform enumeration in a bounded worker to avoid a wedged SAPI5 driver
+    # pinning the process; pythoncom is initialized/cleaned up around engine use.
+    result = {"value": ""}
 
+    def _detect() -> None:
+        global _TTS_VOICE_CACHE, _TTS_VOICE_CHECKED
+        com_initialized = False
+        try:
+            try:
+                import pythoncom  # type: ignore
+
+                pythoncom.CoInitialize()
+                com_initialized = True
+            except Exception:  # pragma: no cover - pythoncom optional
+                com_initialized = False
+            try:
+                import pyttsx3  # type: ignore
+            except ImportError:
+                result["value"] = ""
+                return
+            try:
+                engine = pyttsx3.init()
+                voices = engine.getProperty("voices")
+                try:
+                    engine.stop()
+                except Exception:
+                    pass
+            except Exception as e:  # pragma: no cover - OS/engine dependent
+                logger.warning("Could not enumerate SAPI5 voices: %s", e)
+                result["value"] = ""
+                return
+            found = ""
+            for preferred in TTS_PREFERRED_VOICES:
+                for voice in voices or []:
+                    name = getattr(voice, "name", "") or ""
+                    if preferred.lower() in str(name).lower():
+                        found = str(name)
+                        break
+                if found:
+                    break
+            if not found and voices:
+                found = getattr(voices[0], "name", "") or ""
+            result["value"] = str(found or "")
+        finally:
+            if com_initialized:
+                try:
+                    import pythoncom  # type: ignore
+
+                    pythoncom.CoUninitialize()
+                except Exception:  # pragma: no cover - defensive
+                    pass
+
+    worker = threading.Thread(target=_detect, daemon=True)
+    worker.start()
+    worker.join(5.0)
+    if worker.is_alive():
+        # Timeout: do not cache an empty/checked result; allow a later
+        # retry and return empty without marking the lookup complete.
+        return ""
+    with _TTS_VOICE_LOCK:
+        _TTS_VOICE_CACHE = result["value"]
+        _TTS_VOICE_CHECKED = True
+        return _TTS_VOICE_CACHE or ""
 
 # ---------------------------------------------------------------------------
 # Explicit owner-initiated installation

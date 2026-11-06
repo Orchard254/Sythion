@@ -1,8 +1,13 @@
 """
-Voice Processing Service
-Handles Voice Activity Detection (VAD), Speech-to-Text (STT), and Text-to-Speech (TTS).
-Provides cross-platform audio capture and playback.
+Voice Processing Service (QUARANTINED - WU-G2)
+
+Legacy duplicate voice processing module. Non-routable: no production caller
+imports it (verified 2026-11-06). Canonical implementation:
+backend.services.voice_pipeline. Retained only for historical reference; do not
+add imports or fallbacks to this module.
 """
+
+QUARANTINED = True
 import asyncio
 import logging
 import numpy as np
@@ -609,3 +614,11 @@ class VoiceProcessor:
 def get_voice_processor(config: Optional[VoiceConfig] = None, use_windows_audio: bool = False) -> VoiceProcessor:
     """Create a voice processor instance."""
     return VoiceProcessor(config, use_windows_audio)
+
+
+# Quarantine guard: this legacy module must not be executed as a script.
+if __name__ == "__main__":
+    raise RuntimeError(
+        "sythion_backend.services.voice_service is quarantined/non-routable; "
+        "do not execute directly"
+    )

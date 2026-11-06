@@ -14,6 +14,8 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 pub struct AppState {
     pub bridge: Mutex<Option<sidecar::BridgeConfig>>,
     pub child: Mutex<Option<Child>>,
+    /// Launcher-generated handshake token for validating sidecar handshake.
+    pub launch_token: Mutex<Option<String>>,
     /// Windows Job Object handle (as a raw pointer-sized integer) used for
     /// sidecar lifetime containment. When the main process dies abruptly the
     /// kernel closes this handle and `KILL_ON_JOB_CLOSE` terminates the
@@ -627,6 +629,7 @@ fn main() {
     let state = AppState {
         bridge: Mutex::new(None),
         child: Mutex::new(None),
+        launch_token: Mutex::new(None),
         #[cfg(windows)]
         job: Mutex::new(None),
     };

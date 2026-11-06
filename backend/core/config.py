@@ -10,6 +10,20 @@ from .secrets import resolve_ollama_api_key
 from .secrets import resolve_secret_context
 
 
+def development_mode_from_env() -> bool:
+    """Read SYTHION_DEVELOPMENT_MODE directly from the environment.
+
+    Used so development origins are trusted when the packaged launcher sets the
+    flag, independent of Settings' env loading cadence.
+    """
+    return os.environ.get("SYTHION_DEVELOPMENT_MODE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 # Prototype/ambiguous detection happens here, independently of Settings, so the
 # backend/.env file is never opened (and never read) in those modes.
 try:
@@ -42,7 +56,7 @@ class Settings(BaseSettings):
     
     # Security & Autonomy
     control_token: str = ""  # Set per-launch by Tauri
-    development_mode: bool = False  # Enables the Vite dashboard only; never for packaged releases
+    development_mode: bool = development_mode_from_env()  # Enables the Vite dashboard only; never for packaged releases
     autonomy_level: str = "guarded"  # "guarded" (default/contract) or "autonomous" (accessibility/unattended mode)
     
     # Database

@@ -162,12 +162,12 @@ class TaskOrchestrator:
         from backend.models.database import PlanStep
 
         planner = self.planner
+        # Evidence binding is exact: only evidence_task_id establishes plan-step
+        # binding. linked_task_id is display/projection only and must not be
+        # treated as task outcome evidence.
         step = (
             planner.db.query(PlanStep)
-            .filter(
-                (PlanStep.linked_task_id == task_id)
-                | (PlanStep.evidence_task_id == task_id)
-            )
+            .filter(PlanStep.evidence_task_id == task_id)
             .first()
         )
         if step is None or step.plan_id is None:
@@ -376,7 +376,7 @@ class TaskOrchestrator:
             return None
 
         # Re-derive the category deterministically from persisted evidence.
-        task_id = step.evidence_task_id or step.linked_task_id
+        task_id = step.evidence_task_id
         task = planner.db.query(Task).filter_by(id=task_id).first() if task_id else None
         error_fn = _default_completion_precondition(planner.db, task_id)
         precondition_error = (
@@ -474,7 +474,7 @@ class TaskOrchestrator:
 
         scope = f"goal:{step.objective_id}"
         ledger = planner.ledger
-        task_id = step.evidence_task_id or step.linked_task_id
+        task_id = step.evidence_task_id
 
         from backend.models.database import Task
 

@@ -170,7 +170,7 @@ class VoskSTT:
                     self._recognizer.Reset()
                 except Exception:  # pragma: no cover
                     pass
-            self._recognizer.AcceptWaveform(pcm16_mono, sample_rate)
+            self._recognizer.AcceptWaveform(pcm16_mono)
             result = self._recognizer.FinalResult()
             import json
 
@@ -208,6 +208,7 @@ class SAPI5TTS:
     ) -> None:
         self._engine = None
         self._engine_lock = threading.Lock()
+        self._speak_lock = threading.Lock()
         self._speak_timeout = (
             float(speak_timeout_seconds)
             if speak_timeout_seconds is not None
@@ -256,85 +257,86 @@ class SAPI5TTS:
     def speak(self, text: str) -> bool:
         """Speak ``text``. Only call with concise evidence-based results.
 
-        A fresh pyttsx3 engine is created inside the worker thread on every
-        attempt so that COM state and the SAPI5 event loop stay thread-affine.
+        A fresh pyttsx3 engine is created for every attempt and passed into the
+        worker thread so COM state and the SAPI5 event loop stay thread-affine.
         ``pythoncom`` is initialized and cleaned up around engine use. A wedged
         ``runAndWait()`` is abandoned after the configured timeout; retry then
-        builds another fresh engine.
+        builds another fresh engine and signals the abandoned engine to stop.
         """
         if not text or not text.strip():
             return False
         cleaned = text.strip()
 
-        for _attempt in range(2):
-            outcome = {"ok": False, "error": None, "init_failed": False}
+        with self._speak_lock:
+            for _attempt in range(2):
+                engine = self._get_engine()
+                if engine is None:
+                    return False
 
-            def _worker() -> None:
-                com_initialized = False
-                try:
+                outcome = {"ok": False, "error": None}
+
+                def _worker(eng: object = engine) -> None:
+                    com_initialized = False
                     try:
-                        import pythoncom  # type: ignore
-
-                        pythoncom.CoInitialize()
-                        com_initialized = True
-                    except Exception as _exc:  # pragma: no cover - pythoncom optional
-                        logger.debug("pythoncom.CoInitialize unavailable: %s", _exc)
-                        com_initialized = False
-
-                    try:
-                        engine = self._get_engine()
-                    except Exception as exc:  # pragma: no cover - defensive
-                        engine = None
-                        outcome["error"] = exc
-                        return
-
-                    if engine is None:
-                        outcome["init_failed"] = True
-                        outcome["error"] = RuntimeError("SAPI5 TTS unavailable")
-                        return
-
-                    try:
-                        engine.say(cleaned)
-                        engine.runAndWait()
-                        outcome["ok"] = True
-                    except RuntimeError as exc:
-                        # A stale/restarted SAPI5 loop means this engine is no
-                        # good; signal the outer loop to build a fresh one.
-                        outcome["error"] = exc
-                        logger.warning("SAPI5 TTS run loop error: %s", exc)
-                        raise
-                except Exception as exc:  # pragma: no cover - OS dependent
-                    outcome["error"] = exc
-                finally:
-                    if com_initialized:
                         try:
                             import pythoncom  # type: ignore
 
-                            pythoncom.CoUninitialize()
-                        except Exception:  # pragma: no cover - defensive
-                            pass
+                            pythoncom.CoInitialize()
+                            com_initialized = True
+                        except Exception as _exc:  # pragma: no cover - pythoncom optional
+                            logger.debug("pythoncom.CoInitialize unavailable: %s", _exc)
+                            com_initialized = False
 
-            worker = threading.Thread(target=_worker, daemon=True)
-            worker.start()
-            worker.join(self._speak_timeout)
+                        try:
+                            eng.say(cleaned)
+                            eng.runAndWait()
+                            outcome["ok"] = True
+                        except Exception as exc:  # pragma: no cover - OS dependent
+                            outcome["error"] = exc
+                            if isinstance(exc, RuntimeError):
+                                logger.warning("SAPI5 TTS run loop error: %s", exc)
+                    finally:
+                        if com_initialized:
+                            try:
+                                import pythoncom  # type: ignore
 
-            if worker.is_alive():
-                logger.warning(
-                    "SAPI5 TTS playback timed out after %.2fs; building fresh engine",
-                    self._speak_timeout,
-                )
-                continue
+                                pythoncom.CoUninitialize()
+                            except Exception:  # pragma: no cover - defensive
+                                pass
 
-            if outcome.get("init_failed"):
-                return False
+                worker = threading.Thread(target=_worker, daemon=True)
+                worker.start()
+                worker.join(self._speak_timeout)
 
-            if outcome["error"] is not None:
-                logger.error("TTS playback failed: %s", outcome["error"])
-                continue
+                if worker.is_alive():
+                    logger.warning(
+                        "SAPI5 TTS playback timed out after %.2fs; stopping engine",
+                        self._speak_timeout,
+                    )
+                    try:
+                        stop = getattr(engine, "stop", None)
+                        if callable(stop):
+                            stop()
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+                    # Bounded join so the abandoned worker (COM/SAPI5) is not
+                    # overlapped by a second engine; never block indefinitely.
+                    worker.join(min(self._speak_timeout, 0.1))
+                    if worker.is_alive():
+                        logger.warning(
+                            "SAPI5 TTS worker did not stop in time; abandoning retry"
+                            " to avoid overlapping COM work"
+                        )
+                        return False
+                    continue
 
-            return bool(outcome["ok"])
+                if outcome["error"] is not None:
+                    logger.error("TTS playback failed: %s", outcome["error"])
+                    continue
 
-        return False
+                return bool(outcome["ok"])
+
+            return False
 
     def _invalidate_engine(self) -> None:
         # No cached engine exists to invalidate; kept for API/tests compatibility.
@@ -371,37 +373,58 @@ class VoiceSessionManager:
         self._tts = tts or SAPI5TTS()
         self._idle_timeout = idle_timeout_seconds
         self._sessions: Dict[str, VoiceSessionState] = {}
+        # Concurrency guard for manager state (sessions/VAD/STT/shared buffers).
+        self._lock = threading.RLock()
 
     # -- Session lifecycle --------------------------------------------------
 
     def start_session(
         self, sample_rate: int = 16000, channels: int = 1, recording_enabled: bool = False
     ) -> str:
-        self._reap_idle()
-        session_id = uuid.uuid4().hex
-        self._sessions[session_id] = VoiceSessionState(
-            session_id=session_id,
-            sample_rate=sample_rate,
-            channels=channels,
-            recording_enabled=recording_enabled,
-        )
-        self._vad.reset()
-        self._stt.reset()
+        # Reap idle sessions outside the lock so their transcription does not
+        # hold _lock across sessions.
+        stale: List[str] = []
+        with self._lock:
+            now = time.time()
+            stale = [
+                sid
+                for sid, s in self._sessions.items()
+                if now - s.last_active > self._idle_timeout
+            ]
+        for sid in stale:
+            logger.info("Reaping idle voice session %s", sid)
+            self.end_session(sid)
+        with self._lock:
+            # Only reset shared engines when no active session exists, so a new
+            # session cannot corrupt another session's VAD/STT state.
+            should_reset = not self._sessions
+            session_id = uuid.uuid4().hex
+            self._sessions[session_id] = VoiceSessionState(
+                session_id=session_id,
+                sample_rate=sample_rate,
+                channels=channels,
+                recording_enabled=recording_enabled,
+            )
+        if should_reset:
+            self._vad.reset()
+            self._stt.reset()
         logger.info("Voice session started: %s", session_id)
         return session_id
 
     def get_session(self, session_id: str) -> Optional[VoiceSessionState]:
-        session = self._sessions.get(session_id)
-        if session:
-            session.last_active = time.time()
-        return session
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session:
+                session.last_active = time.time()
+            return session
 
     def end_session(self, session_id: str) -> List[SegmentResult]:
         """Flush any pending segment, then delete all raw audio and drop the session."""
-        session = self._sessions.pop(session_id, None)
+        with self._lock:
+            session = self._sessions.pop(session_id, None)
         if session is None:
             return []
-        results = []
+        results: List[SegmentResult] = []
         pending = self._flush_pending(session)
         if pending:
             results.append(pending)
@@ -410,8 +433,11 @@ class VoiceSessionManager:
         session.pending_frame_buffer = b""
         session.raw_bytes_retained = 0
         session.recorded_bytes = 0
-        self._vad.reset()
-        self._stt.reset()
+        with self._lock:
+            should_reset = not self._sessions
+        if should_reset:
+            self._vad.reset()
+            self._stt.reset()
         logger.info("Voice session ended: %s", session_id)
         return results
 
@@ -419,38 +445,47 @@ class VoiceSessionManager:
 
     def feed_pcm(self, session_id: str, pcm16_mono: bytes) -> List[SegmentResult]:
         """Feed a short 16 kHz mono PCM frame; return any completed segments."""
-        session = self.get_session(session_id)
-        if session is None:
-            return []
-        session.last_active = time.time()
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return []
+            session.last_active = time.time()
+            session.pending_frame_buffer += pcm16_mono
 
         completed: List[SegmentResult] = []
-        frame_bytes = int(_FRAME_SIZE_MS / 1000.0 * session.sample_rate * 2)
-        session.pending_frame_buffer += pcm16_mono
+        while True:
+            with self._lock:
+                session = self._sessions.get(session_id)
+                if session is None:
+                    return completed
+                frame_bytes = int(_FRAME_SIZE_MS / 1000.0 * session.sample_rate * 2)
+                if len(session.pending_frame_buffer) < frame_bytes:
+                    break
+                frame = session.pending_frame_buffer[:frame_bytes]
+                session.pending_frame_buffer = session.pending_frame_buffer[frame_bytes:]
 
-        while len(session.pending_frame_buffer) >= frame_bytes:
-            frame = session.pending_frame_buffer[:frame_bytes]
-            session.pending_frame_buffer = session.pending_frame_buffer[frame_bytes:]
+                # Retain raw audio only while assembling a segment (or recording).
+                session.pending_audio += frame
+                session.raw_bytes_retained += len(frame)
 
-            # Retain raw audio only while assembling a segment (or recording).
-            session.pending_audio += frame
+                speech = self._vad.is_speech(frame, session.sample_rate)
+                if speech:
+                    session.speaking = True
+                    session.silence_frames = 0
+                elif session.speaking:
+                    session.silence_frames += 1
 
-            speech = self._vad.is_speech(frame, session.sample_rate)
-            if speech:
-                session.speaking = True
-                session.silence_frames = 0
-            elif session.speaking:
-                session.silence_frames += 1
-                if session.silence_frames >= _SILENCE_FRAMES_BEFORE_END:
-                    segment = self._flush_pending(session)
-                    if segment:
-                        completed.append(segment)
-
-            if len(session.pending_audio) >= frame_bytes * _MAX_SEGMENT_FRAMES:
+                flush = (
+                    session.speaking
+                    and session.silence_frames >= _SILENCE_FRAMES_BEFORE_END
+                ) or (
+                    len(session.pending_audio) >= frame_bytes * _MAX_SEGMENT_FRAMES
+                )
+            # Transcription is performed without holding _lock.
+            if flush:
                 segment = self._flush_pending(session)
-                if segment:
+                if segment is not None:
                     completed.append(segment)
-
         return completed
 
     # -- Segment assembly ---------------------------------------------------
@@ -459,45 +494,44 @@ class VoiceSessionManager:
         """Transcribe the accumulated utterance, then delete its raw audio."""
         # Drain any trailing partial frame so the capture loop / manual stop
         # does not drop the tail of the utterance.
-        if session.pending_frame_buffer:
-            session.pending_audio += session.pending_frame_buffer
-            session.pending_frame_buffer = b""
-
-        if not session.pending_audio or not session.speaking:
+        with self._lock:
+            if session.pending_frame_buffer:
+                session.raw_bytes_retained += len(session.pending_frame_buffer)
+                session.pending_audio += session.pending_frame_buffer
+                session.pending_frame_buffer = b""
+            if not session.pending_audio or not session.speaking:
+                session.pending_audio = b""
+                session.pending_frame_buffer = b""
+                session.speaking = False
+                session.silence_frames = 0
+                session.raw_bytes_retained = 0
+                return None
+            audio = session.pending_audio
             session.pending_audio = b""
             session.pending_frame_buffer = b""
             session.speaking = False
             session.silence_frames = 0
             session.raw_bytes_retained = 0
-            return None
-
-        audio = session.pending_audio
-        session.pending_audio = b""
-        session.pending_frame_buffer = b""
-        session.speaking = False
-        session.silence_frames = 0
-        session.raw_bytes_retained = 0
-        session.segment_counter += 1
-
+            session.segment_counter += 1
+        # STT runs outside the lock to avoid holding it across transcription.
         stt_available = self._stt.available()
         text = self._stt.transcribe(audio, session.sample_rate) if stt_available else ""
-
-        # Privacy: raw audio is deleted after transcription unless recording.
-        if session.recording_enabled:
-            session.recorded_bytes += len(audio)
-            audio_deleted = False
-        else:
-            audio = b""
-            audio_deleted = True
-
-        result = SegmentResult(
-            text=text,
-            stop_detected=detect_stop_phrase(text),
-            segment_id=f"{session.session_id}-seg-{session.segment_counter}",
-            audio_bytes_deleted=audio_deleted,
-            stt_available=stt_available,
-        )
-        session.segments.append(result)
+        with self._lock:
+            # Privacy: raw audio is deleted after transcription unless recording.
+            if session.recording_enabled:
+                session.recorded_bytes += len(audio)
+                audio_deleted = False
+            else:
+                audio = b""
+                audio_deleted = True
+            result = SegmentResult(
+                text=text,
+                stop_detected=detect_stop_phrase(text),
+                segment_id=f"{session.session_id}-seg-{session.segment_counter}",
+                audio_bytes_deleted=audio_deleted,
+                stt_available=stt_available,
+            )
+            session.segments.append(result)
         logger.debug(
             "Segment completed id=%s text=%r stop=%s audio_deleted=%s",
             result.segment_id,
@@ -519,12 +553,15 @@ class VoiceSessionManager:
         return self._stt.available()
 
     def _reap_idle(self) -> None:
-        now = time.time()
-        stale = [
-            sid
-            for sid, s in self._sessions.items()
-            if now - s.last_active > self._idle_timeout
-        ]
+        with self._lock:
+            now = time.time()
+            stale = [
+                sid
+                for sid, s in self._sessions.items()
+                if now - s.last_active > self._idle_timeout
+            ]
+        # End sessions outside the lock to avoid holding it across
+        # transcription and session teardown.
         for sid in stale:
             logger.info("Reaping idle voice session %s", sid)
             self.end_session(sid)

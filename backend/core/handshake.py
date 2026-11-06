@@ -18,6 +18,7 @@ The token is never passed on a command line (visible in process listings).
 import json
 import os
 import secrets
+import tempfile
 from typing import Dict, Optional
 
 from .storage import data_dir, handshake_path
@@ -43,16 +44,10 @@ def write_launch_token(token: Optional[str] = None) -> str:
         The token that was written.
     """
     token = token or secrets.token_urlsafe(32)
-    from .storage import _restrict_acl_windows
-
     data_dir()
     path = token_file_path()
+    # Atomic private write; ACL is applied to the temp file before replace.
     _write_private(path, json.dumps({"token": token, "version": 1}))
-    if os.name == "nt":
-        try:
-            _restrict_acl_windows(path)
-        except Exception:  # pragma: no cover - OS dependent
-            pass
     return token
 
 
@@ -72,7 +67,9 @@ def read_launch_token() -> Optional[str]:
 def write_handshake(port: int, token: str) -> Dict[str, object]:
     """Write the sidecar's ephemeral port + token for the launcher to read."""
     payload = {"port": port, "token": token, "version": 1}
-    _write_private(handshake_path(), json.dumps(payload))
+    path = handshake_path()
+    # Atomic private write; ACL is applied to the temp file before replace.
+    _write_private(path, json.dumps(payload))
     return payload
 
 
@@ -92,8 +89,53 @@ def read_handshake() -> Optional[Dict[str, object]]:
 
 
 def _write_private(path: str, content: str) -> None:
-    """Write ``content`` atomically via a temp file + rename."""
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(content)
-    os.replace(tmp, path)
+    """Write ``content`` atomically via a unique, unpredictable temp file.
+
+    Cleans up the temp file on failure and applies private permissions on
+    non-Windows systems; leaves no stale predictable ``.tmp`` behind.
+    """
+    path = str(path)
+    directory = os.path.dirname(os.path.abspath(path)) or os.getcwd()
+    os.makedirs(directory, exist_ok=True)
+
+    legacy_tmp = path + ".tmp"
+    try:
+        if os.path.lexists(legacy_tmp):
+            os.remove(legacy_tmp)
+    except OSError:
+        pass
+
+    fd, tmp = tempfile.mkstemp(prefix=".sythion-", suffix=".tmp", dir=directory)
+    try:
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+                fh.flush()
+                try:
+                    os.fsync(fh.fileno())
+                except (OSError, AttributeError):
+                    pass
+            if os.name != "nt":
+                try:
+                    os.chmod(tmp, 0o600)
+                except OSError:
+                    pass
+            else:
+                # Apply user-only ACL to the temp file BEFORE atomic replace.
+                from .storage import _restrict_acl_windows
+
+                _restrict_acl_windows(tmp)
+            os.replace(tmp, path)
+        except Exception:
+            if os.path.lexists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            raise
+    finally:
+        if os.path.lexists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass

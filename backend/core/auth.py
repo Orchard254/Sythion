@@ -126,9 +126,34 @@ class LocalControlBoundaryMiddleware:
         if origin in self.allowed_origins:
             return True
         path = scope.get("path", "")
-        if path.startswith(BROWSER_BRIDGE_PREFIX):
-            return any(origin.startswith(scheme) for scheme in EXTENSION_ORIGIN_SCHEMES)
-        return False
+        if not path.startswith(BROWSER_BRIDGE_PREFIX):
+            return False
+
+        # Exact extension-origin parsing. Only a small, explicitly allowlisted
+        # set of schemes is accepted, in canonical lowercase form. The origin
+        # must be exactly `scheme://<non-empty id>` with no userinfo, port,
+        # path, query, or fragment components.
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(origin)
+        allowed_schemes = frozenset(
+            scheme.split("://", 1)[0] for scheme in EXTENSION_ORIGIN_SCHEMES
+        )
+        if parsed.scheme not in allowed_schemes:
+            return False
+
+        netloc = parsed.netloc
+        if not netloc:
+            return False
+        if any(ch.isspace() for ch in netloc):
+            return False
+        if "@" in netloc or ":" in netloc:
+            return False
+        if parsed.username is not None or parsed.password is not None or parsed.port is not None:
+            return False
+        if parsed.path or parsed.query or parsed.fragment:
+            return False
+        return True
 
     @staticmethod
     def _is_protected(scope: Scope) -> bool:

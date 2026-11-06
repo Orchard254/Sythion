@@ -360,7 +360,7 @@ def migrate_legacy_objectives(db, include_empty: bool = False) -> Dict[str, Any]
     plan-backed step are skipped, so running twice creates nothing.
 
     Conservative state-mapping rules (never fabricate completion):
-      - legacy 'completed' WITH evidence (linked/evidence task or a recorded
+      - legacy 'completed' WITH evidence (evidence task or a recorded
         result summary)  → step COMPLETED, evidence reference preserved;
       - legacy 'completed' WITHOUT evidence → PENDING (explicitly recoverable;
         the claim cannot be verified so it is not trusted);
@@ -445,12 +445,12 @@ def migrate_legacy_objectives(db, include_empty: bool = False) -> Dict[str, Any]
         carried_completed = 0
         for idx, legacy in enumerate(legacy_steps, start=1):
             new_step = new_steps[f"step_{idx}"]
-            has_evidence = bool(legacy.linked_task_id or legacy.evidence_task_id
+            has_evidence = bool(legacy.evidence_task_id
                                 or (legacy.result_summary or "").strip())
             if legacy.status == "completed" and has_evidence:
                 new_step.status = "completed"
                 new_step.result_summary = legacy.result_summary
-                new_step.evidence_task_id = legacy.evidence_task_id or legacy.linked_task_id
+                new_step.evidence_task_id = legacy.evidence_task_id
                 carried_completed += 1
             elif legacy.status == "failed":
                 new_step.status = "failed"

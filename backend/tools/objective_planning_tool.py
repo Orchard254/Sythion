@@ -94,7 +94,8 @@ def _plan_step_evidence_error(session, step: PlanStep) -> dict[str, str] | None:
     from backend.runtime.events import DbEventLedger
     from backend.services.execution_components import CompletionVerifier
 
-    task_id = step.evidence_task_id or step.linked_task_id
+    # Exact evidence binding only; linked_task_id is projection-only.
+    task_id = step.evidence_task_id
     if not task_id:
         return {
             "code": "STEP_EVIDENCE_REQUIRED",

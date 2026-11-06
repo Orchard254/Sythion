@@ -71,7 +71,7 @@ EXIT_ENVIRONMENT = 4
 
 # The documents that carry the baseline block, and the one that may only
 # quote a pair (rule C1) without being a baseline document itself.
-BASELINE_DOCS = ()
+BASELINE_DOCS = ("README.md",)
 PAIR_ONLY_DOCS = ()
 
 # A native fault is disqualifying even when the process survives it: this
@@ -519,6 +519,12 @@ def load_measurement(path):
 def resolve_docs(root, given):
     """Resolve the document list; relative paths may be relative to the root."""
     if not given:
+        if not BASELINE_DOCS and not PAIR_ONLY_DOCS:
+            raise UsageError(
+                "no baseline documents are configured: BASELINE_DOCS and "
+                "PAIR_ONLY_DOCS are both empty. Set BASELINE_DOCS or pass "
+                "--docs to provide documents to check."
+            )
         names = list(BASELINE_DOCS) + list(PAIR_ONLY_DOCS)
     else:
         names = list(given)
@@ -835,6 +841,15 @@ def main(argv=None):
             raise UsageError("Makefile not found: {}".format(makefile))
         if args.attempts < 1:
             raise UsageError("--attempts must be at least 1")
+
+        if (args.check or args.check_collected) and not args.docs and (
+            not BASELINE_DOCS and not PAIR_ONLY_DOCS
+        ):
+            raise UsageError(
+                "no baseline documents are configured: BASELINE_DOCS and "
+                "PAIR_ONLY_DOCS are both empty. Set BASELINE_DOCS or pass "
+                "--docs to provide documents to check."
+            )
 
         if args.measured:
             measurement = load_measurement(args.measured)
