@@ -394,10 +394,12 @@ async def test_composer_followup_independent_ambiguity_and_races(db, monkeypatch
     assert db.query(Task).count() == (2 if mode == "independent" else 1)
     if mode == "append":
         assert response.assistant_text == (
-            "Your instruction was recorded for this task and will be "
-            "applied at its next safe point. No task was restarted "
+            "Your instruction was queued for this task and has not yet "
+            "been applied. Whether to apply it will be decided at a safe point. "
+            "No task was restarted "
             "or duplicated, and no action permission was granted."
         )
+        assert response.status == "queued"
         assert db.get(Task, "original").normalized_goal is None
         assert not response.background_task_ids
     elif mode in {"busy", "completed_race"}:

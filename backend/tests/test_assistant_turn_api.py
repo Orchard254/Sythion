@@ -250,17 +250,20 @@ async def test_multiple_command_request_is_fail_closed(request, _patch_engine):
 async def test_one_start_task_command_dispatches_one_worker(request, _patch_engine):
     db = request.getfixturevalue("test_db")
     worker_calls = _patch_engine
-    ENGINE_STATE["assistant_text"] = "I started the work."
+    ENGINE_STATE["assistant_text"] = "I completed all the work."
     ENGINE_STATE["commands"] = [{"type": "start_task", "request": "Do background work"}]
 
     from fastapi import BackgroundTasks
     bg = BackgroundTasks()
+    data = AssistantTurnRequest(client_request_id="ack-start-replay", text="start work")
     resp = await assistant_turn(
-        AssistantTurnRequest(client_request_id=f"test-{__import__(chr(117)+chr(117)+chr(105)+chr(100)).uuid4()}", text="start work"), bg, db, None
+        data, bg, db, None
     )
 
     assert resp.status == "completed"
-    assert resp.assistant_text == "I started the work."
+    assert resp.assistant_text == "Your background request was accepted."
+    assert resp.scheduling_established is False
+    assert db.query(ConversationExchange).one().assistant_text == resp.assistant_text
     assert len(resp.background_task_ids) == 1
     assert worker_calls["count"] == 0  # mocked worker is scheduled, not immediately invoked
     assert len(bg.tasks) == 1
@@ -270,6 +273,17 @@ async def test_one_start_task_command_dispatches_one_worker(request, _patch_engi
     assert task.state == TaskState.RUNNING.value
     assert task.original_request == "Do background work"
     assert db.query(ConversationExchange).count() == 1
+    from backend.models.database import TaskEvent
+    db.add(TaskEvent(task_id=task.id, event_type="task.worker_started",
+                     event_data="{}", sequence_num=1, created_at=datetime.utcnow()))
+    db.commit()
+    replay_bg = BackgroundTasks()
+    replay = await assistant_turn(data, replay_bg, db, None)
+    assert replay.assistant_text == resp.assistant_text
+    assert replay.background_task_ids == resp.background_task_ids
+    assert replay.scheduling_established is True
+    assert not replay_bg.tasks
+    assert db.query(Task).count() == 1
 
 
 @pytest.mark.asyncio
@@ -297,25 +311,99 @@ async def test_permission_hold_command_is_fail_closed(request, _patch_engine):
 async def test_one_answer_clarification_command_dispatches_worker(request, _patch_engine):
     db = request.getfixturevalue("test_db")
     _make_waiting_task(db, "clar-task", "clarification", version=4)
-    ENGINE_STATE["assistant_text"] = "Continuing with your clarification."
+    from backend.models.database import TaskEvent
+    db.add(TaskEvent(task_id="clar-task", event_type="task.worker_started",
+                     event_data="{}", sequence_num=1, created_at=datetime.utcnow()))
+    db.commit()
+    ENGINE_STATE["assistant_text"] = "I completed everything after your clarification."
     ENGINE_STATE["commands"] = [
         {"type": "answer_clarification", "task_id": "clar-task", "expected_version": 4, "answer": "yes"}
     ]
 
     from fastapi import BackgroundTasks
     bg = BackgroundTasks()
+    data = AssistantTurnRequest(client_request_id="ack-clarification-replay", text="yes")
     resp = await assistant_turn(
-        AssistantTurnRequest(client_request_id=f"test-{__import__(chr(117)+chr(117)+chr(105)+chr(100)).uuid4()}", text="yes"), bg, db, None
+        data, bg, db, None
     )
 
     assert resp.status == "completed"
+    assert resp.assistant_text == (
+        "Your clarification was received in the conversation. "
+        "Its application to the task and task continuation are not confirmed."
+    )
+    assert db.query(ConversationExchange).one().assistant_text == resp.assistant_text
     assert resp.background_task_ids == ["clar-task"]
+    assert resp.scheduling_established is False
     assert len(bg.tasks) == 1
     task = db.query(Task).filter_by(id="clar-task").first()
     assert task is not None
     assert task.state == TaskState.RUNNING.value
     assert task.version == 5
     assert db.query(ConversationExchange).count() == 1
+    replay_bg = BackgroundTasks()
+    replay = await assistant_turn(data, replay_bg, db, None)
+    assert replay.assistant_text == resp.assistant_text
+    assert replay.background_task_ids == resp.background_task_ids
+    assert replay.scheduling_established is False
+    assert not replay_bg.tasks
+    assert task.version == 5
+
+
+@pytest.mark.asyncio
+async def test_clarification_crash_after_persistence_replays_receipt_only(request, _patch_engine, monkeypatch):
+    db = request.getfixturevalue("test_db")
+    _make_waiting_task(db, "clar-task", "clarification", version=4)
+    from backend.models.database import TaskEvent
+    from backend.runtime.composer_request_receipt import ComposerRequestReceiptManager
+
+    db.add(TaskEvent(task_id="clar-task", event_type="task.worker_started",
+                     event_data="{}", sequence_num=1, created_at=datetime.utcnow()))
+    db.commit()
+    ENGINE_STATE["commands"] = [
+        {"type": "answer_clarification", "task_id": "clar-task", "expected_version": 4, "answer": "yes"}
+    ]
+    from backend.services.task_runner import TaskRunner
+
+    class SimulatedCrash(BaseException):
+        pass
+
+    calls = []
+
+    async def crash_before_reply(self, *args, **kwargs):
+        calls.append(True)
+        raise SimulatedCrash()
+
+    monkeypatch.setattr(TaskRunner, "reply_to_waiting", crash_before_reply)
+    data = AssistantTurnRequest(client_request_id="clarification-crash-window", text="yes")
+    bg = BackgroundTasks()
+    with pytest.raises(SimulatedCrash):
+        await assistant_turn(data, bg, db, None)
+
+    assert calls == [True]
+    assert not bg.tasks
+    assert db.query(ConversationExchange).count() == 1
+    task = db.query(Task).filter_by(id="clar-task").one()
+    assert task.state == TaskState.WAITING_FOR_USER.value
+    assert task.version == 4
+    receipts = ComposerRequestReceiptManager(db)
+    assert receipts.get("clarification-crash-window", "assistant-turn-test-session").status == "resolving"
+
+    replay_bg = BackgroundTasks()
+    replay = await assistant_turn(data, replay_bg, db, None)
+    assert replay.assistant_text == (
+        "Your clarification was received in the conversation. "
+        "Its application to the task and task continuation are not confirmed."
+    )
+    assert calls == [True]
+    assert not replay_bg.tasks
+    assert replay.background_task_ids == ["clar-task"]
+    assert replay.scheduling_established is False
+    assert {replay.scheduling_status, replay.task_scheduling_status,
+            replay.background_task_scheduling_status, replay.dispatch_status} == {"unknown"}
+    assert receipts.get("clarification-crash-window", "assistant-turn-test-session").status == "resolving"
+    assert task.state == TaskState.WAITING_FOR_USER.value
+    assert task.version == 4
 
 
 @pytest.mark.asyncio
@@ -553,7 +641,7 @@ async def test_assistant_turn_transient_retry_leads_to_single_dispatch(request, 
     resp = await assistant_turn(AssistantTurnRequest(client_request_id=f"test-{__import__(chr(117)+chr(117)+chr(105)+chr(100)).uuid4()}", text="start work"), bg, db, None)
 
     assert resp.status == "completed"
-    assert resp.assistant_text == "I started the work."
+    assert resp.assistant_text == "Your background request was accepted."
     assert len(resp.background_task_ids) == 1
     assert len(bg.tasks) == 1
     assert db.query(Task).count() == 1
@@ -760,7 +848,7 @@ async def test_assistant_turn_real_engine_malformed_then_valid_start_task_dispat
     resp = await assistant_turn(AssistantTurnRequest(client_request_id=f"test-{__import__(chr(117)+chr(117)+chr(105)+chr(100)).uuid4()}", text="start work"), bg, db, None)
 
     assert resp.status == "completed"
-    assert resp.assistant_text == "I started the work."
+    assert resp.assistant_text == "Your background request was accepted."
     assert len(resp.background_task_ids) == 1
     assert len(bg.tasks) == 1
     assert db.query(Task).count() == 1

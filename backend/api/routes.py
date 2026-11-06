@@ -568,7 +568,21 @@ async def assistant_turn(
                 # separate concern; a resolved receipt can still report unknown
                 # scheduling after a crash.  Absence of worker-start evidence never
                 # means no worker ran.
-                scheduling_established = _composer_scheduling_established(
+                # A worker marker is task-wide, not continuation-specific. Only
+                # use it for a task created by this exact composer request; a
+                # clarification can reuse a task with older worker markers.
+                from backend.models.database import Task as _SchedulingTask
+                start_key = "assistant_turn_start_task:" + deterministic_exchange_id[len("conv-"):]
+                try:
+                    request_created_tasks = all(
+                        db.query(_SchedulingTask).filter_by(
+                            id=task_id, idempotency_key=start_key
+                        ).first() is not None
+                        for task_id in associated_task_ids
+                    )
+                except Exception:
+                    request_created_tasks = False
+                scheduling_established = request_created_tasks and _composer_scheduling_established(
                     db, associated_task_ids
                 )
 
@@ -889,6 +903,7 @@ async def assistant_turn(
             raise HTTPException(
                 status_code=503,
                 detail=_MODEL_REJECTION_DETAIL,
+                headers={"X-Sythion-Dispatch-Verdict": "no-dispatch"},
             ) from None
         if attempted_durable_rejection:
             raise HTTPException(
@@ -953,6 +968,8 @@ async def assistant_turn(
                             "Your separate background request was accepted. Existing "
                             "tasks were not modified or restarted."
                         )
+                    else:
+                        assistant_text = "Your background request was accepted."
 
                     from backend.services.task_runner import get_runner
 
@@ -1111,8 +1128,9 @@ async def assistant_turn(
                         conversation_persisted = False
                         queued_followup = True
                         assistant_text = (
-                            "Your instruction was recorded for this task and will be "
-                            "applied at its next safe point. No task was restarted "
+                            "Your instruction was queued for this task and has not yet "
+                            "been applied. Whether to apply it will be decided at a safe point. "
+                            "No task was restarted "
                             "or duplicated, and no action permission was granted."
                         )
                     except ValueError as exc:
@@ -1141,6 +1159,11 @@ async def assistant_turn(
                         raise ValueError("permission or unknown wait cannot be answered automatically")
                     if task.version != expected_version:
                         raise ValueError("stale clarification target")
+
+                    assistant_text = (
+                        "Your clarification was received in the conversation. "
+                        "Its application to the task and task continuation are not confirmed."
+                    )
 
                     # Preserve the existing wait if conversation persistence fails.
                     try:
@@ -1324,8 +1347,10 @@ async def assistant_turn(
         except Exception:
             logger.warning("Partial recall indexing skipped: scheduling_error")
 
-    _fresh_scheduling_established = _composer_scheduling_established(
-        db, background_task_ids
+    # Existing task events cannot prove this particular clarification resumed.
+    _fresh_scheduling_established = (
+        (not background_task_ids or background_task_ids == [created_task_id])
+        and _composer_scheduling_established(db, background_task_ids)
     )
     _fresh_scheduling_status = "established" if _fresh_scheduling_established else "unknown"
     return AssistantTurnResponse(

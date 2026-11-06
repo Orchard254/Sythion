@@ -114,7 +114,9 @@ def _specs() -> List[CapabilitySpec]:
         # renders demonstration data and the registry must not claim availability.
         CapabilitySpec(
             id="device_integration", name="Device Integration", category="devices",
-            description="Device and home management integration available as device status inventory (not demo data).",
+            description="Smart-home and remote-device integration is unavailable. "
+                        "A separate read-only Windows device status inventory tool is provided; "
+                        "inventory results depend on the system.",
             tool_names=("device_status",),
             risk_class="MEDIUM", requires_permission=True,
             requires_external_service=True,
