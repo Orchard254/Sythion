@@ -638,6 +638,45 @@ async def test_assistant_turn_real_engine_bad_shape_logged_reason_code(request, 
 
 
 @pytest.mark.asyncio
+async def test_assistant_turn_real_engine_plain_prose_fallback_completed_no_task(request, monkeypatch):
+    db = request.getfixturevalue("test_db")
+    disclosure = (
+        "\n\nNo background task, clarification, or other action was started or "
+        "scheduled. This response is informative only."
+    )
+
+    class FakeModelClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, messages, **kwargs):
+            self.calls += 1
+            return "Beam says hello"
+
+    client = FakeModelClient()
+    monkeypatch.setattr("backend.services.conversation_runtime.ModelClient", lambda *a, **k: client)
+
+    from fastapi import BackgroundTasks
+    bg = BackgroundTasks()
+    resp = await assistant_turn(
+        AssistantTurnRequest(
+            client_request_id=f"test-{__import__(chr(117)+chr(117)+chr(105)+chr(100)).uuid4()}",
+            text="Hi",
+        ),
+        bg,
+        db,
+        None,
+    )
+
+    assert resp.status == "completed"
+    assert resp.assistant_text == "Beam says hello" + disclosure
+    assert resp.background_task_ids == []
+    assert len(bg.tasks) == 0
+    assert db.query(Task).count() == 0
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
 async def test_assistant_turn_malicious_injected_exception_falls_back_to_unspecified(request, _patch_engine, caplog):
     db = request.getfixturevalue("test_db")
     secret = "SECRET_INJECTED_CODE_OR_MESSAGE"

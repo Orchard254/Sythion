@@ -53,29 +53,36 @@ Independent evidence so far:
   the canonical assistant-turn path, preventing misordered recap context for
   repeated turns. Other model-side JSON/conversation degradation remains a
   separate, unfixed defect.
-- Real isolated source/model evidence observed through `http://localhost:3000`:
-  - clean setup inference returned HTTP 502 (empty model body);
-  - setup gate no longer hardcodes a 16-token cap and now uses the provider's
-    established normal default. Controlled Beam probe showed `done_reason=length`
-    and empty content at a `16` token cap (`16` eval tokens; 52 thinking
-    characters), while the same `Reply with OK` prompt returned non-empty `OK`
-    with a `256` cap. Focused regression and existing onboarding tests now
-    pass (`30 passed` in
-    `backend/tests/test_onboarding_inference_response_shape.py` and
-    `backend/tests/test_setup_readiness.py`, 16 warnings).
-  - restarted actual isolated endpoint had one HTTP 502 ReadError transport
-    failure during inference, so live setup readiness remains unverified.
-  - first actual Beam assistant answer returned HTTP 200 and was persisted;
-  - second follow-up returned HTTP 503 `json_malformed` (not fixed by the
-    timestamp-tie change).
+- Real isolated source/runtime evidence through the preview endpoint (API source
+  truth only; frontend behavior still comes from existing tests, not a fresh
+  interactive UI run):
+  - clean setup inference returned HTTP 200 (updated from the earlier HTTP 502).
+  - first actual Beam assistant answer returned HTTP 200 and was persisted.
+  - three sequential Beam assistant turns returned HTTP 200, with
+    context-aware text and persisted exchanges. No task action was dispatched and
+    no assistant command/action result was carried by those success responses.
+  - no task dispatch, retry execution, or external effect was observed for those
+    turns.
 - The user's reported historical later-chat failure remains evidence of a
   repeated-turn/context degradation issue; it is not explained by the fixed
   timestamp-ordering defect.
-- The user's reported historical later-chat failure remains evidence of a
-  repeated-turn/context degradation issue; it is not explained by the fixed
-  timestamp-ordering defect.
-- Source UI observed through `http://localhost:3000` only, not an installed
-  application, release artifact, deployment, or end-to-end completed workflow.
+- The patched conversation fallback keeps strict JSON as the only path to
+  commands. For descriptor-free turns where the model returns ordinary prose, it
+  may return that prose with commands `[]` plus this fixed disclosure after the
+  existing strict retry budget: "No background task, clarification, or other
+  action was started or scheduled. This response is informative only." This does
+  not validate or sanitize a model's unsupported action claim; it records no
+  action because the command list is empty. Independent inspection found this
+  exact disclosure in 0 of the 3 successful real Beam responses, so those live
+  turns appear to have used the strict JSON path; the fallback itself has only
+  been exercised with isolated fake model providers.
+- Focused conversation compatibility evidence reported by a coordinator: 118
+  tests passed across the conversation engine, assistant-turn, JSON mode,
+  receipt, and control boundary suites. Counts are partner-reported but
+  distinguish isolated backend evidence from installed-app behavior.
+
+No installed-app, release artifact, deployment, soak run, or completed workflow
+is claimed from this runtime evidence.
 
 Not demonstrated: end-to-end follow-up success after correction, installed
 application, release artifact, 24-hour availability, soak/crash recovery, or

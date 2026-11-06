@@ -474,12 +474,37 @@ async def test_empty_output_reason_code():
 @pytest.mark.asyncio
 async def test_malformed_json_output_reason_code():
     secret = "SECRET_MALFORMED_OUTPUT"
-    fake = FakeModel(secret + " {not json")
+    fake = FakeModel("{" + secret + " {not json")
     engine = ConversationTurnEngine(fake)
     with pytest.raises(ConversationTurnValidationError) as exc:
         await engine.run("hi", [], [])
     assert exc.value.reason_code == "json_malformed"
     assert secret not in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_plain_prose_without_descriptors_returns_informative_fallback():
+    prose = "I can help with that in ordinary language."
+    fake = FakeModel(prose)
+    engine = ConversationTurnEngine(fake)
+    result = await engine.run("hi", [], [])
+    assert result.commands == []
+    assert prose in result["assistant_text"]
+    assert "No background task, clarification, or other action was started or scheduled." in result["assistant_text"]
+    assert len(fake.calls) == 2
+    assert engine.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_plain_prose_with_descriptors_remains_strict_malformed():
+    prose = "I can help with that in ordinary language."
+    fake = FakeModel(prose)
+    engine = ConversationTurnEngine(fake)
+    with pytest.raises(ConversationTurnValidationError) as exc:
+        await engine.run("yes", [], [descriptor(version=2)])
+    assert exc.value.reason_code == "json_malformed"
+    assert len(fake.calls) == 2
+    assert engine.call_count == 2
 
 
 @pytest.mark.asyncio

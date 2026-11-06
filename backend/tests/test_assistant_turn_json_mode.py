@@ -142,7 +142,7 @@ async def test_engine_malformed_json_retried_once_then_rejected():
 
         async def chat(self, messages, **kwargs):
             self.calls += 1
-            return "not json at all"
+            return "{not json at all"
 
     fake = FakeModel()
     engine = ConversationTurnEngine(fake)

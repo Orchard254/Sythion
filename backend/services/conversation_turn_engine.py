@@ -44,6 +44,10 @@ MAX_USER_TEXT = 12000
 MAX_TURN_TEXT = 2000
 MAX_DISCUSSION_CONTEXTS = 20
 MAX_ASSISTANT_TEXT = 8000
+PLAIN_PROSE_NO_ACTION_DISCLOSURE = (
+    "\n\nNo background task, clarification, or other action was started or "
+    "scheduled. This response is informative only."
+)
 MAX_COMMAND_TEXT = 4000
 
 ALLOWED_COMMAND_TYPES = {"start_task", "answer_clarification", "append_task_instruction"}
@@ -255,6 +259,26 @@ class ConversationTurnEngine:
             try:
                 return self._validate_output(raw, descriptors)
             except ConversationTurnValidationError as exc:
+                # Preserve the existing strict JSON correction retry first.  Only
+                # after that bounded retry is exhausted may a descriptor-free,
+                # genuinely prose-shaped response become an answer-only result.
+                # JSON-shaped text remains unusable in that final position too.
+                if (
+                    exc.reason_code == "json_malformed"
+                    and not descriptors
+                    and self._is_ordinary_prose(raw)
+                    and attempt + 1 >= self.MAX_TOTAL_MODEL_CALLS
+                ):
+                    PlainProseNO = PLAIN_PROSE_NO_ACTION_DISCLOSURE
+                    assistant_text = self._bounded_text(
+                        raw.strip() if isinstance(raw, str) else "",
+                        "assistant_text",
+                        max(0, MAX_ASSISTANT_TEXT - len(PlainProseNO)),
+                    )
+                    if not assistant_text.strip():
+                        raise
+                    assistant_text = assistant_text.rstrip() + PlainProseNO
+                    return ConversationTurnResult(assistant_text, [])
                 # Retry json_malformed only, and only before any task dispatch.
                 if (
                     exc.reason_code == "json_malformed"
@@ -572,6 +596,19 @@ class ConversationTurnEngine:
         if stripped.startswith("```"):
             return True
         return stripped.startswith("{") or stripped.startswith("[")
+
+    @staticmethod
+    def _is_ordinary_prose(raw: Any) -> bool:
+        text = raw.strip() if isinstance(raw, str) else ""
+        if not text:
+            return False
+        if ConversationTurnEngine._looks_like_machine_readable_payload(text):
+            return False
+        # Ordinary conversational prose must not carry JSON-like control fragments,
+        # including embedded objects or arrays.
+        if "{" in text or "[" in text:
+            return False
+        return True
 
     @staticmethod
     def _unwrap_machine_readable_payload(text: str) -> str:
