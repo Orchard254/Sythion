@@ -7,6 +7,7 @@ try:
         ConversationTurnEngine,
         ConversationTurnValidationError,
         MAX_RECENT_TURNS,
+        PLAIN_PROSE_NO_ACTION_DISCLOSURE,
     )
     from backend.services.conversation_runtime import ConversationModelError
 except ImportError:
@@ -14,6 +15,7 @@ except ImportError:
         ConversationTurnEngine,
         ConversationTurnValidationError,
         MAX_RECENT_TURNS,
+        PLAIN_PROSE_NO_ACTION_DISCLOSURE,
     )
     from services.conversation_runtime import ConversationModelError
 
@@ -490,7 +492,7 @@ async def test_plain_prose_without_descriptors_returns_informative_fallback():
     result = await engine.run("hi", [], [])
     assert result.commands == []
     assert prose in result["assistant_text"]
-    assert "No background task, clarification, or other action was started or scheduled." in result["assistant_text"]
+    assert "No background task, clarification, or other action was started or scheduled." not in result["assistant_text"]
     assert len(fake.calls) == 2
     assert engine.call_count == 2
 
@@ -1104,3 +1106,51 @@ async def test_retry_cancellation_no_retry():
         await engine.run("hi", [], [])
     assert fake.calls == 1
     assert engine.call_count == 1
+DISCLOSURE = PLAIN_PROSE_NO_ACTION_DISCLOSURE
+
+
+@pytest.mark.asyncio
+async def test_legacy_notice_removed_from_fallback_output_and_history():
+    legacy_echo = "Here is help." + DISCLOSURE + "\n\n" + DISCLOSURE
+    fake = FakeModel(legacy_echo)
+    engine = ConversationTurnEngine(fake)
+    history = [
+        {"role": "assistant", "content": "old answer" + DISCLOSURE},
+    ]
+    result = await engine.run("hi", history, [])
+    assert result.commands == []
+    assert DISCLOSURE not in result["assistant_text"]
+    assert "Here is help." in result["assistant_text"]
+    assert len(fake.calls) == 2
+    # The cleaned assistant turn must be forwarded to the model on the next turn.
+    forwarded = json.dumps(fake.calls[0][1]["content"])
+    assert DISCLOSURE not in forwarded
+
+
+@pytest.mark.asyncio
+async def test_valid_json_strip_legacy_notice_preserves_commands_and_text():
+    text = "Safe answer" + DISCLOSURE
+    fake = FakeModel(json.dumps({"assistant_text": text, "commands": []}))
+    engine = ConversationTurnEngine(fake)
+    result = await engine.run("hi", [], [])
+    assert result.commands == []
+    assert result["assistant_text"] == "Safe answer"
+    assert DISCLOSURE not in result["assistant_text"]
+
+
+@pytest.mark.asyncio
+async def test_malformed_retry_prompt_explicitly_forbids_unvalidated_action_claims():
+    prose = "I can help."
+    fake = FakeModel(prose)
+    engine = ConversationTurnEngine(fake)
+    with pytest.raises(ConversationTurnValidationError):
+        await engine.run("hi", [], [descriptor(version=2)])
+    # The retry instruction must be present and must contain the safe-status
+    # wording, while still being a fixed, content-free prompt.
+    assert len(fake.calls) == 2
+    retry_content = fake.calls[1][1]["content"] if "messages" not in fake.calls[1] else None
+    # Retry message is sent as an additional system message, not in user JSON.
+    retry_system = fake.calls[1][-1]["content"]
+    assert "No action, completion, or result has been verified from" in retry_system
+    assert "could not be parsed as JSON" in retry_system
+    assert prose not in retry_system

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, List, Mapping, Optional, Sequence
 
@@ -269,15 +270,18 @@ class ConversationTurnEngine:
                     and self._is_ordinary_prose(raw)
                     and attempt + 1 >= self.MAX_TOTAL_MODEL_CALLS
                 ):
-                    PlainProseNO = PLAIN_PROSE_NO_ACTION_DISCLOSURE
                     assistant_text = self._bounded_text(
                         raw.strip() if isinstance(raw, str) else "",
                         "assistant_text",
-                        max(0, MAX_ASSISTANT_TEXT - len(PlainProseNO)),
+                        MAX_ASSISTANT_TEXT,
                     )
                     if not assistant_text.strip():
                         raise
-                    assistant_text = assistant_text.rstrip() + PlainProseNO
+                    assistant_text = self._strip_legacy_no_action_disclosure(
+                        assistant_text
+                    ).strip()
+                    if not assistant_text.strip():
+                        raise
                     return ConversationTurnResult(assistant_text, [])
                 # Retry json_malformed only, and only before any task dispatch.
                 if (
@@ -306,7 +310,14 @@ class ConversationTurnEngine:
         "Return exactly one valid JSON object with no markdown fences, code "
         "blocks, comments, trailing commas, extra text, or leading prose. "
         "Use each JSON key exactly once; use exactly the keys assistant_text "
-        "and commands."
+        "and commands. No action, completion, or result has been verified from "
+        "the previous reply. A command may be validated and possibly executed "
+        "only if you return it in valid JSON; the presence of a command is never "
+        "proof that it ran or produced a result. Do not claim an action was "
+        "started, completed, scheduled, changed, queued, cancelled, or that any "
+        "result exists unless the verified server outcome says so. If you are not "
+        "returning an executable command, return only a normal conversational "
+        "answer with an empty commands array."
     )
 
     async def _call_model(self, messages):
@@ -584,6 +595,7 @@ class ConversationTurnEngine:
         assistant_text = self._bounded_text(
             assistant_text, "assistant_text", MAX_ASSISTANT_TEXT
         )
+        assistant_text = self._strip_legacy_no_action_disclosure(assistant_text).strip()
         if not assistant_text.strip():
             raise ConversationTurnValidationError(
                 "empty model response", reason_code="empty"
@@ -596,6 +608,30 @@ class ConversationTurnEngine:
         if stripped.startswith("```"):
             return True
         return stripped.startswith("{") or stripped.startswith("[")
+
+    @staticmethod
+    def _strip_legacy_no_action_disclosure(text: Any) -> Any:
+        if not isinstance(text, str):
+            return text
+        legacy_constant = PLAIN_PROSE_NO_ACTION_DISCLOSURE
+        legacy_core = (
+            "No background task, clarification, or other action was started or "
+            "scheduled. This response is informative only."
+        )
+        result = text
+        # Exact historical marker, including its leading blank lines.
+        result = result.replace(legacy_constant, "")
+        # Handle common whitespace/newline presentation drift around the same
+        # exact legacy marker without classifying natural language.
+        result = re.sub(
+            r"(?:\r?\n)+\s*" + re.escape(legacy_core),
+            "",
+            result,
+        )
+        # Finally remove any bare marker occurrences that have already lost
+        # their leading newlines in persisted or model-echoed history.
+        result = result.replace(legacy_core, "")
+        return result
 
     @staticmethod
     def _is_ordinary_prose(raw: Any) -> bool:
@@ -2006,6 +2042,8 @@ class ConversationTurnEngine:
                 raise ConversationTurnValidationError("recent turn must be an object", reason_code="input")
             role = self._required_history_role(turn)
             content = self._bounded_text(str(turn.get("content", turn.get("text", turn.get("summary", "")))), "turn.content", MAX_TURN_TEXT)
+            if role == "assistant":
+                content = self._strip_legacy_no_action_disclosure(content).strip()
             turn_rows.append({"role": role, "content": content})
 
         descriptor_rows = []
@@ -2115,6 +2153,9 @@ class ConversationTurnEngine:
         if len(assistant_text) > MAX_ASSISTANT_TEXT:
             raise ConversationTurnValidationError("assistant_text too long", reason_code="shape")
         assistant_text = assistant_text.strip()
+        assistant_text = self._strip_legacy_no_action_disclosure(assistant_text).strip()
+        if not assistant_text:
+            raise ConversationTurnValidationError("assistant_text must be nonempty", reason_code="shape")
 
         commands_raw = parsed.get("commands")
         if not isinstance(commands_raw, list) or len(commands_raw) > MAX_COMMANDS:

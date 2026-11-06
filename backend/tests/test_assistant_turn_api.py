@@ -669,7 +669,7 @@ async def test_assistant_turn_real_engine_plain_prose_fallback_completed_no_task
     )
 
     assert resp.status == "completed"
-    assert resp.assistant_text == "Beam says hello" + disclosure
+    assert resp.assistant_text == "Beam says hello"
     assert resp.background_task_ids == []
     assert len(bg.tasks) == 0
     assert db.query(Task).count() == 0
