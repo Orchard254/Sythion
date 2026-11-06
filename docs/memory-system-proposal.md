@@ -4,6 +4,10 @@
 project memory (SQLite-backed MCP server at `C:\Ai\project-memory\server.py`).
 All facts migrated, all references cleaned up (2026-08-10).
 
+> **Historical proposal note:** This document records a proposal that was
+> implemented. It is not current status, and it is not an independently
+> verified description of today's runtime behaviour or installed product.
+
 ## Problem
 
 I (the LLM) lose all context between sessions. Every new conversation starts

@@ -22,6 +22,10 @@ This archive consolidates content formerly held in these root-level reports:
 - `PHASE3_REPORT.md`
 - `PHASE13B_VERIFICATION_REPORT.md`
 
+An additional historical verification snapshot is retained separately as
+[PHASE13B_ACCEPTANCE.txt](PHASE13B_ACCEPTANCE.txt). It is historical-only evidence and is not
+current project status, release readiness, or test execution evidence.
+
 Use this file only to understand historical evolution and discarded or
 superseded implementation snapshots. Do not use it to infer present-day runtime
 behaviour, current counts, or release readiness.
