@@ -11,11 +11,11 @@ vi.mock('../services/bridge', () => ({ isTauri: () => true }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: shell.invoke }));
 
 const route = {
-  id: 'operations',
+  id: 'overview',
   label: 'Operations',
   blurb: 'Control Center landing view',
-  icon: 'home',
-  group: 'main',
+  icon: 'overview',
+  group: 'operate',
   data: 'live',
 } as RouteDef;
 

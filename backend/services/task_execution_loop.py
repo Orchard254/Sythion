@@ -167,6 +167,7 @@ class TaskExecutionLoop:
                         {
                             "task_id": task_id,
                             "task_version": getattr(task_row, "version", None),
+                            "task_idempotency_key": getattr(task_row, "idempotency_key", None),
                             "worker_id": worker_id,
                             "process_id": os.getpid(),
                             "historical": True,

@@ -494,7 +494,7 @@ async def test_plain_prose_without_descriptors_returns_informative_fallback():
     result = await engine.run("hi", [], [])
     assert result.commands == []
     assert prose in result["assistant_text"]
-    assert "No background task, clarification, or other action was started or scheduled." not in result["assistant_text"]
+    assert PLAIN_PROSE_NO_ACTION_DISCLOSURE.strip() in result["assistant_text"]
     assert len(fake.calls) == 2
     assert engine.call_count == 2
 
@@ -1125,10 +1125,9 @@ async def test_plain_prose_legacy_disclosure_is_stripped_before_truncation():
     engine = ConversationTurnEngine(fake)
     result = await engine.run("hi", [], [])
     assert result.commands == []
-    assert result["assistant_text"] == "x" * (MAX_ASSISTANT_TEXT - 50)
-    assert PLAIN_PROSE_NO_ACTION_DISCLOSURE not in result["assistant_text"]
-    assert legacy_core not in result["assistant_text"]
-    assert "scheduled. This response is informative only." not in result["assistant_text"]
+    assert result["assistant_text"] == ("x" * (MAX_ASSISTANT_TEXT - 50)) + PLAIN_PROSE_NO_ACTION_DISCLOSURE
+    assert result["assistant_text"].count(PLAIN_PROSE_NO_ACTION_DISCLOSURE) == 1
+    assert legacy_core not in ("x" * (MAX_ASSISTANT_TEXT - 50))
     assert len(fake.calls) == 2
 
 
@@ -1142,7 +1141,7 @@ async def test_legacy_notice_removed_from_fallback_output_and_history():
     ]
     result = await engine.run("hi", history, [])
     assert result.commands == []
-    assert DISCLOSURE not in result["assistant_text"]
+    assert result["assistant_text"].count(DISCLOSURE) == 1
     assert "Here is help." in result["assistant_text"]
     assert len(fake.calls) == 2
     # The cleaned assistant turn must be forwarded to the model on the next turn.

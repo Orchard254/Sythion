@@ -357,14 +357,49 @@ def _composer_scheduling_established(db: Session, task_ids: List[str]) -> bool:
         # An absent event does not mean no worker ran.
         established = True
         for task_id in ids:
-            started = (
+            task_row = db.query(Task).filter_by(id=task_id).first()
+            expected_key = None
+            if task_row is not None:
+                expected_key = getattr(task_row, "idempotency_key", None)
+            events = (
                 db.query(TaskEvent)
                 .filter_by(task_id=task_id, event_type="task.worker_started")
-                .first()
-                is not None
+                .all()
             )
-            if not started:
+            if not events:
                 established = False
+                continue
+            if expected_key not in (None, ""):
+                matched = False
+                for event in events:
+                    event_data = getattr(event, "event_data", "")
+                    payload = {}
+                    if isinstance(event_data, dict):
+                        payload = event_data
+                    elif isinstance(event_data, str):
+                        try:
+                            import json as _attempt_json
+                            parsed = _attempt_json.loads(event_data)
+                            if isinstance(parsed, dict):
+                                payload = parsed
+                        except (TypeError, ValueError):
+                            payload = {}
+                    if any(
+                        payload.get(field) == expected_key
+                        for field in (
+                            "task_idempotency_key",
+                            "dispatch_attempt_key",
+                            "attempt_id",
+                            "dispatch_attempt_id",
+                            "start_task_idempotency_key",
+                            "composer_request_id",
+                            "composer_request_key",
+                        )
+                    ):
+                        matched = True
+                        break
+                if not matched:
+                    established = False
         return bool(established)
     except Exception:
         return False

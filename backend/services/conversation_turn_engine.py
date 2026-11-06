@@ -282,6 +282,9 @@ class ConversationTurnEngine:
                     )
                     if not assistant_text.strip():
                         raise
+                    # This fallback can never validate or schedule commands; make
+                    # that limitation explicit in the ordinary-prose answer.
+                    assistant_text = assistant_text.strip() + PLAIN_PROSE_NO_ACTION_DISCLOSURE
                     return ConversationTurnResult(assistant_text, [])
                 # Retry json_malformed only, and only before any task dispatch.
                 if (

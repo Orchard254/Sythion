@@ -275,7 +275,8 @@ async def test_one_start_task_command_dispatches_one_worker(request, _patch_engi
     assert db.query(ConversationExchange).count() == 1
     from backend.models.database import TaskEvent
     db.add(TaskEvent(task_id=task.id, event_type="task.worker_started",
-                     event_data="{}", sequence_num=1, created_at=datetime.utcnow()))
+                     event_data=__import__("json").dumps({"task_idempotency_key": task.idempotency_key}),
+                     sequence_num=1, created_at=datetime.utcnow()))
     db.commit()
     replay_bg = BackgroundTasks()
     replay = await assistant_turn(data, replay_bg, db, None)

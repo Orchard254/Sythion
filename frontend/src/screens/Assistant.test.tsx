@@ -957,7 +957,7 @@ describe('assistant turns', () => {
     storage.set('sythion.composer.clientRequestText', 'Hello Synth');
     storage.set('sythion.composer.clientRequestId', 'stored-read-fail-id');
     vi.stubGlobal('sessionStorage', {
-      getItem: (_key: string) => { throw new Error('read failed'); },
+      getItem: () => { throw new Error('read failed'); },
       setItem: (key: string, value: string) => { storage.set(key, value); },
       removeItem: (key: string) => { storage.delete(key); },
     });
@@ -1020,7 +1020,7 @@ describe('assistant turns', () => {
     storage.set('sythion.composer.clientRequestText', 'Hello Synth');
     storage.set('sythion.composer.clientRequestId', 'unreadable-surviving-id');
     vi.stubGlobal('sessionStorage', {
-      getItem: (_key: string) => { throw new Error('read failed'); },
+      getItem: () => { throw new Error('read failed'); },
       setItem: (key: string, value: string) => { storage.set(key, value); },
       removeItem: (key: string) => { storage.delete(key); },
     });
