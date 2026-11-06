@@ -3,6 +3,21 @@
 > This repository is the **trusted local runtime core** of a larger
 > intelligence system. It is not the whole intelligence stack by itself.
 
+## The goal
+
+The long-term vision is Synth: an intelligent, always-available AI companion,
+inspired by the helpful AIs in movies, running in its own isolated system. Synth
+is intended to converse, remember useful information, understand goals, make
+plans, and help carry them out while keeping the user informed and respecting
+appropriate permissions and safety boundaries.
+
+This repository builds a trusted Windows foundation for that vision: the
+Companion and Control Center, together with the runtime that controls actions,
+records activity, and checks results. Conversation, memory, planning, and agent
+subsystems exist in the code, but the complete vision is not finished or proven
+to work end to end. The details of future isolation and autonomy remain to be
+worked out.
+
 [![Backend tests](https://img.shields.io/badge/backend%20tests-1569%20passed%20%2F%2045%20skipped-green)]()
 [![Boundary](https://img.shields.io/badge/boundary-runtime%20core-blue)]()
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F%2F11-lightgrey)]()
