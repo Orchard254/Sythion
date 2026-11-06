@@ -766,6 +766,8 @@ def stage_embedded_python_isolated(runtime_dir, *, python_version=DEFAULT_PYTHON
     sp_dir=runtime_dir/"Lib"/"site-packages"; sp_dir.mkdir(parents=True, exist_ok=True)
     (sp_dir/"sitecustomize.py").write_text("import os, sys\ncwd=os.getcwd()\nif cwd not in sys.path:\n    sys.path.insert(0,cwd)\n", encoding="utf-8")
     if bootstrap_pip:
+        if not allow_network:
+            raise SystemExit("[stage-runtime] network disabled: pip bootstrap cannot run while allow_network=False")
         gp=ensure_getpip(get_pip_path, allow_network, expected_sha256=_gp_digest, release=_rel)
         print(f"[stage-runtime] bootstrapping pip via {gp}")
         r=subprocess.run([str(python_exe), str(gp), "--no-warn-script-location"], check=False, capture_output=True, text=True)
@@ -774,6 +776,10 @@ def stage_embedded_python_isolated(runtime_dir, *, python_version=DEFAULT_PYTHON
     return python_exe
 
 def install_requirements(python_exe, lock_path, *, allow_network=False, verify_inventory=True, release=False, require_hashes=False, **kwargs):
+    # Offline installation cannot run the pip subprocess, which may contact the
+    # network. Fail closed before any lock processing or subprocess launch.
+    if not allow_network:
+        raise SystemExit("[stage-runtime] network disabled: dependency installation cannot run while allow_network=False")
     python_exe=Path(python_exe)
     _rel = bool(release)
     if _truthy_flag(kwargs.pop("release_mode", None)):

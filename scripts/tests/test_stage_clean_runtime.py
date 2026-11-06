@@ -291,7 +291,7 @@ def test_stage_rejects_unexpected_preexisting_backend_dir(tmp_path, monkeypatch)
     (backend_dir / "stale.txt").write_text("stale\n", encoding="utf-8")
     monkeypatch.setattr(tempfile, "mkdtemp", lambda *a, **k: str(temp_root))
     rc, findings, removed, out = S.stage(
-        source, output, runtime_zip=_TEST_ZIP, install_dependencies=False, required_imports=False,
+        source, output, runtime_zip=_TEST_ZIP, bootstrap_pip=False, install_dependencies=False, required_imports=False,
     )
     assert rc == 1
     assert any("runtime-error" == getattr(f, "kind", None) or "existing" in str(f).lower() or "fileexists" in str(f).lower() for f in findings) or rc == 1
@@ -334,6 +334,7 @@ def test_python_archive_digest_guard_rejects_mismatch_before_extraction(tmp_path
             source,
             output,
             runtime_zip=bad_archive,
+            bootstrap_pip=False,
             install_dependencies=False,
             required_imports=False,
         )
@@ -487,7 +488,7 @@ def test_release_manifest_records_proven_facts(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     rc, findings, removed, out = S.stage(
-        source, output, runtime_zip=_TEST_ZIP, allow_network=False,
+        source, output, runtime_zip=_TEST_ZIP, allow_network=True,
         install_dependencies=True, required_imports=False, verify=True,
         bootstrap_pip=True, get_pip=get_pip, get_pip_sha256=digest, lock=lock, release=True,
     )
@@ -527,7 +528,7 @@ def test_install_requirements_release_enforces_require_hashes(tmp_path, monkeypa
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     S.install_requirements(
-        tmp_path / "python.exe", lock, allow_network=False,
+        tmp_path / "python.exe", lock, allow_network=True,
         verify_inventory=False, release=True,
     )
     assert "--require-hashes" in captured["args"]
@@ -538,7 +539,7 @@ def test_install_requirements_release_rejects_incomplete_hashes(tmp_path):
     lock.write_text("foo==1.0\n", encoding="utf-8")
     with pytest.raises(SystemExit) as exc:
         S.install_requirements(
-            tmp_path / "python.exe", lock, allow_network=False,
+            tmp_path / "python.exe", lock, allow_network=True,
             verify_inventory=False, release=True,
         )
     assert "hash" in str(exc.value).lower()
@@ -686,7 +687,7 @@ def test_runtime_provenance_manifest_verifier_rejects_tampered_python_digest(tmp
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     rc, findings, removed, out = S.stage(
-        source, output, runtime_zip=_TEST_ZIP, allow_network=False,
+        source, output, runtime_zip=_TEST_ZIP, allow_network=True,
         install_dependencies=True, required_imports=False, verify=True,
         bootstrap_pip=True, get_pip=get_pip, get_pip_sha256=digest, lock=lock, release=True,
     )
@@ -731,7 +732,7 @@ def test_runtime_provenance_manifest_verifier_rejects_archive_digest_as_python_d
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     rc, findings, removed, out = S.stage(
-        source, output, runtime_zip=_TEST_ZIP, allow_network=False,
+        source, output, runtime_zip=_TEST_ZIP, allow_network=True,
         install_dependencies=True, required_imports=False, verify=True,
         bootstrap_pip=True, get_pip=get_pip, get_pip_sha256=digest, lock=lock, release=True,
     )
@@ -794,7 +795,7 @@ def test_runtime_provenance_manifest_release_fails_closed_without_trusted_archiv
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     rc, findings, removed, out = S.stage(
-        source, output, runtime_zip=_TEST_ZIP, allow_network=False,
+        source, output, runtime_zip=_TEST_ZIP, allow_network=True,
         install_dependencies=True, required_imports=False, verify=True,
         bootstrap_pip=True, get_pip=get_pip, get_pip_sha256=digest, lock=lock, release=True,
     )
@@ -855,7 +856,7 @@ def test_runtime_provenance_manifest_verifier_trusted_archive_mismatch(tmp_path,
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     rc, findings, removed, out = S.stage(
-        source, output, runtime_zip=_TEST_ZIP, allow_network=False,
+        source, output, runtime_zip=_TEST_ZIP, allow_network=True,
         install_dependencies=True, required_imports=False, verify=True,
         bootstrap_pip=True, get_pip=get_pip, get_pip_sha256=digest, lock=lock, release=True,
     )
@@ -879,3 +880,92 @@ def test_explicit_release_mode_is_strict_about_whitespace(tmp_path):
     assert S._explicit_release_mode("RELEASE") is True
     assert S._explicit_release_mode("release please") is False
     assert S._explicit_release_mode("releasedx") is False
+
+
+def test_stage_embedded_python_offline_bootstrap_fails_closed_before_subprocess(tmp_path, monkeypatch):
+    source = _make_tree(tmp_path / "source", {"main.py": "print(1)\\n"})
+    executed = {"count": 0}
+
+    def fake_run(*args, **kwargs):
+        executed["count"] += 1
+        return subprocess.CompletedProcess(args=args[0] if args else [], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(SystemExit) as exc:
+        S.stage_embedded_python_isolated(
+            tmp_path / "runtime",
+            python_version="3.13.16",
+            zip_path=_TEST_ZIP,
+            get_pip_path=tmp_path / "missing-get-pip.py",
+            allow_network=False,
+            bootstrap_pip=True,
+        )
+    message = str(exc.value).lower()
+    assert "network" in message
+    assert "bootstrap" in message
+    assert executed["count"] == 0
+
+
+def test_install_requirements_offline_fails_closed_before_subprocess(tmp_path, monkeypatch):
+    executed = {"count": 0}
+
+    def fake_run(*args, **kwargs):
+        executed["count"] += 1
+        return subprocess.CompletedProcess(args=args[0] if args else [], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    lock = tmp_path / "requirements.lock.txt"
+    lock.write_text("foo==1.0 --hash=sha256:" + "a" * 64 + "\\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        S.install_requirements(
+            tmp_path / "python.exe",
+            lock,
+            allow_network=False,
+        )
+    message = str(exc.value).lower()
+    assert "network" in message
+    assert "installation" in message
+    assert executed["count"] == 0
+
+
+def test_stage_offline_dependency_installation_fails_closed_before_subprocess(tmp_path, monkeypatch):
+    source = _make_tree(tmp_path / "source", {"main.py": "print(1)\\n"})
+    output = tmp_path / "isolated"
+    executed = {"count": 0}
+
+    def fake_run(*args, **kwargs):
+        executed["count"] += 1
+        return subprocess.CompletedProcess(args=args[0] if args else [], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(SystemExit) as exc:
+        S.stage(
+            source,
+            output,
+            runtime_zip=_TEST_ZIP,
+            allow_network=False,
+            bootstrap_pip=True,
+            install_dependencies=True,
+            required_imports=False,
+            verify=False,
+        )
+    message = str(exc.value).lower()
+    assert "network" in message
+    assert executed["count"] == 0
+
+
+def test_offline_no_bootstrap_path_remains_functional(tmp_path):
+    source = _make_tree(tmp_path / "source", {"main.py": "print(1)\\n"})
+    output = tmp_path / "isolated"
+    rc, findings, removed, out = S.stage(
+        source,
+        output,
+        runtime_zip=_TEST_ZIP,
+        allow_network=False,
+        bootstrap_pip=False,
+        install_dependencies=False,
+        required_imports=False,
+        verify=True,
+    )
+    assert rc == 0, [f.describe() for f in findings]
+    assert out == output.resolve()
