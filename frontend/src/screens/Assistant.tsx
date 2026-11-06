@@ -590,7 +590,11 @@ useLayoutEffect(() => {
                           }
                         }
                       } catch {
-                        // Storage may be unavailable; ignore.
+                        // A storage read/write failure means the clearing could
+                        // not be verified. Fail closed while mounted; this does
+                        // not guarantee clearing across reloads or inaccessible
+                        // storage.
+                        setComposerStorageCompromised(true);
                       }
                       void tasks.refetch();
                       notify({
@@ -601,14 +605,38 @@ useLayoutEffect(() => {
                       });
                     } catch (err) {
                       const message = err instanceof Error ? err.message : 'Failed to send the message';
-                      // Only the model-output rejection is proven to have created
-                      // no conversation and no task; drop the reserved request
-                      // identity so an identical retry can run. All other
-                      // backend- or transport-reported failures retain the
-                      // reserved identity, because their message text does not
-                      // prove the absence of task/exchange side effects.
-                       const definiteBackendFailure =
-                         message.startsWith('Synth could not understand the model\'s reply.');
+                       // Only an explicit no-dispatch verdict is proven to have
+                       // created no conversation and no task; drop the reserved
+                       // request identity so an identical retry can run. All other
+                       // outcomes retain the reserved identity, since message,
+                       // status or legacy text never proves the absence of
+                       // task/exchange side effects.
+                        const rejectionResponse =
+                          err && typeof err === 'object' && 'response' in err
+                            ? (err as { response?: { headers?: Record<string, unknown> } }).response
+                            : undefined;
+                        const rejectionHeaders = rejectionResponse?.headers;
+                        const readVerdictHeader = (name: string): unknown => {
+                          if (!rejectionHeaders) return undefined;
+                          if (typeof (rejectionHeaders as { get?: unknown }).get === 'function') {
+                            try {
+                              const direct = (rejectionHeaders as { get: (n: string) => unknown }).get(name);
+                              if (direct !== undefined && direct !== null) return direct;
+                              const lowered = (rejectionHeaders as { get: (n: string) => unknown }).get(name.toLowerCase());
+                              if (lowered !== undefined && lowered !== null) return lowered;
+                            } catch {
+                              // Fall through to record-style access.
+                            }
+                          }
+                          if (typeof rejectionHeaders !== 'object' || rejectionHeaders === null) return undefined;
+                          const wanted = name.toLowerCase();
+                          for (const key of Object.keys(rejectionHeaders as Record<string, unknown>)) {
+                            if (key.toLowerCase() === wanted) return (rejectionHeaders as Record<string, unknown>)[key];
+                          }
+                          return (rejectionHeaders as Record<string, unknown>)[name];
+                        };
+                        const dispatchVerdict = readVerdictHeader('x-sythion-dispatch-verdict');
+                        const definiteBackendFailure = dispatchVerdict === 'no-dispatch';
                       if (definiteBackendFailure && clientRequestId) {
                         const completedPair = clientComposerRequestRef.current;
                         if (completedPair && completedPair.text === text && completedPair.id === clientRequestId) {
@@ -648,7 +676,10 @@ useLayoutEffect(() => {
                               }
                             }
                           } catch {
-                            // Storage may be unavailable; ignore.
+                            // A storage read/write failure means the clearing could not
+                            // be verified. Fail closed while mounted; this does not
+                            // guarantee clearing across reloads or inaccessible storage.
+                            setComposerStorageCompromised(true);
                           }
                         }
                       }

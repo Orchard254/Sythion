@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AssistantScreen } from './Assistant';
 import { useAppStore } from '../store/appStore';
 import type { Task } from '../types';
+import axios from 'axios';
 
 const mock = vi.hoisted(() => ({
   turn: vi.fn(),
@@ -819,9 +820,11 @@ describe('assistant turns', () => {
     expect(secondId).toBe(firstId);
   });
 
-  it('mints a new request id after a model-output rejection, which has no task or exchange', async () => {
+  it('mints a new request id after an explicit no-dispatch verdict, which has no task or exchange', async () => {
     const modelRejection = 'Synth could not understand the model\'s reply. No conversation or action was recorded, and no background work was started.';
-    mock.turn.mockRejectedValueOnce(new Error(modelRejection));
+    const noDispatchError = new Error(modelRejection) as Error & { response?: { headers?: Record<string, string> } };
+    noDispatchError.response = { headers: { 'X-Sythion-Dispatch-Verdict': 'no-dispatch' } };
+    mock.turn.mockRejectedValueOnce(noDispatchError);
     await draft();
     await send();
     const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
@@ -847,6 +850,191 @@ describe('assistant turns', () => {
     const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
     expect(secondId).not.toBe(firstId);
     expect(text()).toContain('Handled distinct');
+  });
+
+  it('retains the request id when a model-prefixed message has no explicit no-dispatch verdict (prefix collision)', async () => {
+    const modelRejection = 'Synth could not understand the model\'s reply. No conversation or action was recorded, and no background work was started.';
+    mock.turn.mockRejectedValueOnce(new Error(modelRejection));
+    await draft();
+    await send();
+    const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+
+    mock.turn.mockRejectedValueOnce(new Error(modelRejection));
+    await draft();
+    await send();
+    const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(secondId).toBe(firstId);
+  });
+
+  it('retains the request id for an uncertain failure (no verdict header)', async () => {
+    const uncertain = 'Request outcome is uncertain; it was not rerun.';
+    mock.turn.mockRejectedValueOnce(new Error(uncertain));
+    await draft();
+    await send();
+    const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+
+    mock.turn.mockRejectedValueOnce(new Error(uncertain));
+    await draft();
+    await send();
+    const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(secondId).toBe(firstId);
+  });
+
+  it('retains the draft and request id, with no auto retry, for a malformed verdict header', async () => {
+    const err = new Error('boom') as Error & { response?: { headers?: Record<string, string> } };
+    err.response = { headers: { 'x-sythion-dispatch-verdict': 'No-Dispatch' } };
+    mock.turn.mockRejectedValueOnce(err);
+    await draft();
+    await send();
+    expect(useAppStore.getState().transcriptDraft).toBe('Hello Synth');
+    const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+
+    mock.turn.mockRejectedValueOnce(err);
+    await draft();
+    await send();
+    const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(secondId).toBe(firstId);
+  });
+
+  it('drops storage only on explicit no-dispatch and mints a fresh id on remount for same text', async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value); },
+      removeItem: (key: string) => { storage.delete(key); },
+    });
+    const err = new Error('model failed') as Error & { response?: { status: number; headers?: Record<string, string> } };
+    err.response = { status: 503, headers: { 'x-sythion-dispatch-verdict': 'no-dispatch' } };
+    mock.turn.mockRejectedValueOnce(err);
+    await draft();
+    await send();
+    const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+
+    await settle(() => { view.unmount(); view = create(<QueryClientProvider client={client}><AssistantScreen /></QueryClientProvider>); });
+    await draft();
+    mock.turn.mockResolvedValueOnce({ exchange_id: 'recovered', user_text: 'Hello Synth', assistant_text: 'Recovered', status: 'completed', background_task_ids: [] });
+    await send();
+    const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(secondId).not.toBe(firstId);
+    expect(text()).toContain('Recovered');
+  });
+
+  it('allows a same-text retry after an explicit no-dispatch verdict to use a new id', async () => {
+    const err = new Error('model failed') as Error & { response?: { headers?: Record<string, string> } };
+    err.response = { headers: { 'x-sythion-dispatch-verdict': 'no-dispatch' } };
+    mock.turn.mockRejectedValueOnce(err);
+    await draft();
+    await send();
+    const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+
+    mock.turn.mockResolvedValueOnce({ exchange_id: 'retry-ok', user_text: 'Hello Synth', assistant_text: 'Recovered', status: 'completed', background_task_ids: [] });
+    await draft();
+    await send();
+    const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(secondId).not.toBe(firstId);
+    expect(text()).toContain('Recovered');
+  });
+
+  it('classifies an explicit no-dispatch verdict using a real AxiosHeaders instance', async () => {
+    const h = new axios.AxiosHeaders();
+    h.set('X-Sythion-Dispatch-Verdict', 'no-dispatch');
+    const err = Object.assign(new Error('boom'), { response: { status: 503, headers: h } }) as Error & { response?: { status: number; headers: unknown } };
+    mock.turn.mockRejectedValueOnce(err);
+    await draft();
+    await send();
+    const firstId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+
+    mock.turn.mockResolvedValueOnce({ exchange_id: 'axios-header-retry', user_text: 'Hello Synth', assistant_text: 'Recovered', status: 'completed', background_task_ids: [] });
+    await draft();
+    await send();
+    const secondId = mock.turn.mock.calls[mock.turn.mock.calls.length - 1][1];
+    expect(secondId).not.toBe(firstId);
+    expect(text()).toContain('Recovered');
+  });
+
+  it('marks storage compromised and avoids auto retry when a storage read fails during an explicit verdict', async () => {
+    const storage = new Map<string, string>();
+    storage.set('sythion.composer.clientRequestText', 'Hello Synth');
+    storage.set('sythion.composer.clientRequestId', 'stored-read-fail-id');
+    vi.stubGlobal('sessionStorage', {
+      getItem: (_key: string) => { throw new Error('read failed'); },
+      setItem: (key: string, value: string) => { storage.set(key, value); },
+      removeItem: (key: string) => { storage.delete(key); },
+    });
+
+    const err = Object.assign(new Error('boom'), { response: { headers: { 'x-sythion-dispatch-verdict': 'no-dispatch' } } }) as Error & { response?: { headers: Record<string, string> } };
+    mock.turn.mockRejectedValueOnce(err);
+    await draft();
+    await send();
+
+    expect(useAppStore.getState().transcriptDraft).toBe('Hello Synth');
+    expect(text()).toContain('could not be verified');
+    expect(mock.turn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not clear a nonmatching stored pair on an explicit no-dispatch rejection', async () => {
+    const storage = new Map<string, string>();
+    storage.set('sythion.composer.clientRequestText', 'different persisted text');
+    storage.set('sythion.composer.clientRequestId', 'nonmatching-stored-id');
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value); },
+      removeItem: (key: string) => { storage.delete(key); },
+    });
+
+    const err = Object.assign(new Error('boom'), { response: { headers: { 'x-sythion-dispatch-verdict': 'no-dispatch' } } }) as Error & { response?: { headers: Record<string, string> } };
+    mock.turn.mockRejectedValueOnce(err);
+    await draft();
+    await send();
+
+    // The submit flow persists the current request's pair before the
+    // backend outcome, so a pre-existing foreign pair is replaced rather than
+    // silently preserved. The important contract here is that the draft is
+    // retained and no automatic retry occurs.
+    expect(useAppStore.getState().transcriptDraft).toBe('Hello Synth');
+  });
+
+  it('preserves a newer draft when an explicit verdict arrives after the user changed text', async () => {
+    const err = Object.assign(new Error('boom'), { response: { headers: { 'x-sythion-dispatch-verdict': 'no-dispatch' } } }) as Error & { response?: { headers: Record<string, string> } };
+    mock.turn.mockRejectedValueOnce(err);
+    await draft();
+    await send();
+    await settle(() => view.root.findByProps({ 'aria-label': 'Message Sythion' }).props.onChange({ target: { value: 'newer draft text' } }));
+    expect(useAppStore.getState().transcriptDraft).toBe('newer draft text');
+    expect(mock.turn).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the composer usable and makes no retry call after an uncertain headerless failure', async () => {
+    mock.turn.mockRejectedValueOnce(new Error('Request outcome is uncertain; it was not rerun.'));
+    await draft();
+    await send();
+    expect(mock.turn).toHaveBeenCalledTimes(1);
+    mock.turn.mockRejectedValueOnce(new Error('Request outcome is uncertain; it was not rerun.'));
+    await draft();
+    await send();
+    expect(mock.turn).toHaveBeenCalledTimes(2);
+  });
+
+  it('documents the unavoidable reload limitation when storage cannot be read', async () => {
+    const storage = new Map<string, string>();
+    storage.set('sythion.composer.clientRequestText', 'Hello Synth');
+    storage.set('sythion.composer.clientRequestId', 'unreadable-surviving-id');
+    vi.stubGlobal('sessionStorage', {
+      getItem: (_key: string) => { throw new Error('read failed'); },
+      setItem: (key: string, value: string) => { storage.set(key, value); },
+      removeItem: (key: string) => { storage.delete(key); },
+    });
+
+    const err = Object.assign(new Error('boom'), { response: { headers: { 'x-sythion-dispatch-verdict': 'no-dispatch' } } }) as Error & { response?: { headers: Record<string, string> } };
+    mock.turn.mockRejectedValueOnce(err);
+    await draft();
+    await send();
+
+    // Fail-closed while mounted: reload safety is intentionally not claimed when
+    // storage is unreadable or stale data cannot be cleared. After remount,
+    // persisted data (if any) may be reused, so no reload-time guarantee is
+    // made.
+    expect(text()).toContain('could not be verified');
   });
 
 });

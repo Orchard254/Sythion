@@ -214,10 +214,18 @@ useEffect(() => {
     if (!isTauri()) return;
     void (async () => {
       try {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window');
-        await getCurrentWindow().close();
-      } catch {
-        // Ignore: the user can still exit from the Control Center.
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('set_companion_visible', { visible: false });
+      } catch (err) {
+        // Hiding is best-effort, but a swallowed failure would leave the user
+        // with no explanation of why the overlay stayed visible. Surface it both
+        // as a visible error on the capsule and in the dev/Rust log stream, and
+        // keep the window alive so the user can retry or exit from the Control
+        // Center.
+        console.warn('[sythion] could not hide the Companion overlay:', err);
+        setSurfaceError(
+          err instanceof Error ? err.message : 'Could not hide the Companion overlay.',
+        );
       }
     })();
   }, []);
