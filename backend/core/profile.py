@@ -32,17 +32,44 @@ def profile_path() -> str:
 
 
 def load_profile() -> Dict[str, Any]:
-    """Read the profile metadata file, tolerating an absent/corrupt file."""
+    """Read the profile metadata file, tolerating an absent/corrupt file.
+
+    Read-only callers (for example model resolution) use this tolerant form so a
+    damaged profile does not crash unrelated startup. It does not validate the
+    existing file for writes; see ``save_profile``.
+    """
     path = profile_path()
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-            return data if isinstance(data, dict) else {}
     except FileNotFoundError:
         return {}
-    except (json.JSONDecodeError, OSError) as e:  # pragma: no cover - FS errors
+    except (json.JSONDecodeError, OSError, UnicodeError) as e:  # pragma: no cover - FS errors
         logger.warning("Could not read profile at %s: %s", path, e)
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _read_profile_for_save() -> Dict[str, Any]:
+    """Read the existing profile strictly for an update.
+
+    A missing profile is treated as empty so initial creation still works. Any
+    other read, parse, or shape failure is deliberately not swallowed: raising
+    keeps ``save_profile`` from overwriting the original bytes with a partial
+    profile derived from an empty baseline.
+    """
+    path = profile_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"profile at {path} must contain a JSON object, got "
+            f"{type(data).__name__}"
+        )
+    return data
 
 
 def save_profile(patch: Dict[str, Any]) -> Dict[str, Any]:
@@ -53,9 +80,12 @@ def save_profile(patch: Dict[str, Any]) -> Dict[str, Any]:
     profile path. A crash during serialization therefore leaves the previous
     profile.json (if any) intact, and a successful return guarantees the new
     bytes have been committed to stable storage on platforms that support it.
+
+    If an existing profile cannot be read as a JSON object, this raises instead
+    of replacing it, so corrupt or unreadable profile bytes are preserved.
     """
     with _SAVE_LOCK:
-        profile = load_profile()
+        profile = _read_profile_for_save()
         profile.update(patch or {})
         path = profile_path()
         directory = os.path.dirname(os.path.abspath(path)) or "."

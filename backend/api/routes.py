@@ -3396,7 +3396,10 @@ async def select_model(body: ModelSelectRequest, db=Depends(get_db)):
             detail=f"Model '{body.model_id}' is not in the authenticated model list",
         )
 
-    set_selected_model(body.model_id)
+    try:
+        set_selected_model(body.model_id)
+    except (OSError, UnicodeError, ValueError):
+        raise HTTPException(status_code=500, detail="Profile storage unavailable") from None
     try:
         from backend.core.settings_store import set_setting
         set_setting(db, "ollama_inference_verified_model", "")
