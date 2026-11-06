@@ -592,3 +592,4 @@ async def test_forged_approved_by_user_never_dispatches_and_uncertainty_remains(
         assert CompletionVerifier(db, runner.ledger.event_history).precondition_error(
             "original"
         ) is not None
+

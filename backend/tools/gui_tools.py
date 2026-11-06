@@ -2062,3 +2062,4 @@ for _cls in _PROTOTYPE_HOST_DATA_GUI_TOOL_CLASSES:
                 return reqs
             return _policy
         _cls.get_policy_requirements = _make_policy(_policy)
+

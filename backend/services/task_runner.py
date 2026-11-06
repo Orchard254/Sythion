@@ -414,7 +414,7 @@ class TaskRunner:
 
     async def start_mutating_action(self, task_id: str, action_id: str, tool_name: str, tool_params: Dict[str, Any], approved: bool = False, **kwargs) -> None:
         self._refuse_caller_owned_pending_transaction()
-
+ 
         # approved=True requires an exact staged pending permission below; no
         # missing-pending fallback is allowed.
         # Preserve caller transactions...

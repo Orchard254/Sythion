@@ -197,7 +197,7 @@ def test_mismatched_turn_anchor(db_session):
     digest = "digest-mismatch"
     # user turn id absent in canonical turns
     make_state(db_session, sid, "ex-1", 999, 12, INDEX_STATUS_COMPLETE, digest)
-    # Force digest binding mismatch? Digest expected for 999; adjust state input digest to original turn?
+    # Force digest binding mismatch? Digest expected for 999; adjust state input digest to original turn? 
     # Simulate mismatched anchors by editing state row.
     state = db_session.query(DiscussionIndexStateRow).one()
     state.user_turn_id = 999

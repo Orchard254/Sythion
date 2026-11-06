@@ -795,3 +795,4 @@ def apply_semantic_index_proposals(
         "unresolved": unresolved,
         "replicated": False,
     }
+

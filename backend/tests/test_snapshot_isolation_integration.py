@@ -78,3 +78,4 @@ def test_concurrent_writer_does_not_change_snapshot():
                 os.remove(path)
             except OSError:
                 pass
+

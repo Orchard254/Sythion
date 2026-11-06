@@ -251,3 +251,5 @@ def startup_status_projection(boot: Any = None) -> Dict[str, Any]:
         "stage_statuses": stages,
         "startup_stage_statuses": stages,
     }
+
+

@@ -456,7 +456,7 @@ def test_hash_seed_deterministic_reason():
     ])
     g = _grant(allowed_operations=granted)
     # Proposed "read/acct-1/session-1" differs from every entry, but action exists,
-    # resource exists, context exists in different entries; resource_only?
+    # resource exists, context exists in different entries; resource_only? 
     # Exact deterministic: action exists in entries, resource exists, context exists;
     # no single dimension-only match against one entry, so not_granted.
     r = evaluate_grant_scope(grant=g, operation=_op(), evaluation_time=now)

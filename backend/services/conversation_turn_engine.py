@@ -479,7 +479,7 @@ class ConversationTurnEngine:
         )
         if resolution.outcome == "clarification":
             return ConversationTurnResult(resolution.clarification, [])
-
+ 
         selected_ids = resolution.selected_discussion_ids
         cancelled = None
         try:
