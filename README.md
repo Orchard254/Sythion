@@ -112,16 +112,11 @@ Important current rules:
 - approved file roots and voice/privacy settings are part of the runtime
   boundary and should be treated as first-class configuration.
 
-## Historical reports
+## Recorded test baseline
 
-The following files are retained for historical context only and should not be
-used as the current status baseline:
-
-- `docs/HISTORICAL_REPORTS.md` — consolidated archive of former root-level
-  historical reports
-- `docs/PROGRESS_REPORT.md`
-
-## Current verified baseline
+> This is a recorded baseline from the noted measurement date, not a fresh
+> verification. For current state, use `docs/PROJECT_STATUS.md`; the counts
+> here may conflict with other documents.
 
 - Full backend suite: **1569 passed, 45 skipped** (1648 collected)
 - Acceptance suite: **191 passed, 2 skipped**

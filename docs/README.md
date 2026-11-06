@@ -27,13 +27,8 @@ active task lists.
 - [CONVERSATIONAL_PROTOCOL_PLAN.md](CONVERSATIONAL_PROTOCOL_PLAN.md)
 - [composer-context-matching.md](composer-context-matching.md)
 
-## Historical archives and evidence
+## Build evidence
 
-- [HISTORICAL_REPORTS.md](HISTORICAL_REPORTS.md)
-- [PHASE13B_ACCEPTANCE.txt](PHASE13B_ACCEPTANCE.txt) (historical
-  verification snapshot; not current readiness or test evidence)
-- [memory-system-proposal.md](memory-system-proposal.md) (implemented
-  historical proposal; see its status note)
 - [evidence/README.md](evidence/README.md) (packaged/build evidence)
 
 ## Related higher-level documents

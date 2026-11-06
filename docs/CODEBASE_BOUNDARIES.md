@@ -240,14 +240,6 @@ This file had drifted badly:
 
 It should describe the current service layout, not an older prototype.
 
-### Older milestone/status docs
-
-These are intentionally retained as archives, but must stay clearly labeled as
-non-authoritative:
-- `docs/HISTORICAL_REPORTS.md` — consolidated archive of former root-level
-  historical reports
-- `docs/PROGRESS_REPORT.md`
-
 ## Practical refactor order
 
 ### Step 1 — low-risk structure clarity

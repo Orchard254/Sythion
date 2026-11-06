@@ -106,9 +106,6 @@ Use these documents in order:
 8. [`docs/OPERATIONS.md`](OPERATIONS.md) — startup, smoke-test, and validation runbook
 9. [`docs/acceptance-test-map.md`](acceptance-test-map.md) — release gates and acceptance criteria
 
-Older reports such as `docs/HISTORICAL_REPORTS.md` and
-`docs/PROGRESS_REPORT.md` are historical context only.
-
 ## Verified test baseline
 
 - Full backend suite: **1583 passed, 45 skipped** (1628 collected)
