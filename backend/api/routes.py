@@ -3936,7 +3936,7 @@ async def setup_safe_settings(db=Depends(get_db)):
 @router.get("/setup/readiness")
 @router.get("/onboarding/readiness")
 @router.get("/first-run/readiness")
-async def setup_readiness(db=Depends(get_health_db)):
+async def setup_readiness(db=Depends(get_db)):
     """Authoritative first-run readiness based on backend checks and assets."""
     from backend.core.secrets import has_secret, OLLAMA_API_KEY
     from backend.core.config import resolve_selected_model, settings
