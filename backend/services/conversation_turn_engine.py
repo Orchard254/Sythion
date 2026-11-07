@@ -1530,15 +1530,43 @@ class ConversationTurnEngine:
             # invalid declaration as disabled.
             mode_active = True
             mode_declaration_invalid = True
-        for name in top_pair_count_names + list(pair_list_aliases):
-            if _get(name, _UNSET) is not _UNSET:
-                mode_active = True
+        # Production DTOs always carry inert source-pair defaults
+        # (readback=False, counts=0, pairs=()). Presence alone is not an
+        # opt-in: only a True declaration, a non-zero count, a non-empty
+        # pair list, or any other non-inert supplied value activates the
+        # strict readback gate. This preserves explicit-False legacy
+        # validity for correction evidence while keeping every non-inert
+        # supplied value fail-closed.
+        def _is_inert_pair_value(name: str, value: object) -> bool:
+            if name in mode_bool_aliases:
+                return value is False
+            if name in top_pair_count_names:
+                return type(value) is int and value == 0
+            seq = _seq(value)
+            return seq is not None and len(seq) == 0
+
+        _pair_field_names = (
+            mode_bool_aliases
+            + tuple(top_pair_count_names)
+            + tuple(pair_list_aliases)
+        )
+        for name in _pair_field_names:
+            value = _get(name, _UNSET)
+            if value is _UNSET or _is_inert_pair_value(name, value):
+                continue
+            if name in mode_bool_aliases and value is not True:
+                mode_declaration_invalid = True
+            mode_active = True
         for entry in entries_list:
-            for name in top_pair_count_names + list(pair_list_aliases):
-                if _node_get(entry, name) is not _UNSET:
-                    mode_active = True
+            for name in _pair_field_names:
+                value = _node_get(entry, name)
+                if value is _UNSET or _is_inert_pair_value(name, value):
+                    continue
+                if name in mode_bool_aliases and value is not True:
+                    mode_declaration_invalid = True
+                mode_active = True
             nested = _node_get(entry, "source_pairs")
-            if nested is not _UNSET and nested is not None:
+            if nested is not _UNSET and nested is not None and not _is_inert_pair_value("source_pairs", nested):
                 mode_active = True
 
         if mode_active:
