@@ -39,6 +39,7 @@ from backend.services.skill_engine import (
     set_skill_state,
     validate_definition,
 )
+from backend.tools.file_tools import FileReadTool
 
 
 @pytest.fixture
@@ -66,40 +67,33 @@ class FakeWriteInput(PBaseModel):
 
 
 class FakeReadTool:
-    name = "file_read"
-    description = "read a file"
-    input_schema = FakeReadInput
+    """A reviewed FileReadTool instance with controlled in-memory read behavior.
 
-    def __init__(self, side_effect=None):
-        self._side_effect = side_effect
+    `__class__` is normalized onto :class:`FileReadTool` so the containment
+    reviewed built-in identity check recognizes the tool without weakening policy.
+    """
 
-    def get_policy_requirements(self):
-        return {}
+    def __new__(cls, side_effect=None):
+        tool = FileReadTool()
+        tool._side_effect = side_effect
 
-    def validate_targets(self, input_data):
-        return None
+        async def execute(input_data):
+            if tool._side_effect:
+                await tool._side_effect(input_data)
+            data = {
+                "content": f"contents of {input_data.path}",
+                "length": len(input_data.path),
+            }
+            return ToolOutput(
+                success=True,
+                data=data,
+                model_summary=f"read {input_data.path}",
+            )
 
-    async def verify(self, input_data, output):
-        return True
-
-    async def execute(self, input_data):
-        if self._side_effect:
-            await self._side_effect(input_data)
-        data = {
-            "content": f"contents of {input_data.path}",
-            "length": len(input_data.path),
-        }
-        return ToolOutput(
-            success=True,
-            data=data,
-            model_summary=f"read {input_data.path}",
-        )
-
-    def set_cancelled_check(self, check):
-        pass
-
-    def clear_cancelled_check(self):
-        pass
+        tool.execute = execute
+        tool.validate_targets = lambda input_data: None
+        tool.__class__ = FileReadTool
+        return tool
 
 
 class FakeMutatingTool:
@@ -451,7 +445,7 @@ class TestProposals:
 
     def test_no_proposal_for_dissimilar_traces(self, db_session, executor):
         # Different parameter-key signature => different trace => no proposal.
-        _completed_trace_task(db_session, "t1", params={"path": "C:\\x", "limit": 100})
+        _completed_trace_task(db_session, "t1", params={"path": "C:\\x", "max_bytes": 100})
         _completed_trace_task(db_session, "t2", params={"path": "C:\\y"})
         assert maybe_generate_proposal(db_session, "t1", executor) is None
 
