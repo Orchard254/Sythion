@@ -111,44 +111,45 @@ async def test_file_target_inside_roots_passes_gate(full_tool_executor, tmp_path
 @pytest.mark.asyncio
 async def test_move_and_copy_validate_both_targets(full_tool_executor, tmp_path, monkeypatch):
     monkeypatch.setattr("backend.tools.file_tools._approved_roots", lambda: [tmp_path])
-    called = _spy_execute(full_tool_executor, "file_move", monkeypatch)
-    ctx = PolicyContext(direct_user_instruction=True)
+    tool = full_tool_executor.get_tool("file_move")
+    assert tool is not None
 
     src = tmp_path / "a.txt"
     src.write_text("x", encoding="utf-8")
+
     # Wildcard destination must be rejected before any OS call.
-    out = await full_tool_executor.execute_tool(
-        "file_move",
-        {"source_path": str(src), "destination_path": str(tmp_path / "*.txt")},
-        policy_context=ctx,
+    error = tool.validate_targets(
+        tool.input_schema(
+            source_path=str(src),
+            destination_path=str(tmp_path / "*.txt"),
+        )
     )
-    assert not out.success
-    assert out.error["code"] == "TARGET_WILDCARD_REJECTED"
-    assert called == []
+    assert error is not None
+    assert error["code"] == "TARGET_WILDCARD_REJECTED"
 
     # Destination outside roots must be rejected too.
-    out = await full_tool_executor.execute_tool(
-        "file_move",
-        {"source_path": str(src), "destination_path": str(tmp_path.parent / "out.txt")},
-        policy_context=ctx,
+    error = tool.validate_targets(
+        tool.input_schema(
+            source_path=str(src),
+            destination_path=str(tmp_path.parent / "out.txt"),
+        )
     )
-    assert not out.success
-    assert out.error["code"] == "TARGET_OUTSIDE_ROOTS"
-    assert called == []
+    assert error is not None
+    assert error["code"] == "TARGET_OUTSIDE_ROOTS"
+
 
 
 @pytest.mark.asyncio
-async def test_invalid_app_id_rejected_before_launch(full_tool_executor, monkeypatch):
-    called = _spy_execute(full_tool_executor, "app_launch", monkeypatch)
+async def test_invalid_app_id_rejected_before_launch(full_tool_executor):
+    tool = full_tool_executor.get_tool("app_launch")
+    assert tool is not None
 
-    out = await full_tool_executor.execute_tool(
-        "app_launch",
-        {"app_id": "C:\\Windows\\System32\\cmd.exe"},
-        policy_context=PolicyContext(direct_user_instruction=True),
+    error = tool.validate_targets(
+        tool.input_schema(app_id="C:\\Windows\\System32\\cmd.exe")
     )
-    assert not out.success
-    assert out.error["code"] == "INVALID_APP_ID"
-    assert called == []
+    assert error is not None
+    assert error["code"] == "INVALID_APP_ID"
+
 
 
 @pytest.mark.asyncio
@@ -175,31 +176,27 @@ async def test_invalid_package_id_rejected_before_install(full_tool_executor):
 
 
 @pytest.mark.asyncio
-async def test_gui_target_requires_window_title(full_tool_executor, monkeypatch):
-    called = _spy_execute(full_tool_executor, "gui_focus", monkeypatch)
+async def test_gui_target_requires_window_title(full_tool_executor):
+    tool = full_tool_executor.get_tool("gui_focus")
+    assert tool is not None
 
-    out = await full_tool_executor.execute_tool(
-        "gui_focus",
-        {"window_title": ""},
-        policy_context=PolicyContext(direct_user_instruction=True),
-    )
-    assert not out.success
-    assert out.error["code"] == "TARGET_REQUIRED"
-    assert called == []
+    error = tool.validate_targets(tool.input_schema(window_title=""))
+    assert error is not None
+    assert error["code"] == "TARGET_REQUIRED"
+
 
 
 @pytest.mark.asyncio
-async def test_gui_element_target_required(full_tool_executor, monkeypatch):
-    called = _spy_execute(full_tool_executor, "gui_invoke", monkeypatch)
+async def test_gui_element_target_required(full_tool_executor):
+    tool = full_tool_executor.get_tool("gui_invoke")
+    assert tool is not None
 
-    out = await full_tool_executor.execute_tool(
-        "gui_invoke",
-        {"window_title": "Notepad", "element_description": "  "},
-        policy_context=PolicyContext(direct_user_instruction=True),
+    error = tool.validate_targets(
+        tool.input_schema(window_title="Notepad", element_description="  ")
     )
-    assert not out.success
-    assert out.error["code"] == "ELEMENT_TARGET_REQUIRED"
-    assert called == []
+    assert error is not None
+    assert error["code"] == "ELEMENT_TARGET_REQUIRED"
+
 
 
 @pytest.mark.asyncio
@@ -210,16 +207,28 @@ async def test_no_target_tools_pass_gate(full_tool_executor):
 
 
 @pytest.mark.asyncio
-async def test_policy_gate_still_precedes_execution(full_tool_executor, monkeypatch):
+async def test_policy_gate_still_precedes_execution(full_tool_executor, tmp_path, monkeypatch):
     """Confirmation-required tools are blocked by policy before execute."""
-    called = _spy_execute(full_tool_executor, "file_write", monkeypatch)
-    target = _approved_roots()[0]
+    monkeypatch.setattr("backend.tools.file_tools._approved_roots", lambda: [tmp_path])
+    tool = full_tool_executor.get_tool("file_write")
+    assert tool is not None
 
-    out = await full_tool_executor.execute_tool(
-        "file_write",
-        {"path": str(target / "x.txt"), "content": "data"},
-        policy_context=PolicyContext(direct_user_instruction=False),
-    )
-    assert not out.success
-    assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
-    assert called == []
+    validate_called = []
+
+    def _bomb_validate(input_data):
+        validate_called.append(True)
+        raise AssertionError(f"validate_targets called despite policy denial: {input_data}")
+
+    monkeypatch.setattr(tool, "validate_targets", _bomb_validate)
+    called = _spy_execute(full_tool_executor, "file_write", monkeypatch)
+
+    for direct in (False, True):
+        out = await full_tool_executor.execute_tool(
+            "file_write",
+            {"path": str(tmp_path / "x.txt"), "content": "data"},
+            policy_context=PolicyContext(direct_user_instruction=direct),
+        )
+        assert not out.success
+        assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+        assert called == []
+        assert validate_called == []
