@@ -500,15 +500,10 @@ def test_scan_excludes_mixed_case_env_name_before_open(tmp_path, monkeypatch):
 # ---- stager wiring (source/AST only, never import/execute stager) ----------
 
 
-def test_stager_wiring_payload_copy_ignore_ast():
+def _payload_copy_ignore_imported(source):
     import ast
 
-    stager_path = pathlib.Path(__file__).resolve().parent.parent / "stage_python_runtime.py"
-    source = stager_path.read_text(encoding="utf-8")
     tree = ast.parse(source)
-
-    # verify_release_payload imports payload_copy_ignore ...
-    imported = False
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.ImportFrom)
@@ -516,19 +511,23 @@ def test_stager_wiring_payload_copy_ignore_ast():
             and node.module.endswith("verify_release_payload")
         ):
             if any(alias.name == "payload_copy_ignore" for alias in node.names):
-                imported = True
-    assert imported, "payload_copy_ignore not imported in stager source"
+                return True, tree
+    return False, tree
 
-    # ... and stage_backend calls shutil.copytree(..., ignore=payload_copy_ignore()).
-    stage_backend = None
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "stage_backend":
-            stage_backend = node
-    assert stage_backend is not None, "stage_backend function not found"
 
-    wired = False
-    for node in ast.walk(stage_backend):
+def _copytree_wired_with_payload_copy_ignore(tree):
+    import ast
+
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        is_copytree = (
+            isinstance(func, ast.Attribute) and func.attr == "copytree"
+        ) or (
+            isinstance(func, ast.Name) and func.id == "copytree"
+        )
+        if not is_copytree:
             continue
         for kw in node.keywords:
             if kw.arg != "ignore":
@@ -538,7 +537,49 @@ def test_stager_wiring_payload_copy_ignore_ast():
                 and isinstance(kw.value.func, ast.Name)
                 and kw.value.func.id == "payload_copy_ignore"
             ):
-                wired = True
-    assert wired, "stage_backend does not pass ignore=payload_copy_ignore()"
-    # Source-level corroboration (no execution).
-    assert "ignore=payload_copy_ignore()" in source
+                return True
+    return False
+
+
+def test_stager_wiring_payload_copy_ignore_ast():
+    import ast
+
+    # Active isolated stagers must import and wire payload_copy_ignore() into
+    # every shutil.copytree call that stages backend content.
+    for stager_name in ("stage_clean_backend.py", "stage_clean_runtime.py"):
+        stager_path = pathlib.Path(__file__).resolve().parent.parent / stager_name
+        source = stager_path.read_text(encoding="utf-8-sig")
+        imported, tree = _payload_copy_ignore_imported(source)
+        assert imported, f"{stager_name} does not import payload_copy_ignore"
+        assert _copytree_wired_with_payload_copy_ignore(
+            tree
+        ), f"{stager_name} does not pass ignore=payload_copy_ignore() to shutil.copytree"
+        # Source-level corroboration (no execution).
+        assert "ignore=payload_copy_ignore()" in source
+
+    # Deprecated legacy stage_backend must fail closed and never call rmtree or
+    # copytree, even though the (now inert) helper/import machinery remains.
+    legacy_path = pathlib.Path(__file__).resolve().parent.parent / "stage_python_runtime.py"
+    legacy_source = legacy_path.read_text(encoding="utf-8-sig")
+    legacy_tree = ast.parse(legacy_source)
+
+    stage_backend = None
+    for node in legacy_tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "stage_backend":
+            stage_backend = node
+    assert stage_backend is not None, "stage_backend function not found"
+
+    refuses = False
+    forbidden_call = False
+    for node in ast.walk(stage_backend):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "fail":
+            refuses = True
+        if isinstance(func, ast.Attribute) and func.attr in {"rmtree", "copytree"}:
+            forbidden_call = True
+        if isinstance(func, ast.Name) and func.id in {"rmtree", "copytree"}:
+            forbidden_call = True
+    assert refuses, "deprecated stage_backend does not call fail() to refuse"
+    assert not forbidden_call, "deprecated stage_backend must not call rmtree/copytree"
