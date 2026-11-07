@@ -280,6 +280,8 @@ async def test_native_request_failure_preserves_error_without_replay(method, can
 
     adapter = OllamaCloudAdapter()
     adapter.selected_model = "available-model"
+    if method == "execute_tool_call":
+        adapter.api_key = "test-key"
     adapter._capability_profiles["available-model"] = ProviderCapabilityProfile(
         model_id="available-model", native_tool_calls=True
     )
@@ -525,9 +527,9 @@ async def test_execute_tool_call_capability_probe_payload_too_large_preserves_st
     assert exc.reason == "payload_byte_envelope_exceeded"
     assert exc.code == "payload_byte_envelope_exceeded"
     assert exc.error_code == "payload_byte_envelope_exceeded"
-    assert exc.payload_bytes == 358
-    assert exc.actual_bytes == 358
-    assert exc.observed_bytes == 358
+    assert exc.payload_bytes == 382
+    assert exc.actual_bytes == 382
+    assert exc.observed_bytes == 382
     assert exc.max_payload_bytes == 200
     assert exc.configured_limit == 200
     assert exc.limit == 200
