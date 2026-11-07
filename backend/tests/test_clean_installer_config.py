@@ -108,7 +108,7 @@ def test_generated_config_uses_fresh_output_paths(tmp_path):
 
     protected = (REPO_ROOT / "src-tauri" / "resources").resolve()
     assert protected not in config_path.parents
-    assert "src-tauri/resources" not in config["build"]["frontendDist"] or True
+    assert "src-tauri/resources" not in config["build"]["frontendDist"]
 
 
 def test_generated_config_keeps_build_and_icon_paths_coherent(tmp_path):
@@ -126,7 +126,7 @@ def test_generated_config_keeps_build_and_icon_paths_coherent(tmp_path):
     before_build = config["build"]["beforeBuildCommand"]
     assert "verify_release_payload.py" in before_build
     assert "--check-backend-mirror" in before_build
-    assert str(output_dir.name) not in before_build or True
+    assert str(output_dir.name) not in before_build
 
 
 def test_missing_runtime_fails_closed(tmp_path):

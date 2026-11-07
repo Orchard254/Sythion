@@ -247,6 +247,11 @@ class PermissionProposalManager:
             raise ValueError("Malformed permission proposal parameters")
         if raw_text.startswith("\\\\") or raw_text.startswith("//"):
             raise ValueError("Malformed permission proposal parameters")
+        # Require a fully-qualified drive/root path.  Drive-relative Windows
+        # aliases such as "\\server\\share\\x.txt" have no drive and must not be
+        # accepted as canonical absolute targets.
+        if not os.path.splitdrive(raw_text)[0]:
+            raise ValueError("Malformed permission proposal parameters")
         if raw_text.count(":") > 1:
             raise ValueError("Malformed permission proposal parameters")
         path_parts = Path(raw_text).parts
@@ -430,9 +435,17 @@ def _looks_like_digest_key(key):
 
 def _reserved_name(path):
     try:
-        stem = Path(path).stem.upper()
+        # A bare or full path may be passed.  Windows treats trailing
+        # spaces/dots as ambiguous aliases (the OS strips them) and strips the
+        # extension before applying reserved-device-name rules, so screen both.
+        name = Path(path).name if str(path) not in ("", ".", "..") else str(path)
     except Exception:
+        name = str(path)
+    if not name:
         return False
+    if name.endswith(" ") or name.endswith("."):
+        return True
+    stem = name.split(".", 1)[0].strip().upper()
     return stem in {
         "CON", "PRN", "AUX", "NUL",
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
