@@ -78,12 +78,21 @@ class TaskRunner:
         self._lease_nonce: Optional[str] = None
         self._runner_mutation_depth: int = 0
         self._runner_context_depth: int = 0
+        # One-shot reply-continuation authority retained after a task ownership
+        # release.  It lets the runner that just released a task make the
+        # durable reply transition back to running without a global lease, while
+        # any other runner's nonce cannot match.
+        self._released_task_ownership_task_id: Optional[str] = None
+        self._released_task_ownership_nonce: Optional[str] = None
 
     @property
     def task_ownership_nonce(self) -> Optional[str]:
         return self._task_ownership_nonce
 
     async def acquire_task_ownership(self, task_id: str, worker_id: str = None, **kwargs) -> Any:
+        # A fresh acquisition invalidates any prior reply-continuation authority.
+        self._released_task_ownership_task_id = None
+        self._released_task_ownership_nonce = None
         self._ensure_transaction()
         try:
             result = self.task_ownership.acquire(
@@ -125,6 +134,8 @@ class TaskRunner:
                 outcome=outcome,
             )
             if result:
+                self._released_task_ownership_task_id = task_id
+                self._released_task_ownership_nonce = nonce
                 self._task_ownership_nonce = None
                 self._task_ownership_fencing_token = None
                 self._task_ownership_fence = None
@@ -782,9 +793,24 @@ class TaskRunner:
                 pass
         owner = self.task_ownership.get(task_id)
         has_task_owner = owner is not None and getattr(owner, "status", None) == "ACTIVE"
+        # A runner that just released this task may make the durable reply
+        # transition back to running without holding a global lease.  The
+        # retained one-shot nonce must still match the released row, which
+        # foreign runners cannot satisfy.
+        reply_continuation = (
+            owner is not None
+            and getattr(owner, "status", None) == "RELEASED"
+            and self._released_task_ownership_task_id == task_id
+            and self._released_task_ownership_nonce is not None
+            and owner.owner_nonce == self._released_task_ownership_nonce
+        )
 
-        if has_task_owner:
-            if not self._task_ownership_nonce or owner.owner_nonce != self._task_ownership_nonce:
+        if has_task_owner or reply_continuation:
+            expected_nonce = (
+                self._task_ownership_nonce if has_task_owner
+                else self._released_task_ownership_nonce
+            )
+            if not expected_nonce or owner.owner_nonce != expected_nonce:
                 try:
                     self.db.rollback()
                 except Exception:
@@ -865,6 +891,10 @@ class TaskRunner:
                 event_type,
                 exc,
             )
+
+        if reply_continuation:
+            self._released_task_ownership_task_id = None
+            self._released_task_ownership_nonce = None
 
         return task
 
