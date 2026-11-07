@@ -244,7 +244,16 @@ def test_migration_preserves_existing_edges(tmp_path):
 
 # --- tools integration ------------------------------------------------------
 
-def test_memory_link_relink_clears_stale_status(edge_db):
+@pytest.mark.asyncio
+async def test_memory_link_tool_direct_execute_denied_does_not_relink_stale_edge(edge_db):
+    """Direct MemoryLink execution remains denied and does not change an edge.
+
+    Rename map: the old positive ID ``test_memory_link_relink_clears_stale_status``
+    is no longer a (now fail-closed) MemoryLinkTool success assertion. Its direct
+    denial invariant is retained here. The trusted consolidation relink
+    invariant moved to
+    ``test_consolidate_add_edge_relinks_stale_edge_to_active``.
+    """
     from backend.api.schemas import MemoryLinkInput
     from backend.tools.memory_tools import MemoryLinkTool
 
@@ -253,15 +262,72 @@ def test_memory_link_relink_clears_stale_status(edge_db):
     apply_edge_decay(edge_db, now=_now())
     assert get_edge(edge_db, edge.id).status == "stale"
 
-    out = edge_db_async_run(MemoryLinkTool(), MemoryLinkInput(
+    before_weight = get_edge(edge_db, edge.id).weight
+    before_updated = get_edge(edge_db, edge.id).updated_at
+    before_count = edge_db.query(MemoryEdge).count()
+
+    out = await MemoryLinkTool().execute(MemoryLinkInput(
         source_key="user_name", relation="prefers", target_key="preferred_editor", weight=1.0,
     ))
 
-    assert out.success
-    edge_db.expire_all()  # the tool wrote via its own session; drop stale identity
+    assert out.success is False
+    assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+
     row = get_edge(edge_db, edge.id)
+    assert row.status == "stale"
+    assert row.weight == before_weight
+    assert row.updated_at == before_updated
+    assert edge_db.query(MemoryEdge).count() == before_count
+
+
+def test_consolidate_add_edge_relinks_stale_edge_to_active(edge_db):
+    """Trusted consolidation add_edge relinks a stale edge to active state."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from backend.services.memory_consolidation import consolidate_memory
+
+    class _Turn:
+        def __init__(self, role, summary):
+            self.role = role
+            self.summary = summary
+
+    old = _now() - timedelta(days=14)
+    edge = _add_edge(edge_db, source="user_name", relation="prefers", target="preferred_editor", updated_at=old)
+    apply_edge_decay(edge_db, now=_now())
+    assert get_edge(edge_db, edge.id).status == "stale"
+    original_id = edge.id
+    original_updated = get_edge(edge_db, edge.id).updated_at
+
+    adapter = AsyncMock()
+    adapter.chat.return_value = {
+        "message": {
+            "content": (
+                '{"ops": [{"op": "noop"}], "edge_ops": '
+                '[{"op": "add_edge", "source_key": "user_name", '
+                '"relation": "prefers", "target_key": "preferred_editor", '
+                '"confidence": "high", "source": "user_statement", '
+                '"reason": "user stated it"}]}'
+            )
+        }
+    }
+
+    turns = [_Turn("user", "I prefer VS Code"), _Turn("assistant", "noted")]
+    applied = asyncio.run(consolidate_memory(edge_db, turns, [], adapter))
+
+    assert len(applied) == 1
+    assert applied[0]["op"] == "add_edge"
+
+    rows = edge_db.query(MemoryEdge).filter_by(
+        source_key="user_name", relation="prefers", target_key="preferred_editor"
+    ).all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.id == original_id
     assert row.status == "active"
     assert row.weight == 1.0
+    assert row.updated_at > original_updated
+
 
 
 def test_recall_excludes_removed_edges(edge_db):
