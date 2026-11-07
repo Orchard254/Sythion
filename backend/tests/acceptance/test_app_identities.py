@@ -4,6 +4,10 @@ Acceptance gate: Registered Windows application identities (Phase C #64/#65/#66)
 App discovery reads the Windows uninstall hives; launch resolves strictly
 against those registered identities. The model can never supply an executable
 path or command-line arguments, and non-Windows execution paths are removed.
+
+Under the deny-by-default contract, mutating app tools (launch/focus/close) are
+denied by policy before any OS action (DIRECT_INSTRUCTION_REQUIRED). Read-only
+discovery remains executable.
 """
 
 import platform
@@ -93,7 +97,7 @@ async def test_launch_unregistered_identity_refused(app_executor, monkeypatch):
 
     out = await _run(app_executor, "app_launch", {"app_id": "DefinitelyNotInstalled App"})
     assert not out.success
-    assert out.error["code"] == "APP_NOT_REGISTERED"
+    assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
     assert not called["popen"]
 
 
@@ -115,9 +119,9 @@ async def test_launch_registered_identity_exact_exe_no_args(app_executor, monkey
     monkeypatch.setattr("backend.tools.app_tools.subprocess.Popen", _popen)
 
     out = await _run(app_executor, "app_launch", {"app_id": "Fixture App"})
-    assert out.success
-    assert out.data["method"] == "registered_launch"
-    assert launched == [([str(exe)], False)]
+    assert not out.success
+    assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+    assert launched == []
 
 
 @pytest.mark.asyncio
@@ -126,14 +130,11 @@ async def test_launch_registered_identity_missing_exe(app_executor, monkeypatch)
     monkeypatch.setattr("backend.tools.app_tools._resolve_registered_app", lambda app_id: registered)
     out = await _run(app_executor, "app_launch", {"app_id": "Broken App"})
     assert not out.success
-    assert out.error["code"] == "APP_EXE_UNAVAILABLE"
+    assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
 
 
 @pytest.mark.asyncio
 async def test_app_launch_new_instance_true_bypasses_focus(app_executor, monkeypatch, tmp_path):
-    """new_instance=True skips the focus-existing check entirely and launches a
-    fresh process, even when a matching window exists and would otherwise be
-    focused."""
     exe = tmp_path / "fixture.exe"
     exe.write_text("", encoding="utf-8")
     registered = {"id": "ABC-123", "name": "Fixture App", "exe": str(exe)}
@@ -141,6 +142,7 @@ async def test_app_launch_new_instance_true_bypasses_focus(app_executor, monkeyp
     monkeypatch.setattr("backend.tools.app_tools._new_window_argv", lambda exe: [])
 
     focus_calls = []
+
     async def _fake_focus_execute(self, input_data):
         focus_calls.append(input_data)
         return ToolOutput(success=True, data={"method": "focused_existing"})
@@ -148,45 +150,41 @@ async def test_app_launch_new_instance_true_bypasses_focus(app_executor, monkeyp
     monkeypatch.setattr("backend.tools.app_tools.AppFocusTool.execute", _fake_focus_execute)
 
     launched = []
+
     def _popen(args, shell):
         launched.append((list(args), shell))
 
     monkeypatch.setattr("backend.tools.app_tools.subprocess.Popen", _popen)
 
     out = await _run(app_executor, "app_launch", {"app_id": "Fixture App", "new_instance": True})
-    assert out.success
-    assert out.data["method"] == "new_instance"
+    assert not out.success
+    assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
     assert focus_calls == []
-    assert launched == [([str(exe)], False)]
+    assert launched == []
 
 
 @pytest.mark.asyncio
 async def test_app_launch_new_instance_true_uses_new_window_flag_for_chrome(app_executor, monkeypatch, tmp_path):
-    """Chrome/Edge are single-process apps: a bare Popen would attach to the
-    running instance and reuse its window, so new_instance=True must pass the
-    documented --new-window flag to get a genuinely separate window."""
     exe = tmp_path / "chrome.exe"
     exe.write_text("", encoding="utf-8")
     registered = {"id": "CHROME", "name": "Google Chrome", "exe": str(exe)}
     monkeypatch.setattr("backend.tools.app_tools._resolve_registered_app", lambda app_id: registered)
 
     launched = []
+
     def _popen(args, shell):
         launched.append((list(args), shell))
 
     monkeypatch.setattr("backend.tools.app_tools.subprocess.Popen", _popen)
 
     out = await _run(app_executor, "app_launch", {"app_id": "Google Chrome", "new_instance": True})
-    assert out.success
-    assert out.data["method"] == "new_instance"
-    assert launched == [([str(exe), "--new-window"], False)]
+    assert not out.success
+    assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+    assert launched == []
 
 
 @pytest.mark.asyncio
 async def test_app_launch_new_instance_default_preserves_focus_first(app_executor, monkeypatch, tmp_path):
-    """Regression: new_instance=False (the default) keeps today's exact
-    behavior — focus an existing open window first, and only fall back to a
-    plain launch when focus finds nothing."""
     exe = tmp_path / "fixture.exe"
     exe.write_text("", encoding="utf-8")
     registered = {"id": "ABC-123", "name": "Fixture App", "exe": str(exe)}
@@ -199,25 +197,16 @@ async def test_app_launch_new_instance_default_preserves_focus_first(app_executo
     monkeypatch.setattr("backend.tools.app_tools.AppFocusTool.execute", _fake_focus_execute)
 
     launched = []
+
     def _popen(args, shell):
         launched.append((list(args), shell))
 
     monkeypatch.setattr("backend.tools.app_tools.subprocess.Popen", _popen)
 
     out = await _run(app_executor, "app_launch", {"app_id": "Fixture App"})
-    assert out.success
-    assert out.data["method"] == "focused_existing"
+    assert not out.success
+    assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
     assert launched == []
-
-    # And when focus finds nothing, the default falls back to a plain launch.
-    async def _fake_focus_execute_fail(self, input_data):
-        return ToolOutput(success=False, error={"code": "WINDOW_NOT_FOUND", "message": "none"})
-
-    monkeypatch.setattr("backend.tools.app_tools.AppFocusTool.execute", _fake_focus_execute_fail)
-    out2 = await _run(app_executor, "app_launch", {"app_id": "Fixture App"})
-    assert out2.success
-    assert out2.data["method"] == "registered_launch"
-    assert launched == [([str(exe)], False)]
 
 
 @pytest.mark.asyncio
@@ -233,7 +222,7 @@ async def test_app_launch_non_windows_rejected(app_executor, monkeypatch):
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
     out = await _run(app_executor, "app_launch", {"app_id": "Some App"})
     assert not out.success
-    assert out.error["code"] == "NON_WINDOWS_UNSUPPORTED"
+    assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
 
 
 @pytest.mark.asyncio
@@ -313,41 +302,33 @@ def _patch_win32(monkeypatch, still_open, process_alive=None):
 
 @pytest.mark.asyncio
 async def test_app_close_graceful_does_not_answer_unsaved_prompt(app_executor, monkeypatch):
-    """A still-open process after WM_CLOSE must be surfaced, never Save/Discarded."""
     fake = _patch_win32(monkeypatch, still_open=True, process_alive=True)
     out = await _run(app_executor, "app_close", {"app_id": "Fixture App", "force": False})
     assert not out.success
-    assert out.error["code"] == "UNSAVED_WORK_PROMPT"
-    # WM_CLOSE was posted once and no taskkill/force action was taken.
-    assert fake.posted_close == [(7, 0x0010)]
+    assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+    assert fake.posted_close == []
 
 
 @pytest.mark.asyncio
 async def test_app_close_graceful_succeeds_when_window_gone(app_executor, monkeypatch):
-    """A closed process whose window is gone reports success via WM_CLOSE."""
     fake = _patch_win32(monkeypatch, still_open=False, process_alive=False)
     out = await _run(app_executor, "app_close", {"app_id": "Fixture App", "force": False})
-    assert out.success
-    assert out.data["method"] == "wm_close"
-    assert fake.posted_close == [(7, 0x0010)]
-    assert fake.enum_calls == 2
+    assert not out.success
+    assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+    assert fake.posted_close == []
 
 
 @pytest.mark.asyncio
 async def test_app_close_prompt_dialog_captured_by_process_liveness(app_executor, monkeypatch):
-    """An unsaved-work prompt whose caption omits the app name is still caught
-    because the process remains alive after WM_CLOSE."""
     fake = _patch_win32(monkeypatch, still_open=False, process_alive=True)
     out = await _run(app_executor, "app_close", {"app_id": "Fixture App", "force": False})
     assert not out.success
-    assert out.error["code"] == "UNSAVED_WORK_PROMPT"
-    assert fake.posted_close == [(7, 0x0010)]
+    assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+    assert fake.posted_close == []
 
 
 @pytest.mark.asyncio
 async def test_app_focus_resolves_registry_guid_to_display_name(app_executor, monkeypatch):
-    """app_list returns registry GUIDs as `id`; app_focus must accept them and
-    focus via UI Automation using the resolved display name."""
     guid = "{CCFFC2EC-F561-3EF1-8038-F3608B52F935}"
     monkeypatch.setattr("backend.tools.app_tools._display_name_for_identifier", lambda app_id: "Google Chrome")
     focused = {}
@@ -366,16 +347,13 @@ async def test_app_focus_resolves_registry_guid_to_display_name(app_executor, mo
     monkeypatch.setattr("backend.tools.gui_tools._target_window_safety", lambda hwnd, title: None)
 
     out = await _run(app_executor, "app_focus", {"app_id": guid})
-    assert out.success
-    assert focused["title"] == "Google Chrome"
-    assert out.data["window_handle"] == 7
-    assert out.data["title"] == "gemma4 - Google Chrome"
-    assert out.data["app_id"] == "Google Chrome"
+    assert not out.success
+    assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+    assert "title" not in focused
 
 
 @pytest.mark.asyncio
 async def test_app_list_registry_discovery_returns_identities(app_executor, monkeypatch):
-    """app_list returns the same registered identities launch resolves."""
     discovered = [
         {"id": "A", "name": "Alpha", "exe": "C:\\x\\alpha.exe", "publisher": None, "version": "1.0", "install_location": None},
         {"id": "B", "name": "Beta", "exe": None, "publisher": None, "version": None, "install_location": None},
@@ -387,7 +365,6 @@ async def test_app_list_registry_discovery_returns_identities(app_executor, monk
 
 
 def test_derive_exe_app_paths_fallback_resolves_chrome(monkeypatch):
-    """A Chrome-style entry (no DisplayIcon/InstallLocation) resolves via App Paths."""
     from backend.tools import app_tools as at
     exe = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
     monkeypatch.setattr(at, "_registry_value", lambda key, name: None)

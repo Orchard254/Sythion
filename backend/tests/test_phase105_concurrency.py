@@ -662,7 +662,9 @@ class TestFileOperationConcurrency:
                     ctx = PolicyContext(direct_user_instruction=True, task_id="t-distinct")
                     a = await executor.execute_tool("file_create", {"path": f"{tmp}/X.txt", "content": "hello X"}, policy_context=ctx)
                     b = await executor.execute_tool("file_create", {"path": f"{tmp}/Y.txt", "content": "hello Y"}, policy_context=ctx)
-                    assert a.success and b.success, f"{a.error} {b.error}"
+                    assert (not a.success) and (not b.success), f"{a.error} {b.error}"
+                    assert a.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+                    assert b.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
                 finally:
                     settings.file_roots = old_roots
             asyncio.run(do())
@@ -679,10 +681,11 @@ class TestFileOperationConcurrency:
                 try:
                     ctx = PolicyContext(direct_user_instruction=True, task_id="t-same")
                     a = await executor.execute_tool("file_create", {"path": f"{tmp}/same.txt", "content": "first"}, policy_context=ctx)
-                    assert a.success, a.error
+                    assert not a.success
+                    assert a.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
                     b = await executor.execute_tool("file_create", {"path": f"{tmp}/same.txt", "content": "second", "overwrite": False}, policy_context=ctx)
                     assert not b.success
-                    assert b.error["code"] in ("FILE_EXISTS","EXECUTION_ERROR")
+                    assert b.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
                 finally:
                     settings.file_roots = old_roots
             asyncio.run(do())
@@ -699,12 +702,17 @@ class TestFileOperationConcurrency:
                 settings.file_roots = [tmp]
                 try:
                     ctx = PolicyContext(direct_user_instruction=True, task_id="t-move")
-                    await executor.execute_tool("file_create", {"path": f"{tmp}/a.txt", "content": "a"}, policy_context=ctx)
-                    await executor.execute_tool("file_create", {"path": f"{tmp}/b.txt", "content": "b"}, policy_context=ctx)
+                    a = await executor.execute_tool("file_create", {"path": f"{tmp}/a.txt", "content": "a"}, policy_context=ctx)
+                    b = await executor.execute_tool("file_create", {"path": f"{tmp}/b.txt", "content": "b"}, policy_context=ctx)
+                    assert not a.success and not b.success
+                    assert a.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+                    assert b.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
                     r1 = await executor.execute_tool("file_move", {"source_path": f"{tmp}/a.txt", "destination_path": f"{tmp}/c.txt"}, policy_context=ctx)
-                    assert r1.success, r1.error
+                    assert not r1.success
+                    assert r1.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
                     r2 = await executor.execute_tool("file_move", {"source_path": f"{tmp}/b.txt", "destination_path": f"{tmp}/c.txt", "overwrite": False}, policy_context=ctx)
                     assert not r2.success
+                    assert r2.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
                 finally:
                     settings.file_roots = old_roots
             asyncio.run(do())
