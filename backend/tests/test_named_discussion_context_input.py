@@ -66,7 +66,7 @@ class FakeModel:
 async def test_invalid_exact_identifiers_are_rejected_not_truncated():
     engine = ConversationTurnEngine(FakeModel())
     for context in ({"context_id": None, "name": "x"}, {"context_id": "", "name": "x"},
-                    {"context_id": "x" * 300, "name": "x"}):
+                    {"context_id": "x" * 4097, "name": "x"}):
         with pytest.raises(ConversationTurnValidationError):
             await engine.run("hi", [], [], discussion_contexts=[context])
 

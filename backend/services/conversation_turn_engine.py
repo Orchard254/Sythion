@@ -1967,6 +1967,7 @@ class ConversationTurnEngine:
                             "discussion context identifier must be a nonempty string",
                             reason_code="input",
                         )
+                    # Documented contract: exact discussion identifiers are capped at 4096 chars.
                     if len(value) > 4096:
                         raise ConversationTurnValidationError(
                             "discussion context identifier is too long",
