@@ -27,46 +27,12 @@ from backend.services.skill_engine import (
     validate_definition,
 )
 from backend.services.task_runner import TaskRunner
-from backend.tools.executor import ToolExecutor, ToolOutput
+from backend.tools.executor import ToolExecutor
 from backend.tests.test_skill_engine import FakeReadTool
-from pydantic import BaseModel as PBaseModel
-
 from .conftest import ACCEPTANCE_CONTROL_TOKEN
 
 
 AUTH = {"X-Control-Token": ACCEPTANCE_CONTROL_TOKEN, "Origin": "tauri://localhost"}
-
-
-class FakeReadInput(PBaseModel):
-    path: str
-
-
-class FakeReadTool:
-    name = "file_read"
-    description = "read a file"
-    input_schema = FakeReadInput
-
-    def get_policy_requirements(self):
-        return {}
-
-    def validate_targets(self, input_data):
-        return None
-
-    async def verify(self, input_data, output):
-        return True
-
-    async def execute(self, input_data):
-        return ToolOutput(
-            success=True,
-            data={"content": f"contents of {input_data.path}"},
-            model_summary=f"read {input_data.path}",
-        )
-
-    def set_cancelled_check(self, check):
-        pass
-
-    def clear_cancelled_check(self):
-        pass
 
 
 def _definition(**overrides):
@@ -172,12 +138,10 @@ async def test_pause_before_next_step_when_disabled_mid_run(db_session):
     add_skill_version(db_session, skill, definition, errors)
 
     # The first step's tool disables the skill mid-run.
-    class DisablingReadTool(FakeReadTool):
-        async def execute(self, input_data):
-            set_skill_state(db_session, "gate.mid", "disabled")
-            return ToolOutput(success=True, data={"content": "x"}, model_summary="x")
+    async def disable_skill(input_data):
+        set_skill_state(db_session, "gate.mid", "disabled")
 
-    ex._tools["file_read"] = DisablingReadTool()
+    ex._tools["file_read"] = FakeReadTool(side_effect=disable_skill)
 
     runner = TaskRunner(db_session)
     await runner.acquire_lease()
