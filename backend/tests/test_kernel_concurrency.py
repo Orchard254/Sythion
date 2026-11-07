@@ -15,6 +15,7 @@ concurrent workers:
 """
 
 import asyncio
+import importlib
 
 import pytest
 
@@ -52,6 +53,32 @@ def task_runner(db_session):
     from backend.services.task_runner import TaskRunner
 
     return TaskRunner(db_session)
+
+
+@pytest.fixture
+def datetime_spy():
+    """Narrow spy on the external datetime dependency used by SystemTimeTool.
+
+    Delegates all computation to the saved real dependency and restores it.
+    """
+    module = importlib.import_module("backend.tools.system_tools")
+    real_datetime = getattr(module, "datetime")
+    real_now = real_datetime.now
+    captured = []
+
+    class _DatetimeSpy:
+        def now(self, *args, **kwargs):
+            captured.append(current_execution_context())
+            return real_now(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(real_datetime, name)
+
+    module.datetime = _DatetimeSpy()
+    try:
+        yield captured
+    finally:
+        module.datetime = real_datetime
 
 
 class _CtxTool(BaseTool):
@@ -209,11 +236,45 @@ async def test_execution_context_is_task_scoped_under_interleaving():
 
 
 @pytest.mark.asyncio
-async def test_no_stale_context_outside_execution_scope():
+async def test_no_stale_context_outside_execution_scope(datetime_spy):
+    from backend.tools.system_tools import SystemTimeTool
+
     assert current_execution_context() is None
 
-    output = await _executor_with(_CtxTool()).execute_tool("ctx_tool", {})
-    assert output.success
+    output = await _executor_with(SystemTimeTool()).execute_tool(
+        "system_time", {}, policy_context=PolicyContext(task_id="ctx-task")
+    )
+    assert output.success is True
+
+    # The real builtin's external datetime.now dependency observed the installed
+    # context under the owning task id; no manual context substitution used.
+    assert datetime_spy
+    assert all(ctx is not None for ctx in datetime_spy)
+    assert all(ctx.task_id == "ctx-task" for ctx in datetime_spy)
+
+    # Outer execution context is restored to None before and after execution.
+    assert current_execution_context() is None
+
+
+@pytest.mark.asyncio
+async def test_unreviewed_context_tool_is_denied_without_execution_or_leak():
+    synthetic = _CtxTool()
+    executed = {"called": False}
+
+    original_execute = synthetic.execute
+
+    async def _execute(input_data):
+        executed["called"] = True
+        return await original_execute(input_data)
+
+    synthetic.execute = _execute
+
+    assert current_execution_context() is None
+
+    denied = await _executor_with(synthetic).execute_tool("ctx_tool", {})
+    assert denied.success is False
+    assert denied.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+    assert executed["called"] is False
 
     assert current_execution_context() is None
 
