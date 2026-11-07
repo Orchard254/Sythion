@@ -30,12 +30,46 @@ def _run(app_executor, name, params):
 
 
 @pytest.mark.asyncio
-async def test_executable_path_rejected_as_app_id(app_executor):
-    """A model-supplied executable path must fail validation before execute."""
-    for bad in ["C:\\Windows\\notepad.exe", "C:/Windows/system32/cmd.exe", "notepad.exe", "..\\..\\evil.exe"]:
-        out = await _run(app_executor, "app_launch", {"app_id": bad})
+async def test_executable_path_rejected_as_app_id(app_executor, monkeypatch):
+    """Typed app target validation rejects paths/wildcards before any execution."""
+    tool = app_executor.get_tool("app_launch")
+    assert tool is not None
+
+    # Paths and separators are invalid app identity syntax.
+    for bad in ["C:\\Windows\\notepad.exe", "C:/Windows/system32/cmd.exe", "..\\..\\evil.exe"]:
+        error = tool.validate_targets(tool.input_schema(app_id=bad))
+        assert error is not None
+        assert error["code"] == "INVALID_APP_ID"
+
+    # A bare notepad.exe token is syntactically VALID (dots are allowed).
+    # Registration/launch is a separate, unclaimed layer and is not asserted here.
+    assert tool.validate_targets(tool.input_schema(app_id="notepad.exe")) is None
+
+    # Executor policy denial precedes validation/execution for both provenance flags.
+    validate_called = []
+    called = []
+
+    async def _bomb_execute(input_data):
+        called.append(True)
+        raise AssertionError(f"execute called despite policy denial: {input_data}")
+
+    def _bomb_validate(input_data):
+        validate_called.append(True)
+        raise AssertionError(f"validate_targets called despite policy denial: {input_data}")
+
+    monkeypatch.setattr(tool, "execute", _bomb_execute)
+    monkeypatch.setattr(tool, "validate_targets", _bomb_validate)
+
+    for direct in (False, True):
+        out = await app_executor.execute_tool(
+            "app_launch",
+            {"app_id": "Fixture App"},
+            policy_context=PolicyContext(direct_user_instruction=direct),
+        )
         assert not out.success
-        assert out.error["code"] in ("INVALID_APP_ID", "APP_NOT_REGISTERED")
+        assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+        assert called == []
+        assert validate_called == []
 
 
 @pytest.mark.asyncio
@@ -203,10 +237,41 @@ async def test_app_launch_non_windows_rejected(app_executor, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_app_close_wildcard_rejected(app_executor):
-    out = await _run(app_executor, "app_close", {"app_id": "*.exe", "force": True})
-    assert not out.success
-    assert out.error["code"] == "INVALID_APP_ID"
+async def test_app_close_wildcard_rejected(app_executor, monkeypatch):
+    """Typed app-close target validation and policy-first denial."""
+    tool = app_executor.get_tool("app_close")
+    assert tool is not None
+
+    # Wildcard app ids are invalid at the typed target layer (first pattern rule).
+    error = tool.validate_targets(tool.input_schema(app_id="*.exe", force=True))
+    assert error is not None
+    assert error["code"] == "INVALID_APP_ID"
+
+    # Executor policy denial precedes validation/execution for both provenance flags.
+    validate_called = []
+    called = []
+
+    async def _bomb_execute(input_data):
+        called.append(True)
+        raise AssertionError(f"execute called despite policy denial: {input_data}")
+
+    def _bomb_validate(input_data):
+        validate_called.append(True)
+        raise AssertionError(f"validate_targets called despite policy denial: {input_data}")
+
+    monkeypatch.setattr(tool, "execute", _bomb_execute)
+    monkeypatch.setattr(tool, "validate_targets", _bomb_validate)
+
+    for direct in (False, True):
+        out = await app_executor.execute_tool(
+            "app_close",
+            {"app_id": "Fixture App", "force": True},
+            policy_context=PolicyContext(direct_user_instruction=direct),
+        )
+        assert not out.success
+        assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+        assert called == []
+        assert validate_called == []
 
 
 class _FakeWin32:
