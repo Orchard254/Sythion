@@ -1491,18 +1491,27 @@ class ConversationTurnEngine:
             )
         }
         # Collect any top-level source-pair count fields that are supplied.
+        # Keep this list unified with every count alias validated later
+        # (_first_present_count) so inert detection treats a zero default
+        # as inert and a non-zero/malformed value as an opt-in for all
+        # variant names (e.g. source_pair_available, ..._total_event_count).
         top_pair_count_names = [
             name for name in (
                 "source_pair_count",
                 "source_pair_total_count",
                 "source_pair_event_count",
                 "source_pair_events_count",
+                "source_pair_total_event_count",
                 "source_pair_available_count",
+                "source_pair_available",
                 "source_pair_structural_complete_count",
+                "source_pair_structural_proven_count",
                 "source_pair_unverified_count",
                 "source_pair_text_truncated_count",
+                "source_pair_truncated_count",
                 "source_pair_missing_count",
                 "source_pair_invalid_count",
+                "source_pairs_count",
             )
         ]
 
@@ -1565,8 +1574,11 @@ class ConversationTurnEngine:
                 if name in mode_bool_aliases and value is not True:
                     mode_declaration_invalid = True
                 mode_active = True
+            # An explicit entry.source_pairs=None is a supplied, non-inert
+            # value (production inert defaults use () not None) and must fail
+            # closed like a top-level None, not be treated as an absent field.
             nested = _node_get(entry, "source_pairs")
-            if nested is not _UNSET and nested is not None and not _is_inert_pair_value("source_pairs", nested):
+            if nested is not _UNSET and not _is_inert_pair_value("source_pairs", nested):
                 mode_active = True
 
         if mode_active:
