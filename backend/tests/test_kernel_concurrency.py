@@ -109,62 +109,78 @@ def _executor_with(tool):
 
 
 @pytest.mark.asyncio
-async def test_cancellation_state_cannot_leak_between_tasks():
-    """A shared tool instance serves two tasks; each sees ONLY its own
-    cancellation decision, even when flipped mid-flight."""
-    flag = {"cancel_task_a": False}
+async def test_cancellation_state_cannot_leak_between_tasks(datetime_spy):
+    """A task-scoped cancelled_check gates the real reviewed SystemTimeTool.
+
+    A's predicate is delayed by an owned Event so the caller can flip A's
+    flag while A awaits its public cancellation check. B uses the real
+    unchanged reviewed builtin and a predicate that is always False.
+    """
+    from backend.tools.system_tools import SystemTimeTool
+
+    flag = {"task-a": False}
     entered = asyncio.Event()
-    proceed = asyncio.Event()
-
-    class _GateTool(BaseTool):
-        name = "gate_tool"
-        description = "gated"
-        input_schema = dict
-
-        async def execute(self, input_data):
-            entered.set()
-            await proceed.wait()
-            return ToolOutput(
-                success=True,
-                data={
-                    "task_id": current_execution_context().task_id,
-                    "cancelled": await self._is_cancelled(),
-                },
-            )
+    gate = asyncio.Event()
+    b_checks = []
 
     async def check_a():
-        return flag["cancel_task_a"]
+        entered.set()
+        await gate.wait()
+        return flag["task-a"]
 
     async def check_b():
-        return False
+        value = False
+        b_checks.append(
+            (
+                current_execution_context().task_id
+                if current_execution_context() is not None
+                else None,
+                value,
+            )
+        )
+        return value
 
-    executor = _executor_with(_GateTool())
+    executor = _executor_with(SystemTimeTool())
 
     exec_a = asyncio.create_task(
         executor.execute_tool(
-            "gate_tool", {},
+            "system_time",
+            {},
             policy_context=PolicyContext(task_id="task-a", cancelled_check=check_a),
         )
     )
     await asyncio.wait_for(entered.wait(), timeout=2)
 
-    # Cancel task A while its execution is parked mid-flight...
-    flag["cancel_task_a"] = True
-
+    # Cancel task A while its public cancellation check is awaited...
+    flag["task-a"] = True
     exec_b = asyncio.create_task(
         executor.execute_tool(
-            "gate_tool", {},
+            "system_time",
+            {},
             policy_context=PolicyContext(task_id="task-b", cancelled_check=check_b),
         )
     )
-    await asyncio.sleep(0.01)
-    proceed.set()
+    gate.set()
 
-    out_a, out_b = await asyncio.gather(exec_a, exec_b)
+    out_a, out_b = await asyncio.gather(
+        asyncio.wait_for(exec_a, timeout=2),
+        asyncio.wait_for(exec_b, timeout=2),
+    )
 
-    # Task A observes ITS OWN cancellation; task B observes none of it.
-    assert out_a.data == {"task_id": "task-a", "cancelled": True}
-    assert out_b.data == {"task_id": "task-b", "cancelled": False}
+    # Exact executor cancellation outcome for A.
+    assert out_a.success is False
+    assert out_a.error == {
+        "code": "CANCELLED",
+        "message": "Task was cancelled before the action could run",
+    }
+
+    # B succeeds and its predicate was False.
+    assert out_b.success is True
+    assert b_checks == [("task-b", False)]
+
+    # Only B's reviewed builtin executed, under B's own task id.
+    assert datetime_spy
+    assert all(ctx is not None and ctx.task_id == "task-b" for ctx in datetime_spy)
 
 
 @pytest.mark.asyncio
@@ -198,41 +214,61 @@ async def test_one_task_cannot_consume_another_cancellation_check():
 
 
 @pytest.mark.asyncio
-async def test_execution_context_is_task_scoped_under_interleaving():
-    seen = []
+async def test_execution_context_is_task_scoped_under_interleaving(datetime_spy):
+    from backend.tools.system_tools import SystemTimeTool
+
     first_entered = asyncio.Event()
-    release = asyncio.Event()
+    first_release = asyncio.Event()
+    second_entered = asyncio.Event()
+    second_release = asyncio.Event()
+    check_contexts = []
 
-    class _InterleavedTool(BaseTool):
-        name = "interleaved"
-        description = "interleaved"
-        input_schema = dict
+    async def check_first():
+        ctx = current_execution_context()
+        check_contexts.append(("t1", ctx.task_id if ctx is not None else None))
+        first_entered.set()
+        await first_release.wait()
+        return False
 
-        async def execute(self, input_data):
-            seen.append(current_execution_context().task_id)
-            if len(seen) == 1:
-                first_entered.set()
-                await asyncio.wait_for(release.wait(), timeout=2)
-            seen.append(current_execution_context().task_id)
-            return ToolOutput(success=True, data={"ok": True})
+    async def check_second():
+        ctx = current_execution_context()
+        check_contexts.append(("t2", ctx.task_id if ctx is not None else None))
+        second_entered.set()
+        await second_release.wait()
+        return False
 
-    executor = _executor_with(_InterleavedTool())
+    executor = _executor_with(SystemTimeTool())
 
     t1 = asyncio.create_task(
-        executor.execute_tool("interleaved", {}, policy_context=PolicyContext(task_id="t1"))
+        executor.execute_tool(
+            "system_time", {}, policy_context=PolicyContext(task_id="t1", cancelled_check=check_first)
+        )
     )
     await asyncio.wait_for(first_entered.wait(), timeout=2)
-    t2 = asyncio.create_task(
-        executor.execute_tool("interleaved", {}, policy_context=PolicyContext(task_id="t2"))
-    )
-    await asyncio.sleep(0.01)
-    release.set()
-    await asyncio.gather(t1, t2)
 
-    # Each execution consistently observed exactly one task id: its own.
-    assert sorted(set(seen)) == ["t1", "t2"]
-    assert seen.count("t1") == 2
-    assert seen.count("t2") == 2
+    t2 = asyncio.create_task(
+        executor.execute_tool(
+            "system_time", {}, policy_context=PolicyContext(task_id="t2", cancelled_check=check_second)
+        )
+    )
+    await asyncio.wait_for(second_entered.wait(), timeout=2)
+
+    first_release.set()
+    second_release.set()
+    await asyncio.gather(
+        asyncio.wait_for(t1, timeout=2),
+        asyncio.wait_for(t2, timeout=2),
+    )
+
+    # Each cancellation check observed only its own execution context.
+    assert ("t1", "t1") in check_contexts
+    assert ("t2", "t2") in check_contexts
+    assert all(label == observed for label, observed in check_contexts)
+
+    # Each real builtin observed only its own context via the external spy.
+    assert datetime_spy
+    observed_builtin = {ctx.task_id for ctx in datetime_spy if ctx is not None}
+    assert observed_builtin == {"t1", "t2"}
 
 
 @pytest.mark.asyncio
@@ -335,8 +371,12 @@ async def test_lease_ownership_remains_exclusive_under_contention(test_db):
 
 
 @pytest.mark.asyncio
-async def test_one_task_cannot_complete_another(db_session, task_runner):
-    """Completion gating and transitions are strictly task-scoped."""
+async def test_failed_mutating_action_blocks_own_completion_but_allows_clean_task_completion(db_session, task_runner):
+    """A failed mutating action blocks only the owning task's completion.
+
+    Trusted TaskRunner callers may still complete a clean task under the
+    real lease contract; the guard is evidence-scoped, not runner-global.
+    """
     await task_runner.acquire_lease()
     task_a = await task_runner.create_task("Task A")
     task_b = await task_runner.create_task("Task B")
@@ -357,13 +397,26 @@ async def test_one_task_cannot_complete_another(db_session, task_runner):
         "The final mutating tool action failed and has no recorded resolution"
     )
 
+    with pytest.raises(RuntimeError, match="The final mutating tool action failed and has no recorded resolution"):
+        await task_runner.transition_state(
+            task_a.id, TaskState.COMPLETED, "task.completed", {"summary": "done"}
+        )
+
+    # A remains non-completed; the failed guard is task-scoped.
+    refreshed_a = await task_runner.get_task(task_a.id)
+    assert refreshed_a.state != TaskState.COMPLETED.value
+
     # ...but says nothing about B, whose evidence is clean.
     assert verifier.precondition_error(task_b.id) is None
-
-    # Completing A leaves B untouched.
-    await task_runner.transition_state(task_a.id, TaskState.COMPLETED, "task.completed", {"summary": "done"})
     refreshed_b = await task_runner.get_task(task_b.id)
     assert refreshed_b.state == TaskState.RUNNING.value
+
+    # Clean B can then complete under the real lease contract.
+    await task_runner.transition_state(
+        task_b.id, TaskState.COMPLETED, "task.completed", {"summary": "done"}
+    )
+    completed_b = await task_runner.get_task(task_b.id)
+    assert completed_b.state == TaskState.COMPLETED.value
 
 
 # --- 7: budget accounting is task-scoped -------------------------------------------
