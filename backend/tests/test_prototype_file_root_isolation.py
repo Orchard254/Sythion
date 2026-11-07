@@ -1,5 +1,10 @@
-"""Focused tests for prototype-specific file-root isolation."""
+"""Focused tests for prototype-specific file-root isolation.
 
+NOTE: The secret isolation tranche uses importlib.reload on secrets/config
+modules, which mutates global sys.modules. Those tests are intentionally left
+unchanged here; cleanup is handled at each test/fixture boundary, not via a
+centralized conftest, to avoid indiscriminately purging modules.
+"""
 import os
 from pathlib import Path
 
@@ -34,6 +39,9 @@ def _prototype_env(monkeypatch):
     monkeypatch.setenv("SYTHION_PROTECT_BUILD", "1")
     secrets_module.set_secret_store_for_testing(None)
     yield
+    # The secret store is process-global; restore None after teardown so no
+    # testing store leaks into later tests via sys.modules/global state.
+    secrets_module.set_secret_store_for_testing(None)
 
 
 @pytest.fixture

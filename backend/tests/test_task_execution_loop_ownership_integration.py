@@ -43,7 +43,7 @@ def _create_tasks(engine, ids):
 
 
 @pytest.mark.asyncio
-async def test_two_independent_workers_reach_blocked_model_decision_concurrently(tmp_path):
+async def test_two_independent_workers_reach_blocked_model_decision_concurrently(tmp_path, monkeypatch):
     db_path = str(tmp_path / "concurrent.db")
     engine = _make_file_db(db_path)
     try:
@@ -58,8 +58,7 @@ async def test_two_independent_workers_reach_blocked_model_decision_concurrently
             await block_event.wait()
             raise RuntimeError("blocked by test")
 
-        original = ModelDecisionEngine.make_decision
-        ModelDecisionEngine.make_decision = blocked_make_decision
+        monkeypatch.setattr(ModelDecisionEngine, "make_decision", blocked_make_decision)
         try:
             loops = []
             executors = []
@@ -82,20 +81,22 @@ async def test_two_independent_workers_reach_blocked_model_decision_concurrently
                 timeout=3.0,
             )
             assert reached["task-a"].is_set() and reached["task-b"].is_set()
-
+        finally:
+            # Release/close blocked tasks even when an assertion raises.
+            block_event.set()
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             for session, _ in loops:
                 session.close()
-        finally:
-            ModelDecisionEngine.make_decision = original
+            # monkeypatch (auto-restore) resets ModelDecisionEngine.make_decision
+            pass
     finally:
         engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_same_task_is_exclusive_across_workers(tmp_path):
+async def test_same_task_is_exclusive_across_workers(tmp_path, monkeypatch):
     db_path = str(tmp_path / "same-task.db")
     engine = _make_file_db(db_path)
     try:
@@ -110,8 +111,7 @@ async def test_same_task_is_exclusive_across_workers(tmp_path):
             await block_event.wait()
             raise RuntimeError("blocked by test")
 
-        original = ModelDecisionEngine.make_decision
-        ModelDecisionEngine.make_decision = blocked_make_decision
+        monkeypatch.setattr(ModelDecisionEngine, "make_decision", blocked_make_decision)
         try:
             session1 = SessionLocal()
             runner1 = TaskRunner(session1)
@@ -139,7 +139,8 @@ async def test_same_task_is_exclusive_across_workers(tmp_path):
             session1.close()
             session2.close()
         finally:
-            ModelDecisionEngine.make_decision = original
+            # monkeypatch (auto-restore) resets ModelDecisionEngine.make_decision
+            pass
     finally:
         engine.dispose()
 
@@ -171,7 +172,7 @@ class DummyExecutor:
 
 
 @pytest.mark.asyncio
-async def test_conflicting_mutating_actions_do_not_overlap(tmp_path):
+async def test_conflicting_mutating_actions_do_not_overlap(tmp_path, monkeypatch):
     db_path = str(tmp_path / "tool-overlap.db")
     engine = _make_file_db(db_path)
     try:
@@ -188,8 +189,7 @@ async def test_conflicting_mutating_actions_do_not_overlap(tmp_path):
             await block_event.wait()
             raise RuntimeError("blocked by test")
 
-        original = ModelDecisionEngine.make_decision
-        ModelDecisionEngine.make_decision = scripted_make_decision
+        monkeypatch.setattr(ModelDecisionEngine, "make_decision", scripted_make_decision)
         try:
             loops = []
             executors = {}
@@ -211,20 +211,22 @@ async def test_conflicting_mutating_actions_do_not_overlap(tmp_path):
             for ex in executors.values():
                 assert ex.completed >= 1
                 assert ex.max_active <= 1
-
+        finally:
+            # Release/close blocked tasks even when an assertion raises.
+            block_event.set()
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             for session, _ in loops:
                 session.close()
-        finally:
-            ModelDecisionEngine.make_decision = original
+            # monkeypatch (auto-restore) resets ModelDecisionEngine.make_decision
+            pass
     finally:
         engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_ownership_loss_stops_further_decisions_and_actions(tmp_path):
+async def test_ownership_loss_stops_further_decisions_and_actions(tmp_path, monkeypatch):
     db_path = str(tmp_path / "ownership-loss.db")
     engine = _make_file_db(db_path)
     try:
@@ -293,14 +295,15 @@ async def test_ownership_loss_stops_further_decisions_and_actions(tmp_path):
                 completed_tools += 1
                 return type("R", (), {"success": True, "model_summary": "ok", "data": None, "error": None, "evidence": None, "duration_ms": 1})()
 
-        original = ModelDecisionEngine.make_decision
-        ModelDecisionEngine.make_decision = scripted_make_decision
-        TaskOwnershipManager.renew = failing_renew
+        session = None
+        task = None
+        rerun_session = None
+        monkeypatch.setattr(ModelDecisionEngine, "make_decision", scripted_make_decision)
+        monkeypatch.setattr(TaskOwnershipManager, "renew", failing_renew)
         try:
             from backend.core.config import settings
 
-            old_interval = settings.lease_heartbeat_seconds
-            settings.lease_heartbeat_seconds = 0.01
+            monkeypatch.setattr(settings, "lease_heartbeat_seconds", 0.01)
 
             session = SessionLocal()
             runner = TaskRunner(session)
@@ -318,6 +321,7 @@ async def test_ownership_loss_stops_further_decisions_and_actions(tmp_path):
             task_row = session.query(Task).filter_by(id="task-loss").first()
             assert task_row.state != TaskState.COMPLETED.value
             session.close()
+            session = None
 
             rerun_session = SessionLocal()
             try:
@@ -327,20 +331,27 @@ async def test_ownership_loss_stops_further_decisions_and_actions(tmp_path):
                     await asyncio.wait_for(rerun_loop.execute_task("task-loss"), timeout=1.0)
             finally:
                 rerun_session.close()
-
-            block_event.set()
-            await asyncio.gather(task, return_exceptions=True)
-            session.close()
-            settings.lease_heartbeat_seconds = old_interval
+                rerun_session = None
         finally:
-            ModelDecisionEngine.make_decision = original
-            TaskOwnershipManager.renew = original_renew
+            # Release/close blocked tasks and sessions even when assertions fail.
+            block_event.set()
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            if rerun_session is not None:
+                rerun_session.close()
+                rerun_session = None
+            if session is not None:
+                session.close()
+                session = None
+            # monkeypatch (auto-restore) resets patched seams
+            pass
     finally:
         engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_cancelled_mutating_actions_do_not_begin_until_operation_ends(tmp_path):
+async def test_cancelled_mutating_actions_do_not_begin_until_operation_ends(tmp_path, monkeypatch):
     db_path = str(tmp_path / "cancel-guard.db")
     engine = _make_file_db(db_path)
     try:
@@ -372,8 +383,7 @@ async def test_cancelled_mutating_actions_do_not_begin_until_operation_ends(tmp_
         async def scripted_make_decision(self, task_id, *args, **kwargs):
             return (DecisionType.EXECUTE_TOOL, {"tool_name": "mutating_tool", "params": {}})
 
-        original = ModelDecisionEngine.make_decision
-        ModelDecisionEngine.make_decision = scripted_make_decision
+        monkeypatch.setattr(ModelDecisionEngine, "make_decision", scripted_make_decision)
         try:
             loops = []
             executors = {}
@@ -422,7 +432,8 @@ async def test_cancelled_mutating_actions_do_not_begin_until_operation_ends(tmp_
                     assert row.status in ("ACTIVE",)
                 session.close()
         finally:
-            ModelDecisionEngine.make_decision = original
+            # monkeypatch (auto-restore) resets ModelDecisionEngine.make_decision
+            pass
     finally:
         engine.dispose()
 
