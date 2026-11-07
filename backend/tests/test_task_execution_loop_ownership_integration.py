@@ -236,6 +236,7 @@ async def test_ownership_loss_stops_further_decisions_and_actions(tmp_path, monk
         decision_calls = 0
         completed_tools = 0
         block_event = asyncio.Event()
+        tool_done = asyncio.Event()
 
         async def scripted_make_decision(self, task_id, *args, **kwargs):
             nonlocal decision_calls
@@ -293,6 +294,7 @@ async def test_ownership_loss_stops_further_decisions_and_actions(tmp_path, monk
                 self.active -= 1
                 self.completed += 1
                 completed_tools += 1
+                tool_done.set()
                 return type("R", (), {"success": True, "model_summary": "ok", "data": None, "error": None, "evidence": None, "duration_ms": 1})()
 
         session = None
@@ -312,7 +314,7 @@ async def test_ownership_loss_stops_further_decisions_and_actions(tmp_path, monk
             ex.loop = loop
             task = asyncio.create_task(loop.execute_task("task-loss"))
 
-            await asyncio.sleep(0.25)
+            await asyncio.wait_for(tool_done.wait(), timeout=3.0)
             assert completed_tools == 1
             assert getattr(loop, "_ownership_lost", False) is True
 
