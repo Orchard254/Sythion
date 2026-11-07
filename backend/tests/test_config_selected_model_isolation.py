@@ -66,6 +66,46 @@ def test_resolve_selected_model_production_env_override_allowed(production_profi
     assert config_module.resolve_selected_model() == "env-model"
 
 
+def test_resolve_selected_model_strips_whitespace_env_override(
+    production_profile_dir, monkeypatch
+):
+    profile_module.save_profile({"selected_model": "persisted-model"})
+    monkeypatch.setattr(config_module.settings, "selected_model", "settings-model")
+    monkeypatch.setenv("SYTHION_SELECTED_MODEL", "  env-model\t")
+
+    assert config_module.resolve_selected_model() == "env-model"
+
+
+def test_resolve_selected_model_whitespace_only_env_falls_through(
+    production_profile_dir, monkeypatch
+):
+    profile_module.save_profile({"selected_model": "persisted-model"})
+    monkeypatch.setattr(config_module.settings, "selected_model", "settings-model")
+    monkeypatch.setenv("SYTHION_SELECTED_MODEL", "   ")
+
+    assert config_module.resolve_selected_model() == "settings-model"
+
+
+def test_resolve_selected_model_whitespace_env_ignored_when_fail_closed(
+    production_profile_dir, monkeypatch
+):
+    monkeypatch.setenv("SYTHION_PROTECT_BUILD", "1")
+    monkeypatch.setenv("SYTHION_BUILD_IDENTITY", "production")
+    monkeypatch.setenv("SYTHION_SELECTED_MODEL", "  leaked-model  ")
+    monkeypatch.setattr(config_module.settings, "selected_model", "env-model")
+    profile_module.save_profile({"selected_model": "safe-model"})
+
+    namespace, is_prototype, fail_closed, _ = secrets_module.resolve_secret_context()
+    assert fail_closed
+    assert config_module.resolve_selected_model() == "safe-model"
+
+
+def test_secret_backend_strips_whitespace_memory(production_profile_dir, monkeypatch):
+    monkeypatch.setenv("SYTHION_SECRET_BACKEND", "  memory  ")
+
+    assert isinstance(secrets_module._default_store(), secrets_module.MemoryStore)
+
+
 def test_resolve_selected_model_prototype_ignores_ambient_env_and_dotenv_model(
     prototype_profile_dir, tmp_path, monkeypatch
 ):

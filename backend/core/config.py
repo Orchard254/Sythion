@@ -272,11 +272,12 @@ def resolve_selected_model() -> str:
         # start, so it really does take precedence over persisted metadata and
         # the imported settings singleton (matches the SYTHION_AUTONOMY_LEVEL
         # precedent).
-        env_selected_model = os.environ.get("SYTHION_SELECTED_MODEL", "")
+        env_selected_model = os.environ.get("SYTHION_SELECTED_MODEL", "").strip()
         if env_selected_model:
             return env_selected_model
-        if settings.selected_model:
-            return settings.selected_model
+        settings_model = (settings.selected_model or "").strip()
+        if settings_model:
+            return settings_model
     from .profile import get_selected_model
     return get_selected_model()
 

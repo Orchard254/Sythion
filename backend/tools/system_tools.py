@@ -808,7 +808,7 @@ class SystemCapabilitiesTool(BaseTool[SystemCapabilitiesInput]):
     async def execute(self, input_data: SystemCapabilitiesInput) -> ToolOutput:
         try:
             from backend.core.config import settings
-            active_autonomy = os.environ.get("SYTHION_AUTONOMY_LEVEL", settings.autonomy_level)
+            active_autonomy = str(os.environ.get("SYTHION_AUTONOMY_LEVEL", settings.autonomy_level) or "").strip()
             from backend.tools.registry import create_all_tools
             tools = list(create_all_tools())
 
