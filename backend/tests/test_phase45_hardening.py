@@ -5,6 +5,7 @@ ordering, and the state-separation matrix.
 """
 
 import asyncio
+from datetime import datetime
 
 import pytest
 from sqlalchemy import create_engine
@@ -445,3 +446,311 @@ class TestStateSeparationMatrix:
         picks = {selector.pick_goal()["goal_id"] for _ in range(2)}
         assert blocked.id not in picks
         assert picks == {eligible.id}
+
+# ===========================================================================
+# WAKE-TX: owned zero-row absorb transaction + caller guard
+# ===========================================================================
+
+def _physical_in_transaction(session):
+    try:
+        conn = session.connection()
+        dbapi = getattr(conn, "connection", None)
+        dbapi = getattr(dbapi, "dbapi_connection", dbapi)
+        return bool(getattr(dbapi, "in_transaction", False))
+    except Exception:
+        return bool(session.in_transaction())
+
+
+class TestWakeOwnedTransaction:
+    def test_zero_absorb_ends_owned_physical_transaction_for_runner_lease(self, db_session):
+        from backend.services.task_runner import TaskRunner
+
+        agent = MainAgentService(db_session)
+        agent.set_background_enabled(True)
+        agent.submit_wake("user.request", wake_key="zero-owned-lease")
+        wake = agent.claim_wake("zero-owned-lease")
+        assert agent.absorb_coalescable(wake) == 0
+        assert _physical_in_transaction(db_session) is False
+
+        runner = TaskRunner(db_session)
+        assert asyncio.run(runner.acquire_lease()) is True
+        asyncio.run(runner.release_lease())
+
+    def test_positive_absorb_preserves_coalescing_outcome(self, db_session):
+        agent = MainAgentService(db_session)
+        agent.set_background_enabled(True)
+        agent.submit_wake("task.completed", trigger_reference="p1",
+                          wake_key="pos-owned-main")
+        agent.submit_wake("task.failed", trigger_reference="p2",
+                          wake_key="pos-owned-peer")
+        wake = agent.claim_wake("pos-owned-main")
+        assert agent.absorb_coalescable(wake) == 1
+
+        peer = db_session.query(AgentWake).filter_by(
+            wake_key="pos-owned-peer").one()
+        assert peer.status == WAKE_COMPLETED
+        assert peer.outcome == "coalesced"
+        assert peer.merged_into == wake.id
+        assert _physical_in_transaction(db_session) is False
+
+    def test_absorb_allows_clean_read_only_logical_session(self, db_session):
+        agent = MainAgentService(db_session)
+        agent.set_background_enabled(True)
+        agent.submit_wake("user.request", wake_key="readonly-owned")
+        db_session.commit()
+        target = db_session.query(AgentWake).filter_by(
+            wake_key="readonly-owned").first()
+
+        # A plain read creates a logical SQLAlchemy scope but no physical write.
+        db_session.commit()
+        db_session.query(AgentWake).count()
+        assert _physical_in_transaction(db_session) is False
+        assert agent.absorb_coalescable(target) == 0
+
+    def test_absorb_rejects_new_caller_orm_state_without_flush(self, db_session):
+        agent = MainAgentService(db_session)
+        agent.submit_wake("user.request", wake_key="absorb-refuse-new")
+        db_session.commit()
+        target = db_session.query(AgentWake).filter_by(
+            wake_key="absorb-refuse-new").first()
+
+        from backend.models.database import AgentWake as WakeModel
+
+        marker = WakeModel(
+            agent_id=target.agent_id,
+            wake_key="caller-new",
+            trigger_type="user.request",
+            coalesce_key="user.request",
+            status=WAKE_PENDING,
+            started_at=datetime.utcnow(),
+        )
+        db_session.add(marker)
+
+        with pytest.raises(RuntimeError, match="caller-owned"):
+            agent.absorb_coalescable(target)
+
+        assert marker in db_session.new
+        db_session.rollback()
+        assert db_session.query(WakeModel).filter_by(
+            wake_key="caller-new").count() == 0
+
+    def test_absorb_rejects_dirty_caller_orm_state(self, db_session):
+        agent = MainAgentService(db_session)
+        agent.submit_wake("user.request", wake_key="absorb-refuse-dirty")
+        db_session.commit()
+        target = db_session.query(AgentWake).filter_by(
+            wake_key="absorb-refuse-dirty").first()
+
+        from backend.models.database import AgentWake as WakeModel
+
+        marker = WakeModel(
+            agent_id=target.agent_id,
+            wake_key="caller-dirty",
+            trigger_type="user.request",
+            coalesce_key="user.request",
+            status=WAKE_PENDING,
+            started_at=datetime.utcnow(),
+        )
+        db_session.add(marker)
+        db_session.commit()
+        marker.status = "FAILED"
+
+        with pytest.raises(RuntimeError, match="caller-owned"):
+            agent.absorb_coalescable(target)
+
+        assert marker in db_session.dirty
+        db_session.rollback()
+        refreshed = db_session.query(WakeModel).filter_by(
+            wake_key="caller-dirty").first()
+        assert refreshed is not None
+        assert refreshed.status == WAKE_PENDING
+
+    def test_absorb_rejects_deleted_caller_orm_state(self, db_session):
+        agent = MainAgentService(db_session)
+        agent.submit_wake("user.request", wake_key="absorb-refuse-deleted")
+        db_session.commit()
+        target = db_session.query(AgentWake).filter_by(
+            wake_key="absorb-refuse-deleted").first()
+
+        from backend.models.database import AgentWake as WakeModel
+
+        marker = WakeModel(
+            agent_id=target.agent_id,
+            wake_key="caller-deleted",
+            trigger_type="user.request",
+            coalesce_key="user.request",
+            status=WAKE_PENDING,
+            started_at=datetime.utcnow(),
+        )
+        db_session.add(marker)
+        db_session.commit()
+        db_session.delete(marker)
+
+        with pytest.raises(RuntimeError, match="caller-owned"):
+            agent.absorb_coalescable(target)
+
+        assert marker in db_session.deleted
+        db_session.rollback()
+        assert db_session.query(WakeModel).filter_by(
+            wake_key="caller-deleted").count() == 1
+
+    def test_absorb_rejects_rawPhysicalCaller_update_without_changing_state(
+            self, db_session, monkeypatch):
+        from sqlalchemy import text
+
+        agent = MainAgentService(db_session)
+        agent.submit_wake("user.request", wake_key="absorb-refuse-raw")
+        db_session.commit()
+        target = db_session.query(AgentWake).filter_by(
+            wake_key="absorb-refuse-raw").first()
+
+        db_session.execute(text("BEGIN IMMEDIATE"))
+        db_session.execute(
+            text(
+                "INSERT INTO main_agent_wakes (agent_id, wake_key, trigger_type, "
+                "coalesce_key, status, attempts, started_at) VALUES (:agent_id, "
+                ":wake_key, :trigger_type, :coalesce_key, :status, 0, "
+                "CURRENT_TIMESTAMP)"
+            ),
+            {
+                "agent_id": target.agent_id,
+                "wake_key": "caller-raw-owned",
+                "trigger_type": "user.request",
+                "coalesce_key": "user.request",
+                "status": WAKE_PENDING,
+            },
+        )
+        assert _physical_in_transaction(db_session) is True
+
+        with pytest.raises(RuntimeError, match="caller-owned"):
+            agent.absorb_coalescable(target)
+
+        assert _physical_in_transaction(db_session) is True
+        rows = db_session.execute(
+            text("SELECT COUNT(*) FROM main_agent_wakes WHERE wake_key = "
+                 "'caller-raw-owned'")
+        ).scalar()
+        assert rows == 1
+        db_session.rollback()
+        rows = db_session.execute(
+            text("SELECT COUNT(*) FROM main_agent_wakes WHERE wake_key = "
+                 "'caller-raw-owned'")
+        ).scalar()
+        assert rows == 0
+
+    def test_absorb_unknown_physical_probe_fails_closed(self, db_session, monkeypatch):
+        agent = MainAgentService(db_session)
+        agent.submit_wake("user.request", wake_key="absorb-unknown-probe")
+        db_session.commit()
+        target = db_session.query(AgentWake).filter_by(
+            wake_key="absorb-unknown-probe").first()
+
+        monkeypatch.setattr(db_session, "connection",
+                            lambda: (_ for _ in ()).throw(RuntimeError("probe boom")))
+        with pytest.raises(RuntimeError, match="could not determine"):
+            agent.absorb_coalescable(target)
+
+    class _ProbeSession:
+        """Minimal real SQLite session proxy for physical-probe fail-closed tests."""
+
+    def test_physical_probe_rejects_falsey_non_bool_values(self, db_session, monkeypatch):
+        from backend.services.main_agent import MainAgentService
+
+        agent = MainAgentService(db_session)
+        agent.submit_wake("user.request", wake_key="probe-falsey")
+        db_session.commit()
+        target = db_session.query(AgentWake).filter_by(
+            wake_key="probe-falsey").first()
+
+        for falsey in (0, None, [], "not-a-bool"):
+            class _Driver:
+                in_transaction = falsey
+
+            class _Connection:
+                connection = _Driver()
+
+            monkeypatch.setattr(db_session, "connection", lambda: _Connection())
+            with pytest.raises(RuntimeError, match="could not determine"):
+                agent.absorb_coalescable(target)
+
+        db_session.rollback()
+
+    def test_physical_probe_rejects_callable_flag(self, db_session, monkeypatch):
+        from backend.services.main_agent import MainAgentService
+
+        agent = MainAgentService(db_session)
+        agent.submit_wake("user.request", wake_key="probe-callable")
+        db_session.commit()
+        target = db_session.query(AgentWake).filter_by(
+            wake_key="probe-callable").first()
+
+        class _Driver:
+            in_transaction = lambda self: False
+
+        class _Connection:
+            connection = _Driver()
+
+        monkeypatch.setattr(db_session, "connection", lambda: _Connection())
+        with pytest.raises(RuntimeError, match="could not determine"):
+            agent.absorb_coalescable(target)
+        db_session.rollback()
+
+    def test_physical_probe_connection_accessor_raises(self, db_session, monkeypatch):
+        from backend.services.main_agent import MainAgentService
+
+        agent = MainAgentService(db_session)
+        agent.submit_wake("user.request", wake_key="probe-connection")
+        db_session.commit()
+        target = db_session.query(AgentWake).filter_by(
+            wake_key="probe-connection").first()
+
+        class _Connection:
+            @property
+            def connection(self):
+                raise RuntimeError("connection boom")
+
+        monkeypatch.setattr(db_session, "connection", lambda: _Connection())
+        with pytest.raises(RuntimeError, match="could not determine"):
+            agent.absorb_coalescable(target)
+        db_session.rollback()
+
+    def test_physical_probe_driver_accessor_raises(self, db_session, monkeypatch):
+        from backend.services.main_agent import MainAgentService
+
+        agent = MainAgentService(db_session)
+        agent.submit_wake("user.request", wake_key="probe-driver")
+        db_session.commit()
+        target = db_session.query(AgentWake).filter_by(
+            wake_key="probe-driver").first()
+
+        class _Outer:
+            @property
+            def connection(self):
+                raise RuntimeError("driver boom")
+
+        monkeypatch.setattr(db_session, "connection", lambda: _Outer())
+        with pytest.raises(RuntimeError, match="could not determine"):
+            agent.absorb_coalescable(target)
+        db_session.rollback()
+
+    def test_physical_probe_flag_accessor_raises(self, db_session, monkeypatch):
+        from backend.services.main_agent import MainAgentService
+
+        agent = MainAgentService(db_session)
+        agent.submit_wake("user.request", wake_key="probe-flag")
+        db_session.commit()
+        target = db_session.query(AgentWake).filter_by(
+            wake_key="probe-flag").first()
+
+        class _Driver:
+            @property
+            def in_transaction(self):
+                raise RuntimeError("flag boom")
+
+        class _Outer:
+            connection = _Driver()
+
+        monkeypatch.setattr(db_session, "connection", lambda: _Outer())
+        with pytest.raises(RuntimeError, match="could not determine"):
+            agent.absorb_coalescable(target)
+        db_session.rollback()

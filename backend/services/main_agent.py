@@ -237,6 +237,54 @@ class MainAgentService:
         self.db.commit()
         return self.db.query(AgentWake).filter_by(wake_key=wake_key).first()
 
+    def _caller_pending_orm_state(self) -> bool:
+        pending = False
+        for collection_name in ("new", "dirty", "deleted"):
+            collection = getattr(self.db, collection_name, None)
+            try:
+                if collection:
+                    pending = True
+            except TypeError:
+                continue
+            except Exception as exc:
+                raise RuntimeError(
+                    "MainAgentService could not determine caller ORM transaction state"
+                ) from exc
+        return pending
+
+    def _physical_transaction_active(self) -> bool:
+        try:
+            connection = self.db.connection()
+            dbapi_connection = getattr(connection, "connection", None)
+            dbapi_connection = getattr(
+                dbapi_connection, "dbapi_connection", dbapi_connection
+            )
+            if dbapi_connection is None:
+                raise RuntimeError(
+                    "MainAgentService could not determine caller physical transaction state"
+                )
+            transaction_state = dbapi_connection.in_transaction
+        except Exception as exc:
+            raise RuntimeError(
+                "MainAgentService could not determine caller physical transaction state"
+            ) from exc
+        if type(transaction_state) is not bool or callable(transaction_state):
+            raise RuntimeError(
+                "MainAgentService could not determine caller physical transaction state"
+            )
+        return transaction_state
+
+    def _refuse_caller_owned_pending_transaction(self) -> None:
+        pending = self._caller_pending_orm_state()
+        if pending:
+            raise RuntimeError(
+                "MainAgentService refused to mutate a caller-owned transaction with pending work"
+            )
+        if self._physical_transaction_active():
+            raise RuntimeError(
+                "MainAgentService refused to mutate an active caller-owned transaction"
+            )
+
     def absorb_coalescable(self, wake: AgentWake) -> int:
         """Absorb other PENDING wakes with the same coalesce_key.
 
@@ -244,6 +292,9 @@ class MainAgentService:
         time; absorbing loses nothing. Absorbed rows become COMPLETED with
         outcome 'coalesced' + merged_into pointer (fully auditable).
         """
+        # Ownership guard first: before autoflush/expired attr reads/UPDATE.
+        self._refuse_caller_owned_pending_transaction()
+
         from sqlalchemy import update
 
         absorbed = self.db.execute(
@@ -261,7 +312,7 @@ class MainAgentService:
                 "into_wake_id": wake.id, "absorbed": count,
                 "coalesce_key": wake.coalesce_key,
             })
-            self.db.commit()
+        self.db.commit()
         return count
 
     def finish_wake(
