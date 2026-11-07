@@ -119,11 +119,14 @@ def test_onboarding_requires_auth(client, isolated_profile):
 # --- Resolution order ---------------------------------------------------------
 
 
-def test_env_override_wins_over_persisted_model(client, isolated_profile):
+def test_env_override_wins_over_persisted_model(client, isolated_profile, monkeypatch):
     profile_module.set_selected_model("persisted-model")
-    with patch.object(app_settings, "selected_model", "env-model"):
-        from backend.core.config import resolve_selected_model
-        assert resolve_selected_model() == "env-model"
+    # A real, case-sensitive environment override must take precedence over
+    # both persisted profile metadata and the imported settings singleton.
+    monkeypatch.setattr(app_settings, "selected_model", "")
+    monkeypatch.setenv("SYTHION_SELECTED_MODEL", "env-model")
+    from backend.core.config import resolve_selected_model
+    assert resolve_selected_model() == "env-model"
 
 
 def test_persisted_model_used_without_env(client, isolated_profile):
