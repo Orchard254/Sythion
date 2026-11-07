@@ -82,8 +82,8 @@ def test_early_post_acquire_failure_releases_lock(monkeypatch, tmp_path):
     import backend.main as backend_main
     from backend.core.profile_lock import ProfileLock
 
-    secrets_mod.is_prototype_build = lambda: False
-    secrets_mod.secret_fail_closed = lambda: False
+    monkeypatch.setattr(secrets_mod, "is_prototype_build", lambda: False)
+    monkeypatch.setattr(secrets_mod, "secret_fail_closed", lambda: False)
 
     def injected_fault():
         raise RuntimeError("injected startup migration fault")
