@@ -49,6 +49,11 @@ logger = logging.getLogger(__name__)
 
 CLARIFICATION_KIND = "clarification"
 
+_DESCRIPTION_CAP = 300
+_REASON_CAP = 200
+_DELEGATED_FINDINGS_CAP = 10
+_FINAL_RESULT_CAP = 2000
+
 # Decision types that hand control back to the user instead of acting.
 _PARK_DECISIONS = {
     DecisionType.NO_ACTION,
@@ -129,7 +134,7 @@ class CognitiveDecisionAdapter:
                 decision is not None
                 and decision.risk.at_least(RiskLevel.HIGH)):
             description = (decision.params.get("description", "")
-                           if decision else "")[:300]
+                           if decision else "")[:_DESCRIPTION_CAP]
             metadata = await self.park(
                 task_id=task_id,
                 kind="permission",
@@ -149,7 +154,7 @@ class CognitiveDecisionAdapter:
         # No viable action: hand control back durably instead of guessing.
         if dtype in _PARK_DECISIONS:
             reason = (decision.justification if decision
-                      else "no viable action determined")[:200]
+                      else "no viable action determined")[:_REASON_CAP]
             metadata = await self.park(
                 task_id=task_id,
                 kind="wait",
@@ -314,7 +319,7 @@ class CognitiveDecisionAdapter:
             summary = (f"[delegated:{delegation.specialist_role.lower()}] "
                        f"{result.get('summary', '')}")
             findings = "\n".join(f"- {f}"
-                                 for f in result.get("findings", [])[:10])
+                                 for f in result.get("findings", [])[:_DELEGATED_FINDINGS_CAP])
             final = (f"{summary}\n{findings}\n"
                      f"(specialist cost: actions={cost.get('actions', 0)}, "
                      f"model_calls={cost.get('model_calls', 0)}, "
@@ -332,7 +337,7 @@ class CognitiveDecisionAdapter:
                 event_type="task.completed",
                 event_data={"via": "specialist_integration",
                             "delegation_id": delegation.id},
-                final_result=final[:2000],
+                final_result=final[:_FINAL_RESULT_CAP],
             )
             return {"integrated": True, "delegation_id": delegation.id,
                     "final_result": final}
@@ -343,7 +348,7 @@ class CognitiveDecisionAdapter:
         return await self.park(
             task_id=task_id, kind="wait",
             question=(f"The delegated specialist did not produce a verified "
-                      f"result ({str(reason)[:200]}). Would you like me to "
+                      f"result ({str(reason)[:_REASON_CAP]}). Would you like me to "
                       f"retry directly?"))
 
     # ------------------------------------------------------------------ #
@@ -409,7 +414,7 @@ class CognitiveDecisionAdapter:
             return
         merged = f"{task.original_request}\n[clarification] {answer}"
         try:
-            task.normalized_goal = merged[:2000]
+            task.normalized_goal = merged[:_FINAL_RESULT_CAP]
             task.updated_at = __import__("datetime").datetime.utcnow()
             self.db.commit()
         except Exception as exc:  # pragma: no cover - best-effort enrichment
@@ -418,7 +423,7 @@ class CognitiveDecisionAdapter:
     def record_correction_signal(self, task_id: str, detail: str) -> None:
         """Structured learning signal for future phases (no auto-fixes)."""
         self.ledger.append_event("cognitive", "cognitive.correction.recorded", {
-            "task_id": task_id, "detail": detail[:300],
+            "task_id": task_id, "detail": detail[:_DESCRIPTION_CAP],
         })
         self.db.commit()
 
