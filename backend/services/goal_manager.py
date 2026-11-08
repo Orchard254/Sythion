@@ -49,6 +49,11 @@ TERMINAL_GOAL_STATUSES = {"completed", "failed", "abandoned"}
 # import (planner imports GoalManager).
 STEP_OPEN_STATES = {"pending", "ready", "running", "in_progress", "blocked"}
 
+MIN_DESC_LEN = 3
+MAX_DESC_LEN = 500
+DETAIL_CAP = 300
+FAILURE_REASON_CAP = 1000
+
 
 def _scope(goal_id: str) -> str:
     return f"goal:{goal_id}"
@@ -423,8 +428,8 @@ def migrate_legacy_objectives(db, include_empty: bool = False) -> Dict[str, Any]
             candidates = []
             for idx, s in enumerate(legacy_steps, start=1):
                 raw_desc = (s.description or "").strip()
-                if len(raw_desc) >= 3:
-                    clean_desc = raw_desc[:500]
+                if len(raw_desc) >= MIN_DESC_LEN:
+                    clean_desc = raw_desc[:MAX_DESC_LEN]
                 else:
                     clean_desc = f"Legacy step {idx}"
                 candidates.append(
@@ -444,7 +449,7 @@ def migrate_legacy_objectives(db, include_empty: bool = False) -> Dict[str, Any]
             report["skipped"].append({
                 "objective_id": objective.id,
                 "reason": "migration_validation_failed",
-                "detail": str(exc)[:300],
+                "detail": str(exc)[:DETAIL_CAP],
             })
             continue
 
@@ -465,7 +470,7 @@ def migrate_legacy_objectives(db, include_empty: bool = False) -> Dict[str, Any]
                 new_step.status = "failed"
                 new_step.failure_reason = (
                     legacy.blocker_reason or "carried from legacy objective"
-                )[:1000]
+                )[:FAILURE_REASON_CAP]
             # else: leave the plan default (pending/blocked) — recoverable.
             new_step.updated_at = datetime.utcnow()
 
