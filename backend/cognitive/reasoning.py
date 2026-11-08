@@ -28,6 +28,15 @@ logger = logging.getLogger(__name__)
 
 MAX_REASONING_CALLS = 2  # cognitive-loop bound
 
+PARSED_PROBLEM_MAX_CHARS = 500
+PARSED_TEXT_MAX_CHARS = 300
+PARSED_ITEM_MAX_CHARS = 200
+PARSED_FACT_LIMIT = 10
+PARSED_ITEM_LIMIT = 8
+PARSED_OPTIONS_LIMIT = 6
+PARSED_MAX_TOKENS = 4000
+PARSED_TIMEOUT_SECS = 120
+
 
 @dataclass
 class ReasoningArtifact:
@@ -149,7 +158,7 @@ class ReasoningEngine:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
                 response = asyncio.run(client.decide(
-                    messages=prompt, tools=[], max_tokens=4000,
+                    messages=prompt, tools=[], max_tokens=PARSED_MAX_TOKENS,
                     model_id=selected_model))
             else:
                 import concurrent.futures
@@ -158,8 +167,8 @@ class ReasoningEngine:
                     response = pool.submit(
                         asyncio.run,
                         client.decide(messages=prompt, tools=[],
-                                      max_tokens=4000, model_id=selected_model),
-                    ).result(timeout=120)
+                                      max_tokens=PARSED_MAX_TOKENS, model_id=selected_model),
+                    ).result(timeout=PARSED_TIMEOUT_SECS)
         except Exception as exc:
             logger.warning("Reasoning call failed (%s); deterministic artifact",
                            exc)
@@ -211,22 +220,22 @@ class ReasoningEngine:
             return None
         try:
             return ReasoningArtifact(
-                problem_statement=str(data.get("problem_statement", ""))[:500],
+                problem_statement=str(data.get("problem_statement", ""))[:PARSED_PROBLEM_MAX_CHARS],
                 relevant_facts=[
-                    {"text": str(f.get("text", ""))[:300],
+                    {"text": str(f.get("text", ""))[:PARSED_TEXT_MAX_CHARS],
                      "epistemic": str(f.get("epistemic", "UNKNOWN"))}
-                    for f in data.get("relevant_facts", [])[:10]
+                    for f in data.get("relevant_facts", [])[:PARSED_FACT_LIMIT]
                 ],
-                unknowns=[str(u)[:200] for u in data.get("unknowns", [])[:8]],
+                unknowns=[str(u)[:PARSED_ITEM_MAX_CHARS] for u in data.get("unknowns", [])[:PARSED_ITEM_LIMIT]],
                 constraints=[
                     {"type": str(c.get("type", "SOFT_PREFERENCE")),
-                     "text": str(c.get("text", ""))[:200]}
-                    for c in data.get("constraints", [])[:8]
+                     "text": str(c.get("text", ""))[:PARSED_ITEM_MAX_CHARS]}
+                    for c in data.get("constraints", [])[:PARSED_ITEM_LIMIT]
                 ],
-                candidate_options=list(data.get("candidate_options", []))[:6],
-                tradeoffs=[str(t)[:200] for t in data.get("tradeoffs", [])[:8]],
-                recommended_direction=str(data.get("recommended_direction", ""))[:300],
-                uncertainties=[str(u)[:200] for u in data.get("uncertainties", [])[:8]],
+                candidate_options=list(data.get("candidate_options", []))[:PARSED_OPTIONS_LIMIT],
+                tradeoffs=[str(t)[:PARSED_ITEM_MAX_CHARS] for t in data.get("tradeoffs", [])[:PARSED_ITEM_LIMIT]],
+                recommended_direction=str(data.get("recommended_direction", ""))[:PARSED_TEXT_MAX_CHARS],
+                uncertainties=[str(u)[:PARSED_ITEM_MAX_CHARS] for u in data.get("uncertainties", [])[:PARSED_ITEM_LIMIT]],
             )
         except Exception:  # pragma: no cover - defensive shape guard
             return None
