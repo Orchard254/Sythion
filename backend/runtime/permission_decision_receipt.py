@@ -76,6 +76,10 @@ STATUS_DENIED = "denied"
 ALL_STATUSES: Tuple[str, ...] = (STATUS_PENDING, STATUS_APPROVED, STATUS_DENIED)
 TERMINAL_STATUSES: Tuple[str, ...] = (STATUS_APPROVED, STATUS_DENIED)
 
+# Named SQLite busy timeout (ms) used by ``_ensure_transaction``; the literal
+# previously embedded in the PRAGMA now reads from here.
+BUSY_TIMEOUT = 30000
+
 DIGEST_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
 
 # Nullable, additive provenance fields for decision receipts. These carry trusted
@@ -449,7 +453,7 @@ class PermissionDecisionReceiptManager:
             dbapi_connection = self._session.connection().connection.dbapi_connection
             try:
                 cursor = dbapi_connection.cursor()
-                cursor.execute("PRAGMA busy_timeout=30000")
+                cursor.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT}")
                 cursor.close()
             except Exception:
                 pass
@@ -475,6 +479,11 @@ class PermissionDecisionReceiptManager:
 
     @staticmethod
     def _clean_text(value: Any, field_name: str, *, max_len: int = 512) -> str:
+        """Validate and return exact text for one field.
+
+        Rejects ``None``/blank and enforces ``max_len``; returns ``str(value)``
+        unchanged once valid (no stripping of the stored value).
+        """
         if value is None:
             raise ValueError(f"Exact {field_name} is required")
         text = str(value)
@@ -900,7 +909,13 @@ class PermissionDecisionReceiptManager:
 
         return PermissionDecisionReceipt.from_row(row)
 
-    # Convenience CAS entry points.
+    # Convenience CAS entry points — thin aliases of canonical decide().
+    # Alias map (all delegate to decide(), see L854; no duplicated logic):
+    #   approve/deny/stage preset decision to approved/denied/pending;
+    #   record, create, create_receipt, record_decision, record_receipt,
+    #   resolve, resolve_pending_permission, resolve_decision, cas,
+    #   compare_and_set, submit, store, add, put, append, register
+    #   pass the caller's decision through unchanged.
     def approve(self, *args: Any, **kwargs: Any) -> PermissionDecisionReceipt:
         kwargs = dict(kwargs)
         kwargs.setdefault("decision", STATUS_APPROVED)
