@@ -158,6 +158,15 @@ class TaskOrchestrator:
         error from the kernel's own verifier. Failures are categorised; a
         bounded RETRY may reset the step to READY (audited), otherwise the
         step FAILS and the goal is PAUSED pending owner replanning.
+
+        Flow: bind ``task_id`` exactly via ``PlanStep.evidence_task_id``;
+        ignore non-running steps; categorise evidence; complete or fail
+        the step; recompute goal progress; append observational learning
+        captures (never affecting the outcome). Returns a dict with the
+        fresh step, ``outcome``, ``category`` and ``goal_progress``, or
+        ``None`` for non-plan-backed tasks. Learning capture is delegated
+        to :meth:`_capture_retry_outcome` and
+        :meth:`_capture_planning_real_outcome`.
         """
         from backend.models.database import PlanStep
 
@@ -224,41 +233,89 @@ class TaskOrchestrator:
             outcome, category = self._handle_failure(step, str(exc), task_id, category)
 
         progress = planner.recompute_goal_after_step_terminal(step.objective_id)
-        # Phase 11.5: per-attempt outcome capture preserving retry context (§3)
+        self._capture_retry_outcome(step, task_id, outcome, category)
+        self._capture_planning_real_outcome(step, task_id, outcome, category, evidence_task)
+        return {
+            "step": self.planner.get_step(step.id),
+            "outcome": outcome,
+            "category": category.value if category else None,
+            "goal_progress": progress,
+            "updated": True,
+        }
+
+    def _capture_retry_outcome(
+        self, step, task_id: str, outcome: str, category: Optional[FailureCategory]
+    ) -> None:
+        """Phase 11.5 per-attempt outcome capture preserving retry context (§3).
+
+        Observational only: maps the orchestrator ``outcome`` to the
+        learning taxonomy and records it; failures are logged via
+        ``log_capture_failure`` and never propagate.
+        """
+        planner = self.planner
         try:
             from backend.learning.capture import log_capture_failure, record_retry_outcome
 
             # Map orchestrator outcome to learning taxonomy
-            lo = "SUCCESS_VERIFIED" if outcome == "completed" else ("FAILED_VERIFICATION" if category == FailureCategory.VERIFICATION_FAILURE else "FAILED")
+            retry_outcome_label = (
+                "SUCCESS_VERIFIED"
+                if outcome == "completed"
+                else (
+                    "FAILED_VERIFICATION"
+                    if category == FailureCategory.VERIFICATION_FAILURE
+                    else "FAILED"
+                )
+            )
             record_retry_outcome(
                 planner.db,
                 task_id=task_id,
                 step_id=step.id,
                 attempt=step.attempt_count or 1,
-                outcome=lo,
+                outcome=retry_outcome_label,
                 goal_id=step.objective_id,
                 cost=None,
                 evidence_refs=[f"task:{task_id}", f"plan_step:{step.id}"],
             )
         except Exception as exc:
             from backend.learning.capture import log_capture_failure
-            log_capture_failure("retry_outcome", exc, task_id=task_id, step_id=step.id, goal_id=step.objective_id)
-        # Phase 12.5: REAL_EXECUTION planning outcome — observational only (LEARNING_ONLY).
-        # Authoritative boundary: after CompletionVerifier gate + step state transition
-        # + goal recomputation. Only verified terminal task evidence can justify
-        # REAL_EXECUTION provenance.
+
+            log_capture_failure(
+                "retry_outcome", exc,
+                task_id=task_id, step_id=step.id, goal_id=step.objective_id,
+            )
+
+    def _capture_planning_real_outcome(
+        self,
+        step,
+        task_id: str,
+        outcome: str,
+        category: Optional[FailureCategory],
+        evidence_task,
+    ) -> None:
+        """Phase 12.5 REAL_EXECUTION planning outcome — observational only.
+
+        Authoritative boundary: after CompletionVerifier gate + step state
+        transition + goal recomputation. Only verified terminal task
+        evidence can justify REAL_EXECUTION provenance. Failures are
+        logged and never propagate.
+        """
+        planner = self.planner
         try:
-            import hashlib as _hl
-            import json as _js
+            import hashlib
+            import json
+
             from backend.learning.capture import infer_planning_strategy
             from backend.learning.planning_store import PlanningOutcomeStore
-            from backend.models.database import GoalPlan as _GP
+            from backend.models.database import GoalPlan
+
             fresh_step = planner.get_step(step.id)
             effective_step = fresh_step or step
             plan = planner.active_plan(step.objective_id)
             if plan is None:
                 try:
-                    plan = planner.db.query(_GP).filter(_GP.id == effective_step.plan_id).first()
+                    plan = planner.db.query(GoalPlan).filter(
+                        GoalPlan.id == effective_step.plan_id
+                    ).first()
                 except Exception:
                     plan = None
             plan_steps = planner.plan_steps(plan.id) if plan and getattr(plan, "id", None) else []
@@ -266,8 +323,14 @@ class TaskOrchestrator:
             dep_complexity = None
             try:
                 if plan_steps:
-                    has_deps = any(s.depends_on and s.depends_on not in (None, "", "[]") for s in plan_steps)
-                    dep_complexity = sum(len(_js.loads(s.depends_on)) if s.depends_on else 0 for s in plan_steps)
+                    has_deps = any(
+                        s.depends_on and s.depends_on not in (None, "", "[]")
+                        for s in plan_steps
+                    )
+                    dep_complexity = sum(
+                        len(json.loads(s.depends_on)) if s.depends_on else 0
+                        for s in plan_steps
+                    )
                 else:
                     dep_complexity = None
             except Exception:
@@ -280,28 +343,32 @@ class TaskOrchestrator:
             replans_val = (plan.version - 1) if plan and getattr(plan, "version", None) else 0
             task_state_val = getattr(evidence_task, "state", None)
             if task_state_val == "cancelled":
-                lo_plan = "CANCELLED"
+                planning_outcome_label = "CANCELLED"
                 verified_plan: bool | None = None
             else:
                 if outcome == "completed":
-                    lo_plan = "SUCCESS_VERIFIED"
+                    planning_outcome_label = "SUCCESS_VERIFIED"
                     verified_plan = True
                 elif category == FailureCategory.VERIFICATION_FAILURE:
-                    lo_plan = "FAILED_VERIFICATION"
+                    planning_outcome_label = "FAILED_VERIFICATION"
                     verified_plan = False
                 elif task_state_val == "timed_out":
-                    lo_plan = "TIMED_OUT"
+                    planning_outcome_label = "TIMED_OUT"
                     verified_plan = False
                 else:
-                    lo_plan = "FAILED"
+                    planning_outcome_label = "FAILED"
                     verified_plan = False
-            fp_raw = f"planning_real_task|{effective_step.objective_id}|{effective_step.plan_id}|{task_id}|{effective_step.attempt_count}|{lo_plan}"
+            fingerprint_raw = (
+                f"planning_real_task|{effective_step.objective_id}|"
+                f"{effective_step.plan_id}|{task_id}|"
+                f"{effective_step.attempt_count}|{planning_outcome_label}"
+            )
             # 64-bit truncation is the repo-wide fingerprint convention (all
             # learning stores use hexdigest()[:16]). Collision risk at the
             # bounded evidence scale (TTL-capped rows, per-attempt identity)
             # is negligible; full-digest migration would break idempotency
             # against existing fingerprints and is deliberately NOT done.
-            fp = _hl.sha256(fp_raw.encode()).hexdigest()[:16]
+            fingerprint = hashlib.sha256(fingerprint_raw.encode()).hexdigest()[:16]
             res = PlanningOutcomeStore(planner.db).record(
                 planning_strategy=strat,
                 task_class="goal",
@@ -312,27 +379,33 @@ class TaskOrchestrator:
                 retries=retries_val,
                 replans=replans_val,
                 verified_success=verified_plan,
-                outcome=lo_plan,
-                evidence_refs=[f"goal:{effective_step.objective_id}", f"plan:{effective_step.plan_id}", f"task:{task_id}", f"plan_step:{effective_step.id}"],
-                evidence_fingerprint=fp,
+                outcome=planning_outcome_label,
+                evidence_refs=[
+                    f"goal:{effective_step.objective_id}",
+                    f"plan:{effective_step.plan_id}",
+                    f"task:{task_id}",
+                    f"plan_step:{effective_step.id}",
+                ],
+                evidence_fingerprint=fingerprint,
                 provenance="REAL_EXECUTION",
                 dependency_complexity=dep_complexity,
             )
             from backend.learning.capture import report_capture_result
+
             report_capture_result(
                 "planning_real_outcome", res,
-                task_id=task_id, step_id=effective_step.id, goal_id=effective_step.objective_id, outcome=lo_plan,
+                task_id=task_id,
+                step_id=effective_step.id,
+                goal_id=effective_step.objective_id,
+                outcome=planning_outcome_label,
             )
         except Exception as exc:
             from backend.learning.capture import log_capture_failure
-            log_capture_failure("planning_real_outcome", exc, task_id=task_id, step_id=step.id, goal_id=step.objective_id)
-        return {
-            "step": self.planner.get_step(step.id),
-            "outcome": outcome,
-            "category": category.value if category else None,
-            "goal_progress": progress,
-            "updated": True,
-        }
+
+            log_capture_failure(
+                "planning_real_outcome", exc,
+                task_id=task_id, step_id=step.id, goal_id=step.objective_id,
+            )
 
     @staticmethod
     def _failure_message(evidence_task, precondition_error: Optional[str]) -> str:
