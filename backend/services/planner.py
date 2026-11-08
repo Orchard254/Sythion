@@ -54,6 +54,12 @@ STEP_TRANSITIONS: Dict[str, set] = {
 
 
 def can_transition_step(current: str, requested: str) -> bool:
+    """Return whether ``current`` may move to ``requested``.
+
+    Self-transition (``requested == current``) is idempotent: it is always
+    allowed, so callers may re-assert the current state without error. Any
+    other move must be listed in :data:`STEP_TRANSITIONS` for ``current``.
+    """
     return requested == current or requested in STEP_TRANSITIONS.get(current, set())
 
 
@@ -123,28 +129,28 @@ def validate_dependency_graph(steps: List[CandidateStepModel]) -> None:
                 )
 
     # Cycle detection (iterative DFS with colors).
-    WHITE, GRAY, BLACK = 0, 1, 2
-    color = {key: WHITE for key in keys}
+    UNVISITED, VISITING, DONE = 0, 1, 2
+    color = {key: UNVISITED for key in keys}
     for start in keys:
-        if color[start] != WHITE:
+        if color[start] != UNVISITED:
             continue
         stack = [(start, iter(steps[keys.index(start)].depends_on))]
-        color[start] = GRAY
+        color[start] = VISITING
         while stack:
             node, deps_iter = stack[-1]
             advanced = False
             for dep in deps_iter:
-                if dep in color and color[dep] == GRAY:
+                if dep in color and color[dep] == VISITING:
                     errors.append(f"dependency cycle detected involving '{dep}'")
                     raise PlanValidationError(_dedupe(errors))
-                if dep in color and color[dep] == WHITE:
-                    color[dep] = GRAY
+                if dep in color and color[dep] == UNVISITED:
+                    color[dep] = VISITING
                     idx = keys.index(dep)
                     stack.append((dep, iter(steps[idx].depends_on)))
                     advanced = True
                     break
             if not advanced:
-                color[node] = BLACK
+                color[node] = DONE
                 stack.pop()
 
     if errors:
