@@ -55,6 +55,8 @@ MAX_TURN_TEXT = 2000
 MAX_DISCUSSION_CONTEXTS = 20
 MAX_ASSISTANT_TEXT = 8000
 MAX_COMMAND_TEXT = 4000
+MAX_CONTEXT_VALUE_LEN = 2000
+MAX_CONTEXT_LIST_ITEMS = 10
 
 ALLOWED_COMMAND_TYPES = {"start_task", "answer_clarification", "append_task_instruction"}
 
@@ -2037,9 +2039,9 @@ class ConversationTurnEngine:
                 elif isinstance(value, str):
                     item[key] = value
                 elif isinstance(value, (list, tuple)):
-                    item[key] = [str(v)[:2000] for v in list(value)[:10]]
+                    item[key] = [str(v)[:MAX_CONTEXT_VALUE_LEN] for v in list(value)[:MAX_CONTEXT_LIST_ITEMS]]
                 elif isinstance(value, Mapping):
-                    item[key] = {str(k).strip(): str(v)[:2000] for k, v in value.items()}
+                    item[key] = {str(k).strip(): str(v)[:MAX_CONTEXT_VALUE_LEN] for k, v in value.items()}
                 else:
                     raise ConversationTurnValidationError(
                         "discussion context value type is invalid", reason_code="input"
