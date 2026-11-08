@@ -849,7 +849,7 @@ class DelegationService:
             if not assume_lease_held:
                 await state_store.release_lease()
 
-    async def _fail_execution(self, d: Delegation, specialist: AgentRecord,
+    async def _fail_execution(self, delegation: Delegation, specialist: AgentRecord,
                               task, state_store, reason: str,
                               cost: Optional[Dict[str, Any]] = None,
                               failure_code: Optional[str] = None) -> Dict[str, Any]:
@@ -858,7 +858,21 @@ class DelegationService:
         Failure_code is one of the structured codes (Requirement 18) and is
         surfaced to the Main Agent; a specialist failure must not become a
         successful completion.
+
+        Args:
+            delegation: The delegation being failed; transitions to FAILED.
+            specialist: The temporary specialist agent to mark FAILED.
+            task: The specialist's task record to project as FAILED.
+            state_store: Backs the best-effort task state transition.
+            reason: Human-readable failure reason (truncated for storage).
+            cost: Optional cost accounting dict forwarded to the result.
+            failure_code: Structured failure code; defaults to RUNTIME_FAILURE.
+
+        Returns:
+            Dict with delegation_id, FAILED status, reason, and failure_code.
         """
+        _EVENT_REASON_LIMIT = 300
+        _STORE_REASON_LIMIT = 500
         from backend.api.schemas import TaskState
 
         # Classify if not provided
@@ -871,35 +885,50 @@ class DelegationService:
                 task_id=task.id, new_state=TaskState.FAILED,
                 event_type="task.failed",
                 event_data={"code": code,
-                            "delegation_id": d.id,
-                            "reason": reason[:300]},
+                            "delegation_id": delegation.id,
+                            "reason": reason[:_EVENT_REASON_LIMIT]},
             )
         except Exception as exc:  # pragma: no cover - best-effort projection
             logger.warning("Could not fail specialist task: %s", exc)
 
-        assert_delegation_transition(d.status, DelegationStatus.FAILED.value)
-        d.status = DelegationStatus.FAILED.value
-        d.failure_reason = reason[:500]
-        d.result_json = json.dumps(SpecialistResult(
+        assert_delegation_transition(delegation.status, DelegationStatus.FAILED.value)
+        delegation.status = DelegationStatus.FAILED.value
+        delegation.failure_reason = reason[:_STORE_REASON_LIMIT]
+        delegation.result_json = json.dumps(SpecialistResult(
             status="FAILED", summary=f"specialist failed: {reason}",
             failure_reason=reason, failure_code=code, cost=cost or {},
         ).to_dict())
-        d.updated_at = datetime.utcnow()
+        delegation.updated_at = datetime.utcnow()
         self.db.commit()
         self.agents.transition(specialist.id, "FAILED", reason=reason)
-        self.ledger.append_event(_scope(d.id), "agent.failed", {
-            "reason": reason[:300], "cost": cost, "failure_code": code,
+        self.ledger.append_event(_scope(delegation.id), "agent.failed", {
+            "reason": reason[:_EVENT_REASON_LIMIT], "cost": cost, "failure_code": code,
         })
         self.db.commit()
-        return {"started": True, "delegation_id": d.id, "status": d.status,
+        return {"started": True, "delegation_id": delegation.id, "status": delegation.status,
                 "failure_reason": reason, "failure_code": code}
 
     @staticmethod
     def _build_result(outputs: List[Dict[str, Any]], packet, cost) -> SpecialistResult:
-        # Deterministic fallback — produces substantive findings so validation
-        # still passes when the model is unavailable (tests). Not a template
-        # masquerading as reasoning: findings reference the actual objective
-        # and tool evidence.
+        """Build a deterministic fallback result from tool outputs.
+
+        Produces substantive findings from the actual objective and tool
+        evidence so validation still passes when the model is unavailable
+        (tests). Not a template masquerading as reasoning: findings reference
+        the actual objective and tool evidence.
+
+        Args:
+            outputs: Per-action output dicts with tool/success/summary/seq.
+            packet: Scoped specialist context packet (objective, role, etc).
+            cost: Cost accounting dict recorded on the result.
+
+        Returns:
+            A COMPLETED SpecialistResult with fallback confidences when
+            no actions were executed; reasoning confidence stays None.
+        """
+        _OBJECTIVE_SNIPPET_LIMIT = 500
+        _FALLBACK_RESULT_CONFIDENCE = 0.6
+        _FALLBACK_EVIDENCE_CONFIDENCE = 0.5
         if outputs:
             findings = [
                 f"{o['tool']}: {o['summary'] or ('succeeded' if o['success'] else 'failed')}"
@@ -908,7 +937,7 @@ class DelegationService:
         else:
             # Zero-action reasoning-only fallback must still be substantive:
             # include the objective and memory context rather than a generic placeholder.
-            obj = (packet.objective or "")[:500]
+            obj = (packet.objective or "")[:_OBJECTIVE_SNIPPET_LIMIT]
             mem_summary = f"{len(packet.relevant_memory)} relevant memories" if packet.relevant_memory else "no prior memory"
             caps = ", ".join(packet.required_capabilities) or "no capabilities"
             findings = [
@@ -917,9 +946,9 @@ class DelegationService:
             ]
         total = len(outputs)
         ok = sum(1 for o in outputs if o["success"])
-        confidence = round(ok / total, 2) if total else 0.6
+        confidence = round(ok / total, 2) if total else _FALLBACK_RESULT_CONFIDENCE
         # Evidence confidence is derived from actual success rate; reasoning confidence stays None in fallback
-        evidence_conf = round(ok / total, 2) if total else 0.5
+        evidence_conf = round(ok / total, 2) if total else _FALLBACK_EVIDENCE_CONFIDENCE
         limitations = [
             "Deterministic fallback: findings derived without model reasoning; verify against source data.",
         ]
