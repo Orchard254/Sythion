@@ -45,6 +45,13 @@ _CLARIFICATION_AMBIGUITY = {AmbiguityLevel.AMBIGUOUS,
 _HIGH_IMPACT_RISK = RiskLevel.HIGH
 _LONG_INPUT_WORD_THRESHOLD = 40
 
+# Named summary/candidate slice limits (values unchanged).
+_REASONING_SUMMARY_UNKNOWN_LIMIT = 3
+_CANDIDATE_DESCRIPTION_LIMIT = 200
+_CANDIDATE_GOAL_DESCRIPTION_LIMIT = 150
+_CANDIDATE_OPTIONS_LIMIT = 4
+_DECISION_EVENT_VETOED_LIMIT = 4
+
 # Deterministic routing policy (Phase 8.75): when does a request deserve the
 # FULL reasoning path (LLM-backed ReasoningEngine) versus the LIGHTWEIGHT
 # path (deterministic candidates still evaluated by the DecisionSystem)?
@@ -189,7 +196,7 @@ class CognitivePipeline:
         reasoning_summary = {
             "depth": effective_depth,
             "recommended_direction": artifact.recommended_direction,
-            "unknowns": artifact.unknowns[:3],
+            "unknowns": artifact.unknowns[:_REASONING_SUMMARY_UNKNOWN_LIMIT],
             "options": len(artifact.candidate_options),
         }
 
@@ -360,7 +367,7 @@ class CognitivePipeline:
                 cands.append(CandidateAction(
                     action_id="request_permission",
                     decision_type=DecisionType.REQUEST_PERMISSION,
-                    description=state.user_input[:200],
+                    description=state.user_input[:_CANDIDATE_DESCRIPTION_LIMIT],
                     risk=RiskLevel.HIGH, reversible=False,
                     requires_permission=True,
                     evidence_refs=["user_request"],
@@ -369,7 +376,7 @@ class CognitivePipeline:
                 cands.append(CandidateAction(
                     action_id="execute_task",
                     decision_type=DecisionType.EXECUTE_STEP,
-                    description=state.user_input[:200],
+                    description=state.user_input[:_CANDIDATE_DESCRIPTION_LIMIT],
                     risk=RiskLevel.LOW, reversible=True,
                     requires_capabilities=["system_observation"],
                     **{"expected_outcome": "task executed via runtime"}))
@@ -377,7 +384,7 @@ class CognitivePipeline:
             cands.append(CandidateAction(
                 action_id="create_goal",
                 decision_type=DecisionType.CREATE_GOAL,
-                description=f"create long-running goal: {state.user_input[:150]}",
+                description=f"create long-running goal: {state.user_input[:_CANDIDATE_GOAL_DESCRIPTION_LIMIT]}",
                 risk=RiskLevel.LOW,
                 expected_outcome="goal + validated plan created"))
             if state.active_goals:
@@ -425,7 +432,7 @@ class CognitivePipeline:
                 cands.append(CandidateAction(
                     action_id="delegate_specialist",
                     decision_type=DecisionType.DELEGATE,
-                    description=state.user_input[:200],
+                    description=state.user_input[:_CANDIDATE_DESCRIPTION_LIMIT],
                     risk=RiskLevel.LOW, reversible=True,
                     evidence_refs=["delegation_signals"],
                     expected_outcome="bounded specialist result verified "
@@ -433,7 +440,7 @@ class CognitivePipeline:
 
         # Reasoning-proposed options become additional candidates with
         # conservative defaults (the model cannot elevate its own authority).
-        for idx, opt in enumerate(getattr(artifact, "candidate_options", [])[:4]):
+        for idx, opt in enumerate(getattr(artifact, "candidate_options", [])[:_CANDIDATE_OPTIONS_LIMIT]):
             if not isinstance(opt, dict) or not opt.get("description"):
                 continue
             risk_raw = str(opt.get("risk", "LOW")).upper()
@@ -442,7 +449,7 @@ class CognitivePipeline:
             cands.append(CandidateAction(
                 action_id=str(opt.get("id", f"llm_opt_{idx}")),
                 decision_type=DecisionType.EXECUTE_STEP,
-                description=str(opt.get("description", ""))[:200],
+                description=str(opt.get("description", ""))[:_CANDIDATE_DESCRIPTION_LIMIT],
                 risk=risk,
                 reversible=bool(opt.get("reversible", True)),
                 evidence_refs=["reasoning_artifact"],
@@ -578,7 +585,7 @@ class CognitivePipeline:
                 "ambiguity": state.uncertainty.value,
                 "decision_type": sel.decision_type if sel else None,
                 "risk": sel.risk.value if sel else None,
-                "vetoed": (vetoed or [])[:4],
+                "vetoed": (vetoed or [])[:_DECISION_EVENT_VETOED_LIMIT],
                 "simulation": simulation,
                 "strategy_evidence": (sel.params.get("strategy_evidence") if sel and sel.params else None),
                 "confidence": {
