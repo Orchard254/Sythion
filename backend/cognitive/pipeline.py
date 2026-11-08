@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 _CLARIFICATION_AMBIGUITY = {AmbiguityLevel.AMBIGUOUS,
                             AmbiguityLevel.HIGH_IMPACT_AMBIGUITY}
 _HIGH_IMPACT_RISK = RiskLevel.HIGH
+_LONG_INPUT_WORD_THRESHOLD = 40
 
 # Deterministic routing policy (Phase 8.75): when does a request deserve the
 # FULL reasoning path (LLM-backed ReasoningEngine) versus the LIGHTWEIGHT
@@ -79,7 +80,7 @@ def delegation_signals(user_input: str) -> dict:
     return {
         "multi_step": bool(_MULTI_STEP_MARKERS.search(text)),
         "analysis_oriented": bool(_ANALYSIS_VERBS.search(text)),
-        "long": len(text.split()) > 40,
+        "long": len(text.split()) > _LONG_INPUT_WORD_THRESHOLD,
     }
 
 
@@ -94,7 +95,7 @@ def requires_full_reasoning(intent: IntentResult, user_input: str) -> bool:
     return bool(
         _HIGH_IMPACT_VERBS.search(text)
         or _MULTI_STEP_MARKERS.search(text)
-        or len(text.split()) > 40
+        or len(text.split()) > _LONG_INPUT_WORD_THRESHOLD
     )
 
 
