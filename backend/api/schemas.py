@@ -14,6 +14,15 @@ except ImportError:  # top-level `api.schemas` import path
     from core.hotkeys import HOTKEY_KEYS_DESC
 
 
+# --- Shared validation bounds ----------------------------------------------
+# Named constants for repeated bounds below; values are identical to the
+# literals they replace (no behaviour change).
+_MAX_LONG_TEXT = 5000  # TaskReply answer / plan-step summary / objective text (was 5000)
+_MAX_TITLE = 200  # Objective/goal title (was 200)
+_PRIORITY_MIN = 1  # Priority lower bound (was ge=1)
+_PRIORITY_MAX = 5  # Priority upper bound (was le=5)
+
+
 class TaskState(str, Enum):
     """Valid task states."""
     CREATED = "created"
@@ -38,7 +47,7 @@ class TaskCreate(BaseModel):
 
 class TaskReply(BaseModel):
     """Schema for replying to a waiting_for_user task."""
-    answer: str = Field(..., min_length=1, max_length=5000)
+    answer: str = Field(..., min_length=1, max_length=_MAX_LONG_TEXT)
     inferred: bool = False
     expected_version: Optional[int] = None
 
@@ -116,8 +125,8 @@ class PlanStepUpdate(BaseModel):
     """Schema for updating an existing plan step."""
     description: Optional[str] = Field(default=None, min_length=1, max_length=2000)
     status: Optional[PlanStepStatus] = None
-    result_summary: Optional[str] = Field(default=None, max_length=5000)
-    blocker_reason: Optional[str] = Field(default=None, max_length=5000)
+    result_summary: Optional[str] = Field(default=None, max_length=_MAX_LONG_TEXT)
+    blocker_reason: Optional[str] = Field(default=None, max_length=_MAX_LONG_TEXT)
 
 
 class PlanStepResponse(BaseModel):
@@ -138,22 +147,22 @@ class PlanStepResponse(BaseModel):
 
 class ObjectiveCreate(BaseModel):
     """Schema for creating a durable objective."""
-    title: str = Field(..., min_length=1, max_length=200)
-    purpose: Optional[str] = Field(default=None, max_length=5000)
-    priority: int = Field(default=3, ge=1, le=5)
+    title: str = Field(..., min_length=1, max_length=_MAX_TITLE)
+    purpose: Optional[str] = Field(default=None, max_length=_MAX_LONG_TEXT)
+    priority: int = Field(default=3, ge=_PRIORITY_MIN, le=_PRIORITY_MAX)
     plan_steps: List[str] = Field(default_factory=list, max_length=20)
-    completion_criteria: Optional[str] = Field(default=None, max_length=5000)
+    completion_criteria: Optional[str] = Field(default=None, max_length=_MAX_LONG_TEXT)
     parent_objective_id: Optional[str] = Field(default=None)
 
 
 class ObjectiveUpdate(BaseModel):
     """Schema for updating a durable objective."""
-    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    purpose: Optional[str] = Field(default=None, max_length=5000)
+    title: Optional[str] = Field(default=None, min_length=1, max_length=_MAX_TITLE)
+    purpose: Optional[str] = Field(default=None, max_length=_MAX_LONG_TEXT)
     status: Optional[ObjectiveStatus] = None
-    priority: Optional[int] = Field(default=None, ge=1, le=5)
-    current_summary: Optional[str] = Field(default=None, max_length=5000)
-    completion_criteria: Optional[str] = Field(default=None, max_length=5000)
+    priority: Optional[int] = Field(default=None, ge=_PRIORITY_MIN, le=_PRIORITY_MAX)
+    current_summary: Optional[str] = Field(default=None, max_length=_MAX_LONG_TEXT)
+    completion_criteria: Optional[str] = Field(default=None, max_length=_MAX_LONG_TEXT)
     parent_objective_id: Optional[str] = Field(default=None)
 
 
@@ -379,15 +388,15 @@ class PlanStepCandidate(BaseModel):
     """A validated candidate step inside a goal plan (Phase 2)."""
     key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
     description: str = Field(min_length=3, max_length=500)
-    priority: int = Field(default=3, ge=1, le=5)
+    priority: int = Field(default=3, ge=_PRIORITY_MIN, le=_PRIORITY_MAX)
     depends_on: List[str] = Field(default_factory=list)
 
 
 class GoalCreateRequest(BaseModel):
     """Create a durable goal with an optional validated plan."""
-    title: str = Field(min_length=1, max_length=200)
+    title: str = Field(min_length=1, max_length=_MAX_TITLE)
     purpose: Optional[str] = None
-    priority: int = Field(default=3, ge=1, le=5)
+    priority: int = Field(default=3, ge=_PRIORITY_MIN, le=_PRIORITY_MAX)
     completion_criteria: Optional[str] = None
     steps: List[PlanStepCandidate] = Field(default_factory=list)
 
