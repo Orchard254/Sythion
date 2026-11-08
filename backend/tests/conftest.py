@@ -425,14 +425,17 @@ def test_client(test_db):
     try:
         from backend.main import app
         from backend.models.database import get_db
+        from backend.api.routes import get_health_db
     except ImportError:
         from main import app
         from models.database import get_db
+        from api.routes import get_health_db
 
     def override_get_db():
         yield test_db
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_health_db] = override_get_db
     try:
         import backend.main as backend_main
     except ImportError:
