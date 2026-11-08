@@ -295,6 +295,14 @@ class ModelDecisionEngine:
         "rationale", "internal_thoughts",
     })
 
+    # Decisions that end the task or park it waiting for the user. Nothing
+    # may execute after the first such decision in the same response.
+    _TERMINAL_DECISIONS = (
+        DecisionType.COMPLETE_TASK,
+        DecisionType.FAIL_TASK,
+        DecisionType.REQUEST_USER_INPUT,
+    )
+
     def _redact_reasoning_fields(self, message: Dict[str, Any]) -> Dict[str, Any]:
         """Discard model reasoning/thinking fields before any further handling.
 
@@ -307,16 +315,26 @@ class ModelDecisionEngine:
 
     def _parse_decision(self, response: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         """
-        Parse model response into decision type and parameters.
-        
+        Parse a model response into a decision type and its parameters.
+
+        Accepts both the OpenAI shape (``choices[0].message.tool_calls``)
+        and the Ollama native shape (``message.tool_calls``); reasoning
+        fields are redacted before parsing. An explicit
+        ``request_user_input`` call wins over a contradictory terminal
+        decision in the same response. A direct call to a model-visible
+        tool is mapped to ``execute_tool``. Remaining calls after the
+        primary decision are stored on ``self._pending_tool_calls``,
+        truncated at the first terminal decision.
+
         Args:
-            response: Raw API response from Ollama Cloud
-            
+            response: Raw API response from the model provider.
+
         Returns:
-            Tuple of (decision_type, decision_params)
-            
+            Tuple of (decision_type, decision_params).
+
         Raises:
-            ModelDecisionError: If response is invalid
+            ModelDecisionError: If the response has no valid control or
+                action call, or cannot be parsed.
         """
         try:
             # Check for tool calls in response - supports both OpenAI format
@@ -353,21 +371,21 @@ class ModelDecisionEngine:
             
             # Parse all tool calls into a list for sequential execution
             parsed_tool_calls = []
-            for tc in tool_calls:
-                fn = tc.get('function', {})
-                dt = fn.get('name', '')
-                raw = fn.get('arguments', {})
-                if isinstance(raw, str):
+            for tool_call in tool_calls:
+                function_call = tool_call.get('function', {})
+                decision_type_name = function_call.get('name', '')
+                raw_arguments = function_call.get('arguments', {})
+                if isinstance(raw_arguments, str):
                     try:
-                        parsed_args = json.loads(raw)
+                        parsed_args = json.loads(raw_arguments)
                     except json.JSONDecodeError as e:
                         raise ModelDecisionError(
                             code="INVALID_JSON",
                             message=f"Failed to parse arguments: {str(e)}"
                         )
                 else:
-                    parsed_args = raw or {}
-                parsed_tool_calls.append({'decision_type': dt, 'args': parsed_args})
+                    parsed_args = raw_arguments or {}
+                parsed_tool_calls.append({'decision_type': decision_type_name, 'args': parsed_args})
 
             if len(parsed_tool_calls) > 1:
                 logger.info(
@@ -380,32 +398,27 @@ class ModelDecisionEngine:
             # finish a task and wait for the user; prioritize asking and drop all
             # terminal decisions except the chosen request.
             request_index = next(
-                (i for i, pc in enumerate(parsed_tool_calls)
-                 if pc["decision_type"] == DecisionType.REQUEST_USER_INPUT),
+                (i for i, parsed_call in enumerate(parsed_tool_calls)
+                 if parsed_call["decision_type"] == DecisionType.REQUEST_USER_INPUT),
                 None,
             )
             if request_index is not None:
-                terminal_types = {
-                    DecisionType.COMPLETE_TASK,
-                    DecisionType.FAIL_TASK,
-                    DecisionType.REQUEST_USER_INPUT,
-                }
                 # Keep earlier non-terminal calls in their original order.
                 preserved = [
-                    pc for pc in parsed_tool_calls[:request_index]
-                    if pc["decision_type"] not in terminal_types
+                    parsed_call for parsed_call in parsed_tool_calls[:request_index]
+                    if parsed_call["decision_type"] not in self._TERMINAL_DECISIONS
                 ]
                 chosen = parsed_tool_calls[request_index]
-                raw_args = chosen.get("args", {})
-                if isinstance(raw_args, str):
+                request_args = chosen.get("args", {})
+                if isinstance(request_args, str):
                     try:
-                        raw_args = json.loads(raw_args)
+                        request_args = json.loads(request_args)
                     except json.JSONDecodeError:
-                        raw_args = {}
-                if not isinstance(raw_args, dict):
-                    raw_args = {}
+                        request_args = {}
+                if not isinstance(request_args, dict):
+                    request_args = {}
                 self._pending_tool_calls = preserved
-                return DecisionType.REQUEST_USER_INPUT, raw_args
+                return DecisionType.REQUEST_USER_INPUT, request_args
 
             # First tool call is the primary decision
             primary = parsed_tool_calls[0]
@@ -427,7 +440,7 @@ class ModelDecisionEngine:
                 # tools in the policy-filtered model-visible subset may be
                 # called: a guessed mutating/GUI tool name must be rejected,
                 # not mapped, even if it is registered.
-                if decision_type in {t["name"] for t in self._model_visible_tools()}:
+                if decision_type in tuple(t["name"] for t in self._model_visible_tools()):
                     params = args or {}
                     if not isinstance(params, dict):
                         params = {}
@@ -443,24 +456,19 @@ class ModelDecisionEngine:
             # Asking the user is a terminal wait: never execute later calls from the
             # same response, especially a trailing complete_task that would falsely
             # finish work the task is still waiting to clarify or resume.
-            if decision_type in {DecisionType.COMPLETE_TASK, DecisionType.FAIL_TASK, DecisionType.REQUEST_USER_INPUT}:
+            if decision_type in self._TERMINAL_DECISIONS:
                 pending_tool_calls = []
             else:
                 # A terminal decision (complete/fail/ask) ends or waits the task.
                 # Nothing may execute after the first such decision in the same
                 # response, so truncate the pending queue at the first terminal.
-                terminal_types = {
-                    DecisionType.COMPLETE_TASK,
-                    DecisionType.FAIL_TASK,
-                    DecisionType.REQUEST_USER_INPUT,
-                }
                 pending_tool_calls = []
                 seen_terminal = False
-                for pc in parsed_tool_calls[1:]:
+                for parsed_call in parsed_tool_calls[1:]:
                     if seen_terminal:
                         break
-                    pending_tool_calls.append(pc)
-                    if pc["decision_type"] in terminal_types:
+                    pending_tool_calls.append(parsed_call)
+                    if parsed_call["decision_type"] in self._TERMINAL_DECISIONS:
                         seen_terminal = True
             self._pending_tool_calls = pending_tool_calls
             return decision_type, args
