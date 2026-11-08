@@ -691,6 +691,10 @@ class FollowupInstructionLedgerManager:
             commit=kwargs.get("commit", True),
         )
 
+    # Canonical apply is ``atomic_apply`` (line 651). The ``apply_*``
+    # methods below are compatibility aliases that delegate to
+    # ``atomic_apply``; new code should call ``atomic_apply`` directly.
+    # ``atomic_apply_many = None`` is retained for compatibility only.
     async def apply_followup(self, *args, **kwargs) -> FollowupInstructionRequest:
         return await self.atomic_apply(*args, **kwargs)
 
@@ -769,6 +773,32 @@ class FollowupInstructionLedgerManager:
         return self.on_task_terminal(*args, **kwargs)
 
     # ---------------------------------------------------- module-level helpers
+    # Canonical/alias map (docs only; no alias is removed):
+    #   canonical ``receive`` (line 424) <- create, add, record, enqueue,
+    #     submit, register, store, put, append_request, add_request,
+    #     create_request
+    #   canonical ``get`` <- find, fetch, find_request, get_request
+    #   canonical ``list`` <- requests, all, list_requests, all_requests,
+    #     for_task, by_task, requests_for_task
+    #   canonical ``pending`` <- list_pending, pending_requests, queued,
+    #     waiters, pending_for_task, ordered_pending
+    #   canonical ``ordered`` <- ordered_requests
+    #   canonical ``next_pending`` <- first_pending, next
+    #   canonical ``transition`` (line 579) <- advance_status, set_status,
+    #     update_status, mark_status, change_status, mark_pending,
+    #     mark_received; cancel/reject/expire/terminal/not_applied/block
+    #     (above) set a status then call ``transition``
+    #   ``cancel`` <- cancel_request, mark_cancelled
+    #   ``reject`` <- reject_request, mark_rejected
+    #   ``expire`` <- expire_request, mark_expired
+    #   ``block`` <- mark_blocked; ``terminal`` <- mark_terminal_request
+    #   ``on_task_terminal`` <- on_terminal, task_cancelled,
+    #     task_completed, task_failed, stopped
+    #   ``on_task_stopped`` <- on_stopped, task_stopped
+    #   ``can_apply`` reads ``get`` and checks PENDING_STATUSES (predicate,
+    #     not an alias of ``atomic_apply``)
+    # New code should use the canonical names above; aliases are kept for
+    # compatibility. Apply aliases (``apply_*``) map to ``atomic_apply``.
     def create(self, *args, **kwargs):
         return self.receive(*args, **kwargs)
 
@@ -936,6 +966,8 @@ class FollowupInstructionLedgerManager:
             record = self.get(rid) if isinstance(rid, str) else None
         return bool(record is not None and record.status in PENDING_STATUSES)
 # One service-facing alias; concrete integration will define clearer boundaries.
+# Canonical class is ``FollowupInstructionLedgerManager``; the name below is
+# a compatibility alias. ``__all__`` below retains legacy exports.
 FollowupInstructionLedger = FollowupInstructionLedgerManager
 
 __all__ = [
