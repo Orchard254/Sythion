@@ -1,4 +1,5 @@
-﻿import importlib.util
+﻿"""alias of clean runtime via stage_clean_runtime.py"""
+import importlib.util
 from pathlib import Path
 _src = Path(__file__).resolve().with_name("stage_clean_runtime.py")
 _spec = importlib.util.spec_from_file_location("stage_clean_runtime_shared", str(_src))
