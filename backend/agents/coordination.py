@@ -27,6 +27,7 @@ from backend.agents.state import (
     DelegationPlanStatus,
     DelegationStatus,
     ParallelismStage,
+    ROLE_CAPABILITIES,
     SpecialistRole,
     assert_delegation_transition,
     assert_plan_transition,
@@ -542,8 +543,9 @@ class DelegationPlanService:
             for cap in spec.required_capabilities:
                 # Check against ROLE_CAPABILITIES ceiling too
                 allowed = set()
+                # Fail-closed: any lookup error leaves allowed empty.
                 try:
-                    allowed = set(__import__("backend.agents.state", fromlist=["ROLE_CAPABILITIES"]).ROLE_CAPABILITIES.get(SpecialistRole(spec.role), ()))
+                    allowed = set(ROLE_CAPABILITIES.get(SpecialistRole(spec.role), ()))
                 except Exception:
                     allowed = set()
                 if allowed and cap not in allowed:
