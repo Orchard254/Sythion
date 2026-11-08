@@ -53,15 +53,26 @@ class ReasoningArtifact:
         }
 
 
+FALLBACK_FACT_LIMIT = 5
+MAX_FACT_CHARS = 200
+MAX_PROBLEM_CHARS = 300
+
+
 def _fallback_artifact(state: CognitiveState,
                        reason: str = "deterministic fallback") -> ReasoningArtifact:
+    """Build a deterministic reasoning artifact when model reasoning is unavailable.
+
+    Truncates the problem statement and context facts to bounded lengths and
+    records ``reason`` in the uncertainties so callers can surface why the
+    fallback was used.
+    """
     facts = [
-        {"text": c.content[:200],
+        {"text": c.content[:MAX_FACT_CHARS],
          "epistemic": c.epistemic.value}
-        for c in state.context_sources[:5]
+        for c in state.context_sources[:FALLBACK_FACT_LIMIT]
     ]
     return ReasoningArtifact(
-        problem_statement=state.user_input[:300] or "(empty input)",
+        problem_statement=state.user_input[:MAX_PROBLEM_CHARS] or "(empty input)",
         relevant_facts=facts,
         unknowns=["insufficient context for deeper analysis"],
         constraints=[],
