@@ -256,30 +256,61 @@ class TestProviderCacheIsolation:
 class TestRegistryStability:
     @pytest.mark.asyncio
     async def test_lookup_while_execution_active(self):
-        from backend.tools.file_tools import FileCreateTool
+        from backend.tools.system_tools import SystemTimeTool
+
         executor = ToolExecutor()
-        executor.register_tool(FileCreateTool())
-        # Simulate concurrent lookup while another execution is in-flight
-        async def exec_one():
-            ctx = PolicyContext(direct_user_instruction=True, task_id="t1")
-            # Use temp dir that doesn't exist -> will fail but we test lookup path
-            import tempfile
-            with tempfile.TemporaryDirectory() as tmp:
-                old = list(settings.file_roots)
-                settings.file_roots = [tmp]
-                try:
-                    out = await executor.execute_tool("file_create", {"path": f"{tmp}/a.txt", "content": "x"}, policy_context=ctx)
-                    assert out.success
-                finally:
-                    settings.file_roots = old
-        async def lookup():
+        executor.register_tool(SystemTimeTool())
+
+        # An owned async cancellation hook that is a legitimate suspension point
+        # inside the executor's execution_context (see executor.py:326-338). It
+        # never reports cancellation: it returns False.
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def cancelled_check() -> bool:
+            started.set()
+            await release.wait()
+            return False
+
+        async def lookup() -> None:
+            # Original registry stability assertions: two concurrent get/list
+            # lookups against the real reviewed built-in while dispatch is
+            # pending. No sleeps/backoff; deterministically yields via awaits.
             for _ in range(10):
                 tools = executor.list_tools()
-                t = executor.get_tool("file_create")
-                assert t is not None
-                assert "file_create" in tools
-                await asyncio.sleep(0.005)
-        await asyncio.gather(exec_one(), lookup(), lookup())
+                tool = executor.get_tool("system_time")
+                assert tool is not None
+                assert "system_time" in tools
+
+        ctx = PolicyContext(
+            direct_user_instruction=True, task_id="t1", cancelled_check=cancelled_check
+        )
+
+        exec_task = asyncio.create_task(
+            executor.execute_tool("system_time", {}, policy_context=ctx)
+        )
+        try:
+            # Wait deterministically for the executor's gate to open; this proves
+            # the execution task is provably pending (not completed).
+            await asyncio.wait_for(started.wait(), timeout=5.0)
+            assert not exec_task.done()
+
+            # Run both lookup coroutines to completion while execution is pending.
+            await asyncio.gather(lookup(), lookup())
+
+            # Only open the execution gate after the lookups have finished.
+            release.set()
+
+            output = await asyncio.wait_for(exec_task, timeout=5.0)
+            assert output.success
+        finally:
+            release.set()
+            if not exec_task.done():
+                exec_task.cancel()
+            try:
+                await exec_task
+            except BaseException:
+                pass
 
     def test_registry_mutation_serialized(self):
         executor = ToolExecutor()

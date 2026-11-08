@@ -190,7 +190,7 @@ def test_no_raw_canonical_text_in_coverage_payload(file_db):
     _seed(session, sid, user_text=secret, assistant_text="secret assistant")
     result = read_session_index_coverage(session, sid, max_payload_bytes=8192)
     assert secret not in result.payload_json
-    assert "assistant_text" not in result.payload_json or True
-    assert result.entries[0].canonical_source_digest_match is False or True
+    assert "assistant_text" not in result.payload_json
+    assert result.entries[0].canonical_source_digest_match is False
     # Digest is present, but text is not.
     assert isinstance(result.entries[0].canonical_source_digest, (str, type(None)))

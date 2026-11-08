@@ -335,7 +335,7 @@ def _cm_target(name: str, target_prefix: Optional[str] = None) -> str:
 
 def _default_store() -> SecretStore:
     """Return the production backend, or the in-memory one off-Windows/dev."""
-    backend = os.environ.get("SYTHION_SECRET_BACKEND", "").lower()
+    backend = os.environ.get("SYTHION_SECRET_BACKEND", "").strip().lower()
     namespace, _, fail_closed, _ = resolve_secret_context()
 
     # Persist strict isolation: prototype/ambiguous contexts never use the

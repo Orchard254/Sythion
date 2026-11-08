@@ -8,6 +8,7 @@ only on the code under test.
 """
 
 import asyncio
+import httpx
 import pytest
 from unittest.mock import AsyncMock
 
@@ -17,6 +18,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from backend.adapters.ollama_adapter import get_adapter
+from backend.core import profile as profile_module
 from backend.models.database import Base, get_db
 from backend.api.routes import router as api_router
 from backend.core.auth import LocalControlBoundaryMiddleware, control_origins
@@ -88,3 +91,49 @@ def client(app):
     """TestClient against the acceptance app (sends no Origin by default)."""
     with TestClient(app) as c:
         yield c
+
+
+def _headers():
+    return {"X-Control-Token": ACCEPTANCE_CONTROL_TOKEN}
+
+
+def _models_transport():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={
+                "models": [
+                    {"name": "minimax-m3"},
+                    {"name": "deepseek-r2"},
+                ]
+            })
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handler)
+
+
+@pytest.fixture
+def isolated_profile(tmp_path, monkeypatch):
+    """Point the profile file at a temp path so tests never touch the real one."""
+    monkeypatch.setenv("SYTHION_DATA_DIR", str(tmp_path))
+    profile_module.save_profile.__globals__["data_dir"] = lambda: str(tmp_path)
+    profile_module.profile_path.__globals__["data_dir"] = lambda: str(tmp_path)
+    return tmp_path
+
+
+@pytest.fixture
+def stubbed_models_adapter(isolated_profile):
+    """Adapter that resolves an authenticated model list without the network."""
+    adapter = get_adapter()
+    adapter.api_key = "test-key"
+    adapter.selected_model = ""
+    adapter._client = httpx.AsyncClient(
+        base_url="https://ollama.com",
+        headers={"Authorization": "Bearer test-key"},
+        transport=_models_transport(),
+    )
+    # _client_loop will be set on first async call to _get_client
+    yield adapter
+    try:
+        asyncio.get_event_loop().run_until_complete(adapter.close())
+    except Exception:
+        pass

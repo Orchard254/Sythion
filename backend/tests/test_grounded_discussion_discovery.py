@@ -377,7 +377,7 @@ def test_frozen_result_fresh_serialization(db):
     assert result.serialized_payload == result.payload_json
 
     # Non-ASCII and envelope are part of the counted payload.
-    assert "café" not in result.representatives[0].preview_text or True
+    assert result.representatives[0].preview_text == "raw unicode café"
     assert result.payload_bytes > 0
 
     def _freeze_check(obj):

@@ -10,7 +10,7 @@ from backend.core import profile as profile_module
 from backend.core.config import settings as app_settings
 
 from .conftest import ACCEPTANCE_CONTROL_TOKEN
-from .test_onboarding import _headers, _models_transport, stubbed_models_adapter, isolated_profile
+from .conftest import _headers, _models_transport, stubbed_models_adapter, isolated_profile
 
 
 @pytest.fixture

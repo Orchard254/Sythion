@@ -176,7 +176,7 @@ class ModelDecisionEngine:
         available_tools = ", ".join(t["name"] for t in self._model_visible_tools()) or "(none registered)"
         from backend.core.config import settings
 
-        active_autonomy = os.environ.get("SYTHION_AUTONOMY_LEVEL", settings.autonomy_level)
+        active_autonomy = str(os.environ.get("SYTHION_AUTONOMY_LEVEL", settings.autonomy_level) or "").strip()
         return build_system_prompt(
             available_tools=available_tools,
             active_autonomy=active_autonomy,
@@ -195,7 +195,7 @@ class ModelDecisionEngine:
         """
         visible = []
         from backend.core.config import settings
-        active_autonomy = os.environ.get("SYTHION_AUTONOMY_LEVEL", settings.autonomy_level)
+        active_autonomy = str(os.environ.get("SYTHION_AUTONOMY_LEVEL", settings.autonomy_level) or "").strip()
         for name in self.tool_executor.list_tools():
             tool = self.tool_executor.get_tool(name)
             if not tool:

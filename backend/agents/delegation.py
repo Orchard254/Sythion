@@ -636,8 +636,13 @@ class DelegationService:
         try:
             # The profile-wide Runtime lease covers the WHOLE bounded
             # specialist execution (Phase 9: serialized, no parallel kernel).
-            d.attempt = (d.attempt or 0) + 1
-            idempotency_key = f"delegation:{d.id}:{d.attempt}"
+            # Compute the next attempt purely first: do NOT mutate d.attempt
+            # before TaskRunner.create_task, otherwise Delegation rows can be
+            # left dirty and the TaskRunner caller-transaction guard refuses
+            # the guarded mutation. Create the specialist task using the
+            # stable idempotency key BEFORE touching owned delegation state.
+            next_attempt = (d.attempt or 0) + 1
+            idempotency_key = f"delegation:{d.id}:{next_attempt}"
             task = await state_store.create_task(
                 original_request=f"[specialist:{d.specialist_role}] "
                                  f"{d.objective}",
@@ -645,6 +650,10 @@ class DelegationService:
             )
             if d.goal_id and hasattr(state_store, "set_task_objective"):
                 state_store.set_task_objective(task.id, d.goal_id)
+            # Only after successful (possibly reused) task creation: promote the
+            # owned delegation fields and persist them so the next guarded
+            # TaskRunner operation starts from a committed baseline.
+            d.attempt = next_attempt
             d.specialist_task_id = task.id
             self.db.commit()
 
@@ -881,6 +890,7 @@ class DelegationService:
         self.ledger.append_event(_scope(d.id), "agent.failed", {
             "reason": reason[:300], "cost": cost, "failure_code": code,
         })
+        self.db.commit()
         return {"started": True, "delegation_id": d.id, "status": d.status,
                 "failure_reason": reason, "failure_code": code}
 
@@ -1015,6 +1025,9 @@ class DelegationService:
         if d.task_id:
             self.ledger.append_event(d.task_id, "specialist.cost.incurred", {
                 "delegation_id": d.id, **cost})
+        # Persist the owned delegation/ledger mutations before any later guarded
+        # TaskRunner operation (terminal transition) runs.
+        self.db.commit()
 
     async def _complete_and_submit(self, d: Delegation, specialist,
                                    task, state_store,
@@ -1038,6 +1051,7 @@ class DelegationService:
             "status": result.status,
             "findings": len(result.findings),
         })
+        self.db.commit()
         return {"submitted": True}
 
     # -- result submission / verification ---------------------------------- #

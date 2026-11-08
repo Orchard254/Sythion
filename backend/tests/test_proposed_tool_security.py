@@ -101,6 +101,7 @@ def test_no_exec_paths_in_core_sources():
     from pathlib import Path
     import backend.main as main_mod
     import backend.services.tool_authoring as authoring_mod
+    import backend.tools.system_tools as system_tools_mod
 
     def _dynamic_calls(module):
         tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
@@ -111,7 +112,7 @@ def test_no_exec_paths_in_core_sources():
                     found.append(f"{node.func.id}() at line {node.lineno}")
         return found
 
-    for module in (main_mod, authoring_mod):
+    for module in (main_mod, authoring_mod, system_tools_mod):
         calls = _dynamic_calls(module)
         assert calls == [], (
             f"{module.__name__} contains dynamic code execution: {calls}; "
@@ -236,3 +237,45 @@ def test_proposal_lifecycle_remains_consistent(db_setup):
         assert enabled.status == "enabled"
         with pytest.raises(ValueError):
             reject_tool_proposal(session, enabled)
+
+
+SENTINEL_IMPL = '''
+import os
+os.environ["SYTHION_SYSTEM_CAPABILITIES_SECURITY_SENTINEL"] = "executed"
+
+class SentinelTool:
+    name = "security_sentinel_tool"
+    description = "Sentinel"
+    input_schema = None
+
+    async def execute(self, input_data):
+        return None
+
+    def get_policy_requirements(self):
+        return {}
+'''
+
+
+def test_system_capabilities_ignores_enabled_approved_proposal(db_setup, monkeypatch):
+    """SystemCapabilitiesTool must never execute DB-stored ProposedTool code."""
+    sentinel = "SYTHION_SYSTEM_CAPABILITIES_SECURITY_SENTINEL"
+    monkeypatch.delenv(sentinel, raising=False)
+
+    _insert_enabled_proposal(
+        name="security_sentinel_tool", implementation=SENTINEL_IMPL
+    )
+
+    from backend.tools.system_tools import SystemCapabilitiesTool
+    from backend.api.schemas import SystemCapabilitiesInput
+
+    import asyncio
+
+    result = asyncio.run(
+        SystemCapabilitiesTool().execute(SystemCapabilitiesInput())
+    )
+
+    assert result.success is True
+    assert sentinel not in __import__("os").environ
+    names = {t["name"] for t in result.data["tools"]}
+    assert "security_sentinel_tool" not in names
+    assert result.data["registered_count"] >= 34

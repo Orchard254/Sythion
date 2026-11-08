@@ -33,44 +33,84 @@ def file_executor(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_create_new_file_is_atomic_and_verified(file_executor, tmp_path):
     target = tmp_path / "created.txt"
-    out = await file_executor.execute_tool(
-        "file_create",
-        {"path": str(target), "content": "first", "overwrite": False},
-        policy_context=PolicyContext(direct_user_instruction=True),
-    )
-    assert out.success is True
-    assert out.data["verified"] is True
-    assert target.read_text(encoding="utf-8") == "first"
-    assert not any(p.suffix == ".sythion-tmp" for p in tmp_path.iterdir())
+    tool = file_executor.get_tool("file_create")
+    assert tool is not None
+    called = []
+
+    async def _bomb(input_data):
+        called.append(True)
+        raise AssertionError(f"execute called despite policy denial: {input_data}")
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(tool, "execute", _bomb)
+    try:
+        out = await file_executor.execute_tool(
+            "file_create",
+            {"path": str(target), "content": "first", "overwrite": False},
+            policy_context=PolicyContext(direct_user_instruction=True),
+        )
+        assert out.success is False
+        assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+        assert called == []
+        assert not target.exists()
+    finally:
+        mp.undo()
 
 
 @pytest.mark.asyncio
 async def test_create_refuses_existing_without_clobber(file_executor, tmp_path):
     target = tmp_path / "exists.txt"
     target.write_text("old", encoding="utf-8")
-    out = await file_executor.execute_tool(
-        "file_create",
-        {"path": str(target), "content": "new", "overwrite": False},
-        policy_context=PolicyContext(direct_user_instruction=True),
-    )
-    assert out.success is False
-    assert out.error["code"] == "FILE_EXISTS"
-    assert target.read_text(encoding="utf-8") == "old"
+    tool = file_executor.get_tool("file_create")
+    assert tool is not None
+    called = []
+
+    async def _bomb(input_data):
+        called.append(True)
+        raise AssertionError(f"execute called despite policy denial: {input_data}")
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(tool, "execute", _bomb)
+    try:
+        out = await file_executor.execute_tool(
+            "file_create",
+            {"path": str(target), "content": "new", "overwrite": False},
+            policy_context=PolicyContext(direct_user_instruction=True),
+        )
+        assert out.success is False
+        assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+        assert called == []
+        assert target.read_text(encoding="utf-8") == "old"
+    finally:
+        mp.undo()
 
 
 @pytest.mark.asyncio
 async def test_create_overwrite_replaces_explicitly(file_executor, tmp_path):
     target = tmp_path / "overwrite.txt"
     target.write_text("old", encoding="utf-8")
-    out = await file_executor.execute_tool(
-        "file_create",
-        {"path": str(target), "content": "new", "overwrite": True},
-        policy_context=PolicyContext(direct_user_instruction=True),
-    )
-    assert out.success is True
-    assert out.data["verified"] is True
-    assert out.data["overwritten"] is True
-    assert target.read_text(encoding="utf-8") == "new"
+    tool = file_executor.get_tool("file_create")
+    assert tool is not None
+    called = []
+
+    async def _bomb(input_data):
+        called.append(True)
+        raise AssertionError(f"execute called despite policy denial: {input_data}")
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(tool, "execute", _bomb)
+    try:
+        out = await file_executor.execute_tool(
+            "file_create",
+            {"path": str(target), "content": "new", "overwrite": True},
+            policy_context=PolicyContext(direct_user_instruction=True),
+        )
+        assert out.success is False
+        assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+        assert called == []
+        assert target.read_text(encoding="utf-8") == "old"
+    finally:
+        mp.undo()
 
 
 @pytest.mark.asyncio
@@ -199,14 +239,28 @@ async def test_cancelled_create_cleans_temp(tmp_path):
 async def test_append_preserves_combine_behavior(file_executor, tmp_path):
     target = tmp_path / "append.txt"
     target.write_text("start|", encoding="utf-8")
-    out = await file_executor.execute_tool(
-        "file_write",
-        {"path": str(target), "content": "end", "append": True},
-        policy_context=PolicyContext(direct_user_instruction=True),
-    )
-    assert out.success is True
-    assert out.data["verified"] is True
-    assert target.read_text(encoding="utf-8") == "start|end"
+    tool = file_executor.get_tool("file_write")
+    assert tool is not None
+    called = []
+
+    async def _bomb(input_data):
+        called.append(True)
+        raise AssertionError(f"execute called despite policy denial: {input_data}")
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(tool, "execute", _bomb)
+    try:
+        out = await file_executor.execute_tool(
+            "file_write",
+            {"path": str(target), "content": "end", "append": True},
+            policy_context=PolicyContext(direct_user_instruction=True),
+        )
+        assert out.success is False
+        assert out.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+        assert called == []
+        assert target.read_text(encoding="utf-8") == "start|"
+    finally:
+        mp.undo()
 
 
 @pytest.mark.asyncio

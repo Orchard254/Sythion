@@ -808,33 +808,14 @@ class SystemCapabilitiesTool(BaseTool[SystemCapabilitiesInput]):
     async def execute(self, input_data: SystemCapabilitiesInput) -> ToolOutput:
         try:
             from backend.core.config import settings
-            active_autonomy = os.environ.get("SYTHION_AUTONOMY_LEVEL", settings.autonomy_level)
+            active_autonomy = str(os.environ.get("SYTHION_AUTONOMY_LEVEL", settings.autonomy_level) or "").strip()
             from backend.tools.registry import create_all_tools
             tools = list(create_all_tools())
 
-            # Also include dynamically loaded tools from the database
-            try:
-                from backend.models.database import ProposedTool, get_db_manager
-                db_mgr = get_db_manager()
-                with db_mgr.get_session() as session:
-                    approved = session.query(ProposedTool).filter_by(status="enabled").all()
-                    existing_names = {t.name for t in tools}
-                    for proposal in approved:
-                        if proposal.name not in existing_names:
-                            namespace = {"__builtins__": __builtins__}
-                            exec(proposal.implementation, namespace)
-                            for obj in namespace.values():
-                                if (
-                                    isinstance(obj, type)
-                                    and hasattr(obj, "execute")
-                                    and not getattr(obj, "__abstractmethods__", None)
-                                    and hasattr(obj, "name")
-                                ):
-                                    tools.append(obj())
-                                    break
-            except Exception as exc:
-                logger.debug("SystemCapabilitiesTool: failed to load dynamic tools from DB: %s: %s",
-                             type(exc).__name__, exc)
+            # Database-stored ProposedTool implementations are NOT loaded or
+            # executed here. The protected runtime contract forbids in-process
+            # execution of model/database-authored Python; trusted tools come
+            # only from create_all_tools() above.
         except Exception as e:
             return ToolOutput(
                 success=False,

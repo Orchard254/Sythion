@@ -165,7 +165,7 @@ def test_opt_in_import_does_not_activate(db_session):
     import sys
     sys.modules.pop("backend.services.grounded_discussion_indexed_discovery", None)
     import backend.services.grounded_discussion_indexed_discovery  # noqa: F401
-    assert "backend.models.database" not in sys.modules or True
+    assert "backend.services.grounded_discussion_indexed_discovery" in sys.modules
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,9 @@ providers expose Window, Invoke (button), and Value (edit) patterns.
 
 The test is skipped when there is no interactive Windows desktop available
 (e.g. a locked session or headless CI), because the desktop gate legitimately
-denies GUI actions there.
+denies GUI actions there. It is also skipped when the UIA driver itself is
+unavailable (the ``_import_uia`` probe fails, which maps to UIA_UNAVAILABLE
+from every GUI tool), because the live automation stack there cannot work.
 """
 import ctypes
 import json
@@ -29,6 +31,7 @@ from backend.tools.gui_tools import (
     GUIInvokeTool,
     GUISetValueTool,
     _desktop_gate,
+    _import_uia,
 )
 from backend.api.schemas import (
     GUIObserveInput,
@@ -74,6 +77,10 @@ def fixture_window():
     gate = _desktop_gate()
     if gate:
         pytest.skip(f"no interactive desktop available: {gate['code']}")
+    try:
+        _import_uia()
+    except Exception as exc:
+        pytest.skip(f"UIA driver unavailable: UIA_UNAVAILABLE: {type(exc).__name__}: {exc}")
 
     tmpdir = tempfile.mkdtemp(prefix="sythion-fixture-")
     hwnds_path = os.path.join(tmpdir, "hwnds.json")

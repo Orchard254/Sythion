@@ -174,25 +174,18 @@ def install_requirements(python_exe: Path, lock_path: Path | None, regenerate: b
 
 
 def stage_backend() -> None:
-    if BACKEND_DIR.exists():
-        shutil.rmtree(BACKEND_DIR)
-    BACKEND_DIR.mkdir(parents=True, exist_ok=True)
-    # copy backend package
-    src_backend = APP_DIR / "backend"
-    dst_backend = BACKEND_DIR
-    # The payload policy decides what may ship. The same module verifies the
-    # staged tree afterwards, so a prohibited artifact can neither be copied
-    # in nor survive a staging run.
-    shutil.copytree(
-        src_backend,
-        dst_backend,
-        dirs_exist_ok=True,
-        ignore=payload_copy_ignore(),
+    # Deprecated unsafe legacy staging: it destructively replaced the tracked
+    # src-tauri/resources/backend mirror. Fail closed before any side effect.
+    fail(
+        "legacy backend staging is disabled and deprecated: stage_backend() "
+        "would destructively replace src-tauri/resources/backend. Use the "
+        "supported isolated flow instead: "
+        "python scripts/stage_clean_backend.py --source backend "
+        "--output build/staging/clean-release-payload, then "
+        "python scripts/verify_release_payload.py "
+        "\"build/staging/clean-release-payload\" --check-backend-mirror. "
+        "Do not target the live staged mirror or bypass its protections."
     )
-    removed = prune_tree(dst_backend)
-    if removed:
-        print(f"[stage] removed {len(removed)} prohibited artifact(s) from the staged backend")
-    print(f"[stage] backend staged at {dst_backend}")
 
 
 def verify_payload() -> None:
@@ -216,12 +209,27 @@ def verify_payload() -> None:
     print("[stage] payload verification passed")
 
 
-def main() -> int:
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--python-version", default=PYTHON_VERSION)
     parser.add_argument("--lock", type=Path, default=None, help="requirements lock file")
     parser.add_argument("--regenerate-lock", action="store_true", help="Regenerate lock from requirements-packaging.txt")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    # The full legacy staging flow (runtime download/install + backend copy)
+    # is deprecated and unsafe. Reject before any side effect. Supported
+    # isolated flows: stage_clean_backend.py and stage_clean_runtime.py.
+    fail(
+        "legacy full staging is disabled and deprecated: it downloads/installs "
+        "Python and destructively replaces src-tauri/resources/backend. Use the "
+        "supported isolated flow instead: "
+        "python scripts/stage_clean_backend.py --source backend "
+        "--output build/staging/clean-release-payload, then "
+        "python scripts/verify_release_payload.py "
+        "\"build/staging/clean-release-payload\" --check-backend-mirror; "
+        "or python scripts/stage_clean_runtime.py for an isolated runtime. "
+        "Lock regeneration flags are retained for compatibility only and do "
+        "not enable legacy staging."
+    )
     stage_embedded_python()
     install_requirements(RUNTIME_DIR / "python.exe", args.lock, args.regenerate_lock)
     stage_backend()

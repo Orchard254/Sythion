@@ -417,3 +417,43 @@ def test_the_clean_settings_snapshot_survives_an_in_place_mutation(clean_setting
     finally:
         # Leave the process exactly as it was found.
         core_config.settings.file_roots[:] = original
+
+
+def test_readiness_before_db_init_returns_degraded_200(monkeypatch):
+    """Pre-init readiness must degrade, not 500.
+
+    ``get_db`` raises RuntimeError until ``init_database`` runs (main.py),
+    so a strict ``Depends(get_db)`` failed dependency resolution before the
+    handler's own ``db is not None`` guard could run. The readiness route
+    now uses the optional ``get_health_db`` dependency, which yields None
+    pre-init; the handler already maps that to ``database_ok=False``.
+    """
+    set_secret_store_for_testing(MemoryStore())
+    import backend.core.config as core_config
+    import backend.models.database as database
+    import backend.runtime.model_provider as model_provider_mod
+    import backend.main as backend_main
+
+    monkeypatch.setattr(core_config, "resolve_selected_model", lambda: "m1")
+    monkeypatch.setattr(model_provider_mod, "get_default_provider", lambda: _Provider(healthy=True))
+    # Simulate main.py:112 not having run yet.
+    monkeypatch.setattr(database, "_db_manager", None)
+    # No dependency overrides: the real optional dependency must run.
+    app.dependency_overrides.clear()
+    previous_token = backend_main.control_token
+    backend_main.control_token = "setup-test-token"
+    client = TestClient(
+        app,
+        headers={"Origin": "tauri://localhost", "X-Control-Token": "setup-test-token"},
+    )
+    try:
+        res = client.get("/api/v1/setup/readiness")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["checks"]["database_ok"] is False
+        assert body["full_ready"] is False
+        assert body["checks"]["safe_settings_ok"] is False
+    finally:
+        backend_main.control_token = previous_token
+        app.dependency_overrides.clear()
+        set_secret_store_for_testing(None)

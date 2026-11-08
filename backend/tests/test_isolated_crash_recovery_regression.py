@@ -24,8 +24,6 @@ if PROJECT not in sys.path:
     sys.path.insert(0, PROJECT)
 
 from backend.core.config import settings
-settings.lease_timeout_seconds = 2
-settings.lease_heartbeat_seconds = 1
 
 import pytest
 
@@ -39,7 +37,9 @@ def _session_factory(db_path):
     return db_mgr, db_mgr.new_session()
 
 
-def test_offline_crash_recovery_preserves_interrupted_state_and_idempotency():
+def test_offline_crash_recovery_preserves_interrupted_state_and_idempotency(monkeypatch):
+    monkeypatch.setattr(settings, "lease_timeout_seconds", 2)
+    monkeypatch.setattr(settings, "lease_heartbeat_seconds", 1)
     lease_timeout = 2
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, "offline_crash.db")

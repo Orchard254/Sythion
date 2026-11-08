@@ -539,6 +539,7 @@ class TestRecovery:
             d = prop["delegation"]
             d.status = "RUNNING"
             d.attempt = 1
+            db.commit()
             task = asyncio.run(runner.create_task("spec work", idempotency_key=f"delegation:{d.id}:1"))
             asyncio.run(runner.transition_state(task.id, TaskState.RUNNING, "task.execution_started", {}))
             runner.ledger.append_event(task.id, "specialist.reasoning", {"findings": 2})
