@@ -1,6 +1,36 @@
 """
 API Routes for Sythion (Synth) Backend
 Handles task management, tool execution, settings, and skills.
+
+Section map (A1 navigation only; no handler moved):
+  - Shared helpers & response mappers: grounded-discussion / validation /
+    tool-executor / plan-objective response helpers.
+  - Health, version & conversations: health_check, version_check,
+    list_conversations.
+  - Assistant interpret & turns: interpret_assistant_message, assistant_turn.
+  - Task lifecycle: create_task, list_tasks, get_task, cancel / stop /
+    resume / reply, get_task_events.
+  - Objectives & plan steps: list/create/get/update objectives, verify
+    criteria, create/update plan steps.
+  - Goals & planning (Phase 2): create_goal, list_goals, runnable goals.
+  - Model evaluation / selection (Phase 6): evaluate_model, history,
+    select-preview.
+  - Main Agent (Phase 4): get_agent, pause/resume agent, background policy,
+    activity, wake.
+  - Goal execution & lifecycle: execute_goal_session, get_goal, plans,
+    advance / replan / lifecycle action.
+  - Capability / Model / Self-Model / Health (Phase 5): capabilities,
+    model registry, self-model, agent health.
+  - Agents & delegations: list_agents, list/get delegations.
+  - Tools & skills registry: list_tools, skills CRUD, proposals, generate.
+  - Memory: edges reinforce/remove, items, validation report.
+  - Retention: purge_records, purge receipts.
+  - Settings & secrets: get/update settings, list/set/delete secrets.
+  - Models, onboarding & chat: list_models, onboarding status/select,
+    chat completions, credential test + inference helpers.
+  - Setup & readiness: setup_safe_settings, setup_readiness.
+  - Voice: voice assets, voice sessions (start/audio/end), speak.
+  - Tool Authoring (L3): propose/list/approve/reject tool proposals.
 """
 import logging
 import asyncio
@@ -51,6 +81,9 @@ except Exception:  # pragma: no cover - import path compatibility
     _MAX_CONTEXT_TEXT = 2000
 
 router = APIRouter()
+
+
+# --- Shared helpers & response mappers ------------------------------------
 
 
 def _resolve_grounded_discussion_service(db: Any = None, injected: Any = None) -> Any:
@@ -141,6 +174,9 @@ def _objective_to_response(objective: Objective) -> ObjectiveResponse:
         steps=[_plan_step_to_response(step) for step in steps],
         sub_objectives=[_objective_to_response(sub) for sub in sub_objs],
     )
+
+
+# --- Health, version & conversations --------------------------------------
 
 
 def get_health_db():
@@ -409,6 +445,9 @@ def _composer_scheduling_established(db: Session, task_ids: List[str]) -> bool:
         return bool(established)
     except Exception:
         return False
+
+
+# --- Assistant interpret & turns ------------------------------------------
 
 
 @router.post("/assistant/interpret")
@@ -1621,6 +1660,10 @@ async def _run_partial_recall_post_persistence_semantic_index(
             except Exception:
                 pass
 
+
+# --- Task lifecycle -------------------------------------------------------
+
+
 @router.post("/tasks", response_model=TaskResponse)
 async def create_task(
     task_data: TaskCreate,
@@ -2127,6 +2170,9 @@ def _decode_event_data(raw: Any) -> Dict[str, Any]:
     from backend.runtime.events import decode_event_data
 
     return decode_event_data(raw)
+
+
+# --- Objectives & plan steps ----------------------------------------------
 
 
 @router.get("/objectives", response_model=ObjectiveListResponse)
@@ -2715,6 +2761,9 @@ async def wake_agent(request: Request, db: Session = Depends(get_db)):
     return resp
 
 
+# --- Goal execution & lifecycle -------------------------------------------
+
+
 @router.post("/goals/{goal_id}/execute")
 async def execute_goal_session(goal_id: str, db: Session = Depends(get_db)):
     """Explicitly initiated goal execution session with automatic continuation.
@@ -2986,6 +3035,9 @@ async def agent_health(include_provider: bool = False,
     return run_health_checks(include_provider=include_provider, db_session=db)
 
 
+# --- Agents & delegations -------------------------------------------------
+
+
 @router.get("/agents")
 async def list_agents(include_expired: bool = False,
                       db: Session = Depends(get_db)):
@@ -3052,6 +3104,9 @@ def _safe_json_loads(raw, default):
         return _json.loads(raw) if raw else default
     except Exception:
         return default
+
+
+# --- Tools & skills registry ----------------------------------------------
 
 
 @router.get("/tools", response_model=Dict[str, List[Dict[str, Any]]])
@@ -3182,6 +3237,9 @@ async def reject_proposal(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return {"proposal_id": updated.id, "status": updated.status}
+
+
+# --- Memory ---------------------------------------------------------------
 
 
 @router.get("/memory/edges")
@@ -3376,6 +3434,9 @@ async def set_skill_state(
     return {"skill_id": skill.id, "state": skill.state}
 
 
+# --- Retention ------------------------------------------------------------
+
+
 @router.post("/retention/purge", response_model=RetentionRunResponse)
 async def purge_records(request: PurgeRequest, db: Session = Depends(get_db)):
     """Purge complete task records (task + full audit events + conversation turns).
@@ -3420,6 +3481,9 @@ async def list_purge_receipts(db: Session = Depends(get_db)):
     from backend.services.retention import list_purge_receipts as engine_receipts
 
     return [PurgeReceiptResponse(**r) for r in engine_receipts(db)]
+
+
+# --- Settings & secrets ---------------------------------------------------
 
 
 @router.get("/settings", response_model=SettingsResponse)
@@ -3506,6 +3570,9 @@ async def update_settings(request: Request, db: Session = Depends(get_db)):
         "message": "Settings updated",
         "settings": updated,
     }
+
+
+# --- Models, onboarding & chat --------------------------------------------
 
 
 @router.get("/models")
@@ -3904,6 +3971,9 @@ def _effective_autonomy_is_guarded() -> bool:
     return str(value or "").strip() == "guarded"
 
 
+# --- Setup & readiness ----------------------------------------------------
+
+
 @router.post("/setup/safe-settings")
 async def setup_safe_settings(db=Depends(get_db)):
     if not _effective_autonomy_is_guarded():
@@ -3998,6 +4068,10 @@ async def setup_readiness(db: Optional[Session] = Depends(get_health_db)):
         "inference_verified_model": verified_inference_model or "",
         "tts_voice": tts_voice,
     }
+
+
+# --- Voice ----------------------------------------------------------------
+
 
 @router.get("/voice/assets", response_model=VoiceAssetsResponse)
 async def voice_assets_status():
