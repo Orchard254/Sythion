@@ -353,7 +353,44 @@ def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
 
+# Retrieval scoring constants (values unchanged from former literals).
+_RETRIEVE_CANDIDATE_LIMIT = 500
+_SCORE_TERM_WEIGHT = 3.0
+_SCORE_CONFIDENCE_WEIGHT = 2.0
+_SCORE_VERIFIED_BONUS = 2.0
+_SCORE_RECENCY_MAX = 2.0
+_RECENCY_DECAY_DAYS = 30.0
+_MISSING_TIMESTAMP_RECENCY_DAYS = 999
+
+
+def _scope_pair_filter(pairs):
+    """Build the OR filter for allowed (scope, scope_ref) pairs.
+
+    USER/GLOBAL pairs match on scope alone; all other scopes also require
+    an exact scope_ref match. Returns None for an empty pair set so callers
+    can apply their existing empty-set handling.
+    """
+    if not pairs:
+        return None
+    from sqlalchemy import or_ as _or
+
+    conditions = []
+    for scope, ref in pairs:
+        if scope in ("USER", "GLOBAL"):
+            conditions.append(MemoryEntry.scope == scope)
+        else:
+            conditions.append(
+                (MemoryEntry.scope == scope)
+                & (MemoryEntry.scope_ref == ref)
+            )
+    if not conditions:
+        return None
+    return _or(*conditions)
+
+
 class MemoryService:
+    _scope_pair_filter = staticmethod(_scope_pair_filter)
+
     def __init__(self, session):
         self.db = session
         self.ledger = DbEventLedger(session)
@@ -755,22 +792,13 @@ class MemoryService:
         if kinds:
             q = q.filter(MemoryEntry.kind.in_([k.upper() for k in kinds]))
         if ctx is not None:
-            from sqlalchemy import or_ as _or
             pairs = ctx.allowed_pairs()
             if scopes is not None:
                 allowed_scopes = {str(s).upper() for s in scopes}
                 pairs = {(s, r) for (s, r) in pairs if s in allowed_scopes}
-            if pairs:
-                conditions = []
-                for scope, ref in pairs:
-                    if scope in ("USER", "GLOBAL"):
-                        conditions.append(MemoryEntry.scope == scope)
-                    else:
-                        conditions.append(
-                            (MemoryEntry.scope == scope)
-                            & (MemoryEntry.scope_ref == ref)
-                        )
-                q = q.filter(_or(*conditions))
+            scope_filter = _scope_pair_filter(pairs)
+            if scope_filter is not None:
+                q = q.filter(scope_filter)
             else:
                 q = q.filter(MemoryEntry.id.is_(None))
         elif scopes:
@@ -780,7 +808,8 @@ class MemoryService:
         if require_verified:
             q = q.filter(MemoryEntry.verification_status.like("VERIFIED%"))
 
-        rows = q.order_by(MemoryEntry.updated_at.desc()).limit(500).all()
+        rows = q.order_by(MemoryEntry.updated_at.desc()).limit(
+            _RETRIEVE_CANDIDATE_LIMIT).all()
 
         tokens = [t for t in re.split(r"[^a-z0-9]+", query.lower()) if len(t) > 2]
         scored: List[RetrievedMemory] = []
@@ -792,13 +821,16 @@ class MemoryService:
                 continue
             recency_days = (
                 (now - (r.observed_at or r.created_at)).days
-                if (r.observed_at or r.created_at) else 999
+                if (r.observed_at or r.created_at)
+                else _MISSING_TIMESTAMP_RECENCY_DAYS
             )
-            score = term_hits * 3.0 \
-                + (r.confidence or 0.5) * 2.0 \
-                + (2.0 if r.verification_status.startswith("VERIFIED") else 0.0)
+            score = term_hits * _SCORE_TERM_WEIGHT \
+                + (r.confidence or 0.5) * _SCORE_CONFIDENCE_WEIGHT \
+                + (_SCORE_VERIFIED_BONUS
+                   if r.verification_status.startswith("VERIFIED") else 0.0)
             if recency_preference:
-                score += max(0.0, 2.0 - recency_days / 30.0)
+                score += max(
+                    0.0, _SCORE_RECENCY_MAX - recency_days / _RECENCY_DECAY_DAYS)
             scored.append(RetrievedMemory(
                 id=r.id, kind=r.kind, scope=r.scope, scope_ref=r.scope_ref,
                 key=r.key, value=r.value, confidence=r.confidence,
@@ -823,19 +855,10 @@ class MemoryService:
         )
         q = self.db.query(MemoryEntry).filter_by(key=key, status="ACTIVE")
         if ctx is not None:
-            from sqlalchemy import or_ as _or
             pairs = ctx.allowed_pairs()
-            if pairs:
-                conditions = []
-                for scope, ref in pairs:
-                    if scope in ("USER", "GLOBAL"):
-                        conditions.append(MemoryEntry.scope == scope)
-                    else:
-                        conditions.append(
-                            (MemoryEntry.scope == scope)
-                            & (MemoryEntry.scope_ref == ref)
-                        )
-                q = q.filter(_or(*conditions))
+            scope_filter = _scope_pair_filter(pairs)
+            if scope_filter is not None:
+                q = q.filter(scope_filter)
             else:
                 return None
         row = q.first()
