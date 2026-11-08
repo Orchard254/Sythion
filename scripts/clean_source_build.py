@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Safe single-command clean source-checkout build workflow."""
+"""Safe single-command clean source-checkout build workflow.
+
+Load-order / side-effect map (import time): ``_load(filename, alias)``
+resolves the sibling file, registers it in ``sys.modules`` via
+``setdefault``, then runs ``spec.loader.exec_module`` so each
+submodule's top-level code executes eagerly in strict source order:
+
+1. ``STAGE_BACKEND``    <- ``stage_clean_backend.py``
+2. ``STAGE_RUNTIME``    <- ``stage_clean_runtime.py``
+3. ``GENERATE_CONFIG``  <- ``generate_clean_installer_config.py``
+4. ``VERIFY``           <- ``verify_release_payload.py``
+
+A missing sibling yields ``None``; callers must fail closed on ``None``.
+"""
 
 from __future__ import annotations
 
