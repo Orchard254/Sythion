@@ -14,6 +14,14 @@ from backend.models.database import (
     DiscussionContext, DiscussionContextMembership, Task,
 )
 
+# Read-limit bounds for discussion contexts. The 1..50 inclusive range, the
+# 96-character display-name excerpt, and the 400-row prune batch are the
+# historical values; changing them changes observable behavior.
+MIN_CONTEXT_LIMIT = 1
+MAX_CONTEXT_LIMIT = 50
+CONTEXT_NAME_MAX_LENGTH = 96
+PRUNE_BATCH_SIZE = 400
+
 
 @dataclass(frozen=True)
 class ExchangeContextIdentity:
@@ -28,7 +36,7 @@ class ExchangeContextIdentity:
 
 def context_name(user_text):
     """A bounded human-text display label, never a unique key or topic claim."""
-    return " ".join(user_text.split())[:96] or "Conversation"
+    return " ".join(user_text.split())[:CONTEXT_NAME_MAX_LENGTH] or "Conversation"
 
 
 def read_exchange_context(db, session_id, exchange_id):
@@ -106,9 +114,9 @@ def ensure_exchange_context(db, session_id, exchange_id, user_turn_id, assistant
 def prune_empty_contexts(db, context_ids):
     """Delete only affected contexts that have lost their last retained member."""
     ids = tuple(set(context_ids))
-    for start in range(0, len(ids), 400):
+    for start in range(0, len(ids), PRUNE_BATCH_SIZE):
         (db.query(DiscussionContext)
-         .filter(DiscussionContext.id.in_(ids[start:start + 400]),
+         .filter(DiscussionContext.id.in_(ids[start:start + PRUNE_BATCH_SIZE]),
                  ~db.query(DiscussionContextMembership.exchange_id).filter(
                      DiscussionContextMembership.context_id == DiscussionContext.id).exists())
          .delete(synchronize_session=False))
@@ -148,15 +156,21 @@ class NamedDiscussionContext:
     assistant_text: str | None = None
 
 
-def _normalize_limit(limit):
+def _normalize_limit(limit: int) -> int:
+    """Validate that a context-read limit is an int within 1..50 inclusive."""
     if isinstance(limit, bool) or not isinstance(limit, int):
         raise ValueError("Context limit must be an integer")
-    if not 1 <= limit <= 50:
-        raise ValueError("Context limit must be between 1 and 50")
+    if not MIN_CONTEXT_LIMIT <= limit <= MAX_CONTEXT_LIMIT:
+        raise ValueError(
+            f"Context limit must be between {MIN_CONTEXT_LIMIT} and {MAX_CONTEXT_LIMIT}"
+        )
     return limit
 
 
-def read_session_discussion_contexts(db, session_id, *, limit=20):
+def read_session_discussion_contexts(
+    db, session_id: str, *, limit: int = 20
+) -> tuple[NamedDiscussionContext, ...]:
+    """Read the newest same-session named contexts, bounded by ``limit`` (1..50)."""
     if not isinstance(session_id, str) or not session_id.strip():
         raise ValueError("An exact session identity is required")
     session_id = session_id.strip()
@@ -249,7 +263,8 @@ class DiscussionContextCoverage:
     omitted_count: int
 
 
-def _row_value(row, key):
+def _row_value(row, key: str):
+    """Read one column from a SQLAlchemy row via its mapping or attributes."""
     mapping = getattr(row, "_mapping", None)
     if mapping is not None:
         return mapping[key]
