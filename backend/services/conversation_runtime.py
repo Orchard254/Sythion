@@ -34,6 +34,22 @@ from backend.cognitive.state import InteractionType
 
 logger = logging.getLogger(__name__)
 
+RECENT_TURNS_LIMIT = 6
+PREF_LIMIT = 5
+
+
+def _safe_load(label: str, loader, default: Any = None) -> Any:
+    """Run ``loader`` and return its result, or ``default`` on failure.
+
+    Logs ``Could not load <label>: <exc>`` identically to the previous
+    inline try/except blocks; never propagates loader exceptions.
+    """
+    try:
+        return loader()
+    except Exception as e:  # noqa: BLE001 - best-effort context loading
+        logger.warning(f"Could not load {label}: {e}")
+        return default
+
 
 def _first_not_none(*values: Any) -> Any:
     for value in values:
@@ -222,48 +238,47 @@ class ConversationRuntime:
         context_parts = []
         
         # Recent conversation turns
-        try:
-            recent_turns = (
+        recent_turns = _safe_load(
+            "recent conversation",
+            lambda: (
                 self.db.query(ConversationTurn)
                 .filter_by(session_id=self.session_id)
                 .order_by(ConversationTurn.created_at.desc(), ConversationTurn.id.desc())
-                .limit(6)
+                .limit(RECENT_TURNS_LIMIT)
                 .all()
-            )
-
-            if recent_turns:
-                context_parts.append("[RECENT CONVERSATION]")
-                for turn in reversed(recent_turns):  # Last 3 exchanges
-                    context_parts.append(f"{turn.role.upper()}: {turn.summary}")
-        except Exception as e:
-            logger.warning(f"Could not load recent conversation: {e}")
+            ),
+            default=[],
+        )
+        if recent_turns:
+            context_parts.append("[RECENT CONVERSATION]")
+            for turn in reversed(recent_turns):  # Last 6 turns (3 exchanges)
+                context_parts.append(f"{turn.role.upper()}: {turn.summary}")
         
         # Conversation state (active topic)
-        try:
+        def _load_state_context():
             from backend.services.conversation_state import get_or_create_state, format_state_for_context
-            
-            state = get_or_create_state(self.session_id)
-            state_context = format_state_for_context(state)
-            if state_context:
-                context_parts.append(state_context)
-        except Exception as e:
-            logger.warning(f"Could not load conversation state: {e}")
+
+            return format_state_for_context(get_or_create_state(self.session_id))
+
+        state_context = _safe_load("conversation state", _load_state_context, default="")
+        if state_context:
+            context_parts.append(state_context)
         
         # User preferences from memory
-        try:
-            preferences = (
+        preferences = _safe_load(
+            "user preferences",
+            lambda: (
                 self.db.query(MemoryEntry)
                 .filter(MemoryEntry.category.in_(["user_profile", "user_preference"]))
-                .limit(5)
+                .limit(PREF_LIMIT)
                 .all()
-            )
-            
-            if preferences:
-                context_parts.append("[USER CONTEXT]")
-                for pref in preferences:
-                    context_parts.append(f"{pref.key}: {pref.value}")
-        except Exception as e:
-            logger.warning(f"Could not load user preferences: {e}")
+            ),
+            default=[],
+        )
+        if preferences:
+            context_parts.append("[USER CONTEXT]")
+            for pref in preferences:
+                context_parts.append(f"{pref.key}: {pref.value}")
         
         return "\n".join(context_parts) if context_parts else ""
     

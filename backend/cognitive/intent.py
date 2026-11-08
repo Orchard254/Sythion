@@ -84,6 +84,28 @@ _CONCRETE_PATH_SIGNAL = re.compile(
 
 
 
+LONG_REPORT_WORDS = 35
+# Confidence thresholds mapping to ambiguity levels: < CONF_AMBIGUOUS is
+# AMBIGUOUS, < CONF_LOW is LOW_AMBIGUITY, >= CONF_LOW is CLEAR.
+CONF_AMBIGUOUS = 0.55
+CONF_LOW = 0.7
+
+
+def _is_report_goal(text: str) -> bool:
+    """Whether ``text`` is a report-style goal.
+
+    A long report request (> LONG_REPORT_WORDS words) or an explicit
+    "create/generate a report" phrasing is a GOAL (long-running
+    planning), not an immediate ACTION.  Extracted from two identical
+    inline checks in ``determine_interaction`` with unchanged logic.
+    """
+    return (
+        "create a report" in text
+        or "generate a report" in text
+        or len(text.split()) > LONG_REPORT_WORDS
+    )
+
+
 class IntentInterpreter:
     """Deterministic first-pass intent interpretation."""
 
@@ -285,12 +307,12 @@ class IntentInterpreter:
 
         # Concrete filesystem path present → ACTION or GOAL
         if _CONCRETE_PATH_SIGNAL.search(user_input):
-            if "create a report" in text or "generate a report" in text or len(text.split()) > 35:
+            if _is_report_goal(text):
                 return InteractionType.GOAL
             return InteractionType.ACTION
 
         if _COMMAND_MARKERS.match(user_input):
-            if "create a report" in text or "generate a report" in text or len(text.split()) > 35:
+            if _is_report_goal(text):
                 return InteractionType.GOAL
             return InteractionType.ACTION
 
@@ -356,9 +378,9 @@ class IntentInterpreter:
     def _result(category: IntentCategory, confidence: float,
                 interp: Interpretation, text: str) -> IntentResult:
         ambiguity = AmbiguityLevel.CLEAR
-        if confidence < 0.55:
+        if confidence < CONF_AMBIGUOUS:
             ambiguity = AmbiguityLevel.AMBIGUOUS
-        elif confidence < 0.7:
+        elif confidence < CONF_LOW:
             ambiguity = AmbiguityLevel.LOW_AMBIGUITY
         return IntentResult(
             category=category,

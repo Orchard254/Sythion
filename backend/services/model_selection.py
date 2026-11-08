@@ -8,7 +8,7 @@ Truthfulness invariants:
   prompts — no tools, no filesystem, no arbitrary code execution.
 
 Selection policy (deterministic, documented order — see
-):
+``ModelSelector.select``):
   1. filter capability-incompatible models      → rejected: lacks <cap>
   2. filter unavailable models                  → rejected: unavailable
   3. configured primary kept if compatible+available
@@ -281,18 +281,18 @@ class ModelEvaluator:
         Models with zero rows are reported as UNRATED (never inferred).
         """
         best_by_model: Dict[str, Dict[str, Any]] = {}
-        for mid in model_ids:
+        for model_id in model_ids:
             rows = (
                 self.db.query(ModelEvaluation)
-                .filter_by(model_id=mid, task_class=task_class)
+                .filter_by(model_id=model_id, task_class=task_class)
                 .all()
             )
             attempts = len(rows)
             passed = sum(1 for r in rows if r.passed is True)
             scored = [r.score for r in rows if r.score is not None]
             avg = round(sum(scored) / len(scored), 4) if scored else None
-            best_by_model[mid] = {
-                "model_id": mid, "attempts": attempts,
+            best_by_model[model_id] = {
+                "model_id": model_id, "attempts": attempts,
                 "pass_rate": round(passed / attempts, 4) if attempts else None,
                 "avg_score": avg,
             }
@@ -375,26 +375,26 @@ class ModelSelector:
 
         # 1. capability compatibility (supported=False ⇒ hard reject;
         #    unknown passes but is flagged at ranking time via evidence).
-        for mid in list(candidates):
-            caps = ModelRegistryLike(self.db).model_capabilities(mid)
+        for model_id in list(candidates):
+            caps = ModelRegistryLike(self.db).model_capabilities(model_id)
             incompatible = []
             if requirements.tool_calling and caps["tool_calling"]["supported"] is False:
                 incompatible.append("tool_calling")
             if requirements.vision and caps["vision"]["supported"] is False:
                 incompatible.append("vision")
             if incompatible:
-                rejected.append({"model": mid,
+                rejected.append({"model": model_id,
                                  "reason": f"lacks {'/'.join(incompatible)}"})
-                candidates.remove(mid)
-            elif available_models is not None and mid not in available_models:
-                rejected.append({"model": mid, "reason": "unavailable"})
-                candidates.remove(mid)
-            elif registry_records.get(mid) and \
-                    registry_records[mid].available_now is False:
-                rejected.append({"model": mid, "reason": "unavailable"})
-                candidates.remove(mid)
+                candidates.remove(model_id)
+            elif available_models is not None and model_id not in available_models:
+                rejected.append({"model": model_id, "reason": "unavailable"})
+                candidates.remove(model_id)
+            elif registry_records.get(model_id) and \
+                    registry_records[model_id].available_now is False:
+                rejected.append({"model": model_id, "reason": "unavailable"})
+                candidates.remove(model_id)
             else:
-                considered.append(mid)
+                considered.append(model_id)
 
         if not candidates:
             result = SelectionResult(None, rejected, "no_compatible_available_model",
@@ -415,10 +415,10 @@ class ModelSelector:
         comparison = self.evaluator.compare(candidates, requirements.task_class)
         ranking = {r["model_id"]: r for r in comparison["ranking"]}
         best = None
-        for mid in candidates:
-            info = ranking.get(mid)
-            if info and (info["pass_rate"] or 0) > 0:
-                best = mid
+        for model_id in candidates:
+            ranking_entry = ranking.get(model_id)
+            if ranking_entry and (ranking_entry["pass_rate"] or 0) > 0:
+                best = model_id
                 break
         if best is None:
             # No positive evidence anywhere: fall back to stable registry

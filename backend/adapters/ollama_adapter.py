@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 # guarantee that the provider honors it. Input token fit is not established here.
 NUM_CTX = 131072
 
+TOTAL_TIMEOUT_S = 300.0
+CONNECT_TIMEOUT_S = 30.0
+DEFAULT_MAX_TOKENS = 4000
+
 # Default-inert configured byte envelope for the final serialized HTTP
 # request body.  Zero means "disabled" and preserves historical behavior.
 # This is a conservative transport-size guard only; it is NOT a claim about
@@ -173,7 +177,7 @@ class OllamaCloudAdapter:
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
                 },
-                timeout=httpx.Timeout(300.0, connect=30.0),
+                timeout=httpx.Timeout(TOTAL_TIMEOUT_S, connect=CONNECT_TIMEOUT_S),
             )
             self._client_loop = current_loop
         return self._client
@@ -353,7 +357,7 @@ class OllamaCloudAdapter:
         self,
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
-        max_tokens: int = 4000,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
         model_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute a tool call via Ollama Cloud.
@@ -369,7 +373,7 @@ class OllamaCloudAdapter:
         Raises:
             RuntimeError: If the request fails
         """
-        output_tokens = 4000 if max_tokens is None else max_tokens
+        output_tokens = DEFAULT_MAX_TOKENS if max_tokens is None else max_tokens
         payload = {
             "model": model_id or self.selected_model,
             "messages": messages,
@@ -409,7 +413,7 @@ class OllamaCloudAdapter:
                     _raise_sanitized(RuntimeError(msg), _safe_httpx_cause(e))
             except httpx.ReadTimeout as e:
                 _raise_sanitized(RuntimeError(
-                    "Request timed out after 300s - the model is taking too long to respond"
+                    f"Request timed out after {TOTAL_TIMEOUT_S:.0f}s - the model is taking too long to respond"
                 ), _safe_httpx_cause(e))
             except httpx.ConnectTimeout as e:
                 if attempt < max_network_retries - 1:
@@ -447,8 +451,8 @@ class OllamaCloudAdapter:
     async def chat(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: int = 4000,
-        timeout: float = 300.0,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+        timeout: float = TOTAL_TIMEOUT_S,
         model_id: Optional[str] = None,
         temperature: Optional[float] = None,
         think=None,
@@ -465,7 +469,7 @@ class OllamaCloudAdapter:
         """
         try:
             client = await self._get_client()
-            output_tokens = 4000 if max_tokens is None else max_tokens
+            output_tokens = DEFAULT_MAX_TOKENS if max_tokens is None else max_tokens
             payload = {
                 "model": model_id or self.selected_model,
                 "messages": messages,
@@ -482,7 +486,7 @@ class OllamaCloudAdapter:
             response = await client.post(
                 "/api/chat",
                 json=payload,
-                timeout=httpx.Timeout(timeout, connect=30.0),
+                timeout=httpx.Timeout(timeout, connect=CONNECT_TIMEOUT_S),
             )
             response.raise_for_status()
             return response.json()
@@ -603,8 +607,8 @@ class OllamaCloudProvider:
     async def chat(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: int = 4000,
-        timeout: float = 300.0,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+        timeout: float = TOTAL_TIMEOUT_S,
         temperature: Optional[float] = None,
         think=None,
         format=None,
