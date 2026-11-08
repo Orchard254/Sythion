@@ -18,6 +18,7 @@ database schemas, migrations, activation, or command functionality.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import json
 import sqlite3
@@ -25,10 +26,14 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Optional, Tuple
 
 from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _first_not_none(*values: Any) -> Any:
+    """Return the first non-None value, or None."""
     for value in values:
         if value is not None:
             return value
@@ -36,6 +41,7 @@ def _first_not_none(*values: Any) -> Any:
 
 
 def _session_of(db: Any) -> Any:
+    """Extract a session object from supported wrapper shapes."""
     if db is None or isinstance(db, str) or isinstance(db, os.PathLike):
         raise ValueError("A database session is required")
     if hasattr(db, "db") and db.db is not None:
@@ -56,6 +62,7 @@ def _session_of(db: Any) -> Any:
 
 
 def _clean_session(value: Any) -> str:
+    """Validate and return an exact session identity string."""
     if isinstance(value, bool) or not isinstance(value, str):
         raise ValueError("Exact session identity is required")
     value = value.strip()
@@ -163,6 +170,7 @@ CanonicalSourceDriftDiagnostic = CanonicalSourceDriftDiagnosticResult
 
 
 def _base_fields(result: Any, base_cls: Any) -> dict[str, Any]:
+    """Copy shared coverage base fields from a result object."""
     from backend.services.grounded_discussion_index_coverage import IndexCoverageResult
     base_types = (IndexCoverageResult,)
     names = [f.name for f in dataclasses.fields(IndexCoverageResult)]
@@ -188,6 +196,7 @@ def _fail_closed_result(
     raw_discovery_reason: str = "unavailable",
     error: Optional[str] = None,
 ) -> CanonicalSourceDriftDiagnosticResult:
+    """Build a fail-closed diagnostic result for the given reason."""
     payload: dict[str, Any] = {
         "session_id": session_id,
         "available_count": 0,
@@ -230,7 +239,8 @@ def _fail_closed_result(
         payload["enumeration_error"] = error
     try:
         json_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    except Exception:
+    except (TypeError, ValueError, OverflowError) as exc:
+        _LOGGER.debug("fail-closed payload serialization failed", exc_info=exc)
         json_text = "{}"
     return CanonicalSourceDriftDiagnosticResult(
         session_id=session_id,
@@ -300,7 +310,8 @@ def _resolve_input(db: Any, kwargs: dict[str, Any]) -> tuple[Any, Any, bool]:
         try:
             # Touch connection without starting a committed write transaction.
             session.connection()
-        except Exception:
+        except (SQLAlchemyError, sqlite3.Error, RuntimeError) as exc:
+            _LOGGER.debug("owned session connection probe failed", exc_info=exc)
             session.close()
             engine.dispose()
             raise
@@ -310,6 +321,7 @@ def _resolve_input(db: Any, kwargs: dict[str, Any]) -> tuple[Any, Any, bool]:
 
 
 def _validate_physical_snapshot(session: Any) -> tuple:
+    """Validate the physical snapshot and transaction ownership."""
     caller_owned = False
     transaction_owner = None
     owns_transaction = False
@@ -330,7 +342,8 @@ def _validate_physical_snapshot(session: Any) -> tuple:
         else:
             try:
                 connection.exec_driver_sql("BEGIN")
-            except Exception:
+            except (SQLAlchemyError, sqlite3.Error, RuntimeError) as exc:
+                _LOGGER.debug("snapshot BEGIN failed", exc_info=exc)
                 snapshot_validated = False
             else:
                 in_txn2 = getattr(dbapi, "in_transaction", False)
