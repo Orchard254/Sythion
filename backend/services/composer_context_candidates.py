@@ -9,7 +9,7 @@ and will neither flush, commit, nor roll back the caller's transaction.
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Query, Session, aliased
 
 from backend.models.database import (
     ConversationExchange, ConversationTaskAssociation, ConversationTurn, Task,
@@ -44,7 +44,13 @@ class ContextCandidateSnapshot:
     coverage: str = "retained_initiating_task_associations_in_session"
 
 
-def _query(db, session_id):
+def _query(db: Session, session_id: str) -> Query:
+    """Build the read-only candidate query for one exact session.
+
+    Callers execute the returned query inside ``db.no_autoflush``; building
+    this query neither flushes, commits, nor rolls back the caller's
+    transaction.
+    """
     if not isinstance(session_id, str) or not session_id.strip():
         raise ValueError("An exact session identity is required")
     user_turn = aliased(ConversationTurn)
@@ -77,7 +83,13 @@ def _query(db, session_id):
         .filter(ConversationExchange.session_id == session_id))
 
 
-def _candidate(row):
+def _candidate(row) -> InitiatingDiscussionCandidate:
+    """Project one already-fetched row to a candidate (pure, no DB access).
+
+    This helper performs no session I/O, so it cannot flush pending caller
+    work; it must only be called on rows fetched within the caller's
+    ``db.no_autoflush`` scope.
+    """
     issues = []
     if row.task_version is None:
         issues.append("task_unavailable")
