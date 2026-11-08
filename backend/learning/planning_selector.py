@@ -42,23 +42,37 @@ class PlanningPolicyResult:
         }
 
 
-def _sanitize_planning_strategy(v: str) -> Optional[str]:
-    val = str(v).strip().upper()
-    if val in PlanningStrategy.values():
-        return val
+def _sanitize_planning_strategy(value: str) -> Optional[str]:
+    """Normalize *value* to a canonical planning strategy.
+
+    Returns the upper-cased, stripped *value* when it names a known
+    ``PlanningStrategy``, otherwise ``None`` (unknown/invalid input).
+    """
+    normalized = str(value).strip().upper()
+    if normalized in PlanningStrategy.values():
+        return normalized
     return None
 
 
-def _sanitize_trigger(v: str) -> Optional[str]:
-    val = str(v).strip().upper()
-    if val in ReplanTrigger.values():
-        return val
+def _sanitize_trigger(value: str) -> Optional[str]:
+    """Normalize *value* to a canonical replan trigger.
+
+    Returns the upper-cased, stripped *value* when it names a known
+    ``ReplanTrigger``, otherwise ``None`` (unknown/invalid input).
+    """
+    normalized = str(value).strip().upper()
+    if normalized in ReplanTrigger.values():
+        return normalized
     return None
 
 
 def _risk_value(risk: str | None) -> int:
-    order = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
-    return order.get(str(risk or "LOW").upper(), 1)
+    """Return the 0-4 ordinal for *risk* (``NONE``=0 ... ``CRITICAL``=4).
+
+    ``None`` / missing / unknown values default to ``LOW`` (1).
+    """
+    RISK_ORDER = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+    return RISK_ORDER.get(str(risk or "LOW").upper(), 1)
 
 
 class PlanningPolicySelector:
