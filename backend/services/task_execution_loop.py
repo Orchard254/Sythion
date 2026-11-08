@@ -91,9 +91,49 @@ class TaskExecutionLoop:
         self.verifier = CompletionVerifier(db_session, self._get_event_history)
         self.post_task_pipeline = PostTaskPipeline(db_session, task_runner, tool_executor)
 
+    @staticmethod
+    def _build_repair_context(code: str, message: str) -> str:
+        """Build actionable repair guidance for a model decision error.
+
+        Pure function: no I/O, no state. The returned strings are the
+        exact guidance previously constructed inline in ``execute_task``.
+        """
+        if code == "MISSING_CONTROL_CALL":
+            return (
+                "CRITICAL ERROR: You outputted raw text instead of a tool call. "
+                "You MUST call the 'complete_task' tool with your answer inside 'result' "
+                "(e.g. complete_task(result=\"...\")). Do NOT output raw text."
+            )
+        elif code == "INVALID_DECISION_TYPE":
+            return (
+                "Your previous tool name is not callable in the current autonomy "
+                "mode (it is registered but gated/hidden). Do NOT retry gui_* or any other tool not "
+                "listed in AVAILABLE TOOLS (app_launch only when listed). Consult "
+                "system_capabilities for the model-visible subset, choose one of the "
+                "listed read-only tools, or use tool_propose when a capability is "
+                "genuinely missing. Do not assume an interactive approval or consent "
+                "boundary exists for gated tools."
+            )
+        else:
+            return (
+                f"Your previous decision was rejected: {message} "
+                f"(code {code}). Respond with a valid tool call."
+            )
+
     async def execute_task(self, task_id: str) -> None:
         """
         Execute a single task from start to completion.
+
+        Sections (in execution order):
+          1. Own the task and start the lease heartbeat.
+          2. Establish the task is runnable (terminal tasks are refused).
+          3. Per iteration: enforce budgets, drain reviewed follow-ups at a
+             safe point, handle an approved/denied pending action, request a
+             model decision (with bounded repair guidance on retriable
+             errors), fence the decision against instruction revisions, apply
+             repeat/spin guards, dispatch the decision and any pending calls
+             from the same response, and stop on a terminal state.
+          4. On exit: cancel the heartbeat and release task ownership.
 
         Args:
             task_id: ID of the task to execute
@@ -255,10 +295,10 @@ class TaskExecutionLoop:
                         pending = json.loads(task.pending_action)
                     except (json.JSONDecodeError, TypeError):
                         pending = {}
-                    p_status = pending.get("status")
-                    p_tool = pending.get("tool_name")
-                    p_params = pending.get("params", {})
-                    if p_status == "approved" and p_tool:
+                    pending_status = pending.get("status")
+                    pending_tool_name = pending.get("tool_name")
+                    pending_params = pending.get("params", {})
+                    if pending_status == "approved" and pending_tool_name:
                         # The approved handoff is another admission boundary:
                         # enqueue may have raced the preceding drain/read.
                         if not self.instruction_revision.claim(task_id, snapshot.revision):
@@ -268,11 +308,11 @@ class TaskExecutionLoop:
                             approval_binding = pending.get("action_id") or pending.get(
                                 "binding_token"
                             )
-                        logger.info(f"Executing approved pending action: {p_tool}")
+                        logger.info(f"Executing approved pending action: {pending_tool_name}")
                         budget.record_action()
                         result = await self._execute_tool(
                             task_id,
-                            {"tool_name": p_tool, "params": p_params},
+                            {"tool_name": pending_tool_name, "params": pending_params},
                             approved_by_user=True,
                             action_id=str(approval_binding) if approval_binding else None,
                         )
@@ -280,14 +320,14 @@ class TaskExecutionLoop:
                         # authenticated consent. Stop after the truthful diagnostic
                         # rather than looping over the pending event.
                         break
-                    elif p_status == "denied":
-                        logger.info(f"Skipping denied pending action: {p_tool}")
+                    elif pending_status == "denied":
+                        logger.info(f"Skipping denied pending action: {pending_tool_name}")
                         await self.runner.clear_pending_action(task_id)
                         await self.runner.transition_state(
                             task_id=task_id,
                             new_state=TaskState.RUNNING,
                             event_type="action.denied",
-                            event_data={"tool_name": p_tool, "params": p_params},
+                            event_data={"tool_name": pending_tool_name, "params": pending_params},
                         )
                         continue
 
@@ -347,27 +387,7 @@ class TaskExecutionLoop:
                         break
 
                     # Try again, telling the model what went wrong with actionable instructions
-                    if e.code == "MISSING_CONTROL_CALL":
-                        repair_context = (
-                            "CRITICAL ERROR: You outputted raw text instead of a tool call. "
-                            "You MUST call the 'complete_task' tool with your answer inside 'result' "
-                            "(e.g. complete_task(result=\"...\")). Do NOT output raw text."
-                        )
-                    elif e.code == "INVALID_DECISION_TYPE":
-                        repair_context = (
-                            "Your previous tool name is not callable in the current autonomy "
-                            "mode (it is registered but gated/hidden). Do NOT retry gui_* or any other tool not "
-                            "listed in AVAILABLE TOOLS (app_launch only when listed). Consult "
-                            "system_capabilities for the model-visible subset, choose one of the "
-                            "listed read-only tools, or use tool_propose when a capability is "
-                            "genuinely missing. Do not assume an interactive approval or consent "
-                            "boundary exists for gated tools."
-                        )
-                    else:
-                        repair_context = (
-                            f"Your previous decision was rejected: {e.message} "
-                            f"(code {e.code}). Respond with a valid tool call."
-                        )
+                    repair_context = self._build_repair_context(e.code, e.message)
                     continue
 
 
@@ -467,16 +487,16 @@ class TaskExecutionLoop:
                     else:
                         pending = self.model_engine.pop_pending_tool_calls()
                     for pending_call in pending:
-                        p_type = pending_call["decision_type"]
-                        p_args = pending_call["args"]
+                        pending_type = pending_call["decision_type"]
+                        pending_args = pending_call["args"]
                         budget.record_action()
-                        p_success = await self._execute_decision(
+                        pending_success = await self._execute_decision(
                             task_id=task_id,
-                            decision_type=p_type,
-                            params=p_args
+                            decision_type=pending_type,
+                            params=pending_args
                         )
-                        if not p_success:
-                            logger.warning(f"Pending tool call {p_type} failed; stopping sequential execution")
+                        if not pending_success:
+                            logger.warning(f"Pending tool call {pending_type} failed; stopping sequential execution")
                             success = False
                             break
 
