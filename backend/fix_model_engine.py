@@ -1,3 +1,12 @@
+"""
+Fix Model Engine Patch Script (QUARANTINED)
+
+Orphan patch script — do not run. Top-level code rewrites
+services/model_engine.py in place on execution; no production caller
+imports or invokes this module. Retained only for historical reference.
+"""
+
+QUARANTINED = True
 # Read the file
 with open('services/model_engine.py', 'r') as f:
     content = f.read()
