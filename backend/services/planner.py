@@ -439,10 +439,13 @@ class Planner:
                 f"Invalid step transition: {step.status} -> completed"
             )
 
+        RESULT_SUMMARY_CAP = 2000
+        EVENT_SUMMARY_CAP = 300
+
         step.status = "completed"
         step.result_summary = (
             task.final_result or f"Task {task_id} completed."
-        )[:2000]
+        )[:RESULT_SUMMARY_CAP]
         step.failure_reason = None
         step.blocker_reason = None
         step.evidence_task_id = task_id
@@ -451,7 +454,7 @@ class Planner:
             self._goal_scope(step.objective_id),
             "plan_step.completed",
             {"step_id": step.id, "step_key": step.step_key,
-             "task_id": task_id, "result_summary": (step.result_summary or "")[:300]},
+             "task_id": task_id, "result_summary": (step.result_summary or "")[:EVENT_SUMMARY_CAP]},
         )
         self.db.commit()
         self.db.refresh(step)
@@ -465,8 +468,10 @@ class Planner:
             raise ValueError(f"Step {step_id} not found")
         if not can_transition_step(step.status, "failed"):
             raise ValueError(f"Invalid step transition: {step.status} -> failed")
+        FAILURE_REASON_CAP = 1000
+
         step.status = "failed"
-        step.failure_reason = (reason or "")[:1000]
+        step.failure_reason = (reason or "")[:FAILURE_REASON_CAP]
         if task_id:
             step.evidence_task_id = task_id
         step.updated_at = datetime.utcnow()
