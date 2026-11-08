@@ -20,7 +20,6 @@ from backend.core.budgets import TaskBudget, BudgetExceededError
 from backend.services.model_context_builder import ModelContextBuilder
 from backend.services.model_prompt_contract import build_system_prompt
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Dict, Any, Optional as Opt
 
 logger = logging.getLogger(__name__)
 
