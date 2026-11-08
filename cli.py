@@ -62,7 +62,15 @@ def _manual_data_dir():
     return os.path.normpath(os.path.abspath(os.path.join(tempfile.gettempdir(), "sythion-data")))
 
 
-def resolve_handshake_path():
+def resolve_handshake_path() -> str:
+    """Return the sidecar.json handshake path, preferring storage when available.
+
+    Fallback precedence: ``backend.core.storage.handshake_path()`` wins when the
+    storage module is importable and does not raise; otherwise fall back to
+    ``os.path.join(_manual_data_dir(), "sidecar.json")``. ``BASE_URL`` is derived
+    from this path indirectly via ``get_base_url()``; this helper never reads
+    or mutates ``BASE_URL`` itself.
+    """
     if _storage is not None:
         try:
             return _storage.handshake_path()
@@ -71,6 +79,8 @@ def resolve_handshake_path():
     return os.path.join(_manual_data_dir(), "sidecar.json")
 
 
+# Compat shims: historical names for callers that reference the handshake
+# path as "sidecar" or via the storage.handshake_path() name.
 resolve_sidecar_path = resolve_handshake_path
 handshake_path = resolve_handshake_path
 
