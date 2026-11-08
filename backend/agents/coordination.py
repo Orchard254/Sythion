@@ -501,30 +501,34 @@ class DelegationPlanService:
 
         # Build typed specs
         typed: List[SpecialistSpec] = []
-        for idx, raw in enumerate(specialist_specs):
+        for spec_index, specialist_raw in enumerate(specialist_specs):
+            # Named bounds (values unchanged): objective ≤2000, expected_output ≤500, priority default 3 (1-5, 1 highest).
+            objective_max_len = 2000
+            expected_output_max_len = 500
+            default_priority = 3
             try:
-                role = str(raw.get("role") or raw.get("specialist_role") or "").upper()
+                role = str(specialist_raw.get("role") or specialist_raw.get("specialist_role") or "").upper()
                 SpecialistRole(role)
             except ValueError:
-                return {"plan": None, "delegations": [], "error": f"unknown_role at index {idx}: {raw.get('role')}"}
-            obj = (raw.get("objective") or raw.get("task") or "").strip()
-            if not obj:
-                return {"plan": None, "delegations": [], "error": f"empty objective at index {idx}"}
-            deps = raw.get("depends_on") or raw.get("dependencies") or []
-            if isinstance(deps, str):
-                deps = [deps] if deps else []
+                return {"plan": None, "delegations": [], "error": f"unknown_role at index {spec_index}: {specialist_raw.get('role')}"}
+            objective_text = (specialist_raw.get("objective") or specialist_raw.get("task") or "").strip()
+            if not objective_text:
+                return {"plan": None, "delegations": [], "error": f"empty objective at index {spec_index}"}
+            dependency_ids = specialist_raw.get("depends_on") or specialist_raw.get("dependencies") or []
+            if isinstance(dependency_ids, str):
+                dependency_ids = [dependency_ids] if dependency_ids else []
             # Ensure string ids
-            deps = [str(d) for d in deps]
+            dependency_ids = [str(dep_id) for dep_id in dependency_ids]
             typed.append(SpecialistSpec(
                 role=role,
-                objective=obj[:2000],
-                depends_on=deps,
-                required_capabilities=list(raw.get("required_capabilities") or []),
-                model_requirements=dict(raw.get("model_requirements") or {}),
-                constraints=dict(raw.get("constraints") or {}),
-                expected_output=(raw.get("expected_output") or "")[:500],
-                priority=int(raw.get("priority", 3)),
-                budget=dict(raw.get("budget") or {}) if raw.get("budget") else None,
+                objective=objective_text[:objective_max_len],
+                depends_on=dependency_ids,
+                required_capabilities=list(specialist_raw.get("required_capabilities") or []),
+                model_requirements=dict(specialist_raw.get("model_requirements") or {}),
+                constraints=dict(specialist_raw.get("constraints") or {}),
+                expected_output=(specialist_raw.get("expected_output") or "")[:expected_output_max_len],
+                priority=int(specialist_raw.get("priority", default_priority)),
+                budget=dict(specialist_raw.get("budget") or {}) if specialist_raw.get("budget") else None,
             ))
 
         # Validate graph
