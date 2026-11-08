@@ -173,6 +173,12 @@ class DummyExecutor:
 
 @pytest.mark.asyncio
 async def test_conflicting_mutating_actions_do_not_overlap(tmp_path, monkeypatch):
+    # Isolate the log dir per-test so the RotatingFileHandler does not share
+    # sythion.log with parallel/suite runs (WinError32 on Windows).
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(exist_ok=True)
+    monkeypatch.setenv("SYTHION_LOG_DIR", str(log_dir))
+
     db_path = str(tmp_path / "tool-overlap.db")
     engine = _make_file_db(db_path)
     try:
@@ -181,6 +187,18 @@ async def test_conflicting_mutating_actions_do_not_overlap(tmp_path, monkeypatch
 
         call_counts = {"task-a": 0, "task-b": 0}
         block_event = asyncio.Event()
+        finished = {tid: asyncio.Event() for tid in ("task-a", "task-b")}
+
+        class SignalingExecutor(DummyExecutor):
+            def __init__(self, done_event):
+                super().__init__()
+                self._done_event = done_event
+
+            async def execute_tool(self, tool_name, input_data, policy_context=None):
+                result = await super().execute_tool(tool_name, input_data, policy_context)
+                if self.completed >= 1:
+                    self._done_event.set()
+                return result
 
         async def scripted_make_decision(self, task_id, *args, **kwargs):
             call_counts[task_id] += 1
@@ -197,7 +215,7 @@ async def test_conflicting_mutating_actions_do_not_overlap(tmp_path, monkeypatch
             for task_id in ("task-a", "task-b"):
                 session = SessionLocal()
                 runner = TaskRunner(session)
-                ex = DummyExecutor()
+                ex = SignalingExecutor(finished[task_id])
                 executors[task_id] = ex
                 loop = TaskExecutionLoop(session, runner, ex)
                 loops.append((session, loop))
@@ -205,8 +223,11 @@ async def test_conflicting_mutating_actions_do_not_overlap(tmp_path, monkeypatch
                     await loop_obj.execute_task(tid)
                 tasks.append(asyncio.create_task(runner_fn()))
 
-            # Allow both tools to finish their first serialized execution.
-            await asyncio.sleep(0.4)
+            # Event-based wait: both first serialized executions have completed.
+            await asyncio.wait_for(
+                asyncio.gather(finished["task-a"].wait(), finished["task-b"].wait()),
+                timeout=5.0,
+            )
 
             for ex in executors.values():
                 assert ex.completed >= 1
