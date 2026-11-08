@@ -83,6 +83,15 @@ class SelectedDiscussionEvidenceError(ValueError):
 # Normalizers (strict, bool-excluding).
 # ---------------------------------------------------------------------------
 def _session_of(db: Any) -> Any:
+    """Resolve the session wrapper by fixed priority; fail closed without unification.
+
+    Priority (first match wins): ``db.db`` session-like (``execute`` +
+    ``flush``), then ``db.session``, then ``db.runner.db`` with ``execute``,
+    then ``db`` itself when session-like (``execute`` + ``flush``). The shapes
+    are kept separate compatibility checks, not a unified session factory.
+    ``None``/string input and any candidate lacking the checked session-like
+    surface raise ``ValueError`` without coercion, creation, or mutation.
+    """
     if db is None:
         raise ValueError("A database session is required")
     if isinstance(db, str):
