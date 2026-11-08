@@ -83,6 +83,13 @@ _OCR_MAX_AGE_SECONDS = 5.0
 _SECURITY_WINDOW_TITLE_FRAGMENTS = ("user account control",)
 _SECURITY_WINDOW_CLASSES = {"Consent UI Class", "SecureDesktop"}
 
+# Win32 process/token constants for _integrity_rid / _is_elevated.
+_PROCESS_QUERY_INFORMATION = 0x0400
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_TOKEN_QUERY = 0x0008
+_TOKEN_INTEGRITY_LEVEL = 25
+_HIGH_INTEGRITY_RID = 12288
+
 # Hotkeys Sythion (Synth) never synthesizes, even when a window is foreground.
 _DANGEROUS_HOTKEYS = DANGEROUS_HOTKEYS
 
@@ -152,6 +159,7 @@ def _session_accepts_input() -> bool:
 
 
 def _window_pid(hwnd: int) -> Optional[int]:
+    """Return the owning process ID for a window handle."""
     if not hwnd:
         return None
     pid = ctypes.c_ulong()
@@ -160,6 +168,7 @@ def _window_pid(hwnd: int) -> Optional[int]:
 
 
 def _window_title(hwnd: int) -> str:
+    """Return the title text of a window handle."""
     length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
     buf = ctypes.create_unicode_buffer(length + 1)
     ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
@@ -167,6 +176,7 @@ def _window_title(hwnd: int) -> str:
 
 
 def _window_class(hwnd: int) -> str:
+    """Return the class name of a window handle."""
     buf = ctypes.create_unicode_buffer(256)
     ctypes.windll.user32.GetClassNameW(hwnd, buf, 256)
     return buf.value
@@ -176,26 +186,22 @@ def _integrity_rid(pid: int) -> Optional[int]:
     """Windows integrity level RID of a process (4096 medium, 12288 high)."""
     if not _IS_WINDOWS:
         return None
-    PROCESS_QUERY_INFORMATION = 0x0400
-    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    TOKEN_QUERY = 0x0008
-    TokenIntegrityLevel = 25
     handle = ctypes.windll.kernel32.OpenProcess(
-        PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        _PROCESS_QUERY_INFORMATION | _PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
         return None
     try:
         token = ctypes.c_void_p()
-        if not ctypes.windll.advapi32.OpenProcessToken(handle, TOKEN_QUERY, ctypes.byref(token)):
+        if not ctypes.windll.advapi32.OpenProcessToken(handle, _TOKEN_QUERY, ctypes.byref(token)):
             return None
         try:
             size = ctypes.c_ulong()
-            ctypes.windll.advapi32.GetTokenInformation(token, TokenIntegrityLevel, None, 0, ctypes.byref(size))
+            ctypes.windll.advapi32.GetTokenInformation(token, _TOKEN_INTEGRITY_LEVEL, None, 0, ctypes.byref(size))
             if size.value == 0:
                 return None
             buf = ctypes.create_string_buffer(size.value)
             if not ctypes.windll.advapi32.GetTokenInformation(
-                    token, TokenIntegrityLevel, buf, size.value, ctypes.byref(size)):
+                    token, _TOKEN_INTEGRITY_LEVEL, buf, size.value, ctypes.byref(size)):
                 return None
             return _sid_last_subauthority_from_buffer(buf, size.value)
         finally:
@@ -229,10 +235,11 @@ def _sid_last_subauthority_from_buffer(buf, size: int) -> Optional[int]:
 
 
 def _is_elevated(pid: Optional[int]) -> bool:
+    """Return True when the process runs at high integrity or above."""
     if pid is None:
         return False
     rid = _integrity_rid(pid)
-    return rid is not None and rid >= 12288  # high integrity or above
+    return rid is not None and rid >= _HIGH_INTEGRITY_RID  # high integrity or above
 
 
 def _target_window_safety(hwnd: int, title: str) -> Optional[Dict[str, str]]:
