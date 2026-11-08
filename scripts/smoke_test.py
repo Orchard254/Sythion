@@ -30,6 +30,13 @@ except Exception:  # pragma: no cover - standalone fallback
 
 
 def _manual_data_dir():
+    """fallback only — storage.data_dir() wins.
+
+    Cross-ref: backend/core/storage.py:data_dir(), resolve_data_dir(),
+    handshake_path(), default_data_dir(). This is used only when
+    backend.core.storage is unavailable; callers prefer
+    storage.handshake_path().
+    """
     canonical = os.environ.get("SYTHION_DATA_DIR", "").strip()
     legacy = os.environ.get("Sythion (Synth)_DATA_DIR", "").strip()
     if canonical and legacy:
