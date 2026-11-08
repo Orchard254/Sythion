@@ -535,6 +535,31 @@ def get_adapter() -> OllamaCloudAdapter:
     return _adapter
 
 
+# Sync facades below run async adapter calls with these per-call caps.
+_LIST_MODELS_TIMEOUT_S = 60
+_HEALTH_CHECK_TIMEOUT_S = 30
+
+
+def _run_sync(coro, timeout):
+    """Run ``coro`` to completion from synchronous code.
+
+    When called from a thread with a running event loop, the coroutine
+    runs in a worker thread via ``asyncio.run`` and the caller waits up
+    to ``timeout`` seconds; otherwise it runs directly via
+    ``asyncio.run``.
+    """
+    import concurrent.futures
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(lambda: asyncio.run(coro)).result(timeout=timeout)
+    return asyncio.run(coro)
+
+
 class OllamaCloudProvider:
     """Provider-neutral facade over the Ollama Cloud adapter.
 
@@ -557,18 +582,7 @@ class OllamaCloudProvider:
 
     def list_models(self) -> List[Dict[str, Any]]:
         """Sync facade over the async adapter (provider-neutral contract)."""
-        import asyncio
-        import concurrent.futures
-
-        adapter = get_adapter()
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is not None:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(lambda: asyncio.run(adapter.list_models())).result(timeout=60)
-        return asyncio.run(adapter.list_models())
+        return _run_sync(get_adapter().list_models(), _LIST_MODELS_TIMEOUT_S)
 
     def health(self) -> "ModelHealth":
         """Structured health via the existing capability probe (never raises).
@@ -582,21 +596,7 @@ class OllamaCloudProvider:
             return ModelHealth(self.provider_id(), ModelHealth.UNAVAILABLE,
                                "api key not configured")
         try:
-            import asyncio
-
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        try:
-            if loop is not None:
-                import concurrent.futures
-
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    ok = pool.submit(
-                        lambda: asyncio.run(get_adapter().check_health())
-                    ).result(timeout=30)
-            else:
-                ok = asyncio.run(get_adapter().check_health())
+            ok = _run_sync(get_adapter().check_health(), _HEALTH_CHECK_TIMEOUT_S)
         except Exception as exc:  # pragma: no cover - defensive
             return ModelHealth(self.provider_id(), ModelHealth.UNKNOWN,
                                str(exc)[:200])
@@ -610,8 +610,8 @@ class OllamaCloudProvider:
         max_tokens: int = DEFAULT_MAX_TOKENS,
         timeout: float = TOTAL_TIMEOUT_S,
         temperature: Optional[float] = None,
-        think=None,
-        format=None,
+        think: Optional[Any] = None,
+        format: Optional[Any] = None,
     ) -> Dict[str, Any]:
         return await get_adapter().chat(
             messages,
