@@ -63,6 +63,69 @@ ALLOWED_COMMAND_TYPES = {"start_task", "answer_clarification", "append_task_inst
 # ever accepted in recent_turns.
 _HISTORY_ROLES = frozenset({"user", "assistant"})
 
+# Sentinel distinguishing "field absent" from a present ``None``/falsy value.
+_EVIDENCE_UNSET = object()
+
+
+def _get(evidence_result: Any, name: str, default: object = _EVIDENCE_UNSET) -> object:
+    """Return field ``name`` from a mapping or attribute-bearing object.
+
+    Pure accessor extracted from the structural-evidence gate: mappings use
+    ``.get(name, default)``; other objects use ``getattr`` guarded so any
+    attribute error returns ``default`` instead of raising (fail-closed
+    access for the gate, which checks the returned value itself).
+    """
+    if isinstance(evidence_result, Mapping):
+        return evidence_result.get(name, default)
+    try:
+        return getattr(evidence_result, name, default)
+    except Exception:
+        return default
+
+
+def _int(value: object) -> bool:
+    """Return True iff ``value`` is a genuine ``int`` (bools excluded).
+
+    The gate requires exact integer counts; ``bool`` is an ``int`` subclass
+    in Python, so it must not satisfy count validation.
+    """
+    return type(value) is int and not isinstance(value, bool)
+
+
+def _clean_id(value: object) -> bool:
+    """Return True iff ``value`` is a non-empty, whitespace-trimmed string ID."""
+    return isinstance(value, str) and bool(value) and value == value.strip()
+
+
+def _seq(value: object) -> Optional[list]:
+    """Return ``value`` as a list if it is a non-string sequence, else None.
+
+    Strings/bytes are treated as scalars (not sequences of characters) so
+    malformed string payloads fail closed instead of iterating characters.
+    """
+    if isinstance(value, (str, bytes, bytearray)):
+        return None
+    if not isinstance(value, Sequence):
+        return None
+    return list(value)
+
+
+def _node_get(node: Any, name: str) -> object:
+    """Return field ``name`` from a nested mapping/object, or ``_EVIDENCE_UNSET``.
+
+    Pure accessor for per-entry/member/event/pair nodes: mappings use
+    ``.get``; scalars (bool/str/bytes) and attribute errors yield the
+    absent sentinel, letting the gate treat them as missing fields.
+    """
+    if isinstance(node, Mapping):
+        return node.get(name, _EVIDENCE_UNSET)
+    if isinstance(node, (bool, str, bytes, bytearray)):
+        return _EVIDENCE_UNSET
+    try:
+        return getattr(node, name, _EVIDENCE_UNSET)
+    except Exception:
+        return _EVIDENCE_UNSET
+
 
 def _reject_duplicate_json_keys(pairs):
     """``object_pairs_hook`` that rejects duplicate keys at any nesting level.
@@ -964,30 +1027,36 @@ class ConversationTurnEngine:
         return tuple(result)
 
     def _evidence_is_structurally_sufficient(self, evidence_result: Any) -> bool:
+        """Structural sufficiency gate for selected-discussion evidence.
+
+        Purpose: decide whether ``evidence_result`` is complete enough to
+        use as discussion context without silently accepting gaps.
+
+        Inputs: a mapping or attribute-bearing evidence result (or
+        ``None``/bool/str, which fail). Required aggregate fields must be
+        present and exact (structurally complete, no truncation, zero
+        unresolved/omitted counts); optional supplied fields (IDs, counts,
+        coverage, members, events, sessions, opt-in source-pair readback)
+        must be internally consistent when present.
+
+        Fail-closed: ``None``, missing/malformed required fields, invalid
+        supplied containers/counts/IDs, contradictory projections, and
+        invalid source-pair mode declarations all return ``False``. Field
+        access via module-level ``_get``/``_node_get`` never raises for
+        absent or erroring attributes; the gate rejects the result instead.
+
+        Returns: ``True`` only when the structural contract above holds
+        (including any activated source-pair readback checks); ``False``
+        otherwise. Advisory composite semantic/provenance fields such as
+        ``semantic_complete=False`` or unverified provenance do not affect
+        this structural gate.
+        """
         if evidence_result is None:
             return False
         if isinstance(evidence_result, bool) or isinstance(evidence_result, str):
             return False
 
-        _UNSET = object()
-
-        def _get(name: str, default: object = _UNSET) -> object:
-            if isinstance(evidence_result, Mapping):
-                return evidence_result.get(name, default)
-            try:
-                return getattr(evidence_result, name, default)
-            except Exception:
-                return default
-
-        def _int(value: object) -> bool:
-            return type(value) is int and not isinstance(value, bool)
-
-        def _clean_id(value: object) -> bool:
-            return (
-                isinstance(value, str)
-                and bool(value)
-                and value == value.strip()
-            )
+        _UNSET = _EVIDENCE_UNSET
 
         def _valid_coverage_container(value: object) -> bool:
             # Absent coverage stays optional, but a supplied container must be
@@ -1001,30 +1070,13 @@ class ConversationTurnEngine:
                 return False
             return True
 
-        def _seq(value: object) -> Optional[list]:
-            if isinstance(value, (str, bytes, bytearray)):
-                return None
-            if not isinstance(value, Sequence):
-                return None
-            return list(value)
-
-        def _node_get(node: Any, name: str) -> object:
-            if isinstance(node, Mapping):
-                return node.get(name, _UNSET)
-            if isinstance(node, (bool, str, bytes, bytearray)):
-                return _UNSET
-            try:
-                return getattr(node, name, _UNSET)
-            except Exception:
-                return _UNSET
-
-        entries = _get("entries", _UNSET)
+        entries = _get(evidence_result, "entries", _UNSET)
         entries_list = _seq(entries)
         if not entries_list or len(entries_list) == 0:
             return False
 
         # Core aggregate structural fields remain authoritative.
-        complete = _get("is_structurally_complete", _UNSET)
+        complete = _get(evidence_result, "is_structurally_complete", _UNSET)
         if complete is _UNSET or type(complete) is not bool or complete is not True:
             return False
 
@@ -1034,11 +1086,11 @@ class ConversationTurnEngine:
             "event_unresolved_subject_count",
             "event_omitted_count",
         ):
-            value = _get(name, _UNSET)
+            value = _get(evidence_result, name, _UNSET)
             if value is _UNSET or not _int(value) or value != 0:
                 return False
 
-        truncation = _get("has_role_text_truncation", _UNSET)
+        truncation = _get(evidence_result, "has_role_text_truncation", _UNSET)
         if truncation is _UNSET or type(truncation) is not bool or truncation is not False:
             return False
 
@@ -1047,7 +1099,7 @@ class ConversationTurnEngine:
         # or insufficient True, but it cannot make structural source completeness
         # explicitly False.
         for name in ("member_source_complete", "event_source_complete"):
-            value = _get(name, _UNSET)
+            value = _get(evidence_result, name, _UNSET)
             if value is not _UNSET and (type(value) is not bool or value is not True):
                 return False
 
@@ -1057,13 +1109,13 @@ class ConversationTurnEngine:
             "event_available_count",
             "event_returned_count",
         ):
-            value = _get(name, _UNSET)
+            value = _get(evidence_result, name, _UNSET)
             if value is not _UNSET and (not _int(value) or value < 0):
                 return False
 
         # Aggregate ID shape and discussion count when present.
-        selected_ids_raw = _get("selected_discussion_ids", _UNSET)
-        requested_ids_raw = _get("requested_discussion_ids", _UNSET)
+        selected_ids_raw = _get(evidence_result, "selected_discussion_ids", _UNSET)
+        requested_ids_raw = _get(evidence_result, "requested_discussion_ids", _UNSET)
         selected_ids = None
         requested_ids = None
         for raw, holder in ((selected_ids_raw, "selected"), (requested_ids_raw, "requested")):
@@ -1082,12 +1134,12 @@ class ConversationTurnEngine:
         if selected_ids is not None and requested_ids is not None and selected_ids != requested_ids:
             return False
 
-        discussion_count = _get("discussion_count", _UNSET)
+        discussion_count = _get(evidence_result, "discussion_count", _UNSET)
         if discussion_count is not _UNSET:
             if not _int(discussion_count) or discussion_count != len(entries_list):
                 return False
 
-        aggregate_session = _get("session_id", _UNSET)
+        aggregate_session = _get(evidence_result, "session_id", _UNSET)
         if aggregate_session is not _UNSET:
             if not _clean_id(aggregate_session):
                 return False
@@ -1419,7 +1471,7 @@ class ConversationTurnEngine:
             return _UNSET
 
         def _reconcile(aggregate_name: str, coverage_names: tuple[str, ...], coverage_field: str) -> bool:
-            aggregate = _get(aggregate_name, _UNSET)
+            aggregate = _get(evidence_result, aggregate_name, _UNSET)
             if aggregate is _UNSET:
                 return True
             if not _int(aggregate) or aggregate < 0:
@@ -1486,7 +1538,7 @@ class ConversationTurnEngine:
         source_count_names = {
             key
             for key in (
-                list((_get(names) and []) or [])
+                list((_get(evidence_result, names) and []) or [])
                 if False else []
             )
         }
@@ -1526,7 +1578,7 @@ class ConversationTurnEngine:
             "pair_readback",
         )
         for name in mode_bool_aliases:
-            value = _get(name, _UNSET)
+            value = _get(evidence_result, name, _UNSET)
             if value is _UNSET:
                 continue
             if value is False:
@@ -1560,7 +1612,7 @@ class ConversationTurnEngine:
             + tuple(pair_list_aliases)
         )
         for name in _pair_field_names:
-            value = _get(name, _UNSET)
+            value = _get(evidence_result, name, _UNSET)
             if value is _UNSET or _is_inert_pair_value(name, value):
                 continue
             if name in mode_bool_aliases and value is not True:
@@ -1584,7 +1636,7 @@ class ConversationTurnEngine:
         if mode_active:
             # supplied count fields are strict.
             for name in top_pair_count_names:
-                value = _get(name, _UNSET)
+                value = _get(evidence_result, name, _UNSET)
                 if value is not _UNSET and (not _int(value) or value < 0):
                     return False
             for entry in entries_list:
@@ -1621,7 +1673,7 @@ class ConversationTurnEngine:
 
             top_pair_lists = []
             for name in pair_list_aliases:
-                value = _get(name, _UNSET)
+                value = _get(evidence_result, name, _UNSET)
                 if value is _UNSET:
                     continue
                 seq = _seq(value)
@@ -1803,7 +1855,7 @@ class ConversationTurnEngine:
                 return False
 
             def _first_present_count(names: tuple[str, ...], container: Any = None) -> object:
-                getter = _get if container is None else (lambda n: _node_get(container, n))
+                getter = (lambda n: _get(evidence_result, n)) if container is None else (lambda n: _node_get(container, n))
                 for name in names:
                     value = getter(name)
                     if value is not _UNSET:
