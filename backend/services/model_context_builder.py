@@ -4,15 +4,28 @@ from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session, sessionmaker
+
+try:
+    from backend.services.work_state import is_continuation_request, build_work_context
+except ImportError:
+    from services.work_state import is_continuation_request, build_work_context
+import json
+from backend.models.database import Task, TaskEvent, MemoryEntry, MemoryEdge
+import logging
+from backend.tools.persistent_memory_tools import _query_tokens, _entry_match_score
+from sqlalchemy import text as sa_text, update
 
 MEMORY_CONTEXT_LOG_RETAIN = 500
 _RECENT_CONTEXT_LIMIT = 5
 _MEMORY_FALLBACK_LIMIT = 10
 _MEMORY_CONTEXT_LIMIT = 25
+_MEMORY_CACHE_TTL_SECONDS = 30.0
+_EXPLICIT_REQUEST_MIN_LENGTH = 12
+_PREVIOUS_TASK_LOOKBACK_HOURS = 12
 
 def _cap_tool_summary(summary: str, cap: int, tool_name: str) -> str:
     """Cap a tool summary, cutting evidence packs at newline boundaries."""
@@ -37,14 +50,10 @@ class ModelContextBuilder:
         self._continuation_patterns = tuple(continuation_patterns)
         # Memory context cache: key -> (timestamp, (block, stats))
         self._memory_cache: Dict[str, Tuple[float, Tuple[str, Dict]]] = {}
-        self._memory_cache_ttl = 30.0  # seconds
+        self._memory_cache_ttl = _MEMORY_CACHE_TTL_SECONDS
 
     def _is_continuation_request(self, request: str) -> bool:
         """Detect a request that means 'continue/resume what you were doing'."""
-        try:
-            from backend.services.work_state import is_continuation_request
-        except ImportError:
-            from services.work_state import is_continuation_request
         return is_continuation_request(request)
 
     def previous_task_context(self, task_id: str, request: str) -> str:
@@ -52,16 +61,12 @@ class ModelContextBuilder:
         if not self._is_continuation_request(request):
             return ""
         try:
-            import json
-            from datetime import datetime, timedelta
-            from backend.models.database import Task, TaskEvent
-
-            explicit = bool(request and request.strip()) and len(request.strip()) > 12
+            explicit = bool(request and request.strip()) and len(request.strip()) > _EXPLICIT_REQUEST_MIN_LENGTH
             query = self.db.query(Task).filter(Task.id != task_id)
             if explicit:
                 query = query.filter(Task.state.notin_(("created", "running")))
             else:
-                cutoff = datetime.utcnow() - timedelta(hours=12)
+                cutoff = datetime.utcnow() - timedelta(hours=_PREVIOUS_TASK_LOOKBACK_HOURS)
                 query = (
                     query.filter(Task.state.in_(("failed", "interrupted", "paused")))
                     .filter(Task.created_at >= cutoff)
@@ -100,14 +105,12 @@ class ModelContextBuilder:
                     if isinstance(summary, (dict, list)):
                         summary = json.dumps(summary, ensure_ascii=False, default=str)
                     cap = self._continuation_summary_cap(tname)
-                    if len(str(summary)) > cap:
-                        summary = str(summary)[:cap - 3] + "..."
+                    summary = _cap_tool_summary(str(summary), cap, tname)
                     lines.append(f"  - {tname}: {summary}")
             if prev.final_result or prev.terminal_reason:
                 lines.append(f"- previous outcome: {prev.final_result or prev.terminal_reason}")
             return "\n".join(lines)
         except Exception as e:
-            import logging
             logging.getLogger(__name__).warning("Could not build previous-task context: %s", e)
             return ""
 
@@ -169,10 +172,6 @@ class ModelContextBuilder:
         block = ""
         stats = {"available": 0, "relevant": 0, "connected": 0, "links": 0}
         try:
-            from backend.models.database import MemoryEntry, MemoryEdge
-            from backend.tools.persistent_memory_tools import _query_tokens, _entry_match_score
-            from sqlalchemy import text as sa_text
-
             all_entries = (
                 self.db.query(MemoryEntry)
                 .filter(MemoryEntry.status == "ACTIVE")
@@ -243,7 +242,6 @@ class ModelContextBuilder:
             stats["relevant"] = len(selected)
 
             # Increment access_count for selected entries (importance weighting)
-            from sqlalchemy import update
             selected_ids = [entry.id for entry in selected]
             if selected_ids:
                 self.db.execute(
@@ -269,7 +267,6 @@ class ModelContextBuilder:
                         for entry_id in selected_ids:
                             entry = verify_session.query(MemoryEntry).filter_by(id=entry_id).first()
                             if entry is None or entry.access_count <= 0 or entry.last_accessed_at is None:
-                                import logging
                                 logging.getLogger(__name__).warning("Verification failed: access_count/last_accessed_at not updated for entry %s", entry_id)
                                 return None, {"error": f"Verification failed for entry {entry_id}"}
                 except Exception as exc:
@@ -414,7 +411,6 @@ class ModelContextBuilder:
         session_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Build the model message list from task/runtime state."""
-        import json
         messages: List[Dict[str, Any]] = [{
             "role": "system",
             "content": system_prompt,
@@ -437,11 +433,6 @@ class ModelContextBuilder:
         previous_context = self.previous_task_context(task_id, original_request)
         if previous_context:
             user_content += "\n" + previous_context + "\n"
-
-        try:
-            from backend.services.work_state import build_work_context
-        except ImportError:
-            from services.work_state import build_work_context
 
         work_context = build_work_context(
             self.db,
