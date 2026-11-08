@@ -331,9 +331,28 @@ class SpecialistReasoner:
         except json.JSONDecodeError:
             return None
 
-    def _normalize(self, data: Dict[str, Any], repaired: bool = False) -> Dict[str, Any]:
-        findings = [str(f)[:500] for f in (data.get("findings") or []) if str(f).strip()][:20]
-        proposed = data.get("proposed_actions") or data.get("candidate_actions") or []
+    def _normalize(self, parsed_result: Dict[str, Any], repaired: bool = False) -> Dict[str, Any]:
+        """Normalize parsed specialist output into a validated artifact.
+
+        Truncates free-text fields, drops empty findings/limitations, clamps
+        confidence to [0, 1] (unknown stays None), and validates proposed
+        actions against the role binding and allowed tools.
+
+        Args:
+            parsed_result: Parsed model output dictionary.
+            repaired: Whether this result came from the repair retry.
+
+        Returns:
+            Normalized artifact dict with findings, analysis, limitations,
+            confidence, proposed_actions, flags, and raw input.
+        """
+        # Named truncation caps (values preserved from previous literals).
+        _FINDING_CHAR_CAP = 500
+        _FINDINGS_COUNT_CAP = 20
+        _FIELD_CHAR_CAP = 300
+        _ANALYSIS_CHAR_CAP = 2000
+        findings = [str(f)[:_FINDING_CHAR_CAP] for f in (parsed_result.get("findings") or []) if str(f).strip()][:_FINDINGS_COUNT_CAP]
+        proposed = parsed_result.get("proposed_actions") or parsed_result.get("candidate_actions") or []
         if not isinstance(proposed, list):
             proposed = []
         # Validate each proposed action against role binding
@@ -343,10 +362,10 @@ class SpecialistReasoner:
                 continue
             cap = str(item.get("capability") or item.get("capability_id") or "").strip()
             tool = str(item.get("tool") or item.get("tool_name") or "").strip()
-            purpose = str(item.get("purpose") or item.get("description") or "")[:300]
-            inp = item.get("input") or item.get("tool_input") or {}
-            if not isinstance(inp, dict):
-                inp = {}
+            purpose = str(item.get("purpose") or item.get("description") or "")[:_FIELD_CHAR_CAP]
+            action_input = item.get("input") or item.get("tool_input") or {}
+            if not isinstance(action_input, dict):
+                action_input = {}
             # Capability must be within role's allowed set
             if cap and cap not in self.spec.allowed_capability_ids:
                 logger.info("Specialist proposed capability %s outside role binding, dropping", cap)
@@ -364,29 +383,29 @@ class SpecialistReasoner:
             if tool and tool not in self.allowed_tools:
                 logger.info("Specialist proposed tool %s not in allowed_tools, dropping", tool)
                 continue
-            validated.append({"capability": cap, "tool": tool, "purpose": purpose, "input": inp})
+            validated.append({"capability": cap, "tool": tool, "purpose": purpose, "input": action_input})
         # Confidence separation: reasoning confidence vs evidence confidence
         # Model self-confidence is NOT proof; unknown stays explicit.
         try:
-            conf = data.get("confidence")
+            conf = parsed_result.get("confidence")
             confidence = float(conf) if conf is not None else None
             if confidence is not None and not (0.0 <= confidence <= 1.0):
                 confidence = None
         except (TypeError, ValueError):
             confidence = None
-        limitations = [str(l)[:300] for l in (data.get("limitations") or []) if str(l).strip()][:10]
+        limitations = [str(l)[:_FIELD_CHAR_CAP] for l in (parsed_result.get("limitations") or []) if str(l).strip()][:10]
         if not limitations:
             limitations = ["model provided no explicit limitations"]
         return {
             "findings": findings,
-            "analysis": str(data.get("analysis") or data.get("summary") or "")[:2000],
+            "analysis": str(parsed_result.get("analysis") or parsed_result.get("summary") or "")[:_ANALYSIS_CHAR_CAP],
             "limitations": limitations,
             "confidence": confidence,
-            "recommended_next_action": str(data.get("recommended_next_action") or "")[:500],
+            "recommended_next_action": str(parsed_result.get("recommended_next_action") or "")[:_FINDING_CHAR_CAP],
             "proposed_actions": validated,
             "repaired": repaired,
             "fallback": False,
-            "_raw": data,
+            "_raw": parsed_result,
         }
 
     # -- action planning validation -----------------------------------------
