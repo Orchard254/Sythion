@@ -1,3 +1,26 @@
+/**
+ * api.ts — API client + service facade.
+ *
+ * Section map (top to bottom; comment-only, no behavior/order change):
+ * - imports (axios + ../types), API_BASE_URL, ConversationExchange
+ * - conversationService (list) / assistantService (turn) — early services that
+ *   reference apiClient at call time (first use in text above its creation)
+ * - Bridge config + apiClient creation (configureBridge, getControlToken,
+ *   axios.create interceptors) — apiClient intentionally stays where it is
+ *   (bridge token/axios setup); services only call it after module init
+ * - Interceptors: request (control-token header), response (backend
+ *   error-message normalization via detailToText/errorReason)
+ * - healthService, taskService
+ * - Objectives/goals: objectiveService, goalService
+ * - Agent runtime: agentService, agentRegistryService, capabilityService
+ * - Skills/tools review queues: skillService, toolProposalService
+ * - Memory: memoryService
+ * - First-run setup: setupService
+ * - Voice: Voice* interfaces, voiceService
+ * - Settings/secrets/models/retention/tools: settingsService, secretService,
+ *   modelService, retentionService, toolService
+ * - Helpers (arrayBufferToBase64), SetupReadiness, default export (apiClient)
+ */
 import axios from 'axios';
 import type {
   AgentActivity,
