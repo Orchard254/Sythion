@@ -10,6 +10,9 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from sqlalchemy.orm import Session, sessionmaker
 
 MEMORY_CONTEXT_LOG_RETAIN = 500
+_RECENT_CONTEXT_LIMIT = 5
+_MEMORY_FALLBACK_LIMIT = 10
+_MEMORY_CONTEXT_LIMIT = 25
 
 def _cap_tool_summary(summary: str, cap: int, tool_name: str) -> str:
     """Cap a tool summary, cutting evidence packs at newline boundaries."""
@@ -80,7 +83,7 @@ class ModelContextBuilder:
                 .filter(TaskEvent.task_id == prev.id)
                 .filter(TaskEvent.event_type == "tool.executed")
                 .order_by(TaskEvent.created_at.desc())
-                .limit(5)
+                .limit(_RECENT_CONTEXT_LIMIT)
                 .all()
             )
             if evts:
@@ -188,7 +191,7 @@ class ModelContextBuilder:
                     self.db.query(ConversationTurn)
                     .filter(ConversationTurn.session_id == session_id)
                     .order_by(ConversationTurn.created_at.desc(), ConversationTurn.id.desc())
-                    .limit(5)
+                    .limit(_RECENT_CONTEXT_LIMIT)
                     .all()
                 )
                 if recent_turns:
@@ -208,7 +211,7 @@ class ModelContextBuilder:
                         "JOIN memory_entries m ON m.id = fts.rowid "
                         "WHERE memory_entries_fts MATCH :query "
                         "ORDER BY m.access_count DESC, m.updated_at DESC "
-                        "LIMIT 25"
+                        f"LIMIT {_MEMORY_CONTEXT_LIMIT}"
                     ), {"query": fts_query}).fetchall()
                 except Exception:
                     fts_results = None
@@ -226,17 +229,17 @@ class ModelContextBuilder:
                         if score > 0:
                             scored.append((score, entry))
                     scored.sort(key=lambda pair: (pair[0], pair[1].updated_at), reverse=True)
-                    selected = [entry for _, entry in scored[:25]]
+                    selected = [entry for _, entry in scored[:_MEMORY_CONTEXT_LIMIT]]
             # Fallback: if tokens exist but no matches, include recent high-access entries
             if not selected and tokens:
                 fallback = sorted(
                     all_entries,
                     key=lambda e: (-(e.access_count or 0), -(e.updated_at.timestamp() if e.updated_at else 0)),
-                )[:10]
+                )[:_MEMORY_FALLBACK_LIMIT]
                 selected = fallback
             if not selected and not tokens:
                 # Only fallback to recency when store is empty or query is empty
-                selected = list(all_entries[:25])
+                selected = list(all_entries[:_MEMORY_CONTEXT_LIMIT])
             stats["relevant"] = len(selected)
 
             # Increment access_count for selected entries (importance weighting)
@@ -326,7 +329,7 @@ class ModelContextBuilder:
                     + "\nEND MEMORY DATA"
                 )
             if edges:
-                edge_lines = [f"- {edge.source_key} --{edge.relation}--> {edge.target_key}" for edge in edges[:25]]
+                edge_lines = [f"- {edge.source_key} --{edge.relation}--> {edge.target_key}" for edge in edges[:_MEMORY_CONTEXT_LIMIT]]
                 block += "\nMEMORY LINKS (data):\n" + "\n".join(edge_lines)
         except Exception as e:
             import logging
