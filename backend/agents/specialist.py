@@ -40,6 +40,14 @@ logger = logging.getLogger(__name__)
 # explicitly listed in the delegation constraints ("memory_access").
 _SPECIALIST_READ_SCOPES = ("TASK", "GOAL")
 
+# Bounds for SpecialistContextPacket.to_json(). Serialization is lossy:
+# fields longer than these caps are truncated before JSON encoding, so
+# from_json() receives the capped text and cannot recover the original.
+MAX_OBJECTIVE_CHARS = 1000
+MAX_PACKET_TEXT_CHARS = 500
+MAX_MEMORY_VALUE_CHARS = 300
+MAX_RELEVANT_MEMORY_ENTRIES = 10
+
 
 @dataclass
 class SpecialistContextPacket:
@@ -57,18 +65,18 @@ class SpecialistContextPacket:
 
     def to_json(self) -> str:
         return json.dumps({
-            "objective": self.objective[:1000],
+            "objective": self.objective[:MAX_OBJECTIVE_CHARS],
             "specialist_agent_id": self.specialist_agent_id,
             "role": self.role,
             "required_capabilities": self.required_capabilities,
             "constraints": self.constraints,
-            "expected_output": self.expected_output[:500],
+            "expected_output": self.expected_output[:MAX_PACKET_TEXT_CHARS],
             "budget": self.budget,
-            "parent_goal_summary": (self.parent_goal_summary or "")[:500],
+            "parent_goal_summary": (self.parent_goal_summary or "")[:MAX_PACKET_TEXT_CHARS],
             "model_requirements": self.model_requirements,
             "relevant_memory": [
-                {"key": m.get("key"), "value": str(m.get("value", ""))[:300]}
-                for m in self.relevant_memory[:10]
+                {"key": m.get("key"), "value": str(m.get("value", ""))[:MAX_MEMORY_VALUE_CHARS]}
+                for m in self.relevant_memory[:MAX_RELEVANT_MEMORY_ENTRIES]
             ],
         })
 
