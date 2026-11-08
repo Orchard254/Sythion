@@ -12,6 +12,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+MAX_CONTEXT_SOURCE_CHARS = 1500
+MAX_STATE_PREVIEW_CHARS = 500
+
 
 class IntentCategory(str, enum.Enum):
     COMMAND = "command"                 # immediate action on this machine
@@ -149,12 +152,12 @@ class CognitiveState:
                     epistemic: EpistemicLabel = EpistemicLabel.KNOWN) -> None:
         if content:
             self.context_sources.append(
-                ContextSource(label=label, content=content[:1500],
+                ContextSource(label=label, content=content[:MAX_CONTEXT_SOURCE_CHARS],
                               epistemic=epistemic))
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "user_input": self.user_input[:500],
+            "user_input": self.user_input[:MAX_STATE_PREVIEW_CHARS],
             "intent": {
                 "category": self.intent.category.value if self.intent else None,
                 "ambiguity": self.uncertainty.value,
