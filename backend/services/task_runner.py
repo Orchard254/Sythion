@@ -90,6 +90,17 @@ class TaskRunner:
         return self._task_ownership_nonce
 
     async def acquire_task_ownership(self, task_id: str, worker_id: str = None, **kwargs) -> Any:
+        """Acquire durable task ownership and best-effort runner lease.
+
+        Contract: a fresh acquisition invalidates any prior reply-continuation
+        authority. Requires the runner-owned physical transaction via
+        ``_ensure_transaction()`` and always clears that binding in
+        ``finally``. On ``acquired`` success the nonce/fencing token and
+        current task are stored, the runner lease is acquired, and the
+        transaction commits. Lease-acquisition failures are swallowed with a
+        warning and never fail ownership acquisition. Ownership/commit
+        failures roll back and are re-raised.
+        """
         # A fresh acquisition invalidates any prior reply-continuation authority.
         self._released_task_ownership_task_id = None
         self._released_task_ownership_nonce = None
@@ -108,8 +119,8 @@ class TaskRunner:
                 self._current_task_id = task_id
                 try:
                     await self.acquire_lease(task_id=task_id)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("acquire_lease failed for task %s: %s", task_id, exc)
                 try:
                     self.db.commit()
                 except Exception:
@@ -124,6 +135,16 @@ class TaskRunner:
         finally:
             self._clear_runner_transaction_ownership()
     async def release_task_ownership(self, task_id: str, **kwargs) -> Any:
+        """Release durable task ownership and best-effort runner lease.
+
+        Contract: requires the runner-owned physical transaction via
+        ``_ensure_transaction()`` and always clears that binding in
+        ``finally``. On success the one-shot reply-continuation authority is
+        retained, the nonce/fencing token and current task are cleared, the
+        runner lease is released, and the transaction commits. Lease-release
+        failures are swallowed with a warning and never fail ownership
+        release. Ownership/commit failures roll back and are re-raised.
+        """
         nonce = kwargs.get("nonce", self._task_ownership_nonce)
         outcome = kwargs.get("outcome", kwargs.get("release_outcome"))
         self._ensure_transaction()
@@ -142,8 +163,8 @@ class TaskRunner:
                 self._current_task_id = None
                 try:
                     await self.release_lease()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("release_lease failed for task %s: %s", task_id, exc)
                 try:
                     self.db.commit()
                 except Exception:
