@@ -44,6 +44,11 @@ GOAL_TRANSITIONS: Dict[str, set] = {
 
 TERMINAL_GOAL_STATUSES = {"completed", "failed", "abandoned"}
 
+# Shared open-state set for step completion/progress checks. Values are
+# identical to planner.STEP_OPEN_STATES; defined here to avoid a circular
+# import (planner imports GoalManager).
+STEP_OPEN_STATES = {"pending", "ready", "running", "in_progress", "blocked"}
+
 
 def _scope(goal_id: str) -> str:
     return f"goal:{goal_id}"
@@ -202,8 +207,7 @@ class GoalManager:
             .filter(PlanStep.objective_id == goal_id)
             .all()
         )
-        open_states = {"pending", "ready", "running", "in_progress", "blocked"}
-        open_steps = [s for s in steps if s.status in open_states]
+        open_steps = [s for s in steps if s.status in STEP_OPEN_STATES]
         if open_steps:
             raise ValueError(
                 f"Cannot complete goal {goal_id}: "
@@ -296,6 +300,11 @@ class GoalManager:
         return applied
 
     def in_backoff(self, goal_id: str, now: Optional[datetime] = None) -> bool:
+        """Whether the goal is currently in backoff period.
+
+        Returns False silently for a missing goal (and when no
+        ``backoff_until`` is set); it does not raise.
+        """
         goal = self.get_goal(goal_id)
         if goal is None or not goal.backoff_until:
             return False
@@ -345,7 +354,7 @@ class GoalManager:
             "fraction": round(completed / total, 4) if total else 0.0,
             "open_step_states": sorted({
                 s.status for s in steps
-                if s.status in {"pending", "ready", "running", "in_progress", "blocked"}
+                if s.status in STEP_OPEN_STATES
             }),
         }
 
