@@ -204,6 +204,10 @@ class TaskOrchestrator:
 
         evidence_task = planner.db.query(Task).filter_by(id=task_id).populate_existing().first()
         plan = planner.db.query(GoalPlan).filter_by(id=step.plan_id).populate_existing().first()
+        active_plan_count = len(
+            planner.db.query(GoalPlan.id)
+            .filter_by(goal_id=step.objective_id, status="active").limit(2).all()
+        )
         if not goal_step_task_binding_is_valid(
             requested_task_id=task_id,
             evidence_task_id=step.evidence_task_id,
@@ -212,6 +216,7 @@ class TaskOrchestrator:
             task_goal_id=evidence_task.objective_id if evidence_task is not None else None,
             plan_goal_id=plan.goal_id if plan is not None else None,
             plan_status=plan.status if plan is not None else None,
+            active_plan_count=active_plan_count,
             matching_step_count=len(bindings),
         ) or evidence_task is None:
             return {"step": step, "outcome": "unverified", "updated": False}
@@ -634,6 +639,39 @@ class TaskOrchestrator:
             # The existing manual task-resume/admission path owns resolution.
             return {"step_id": step.id, "resolved": False, "outcome": decision.outcome}
 
+        # Terminal recovery must use the same strict binding as live outcomes.
+        # In particular, a FAILED task in a superseded plan must not bypass
+        # Planner's success-only evidence gate and alter historical failure
+        # state. Duplicate task links or multiple active plans are also
+        # indeterminate; preserve RUNNING for manual review without a write.
+        from backend.models.database import GoalPlan, PlanStep
+        from backend.services.goal_execution_binding import goal_step_task_binding_is_valid
+
+        plan = planner.db.query(GoalPlan).filter_by(id=step.plan_id).first()
+        active_plan_count = len(
+            planner.db.query(GoalPlan.id)
+            .filter_by(goal_id=step.objective_id, status="active").limit(2).all()
+        )
+        matching_count = len(
+            planner.db.query(PlanStep.id)
+            .filter(PlanStep.evidence_task_id == task_id).limit(2).all()
+        )
+        if not goal_step_task_binding_is_valid(
+            requested_task_id=task_id,
+            evidence_task_id=step.evidence_task_id,
+            linked_task_id=step.linked_task_id,
+            step_goal_id=step.objective_id,
+            task_goal_id=task.objective_id,
+            plan_goal_id=plan.goal_id if plan is not None else None,
+            plan_status=plan.status if plan is not None else None,
+            active_plan_count=active_plan_count,
+            matching_step_count=matching_count,
+        ):
+            return {
+                "step_id": step.id, "resolved": False,
+                "outcome": "deferred_evidence_binding_review_required",
+            }
+
         error_fn = _default_completion_precondition(planner.db, task_id)
         precondition_error = error_fn(task_id) if task.state == "completed" else None
 
@@ -985,6 +1023,10 @@ class TaskOrchestrator:
             .filter(PlanStep.evidence_task_id == task_id)
             .limit(2).all()
         )
+        active_plan_count = len(
+            self.planner.db.query(GoalPlan.id)
+            .filter_by(goal_id=step.objective_id, status="active").limit(2).all()
+        )
         if task is None or not goal_step_task_binding_is_valid(
             requested_task_id=task_id,
             evidence_task_id=step.evidence_task_id,
@@ -993,6 +1035,7 @@ class TaskOrchestrator:
             task_goal_id=task.objective_id,
             plan_goal_id=plan.goal_id if plan is not None else None,
             plan_status=plan.status if plan is not None else None,
+            active_plan_count=active_plan_count,
             matching_step_count=matching_count,
         ):
             return "unverified"

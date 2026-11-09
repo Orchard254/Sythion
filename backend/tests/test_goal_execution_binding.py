@@ -5,7 +5,7 @@ from backend.services.goal_execution_binding import goal_step_task_binding_is_va
 GOOD = dict(
     requested_task_id="task-a", evidence_task_id="task-a",
     linked_task_id="task-a", step_goal_id="goal-a", task_goal_id="goal-a",
-    plan_goal_id="goal-a", plan_status="active", matching_step_count=1,
+    plan_goal_id="goal-a", plan_status="active", active_plan_count=1, matching_step_count=1,
 )
 
 
@@ -25,6 +25,8 @@ def test_legacy_unassigned_task_uses_exact_step_binding():
     {"step_goal_id": ""}, {"task_goal_id": "foreign-goal"},
     {"plan_goal_id": "foreign-goal"}, {"plan_status": "superseded"},
     {"plan_status": "rejected"}, {"plan_status": None},
+    {"active_plan_count": 0}, {"active_plan_count": 2},
+    {"active_plan_count": True},
     {"matching_step_count": 0}, {"matching_step_count": 2},
     {"matching_step_count": True},
 ])

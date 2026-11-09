@@ -326,6 +326,7 @@ or implementation. Avoid duplicating work already covered by S051-S063
 - [ ] S201 — Failed-task effect-aware retry acceptance: Run real ORM/TaskRunner tests for uncertain, mutating, incomplete-reasoning and safe read-only failures; validate explicit/background retry stops and Windows process-restart behavior (supports S195-S200).
 - [ ] S202 — Unique goal outcome evidence acceptance: In real ORM/TaskRunner/Windows tests, reject foreign goal tasks, superseded plans, mismatched task links and duplicate evidence bindings before any terminal step event or next-work execution (supports S195-S201).
 - [ ] S203 — Active-plan completion and mandatory kernel verifier acceptance: Run real ORM tests for replan completion isolation, missing/duplicate active plan refusal, and optional callback unable to waive runtime action evidence. Verify full Windows goal flow (supports S195-S202).
+- [ ] S204 — Terminal goal restart binding acceptance: Run real ORM/TaskRunner and process-kill tests proving superseded plans, duplicate evidence tasks and multiple active plans cannot reconcile terminal success/failure or create retries; verify read-only repeated startup and goal UI review consistency (supports S195-S203).
 
 ## Current status and next moves
 
@@ -669,3 +670,5 @@ Live profile `sythion-live-dev-restart` (backend :8000, UI :3001, provider
 - 2026-11-09: **Unique active-plan goal-task binding (S202 implementation only):** added pure goal_execution_binding check shared by Planner direct completion, TaskOrchestrator outcome application and post-worker observation. Duplicated/foreign/stale evidence is unverified, never completion. 19 standalone pure tests passed locally (43 together with existing retry tests), but four new real ORM outcome checks and full Windows/process-kill acceptance were not run in the partial checkout. `[skip ci]` avoids Actions usage.
 
 - 2026-11-09: **S203 partial**: Planner and GoalManager completion now scope to one active plan; direct Planner completion always calls kernel verifier before optional caller veto. 23 new pure tests passed (66 focused combined), source compilation succeeded. Added seven full ORM tests but not run; Windows/process-kill acceptance pending. Commit uses [skip ci].
+
+- 2026-11-09: **S204 partial terminal-recovery binding:** requires one active plan, exact goal/task associations and single evidence-task reference before reconciling terminal goal steps. Fixed stale no-replay assertion; 69 locally passing focused pure tests, Python compilation succeeded, and 7 full-ORM parameter-expanded test cases authored but NOT executed in this partial checkout. Windows/process-kill acceptance and full suite remain open. Commit uses [skip ci].

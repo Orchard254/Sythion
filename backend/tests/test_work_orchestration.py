@@ -796,7 +796,7 @@ class TestSecurityBoundaries:
         step.linked_task_id = None
         db_session.commit()
         orch.recover_step(step.id)
-        assert planner.get_step(step.id).status == "pending"  # never completed
+        assert planner.get_step(step.id).status == "running"  # uncertain old work is not requeued
 
     def test_blocked_step_never_selected_even_after_recovery_loop(self, db_session, runner):
         goal, planner, orch = _goal_with_steps(
@@ -817,6 +817,7 @@ class TestSecurityBoundaries:
 class TestGoalEvidenceBinding:
     @pytest.mark.parametrize("corruption", [
         "wrong_link", "foreign_goal", "superseded_plan", "duplicate_binding",
+        "duplicate_active_plan",
     ])
     def test_terminal_outcome_requires_unique_active_goal_binding(
         self, db_session, runner, corruption,
@@ -843,6 +844,12 @@ class TestGoalEvidenceBinding:
             planner.create_plan(goal.id, [
                 CandidateStepModel(key="replacement", description="New work"),
             ])
+        elif corruption == "duplicate_active_plan":
+            original = planner.active_plan(goal.id)
+            planner.create_plan(goal.id, [
+                CandidateStepModel(key="replacement", description="New work"),
+            ])
+            original.status = "active"
         else:
             sibling = next(s for s in planner.plan_steps(step.plan_id) if s.id != step_id)
             sibling.evidence_task_id = task_id
@@ -889,3 +896,55 @@ def test_runtime_verifier_cannot_be_bypassed_by_optional_callback(
     assert planner.get_step(step_id).status == "running"
     assert len(planner.ledger.event_history(f"goal:{goal.id}")) == before
     assert GoalManager(db_session).get_goal(goal.id).status == "active"
+
+
+# A restarted worker cannot reconcile terminal evidence from an obsolete plan,
+# a duplicated task binding, or two concurrently active plan versions.
+class TestTerminalRecoveryBinding:
+    @pytest.mark.parametrize("terminal", [TaskState.COMPLETED, TaskState.FAILED])
+    @pytest.mark.parametrize("corruption", [
+        "superseded_plan", "duplicate_binding", "duplicate_active_plan",
+    ])
+    def test_terminal_recovery_is_read_only_on_ambiguous_plan(
+        self, db_session, runner, terminal, corruption,
+    ):
+        goal, planner, orch = _goal_with_steps(
+            db_session, runner, ("a", ""), ("b", ""),
+        )
+        started = asyncio.run(orch.start_next_step(goal.id))
+        task_id, step_id = started["task"].id, started["step"].id
+        _run_and_finish(
+            db_session, runner, orch, task_id, terminal,
+            terminal_reason="task failed" if terminal == TaskState.FAILED else None,
+            final_result="done" if terminal == TaskState.COMPLETED else None,
+        )
+        original = planner.get_step(step_id)
+        if corruption == "duplicate_binding":
+            sibling = next(
+                s for s in planner.plan_steps(original.plan_id) if s.id != step_id
+            )
+            sibling.evidence_task_id = task_id
+            sibling.linked_task_id = task_id
+        else:
+            old_plan = planner.active_plan(goal.id)
+            planner.create_plan(goal.id, [
+                CandidateStepModel(key="replacement", description="New plan step"),
+            ])
+            if corruption == "duplicate_active_plan":
+                old_plan.status = "active"
+        db_session.commit()
+
+        before = len(planner.ledger.event_history(f"goal:{goal.id}"))
+        attempts = original.attempt_count
+        tasks = db_session.query(Task).filter_by(objective_id=goal.id).count()
+        for _ in range(2):
+            result = orch.recover_step(step_id)
+            assert result == {
+                "step_id": step_id, "resolved": False,
+                "outcome": "deferred_evidence_binding_review_required",
+            }
+        assert planner.get_step(step_id).status == "running"
+        assert planner.get_step(step_id).attempt_count == attempts
+        assert len(planner.ledger.event_history(f"goal:{goal.id}")) == before
+        assert db_session.query(Task).filter_by(objective_id=goal.id).count() == tasks
+        assert GoalManager(db_session).get_goal(goal.id).status == "active"

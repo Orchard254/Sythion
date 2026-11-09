@@ -430,6 +430,10 @@ class Planner:
         from backend.services.goal_execution_binding import goal_step_task_binding_is_valid
 
         plan = self.db.query(GoalPlan).filter_by(id=step.plan_id).first() if step.plan_id else None
+        active_plan_count = len(
+            self.db.query(GoalPlan.id).filter_by(goal_id=step.objective_id, status="active")
+            .limit(2).all()
+        )
         matching_count = len(
             self.db.query(PlanStep).filter(PlanStep.evidence_task_id == task_id)
             .limit(2).all()
@@ -442,6 +446,7 @@ class Planner:
             task_goal_id=task.objective_id,
             plan_goal_id=plan.goal_id if plan is not None else None,
             plan_status=plan.status if plan is not None else None,
+            active_plan_count=active_plan_count,
             matching_step_count=matching_count,
         ):
             raise ValueError("Goal-step task evidence binding is not authoritative")

@@ -16,6 +16,7 @@ def goal_step_task_binding_is_valid(
     task_goal_id: str | None,
     plan_goal_id: str | None,
     plan_status: str | None,
+    active_plan_count: int,
     matching_step_count: int,
 ) -> bool:
     """Only an unambiguous task bound to an active plan is authoritative.
@@ -33,6 +34,8 @@ def goal_step_task_binding_is_valid(
         and bool(step_goal_id)
         and plan_goal_id == step_goal_id
         and plan_status == "active"
+        and type(active_plan_count) is int
+        and active_plan_count == 1
         and task_goal_id in (None, step_goal_id)
         and type(matching_step_count) is int
         and matching_step_count == 1

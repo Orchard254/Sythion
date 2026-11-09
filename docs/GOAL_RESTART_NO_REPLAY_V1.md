@@ -160,3 +160,28 @@ bounded retry policy; tool permission and runner admission are unchanged.
 Python module/tests compilation passed. **Not run here:** six new real
 ORM/TaskRunner regression cases, full backend, Windows installed runtime and
 actual process-kill/restart tests. S195-S201 remain open.
+
+
+## Terminal recovery active-plan binding (S204, partial acceptance)
+
+Prior startup recovery checked the display/evidence task ID and goal owner,
+but its FAILED branch could still mark a RUNNING historical step FAILED when
+the original plan had been superseded, two steps shared the same evidence
+task, or multiple plans claimed to be active. The completed path would
+eventually reject some mismatches in Planner, but startup reported a generic
+recovery failure rather than a deterministic deferred review.
+
+Startup reconciliation now checks the exact active plan, single active-plan
+version, single evidence-task association and task ownership using the same
+pure binding policy as live Planner completion and post-worker observation.
+Terminal evidence that fails the check remains RUNNING, emits no terminal
+event, schedules no new task, and returns a fixed non-authorizing review
+outcome. Existing interrupted/missing/nonterminal defer semantics are
+unchanged. The legacy test expectation that recovery resets a missing-task
+step to PENDING was corrected to RUNNING (no replay).
+
+**Local verification:** 69 focused pure tests pass, including 3 new
+active-plan uniqueness cases; Python compilation passes. **Added but NOT
+executed here:** 6 parameterized full-ORM startup regression cases and
+1 extended live outcome-binding case. Real process-kill and installed
+Windows/Tauri acceptance remain open. No Actions run.
