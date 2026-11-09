@@ -34,3 +34,27 @@ def test_immutable_policy_result():
     result = classify_goal_restart('interrupted')
     with pytest.raises(FrozenInstanceError):
         result.replay_allowed = True
+
+
+@pytest.mark.parametrize("change", [
+    {"task_state": "completed"}, {"task_state": "interrupted"},
+    {"task_state": "running"}, {"task_state": None},
+    {"task_id": None}, {"evidence_task_id": None},
+    {"linked_task_id": "task-b"}, {"task_goal_id": "other-goal"},
+])
+def test_failed_goal_retry_evidence_gate_rejects_unknown_or_mismatched(change):
+    from backend.services.goal_restart_policy import failed_goal_task_has_matching_evidence
+    valid = dict(
+        task_state="failed", task_id="task-a", evidence_task_id="task-a",
+        linked_task_id="task-a", task_goal_id="goal-a", step_goal_id="goal-a",
+    )
+    assert not failed_goal_task_has_matching_evidence(**(valid | change))
+
+
+@pytest.mark.parametrize("owner", ["goal-a", None])
+def test_failed_goal_retry_evidence_gate_allows_only_matching_failed_task(owner):
+    from backend.services.goal_restart_policy import failed_goal_task_has_matching_evidence
+    assert failed_goal_task_has_matching_evidence(
+        task_state="failed", task_id="task-a", evidence_task_id="task-a",
+        linked_task_id="task-a", task_goal_id=owner, step_goal_id="goal-a",
+    )

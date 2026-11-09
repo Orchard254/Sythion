@@ -788,6 +788,34 @@ async def test_running_step_blocks_retry_mutation_of_other_failed_step(
 
 
 @pytest.mark.asyncio
+async def test_interrupted_goal_preview_stop_reason_is_review_not_generic(db, monkeypatch):
+    monkeypatch.setattr(settings, "max_steps_per_goal_execution", 2)
+    goal = GoalManager(db).create_goal("Interrupted goal step")
+    plan = Planner(db).create_plan(goal.id, [
+        CandidateStepModel(key="old", description="Potentially applied old action"),
+        CandidateStepModel(key="new", description="Independent new action"),
+    ])
+    first, second = Planner(db).plan_steps(plan.id)
+    old = Task(id="interrupted-task", original_request="old action",
+               state="interrupted", version=1, objective_id=goal.id)
+    db.add(old)
+    first.status = "running"
+    first.linked_task_id = old.id
+    first.evidence_task_id = old.id
+    db.commit()
+
+    async def never_run(*_):
+        pytest.fail("Recovery review must prevent any new worker dispatch")
+
+    orch = TaskOrchestrator(state_store=TaskRunner(db), planner=Planner(db))
+    result = await orch.execute_session(goal.id, run_task_fn=never_run)
+    assert result == {"executed": [], "stopped_reason": "unresolved_step_review_required"}
+    assert [s.status for s in Planner(db).plan_steps(plan.id)] == ["running", "ready"]
+    assert second.status == "ready"
+    assert db.query(Task).filter_by(objective_id=goal.id).count() == 1
+
+
+@pytest.mark.asyncio
 async def test_verified_three_step_goal_continues_across_two_fresh_database_sessions(
     file_db, tmp_path, monkeypatch,
 ):

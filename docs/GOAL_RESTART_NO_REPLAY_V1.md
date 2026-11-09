@@ -118,3 +118,29 @@ The local checkout contains pure modules, not the complete Sythion ORM.
 
 **Principle:** Restart can reconcile verified terminal evidence. Restart
 must **not** grant permission to repeat work with unknown effects.
+
+## Retry verification hardening (2026-11-09)
+
+An additional cross-component gap was discovered during the restart review:
+`schedule_retry_if_allowed` categorized a FAILED plan step from its linked
+Task state, but could admit a retry when that task was now COMPLETED with
+unacceptable verifier evidence, missing entirely, linked to a different task,
+or owned by another goal. A completed task with rejected evidence may already
+have produced an external effect; retrying it is not safe by default.
+
+The new pure `failed_goal_task_has_matching_evidence` gate requires an exact
+matching, terminal FAILED task before the existing retry policy is consulted.
+Failed plan steps with inconsistent evidence remain FAILED and are held for
+manual review, with no new attempt, task, event, or authorization. Normal
+bounded retry of a matching FAILED task retains its existing semantics;
+this gate does not establish whether a failed task's external effects are
+safe to repeat. The explicit goal executor now recognizes both
+`step_in_progress` and `recovery_review_required` as
+`unresolved_step_review_required`, and also propagates review-required
+retry blocks rather than reporting ordinary retry exhaustion.
+
+The 10 new pure gate cases passed in an isolated local Python runtime.
+The added ORM/worker integration regressions require the complete private
+checkout and remain **unexecuted** here. The broader OS process-kill and
+Windows acceptance work above is still outstanding; do not mark S199/S200
+complete based on the isolated tests.

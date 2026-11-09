@@ -403,6 +403,40 @@ class TestIdempotency:
 
 
 class TestRetry:
+    @pytest.mark.parametrize("corruption", [
+        "completed_but_unverified", "missing_task", "mismatched_link", "foreign_goal",
+    ])
+    def test_uncertain_or_mismatched_task_never_authorizes_retry(self, db_session, runner, corruption):
+        goal, planner, orch = _goal_with_steps(db_session, runner, ("a", ""))
+        started = asyncio.run(orch.start_next_step(goal.id))
+        task_id = started["task"].id
+        _run_and_finish(db_session, runner, orch, task_id,
+                        TaskState.FAILED, terminal_reason="flaky")
+        asyncio.run(orch.apply_task_outcome(task_id))
+        step = planner.get_step(started["step"].id)
+        assert step.status == "failed"
+        task = db_session.query(Task).filter_by(id=task_id).one()
+        if corruption == "completed_but_unverified":
+            # Legacy/corrupt record: it may already have caused an effect.
+            task.state = "completed"
+        elif corruption == "missing_task":
+            step.evidence_task_id = "ghost-task"
+            step.linked_task_id = "ghost-task"
+        elif corruption == "mismatched_link":
+            step.linked_task_id = "another-task"
+        else:
+            task.objective_id = "foreign-goal"
+        db_session.commit()
+        before = len(planner.ledger.event_history(f"goal:{goal.id}"))
+        attempts = planner.get_step(step.id).attempt_count
+
+        result = orch.schedule_retry_if_allowed(step.id)
+        assert result["scheduled"] is False
+        assert result["requires_review"] is True
+        assert planner.get_step(step.id).status == "failed"
+        assert planner.get_step(step.id).attempt_count == attempts
+        assert len(planner.ledger.event_history(f"goal:{goal.id}")) == before
+
     def test_retry_allowed_then_exhausted(self, db_session, runner):
         goal, planner, orch = _goal_with_steps(db_session, runner, ("a", ""))
 

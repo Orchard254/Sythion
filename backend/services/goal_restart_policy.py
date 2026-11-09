@@ -36,3 +36,27 @@ def classify_goal_restart(task_state: str | None) -> GoalRestartDecision:
     if task_state in ("created", "running", "waiting_for_user", "paused"):
         return GoalRestartDecision(f"deferred_{task_state}", False, True)
     return GoalRestartDecision("deferred_unrecognized_task_state", False, True)
+
+
+def failed_goal_task_has_matching_evidence(
+    *,
+    task_state: str | None,
+    task_id: str | None,
+    evidence_task_id: str | None,
+    linked_task_id: str | None,
+    task_goal_id: str | None,
+    step_goal_id: str,
+) -> bool:
+    """Only a matching FAILED task can be considered by the retry policy.
+
+    This is necessary, not sufficient, for a safe retry. It grants neither
+    permission nor execution: the normal failure taxonomy, retry budget,
+    runner lease, and external-action admission still apply. In particular,
+    a completed-but-unverified task must never be repeated automatically.
+    """
+    return (
+        task_state == "failed"
+        and bool(task_id)
+        and task_id == evidence_task_id == linked_task_id
+        and task_goal_id in (None, step_goal_id)
+    )

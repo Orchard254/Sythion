@@ -459,6 +459,27 @@ class TaskOrchestrator:
         # Re-derive the category deterministically from persisted evidence.
         task_id = step.evidence_task_id
         task = planner.db.query(Task).filter_by(id=task_id).first() if task_id else None
+        from backend.services.goal_restart_policy import failed_goal_task_has_matching_evidence
+
+        # A legacy/corrupt COMPLETED task can have an unverified external
+        # effect. A missing, foreign, or mismatched task also gives no retry
+        # authority. Keep the FAILED step for explicit review, without
+        # changing attempts, emitting a retry event, or creating another task.
+        if not failed_goal_task_has_matching_evidence(
+            task_state=task.state if task is not None else None,
+            task_id=task.id if task is not None else None,
+            evidence_task_id=step.evidence_task_id,
+            linked_task_id=step.linked_task_id,
+            task_goal_id=task.objective_id if task is not None else None,
+            step_goal_id=step.objective_id,
+        ):
+            return {
+                "step_id": step.id, "scheduled": False,
+                "attempt_count": step.attempt_count,
+                "max_attempts": self.retry_policy.max_attempts,
+                "category": None, "requires_review": True,
+            }
+
         error_fn = _default_completion_precondition(planner.db, task_id)
         precondition_error = (
             error_fn(task_id) if task is not None and task.state == "completed" else None
@@ -797,7 +818,7 @@ class TaskOrchestrator:
                     preview = read_goal_work_preview(
                         self.planner.db, goal_id, respect_backoff=False,
                     )
-                    if preview["state"] == "step_in_progress":
+                    if preview["state"] in ("step_in_progress", "recovery_review_required"):
                         # A task from an earlier session may still be running
                         # or waiting for review. No new goal task or retry
                         # may be started until its outcome is reconciled.
@@ -815,10 +836,10 @@ class TaskOrchestrator:
                     if retry_info and retry_info.get("scheduled"):
                         # The enclosing finally releases the lease once.
                         continue
-                    stopped_reason = stopped_reason or (
-                        "step_retry_exhausted"
-                        if retry_info else "no_eligible_step"
-                    )
+                    if retry_info and retry_info.get("requires_review"):
+                        stopped_reason = "unresolved_step_review_required"
+                    else:
+                        stopped_reason = "step_retry_exhausted" if retry_info else "no_eligible_step"
                     break
                 task = started["task"]
                 await self.state_store.transition_state(
