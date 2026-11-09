@@ -469,6 +469,9 @@ export function SecurityScreen() {
                         <span>· {relTime(t.updated_at)}</span>
                       </span>
                       {t.terminal_reason && <span className="t-warn t-clamp-2">{t.terminal_reason}</span>}
+                      <span className="t-faint">
+                        Resuming is not permission approval. Uncertain effects require independent review.
+                      </span>
                     </div>
                     <div className="list__trail">
                       <Button
@@ -481,7 +484,7 @@ export function SecurityScreen() {
                           )
                         }
                       >
-                        Authorize
+                        Resume if safe
                       </Button>
                     </div>
                   </div>

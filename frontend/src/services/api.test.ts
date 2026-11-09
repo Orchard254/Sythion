@@ -5,7 +5,7 @@ import {
   type InternalAxiosRequestConfig,
 } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import apiClient, { assistantService } from './api';
+import apiClient, { assistantService, taskService } from './api';
 
 /**
  * The control token the request interceptor attaches. The response
@@ -240,5 +240,91 @@ describe('assistantService.turn transport boundary', () => {
     expect(error.message).not.toBe(TRANSPORT_MESSAGE);
     expect(error.message).toBe('Authentication required');
     expect(error.response?.status).toBe(401);
+  });
+});
+
+describe('central taskService.resume recovery gate', () => {
+  afterEach(() => {
+    delete apiClient.defaults.adapter;
+  });
+
+  const clear = () => ({
+    task_id: 't1',
+    task_state: 'interrupted' as const,
+    owner_lease: 'released',
+    unresolved_reasoning_calls: 0,
+    reason: 'clear_for_explicit_resume',
+    preflight_clear: true,
+    review_required: false,
+    automatic_replay_allowed: false,
+    review: {
+      status: 'preflight_clear_not_authorized' as const,
+      blocker: 'clear_for_explicit_resume',
+      severity: 'none' as const,
+      observations: { task_state: 'interrupted', owner_lease: 'released', unresolved_reasoning_calls: 0 },
+      evidence_source_classes: [],
+      verification_steps: [],
+      requires_authenticated_reconciliation: false,
+      limited_to_current_snapshot: true,
+      approved: false,
+      authorization_issued: false,
+      uncertainty_cleared: false,
+      execution_started: false,
+      automatic_replay_allowed: false,
+      note: 'Read-only',
+    },
+  });
+
+  const adapterFor = (preflight: unknown, seen: string[]): AxiosAdapter => async (config) => {
+    const endpoint = `${(config.method ?? '').toUpperCase()} ${config.url ?? ''}`;
+    seen.push(endpoint);
+    const data = config.method === 'get' ? preflight : { id: 't1', state: 'running' };
+    return { data, status: 200, statusText: 'OK', headers: {}, config } as AxiosResponse;
+  };
+
+  it('blocks all POST attempts if the fresh preflight requires review', async () => {
+    const seen: string[] = [];
+    const blocked = {
+      ...clear(), preflight_clear: false, review_required: true,
+      reason: 'prior_mutating_effect_review_required',
+      review: { ...clear().review, status: 'review_required' as const, blocker: 'prior_mutating_effect_review_required' },
+    };
+    apiClient.defaults.adapter = adapterFor(blocked, seen);
+    await expect(taskService.resume('t1')).rejects.toThrow('Recovery review is required');
+    expect(seen).toEqual(['GET /tasks/t1/resume-preflight']);
+  });
+
+  it('does not accept an older preflight that omits the non-authorization review', async () => {
+    const seen: string[] = [];
+    apiClient.defaults.adapter = adapterFor({ ...clear(), review: undefined }, seen);
+    await expect(taskService.resume('t1')).rejects.toThrow('Recovery review is required');
+    expect(seen).toEqual(['GET /tasks/t1/resume-preflight']);
+  });
+
+  it('does not turn a forged approval flag into permission to resume', async () => {
+    const seen: string[] = [];
+    apiClient.defaults.adapter = adapterFor({
+      ...clear(), review: { ...clear().review, authorization_issued: true },
+    }, seen);
+    await expect(taskService.resume('t1')).rejects.toThrow('Recovery review is required');
+    expect(seen).toEqual(['GET /tasks/t1/resume-preflight']);
+  });
+
+  it('reads a fresh preflight immediately before a single explicit POST', async () => {
+    const seen: string[] = [];
+    apiClient.defaults.adapter = adapterFor(clear(), seen);
+    const result = await taskService.resume('t1');
+    expect(result).toMatchObject({ id: 't1', state: 'running' });
+    expect(seen).toEqual(['GET /tasks/t1/resume-preflight', 'POST /tasks/t1/resume']);
+  });
+
+  it('never posts when the read-only preflight request fails', async () => {
+    const seen: string[] = [];
+    apiClient.defaults.adapter = async (config) => {
+      seen.push(`${(config.method ?? '').toUpperCase()} ${config.url}`);
+      throw new AxiosError('Network Error', AxiosError.ERR_NETWORK, config);
+    };
+    await expect(taskService.resume('t1')).rejects.toThrow('Network Error');
+    expect(seen).toEqual(['GET /tasks/t1/resume-preflight']);
   });
 });

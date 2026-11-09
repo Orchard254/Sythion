@@ -42,6 +42,41 @@ export type TaskState =
    */
   | 'paused';
 
+/** Read-only GET /api/v1/tasks/{task_id}/resume-preflight. */
+export interface RecoveryReviewPacket {
+  status: 'review_required' | 'preflight_clear_not_authorized';
+  blocker: string;
+  severity: 'high' | 'medium' | 'none';
+  observations: {
+    task_state: string;
+    owner_lease: string;
+    unresolved_reasoning_calls: number | null;
+  };
+  evidence_source_classes: string[];
+  verification_steps: string[];
+  requires_authenticated_reconciliation: boolean;
+  limited_to_current_snapshot: boolean;
+  approved: boolean;
+  authorization_issued: boolean;
+  uncertainty_cleared: boolean;
+  execution_started: boolean;
+  automatic_replay_allowed: boolean;
+  note: string;
+}
+
+/** A snapshot, not authorization to resume or replay consequential work. */
+export interface TaskResumePreflight {
+  task_id: string;
+  task_state: TaskState;
+  owner_lease: string;
+  unresolved_reasoning_calls: number;
+  reason: string;
+  preflight_clear: boolean;
+  review_required: boolean;
+  automatic_replay_allowed: boolean;
+  review: RecoveryReviewPacket;
+}
+
 export interface TaskEvent {
   id: number;
   task_id: string;

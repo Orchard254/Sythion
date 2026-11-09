@@ -1,7 +1,11 @@
 import { useState } from 'react';
 import { Icon } from './icons';
 import { Badge, Bar, Button, Drawer, KV, LoadingBlock, Notice, Rail } from './ui';
-import { useActions, useTaskEvents } from '../hooks/useBackend';
+import { useActions, useTaskEvents, useTaskResumePreflight } from '../hooks/useBackend';
+import { taskService } from '../services/api';
+import {
+  mayOfferExplicitResume, recoveryStatusLabel, recoveryVerificationSteps,
+} from '../lib/recoveryPresentation';
 import { clockTime, dateTime, duration, humanize, relTime, taskLabel, taskTone } from '../lib/format';
 import type { Task } from '../types';
 
@@ -28,6 +32,9 @@ export function TaskDetailDrawer({
 }) {
   const events = useTaskEvents(task.id);
   const actions = useActions();
+  const resumeCandidate = task.state === 'interrupted' || task.state === 'paused';
+  const resumePreflight = useTaskResumePreflight(resumeCandidate ? task.id : null);
+  const resumeReady = resumeCandidate && !resumePreflight.isError && mayOfferExplicitResume(resumePreflight.data);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reply, setReply] = useState('');
@@ -48,6 +55,7 @@ export function TaskDetailDrawer({
       await fn();
       onChanged?.();
       events.refetch();
+      if (resumeCandidate) resumePreflight.refetch();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Action failed');
     } finally {
@@ -65,15 +73,39 @@ export function TaskDetailDrawer({
       >
         {busy ? 'Cancelling…' : task.state === 'created' ? 'Cancel queued request' : 'Interrupt task'}
       </Button>
-    ) : task.state === 'interrupted' ? (
-      <Button
-        variant="primary"
-        icon="play"
-        disabled={busy}
-        onClick={() => void run(() => actions.resumeTask(task.id))}
-      >
-        {busy ? 'Resuming…' : 'Resume task'}
-      </Button>
+    ) : resumeCandidate ? (
+      <div className="row" style={{ gap: 8 }}>
+        <Button
+          variant="subtle"
+          size="sm"
+          disabled={busy || !actions.live || resumePreflight.isFetching}
+          onClick={() => resumePreflight.refetch()}
+        >
+          Recheck recovery
+        </Button>
+        <Button
+          variant="primary"
+          icon="play"
+          disabled={busy || !actions.live || resumePreflight.isFetching || resumePreflight.isError || !resumeReady}
+          onClick={() => void run(async () => {
+            // A displayed snapshot can become stale between refresh and click.
+            // Re-read immediately before sending the explicit resume request.
+            const latest = await taskService.resumePreflight(task.id);
+            if (!mayOfferExplicitResume(latest)) {
+              resumePreflight.refetch();
+              throw new Error('Recovery conditions changed. Review the latest preflight before resuming.');
+            }
+            try {
+              await actions.resumeTask(task.id);
+            } catch {
+              resumePreflight.refetch();
+              throw new Error('The backend refused the resume request. Review the latest recovery status.');
+            }
+          })}
+        >
+          {busy ? 'Resuming…' : 'Resume task'}
+        </Button>
+      </div>
     ) : undefined;
 
   return (
@@ -92,6 +124,41 @@ export function TaskDetailDrawer({
       {error && (
         <Notice tone="danger" icon="alert">
           {error}
+        </Notice>
+      )}
+
+      {resumeCandidate && (
+        <Notice tone={resumeReady ? 'info' : 'warn'} icon={resumeReady ? 'info' : 'lock'}>
+          <div className="stack stack--tight" role="status" aria-label="Recovery preflight">
+            <strong>Recovery review</strong>
+            <span>
+              {resumePreflight.isError
+                ? 'Recovery check failed. Resume is disabled until it can be verified.'
+                : resumePreflight.isLoading && !resumePreflight.data
+                  ? 'Checking the latest persisted recovery evidence…'
+                  : recoveryStatusLabel(resumePreflight.data)}
+            </span>
+            {resumePreflight.data?.review && (
+              <>
+                {recoveryVerificationSteps(resumePreflight.data).length > 0 && (
+                  <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                    {recoveryVerificationSteps(resumePreflight.data).map((step, index) => (
+                      <li key={index}>{step}</li>
+                    ))}
+                  </ul>
+                )}
+                <span className="t-faint">
+                  Read-only guidance. This is not an approval or a guarantee that resumption is safe.
+                  The backend will verify again before changing task state.
+                </span>
+              </>
+            )}
+            {!resumePreflight.data && (
+              <span className="t-faint">
+                This task cannot be resumed unless the recovery service returns a consistent preflight.
+              </span>
+            )}
+          </div>
         </Notice>
       )}
 

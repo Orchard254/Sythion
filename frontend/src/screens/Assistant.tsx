@@ -921,7 +921,7 @@ function ApprovalCard({ task, onOpen }: { task: Task; onOpen: () => void }) {
           <p className="attention__text">{stated}</p>
         ) : (
           <p className="attention__text">
-            {held ? 'This task was interrupted and will not continue until resumed.' : 'Sythion is paused on this and will not continue until you reply.'}
+            {held ? 'This task is interrupted. Recovery checks can block resumption until uncertain work is reviewed.' : 'Sythion is paused on this and will not continue until you reply.'}
           </p>
         )}
         {held ? (

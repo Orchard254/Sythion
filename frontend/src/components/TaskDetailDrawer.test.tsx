@@ -1,4 +1,4 @@
-import { create } from 'react-test-renderer';
+import { act, create } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Task } from '../types';
 import { TaskDetailDrawer } from './TaskDetailDrawer';
@@ -12,10 +12,24 @@ if (typeof (globalThis as { window?: unknown }).window === 'undefined') {
 }
 
 const replyToTask = vi.fn();
+const resumeTask = vi.fn();
+const resumePreflight = vi.hoisted(() => vi.fn());
+const recoveryMock = vi.hoisted(() => ({
+  data: undefined as import('../types').TaskResumePreflight | undefined,
+  isLoading: false,
+  isFetching: false,
+  isError: false,
+  refetch: vi.fn(),
+}));
+
+vi.mock('../services/api', () => ({
+  taskService: { resumePreflight },
+}));
 
 vi.mock('../hooks/useBackend', () => ({
   useTaskEvents: () => ({ data: [], refetch: vi.fn(), isLoading: false }),
-  useActions: () => ({ live: true, replyToTask, resumeTask: vi.fn(), cancelTask: vi.fn() }),
+  useTaskResumePreflight: () => recoveryMock,
+  useActions: () => ({ live: true, replyToTask, resumeTask, cancelTask: vi.fn() }),
 }));
 
 function task(overrides: Partial<Task> = {}): Task {
@@ -72,5 +86,124 @@ describe('TaskDetailDrawer answer control', () => {
     expect(view.root.findAllByType('button').filter((button) => button.children.join('') === 'Send')).toHaveLength(0);
     const rendered = JSON.stringify(view.toJSON());
     expect(rendered).toContain('Do you approve?');
+  });
+});
+describe('TaskDetailDrawer recovery controls', () => {
+  afterEach(() => {
+    recoveryMock.data = undefined;
+    recoveryMock.isError = false;
+    recoveryMock.isLoading = false;
+    recoveryMock.isFetching = false;
+    resumeTask.mockClear();
+    resumePreflight.mockClear();
+  });
+
+  it('disables resumption when no preflight has been received', () => {
+    const view = create(<TaskDetailDrawer task={task({ state: 'interrupted' })} onClose={() => {}} />);
+    const resumeButton = view.root.findAllByType('button')
+      .find((button) => button.children.includes('Resume task'));
+    expect(resumeButton).toBeDefined();
+    expect(resumeButton!.props.disabled).toBe(true);
+    expect(JSON.stringify(view.toJSON())).toContain('Recovery status unavailable');
+  });
+
+  it('disables resumption and shows review guidance for blocked evidence', () => {
+    recoveryMock.data = {
+      task_id: 't1', task_state: 'interrupted', owner_lease: 'expired',
+      unresolved_reasoning_calls: 1,
+      reason: 'unresolved_reasoning_review_required', preflight_clear: false,
+      review_required: true, automatic_replay_allowed: false,
+      review: {
+        status: 'review_required', blocker: 'unresolved_reasoning_review_required',
+        severity: 'medium', observations: { task_state: 'interrupted', owner_lease: 'expired', unresolved_reasoning_calls: 1 },
+        evidence_source_classes: ['reasoning_event_ledger'],
+        verification_steps: ['Verify the prior call outcome independently.'],
+        requires_authenticated_reconciliation: true, limited_to_current_snapshot: true,
+        approved: false, authorization_issued: false, uncertainty_cleared: false,
+        execution_started: false, automatic_replay_allowed: false,
+        note: 'No authorization',
+      },
+    };
+    const view = create(<TaskDetailDrawer task={task({ state: 'interrupted' })} onClose={() => {}} />);
+    const resumeButton = view.root.findAllByType('button')
+      .find((button) => button.children.includes('Resume task'));
+    expect(resumeButton!.props.disabled).toBe(true);
+    const text = JSON.stringify(view.toJSON());
+    expect(text).toContain('Verify the prior call outcome independently.');
+    expect(text).toContain('not an approval');
+  });
+});
+
+function clearRecovery(): import('../types').TaskResumePreflight {
+  return {
+    task_id: 't1', task_state: 'interrupted', owner_lease: 'released',
+    unresolved_reasoning_calls: 0,
+    reason: 'clear_for_explicit_resume', preflight_clear: true,
+    review_required: false, automatic_replay_allowed: false,
+    review: {
+      status: 'preflight_clear_not_authorized', blocker: 'clear_for_explicit_resume',
+      severity: 'none', observations: {
+        task_state: 'interrupted', owner_lease: 'released', unresolved_reasoning_calls: 0,
+      },
+      evidence_source_classes: ['task_state'],
+      verification_steps: ['The backend must recheck the task state.'],
+      requires_authenticated_reconciliation: false, limited_to_current_snapshot: true,
+      approved: false, authorization_issued: false, uncertainty_cleared: false,
+      execution_started: false, automatic_replay_allowed: false,
+      note: 'Not an approval',
+    },
+  };
+}
+
+describe('TaskDetailDrawer explicit recovery interaction', () => {
+  afterEach(() => {
+    recoveryMock.data = undefined;
+    recoveryMock.isError = false;
+    recoveryMock.isLoading = false;
+    recoveryMock.isFetching = false;
+    resumePreflight.mockReset();
+    resumeTask.mockReset();
+  });
+
+  it('keeps Resume task disabled if a displayed preflight request fails', () => {
+    recoveryMock.data = clearRecovery();
+    recoveryMock.isError = true;
+    const view = create(<TaskDetailDrawer task={task({ state: 'interrupted' })} onClose={() => {}} />);
+    const resume = view.root.findAllByType('button').find((b) => b.children.includes('Resume task'));
+    expect(resume?.props.disabled).toBe(true);
+    expect(JSON.stringify(view.toJSON())).toContain('Recovery check failed');
+  });
+
+  it('does not execute when fresh preflight disagrees with displayed clear state', async () => {
+    recoveryMock.data = clearRecovery();
+    const blocked = clearRecovery();
+    blocked.preflight_clear = false;
+    blocked.review_required = true;
+    blocked.reason = 'ownership_recovery_required';
+    blocked.owner_lease = 'expired';
+    blocked.review.status = 'review_required';
+    blocked.review.blocker = 'ownership_recovery_required';
+    resumePreflight.mockResolvedValue(blocked);
+
+    const view = create(<TaskDetailDrawer task={task({ state: 'interrupted' })} onClose={() => {}} />);
+    const resume = view.root.findAllByType('button').find((b) => b.children.includes('Resume task'));
+    expect(resume?.props.disabled).toBe(false);
+    await act(async () => { resume?.props.onClick(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(resumePreflight).toHaveBeenCalledWith('t1');
+    expect(resumeTask).not.toHaveBeenCalled();
+    expect(JSON.stringify(view.toJSON())).toContain('Recovery conditions changed');
+  });
+
+  it('calls explicit resume only after successful fresh preflight', async () => {
+    recoveryMock.data = clearRecovery();
+    resumePreflight.mockResolvedValue(clearRecovery());
+    resumeTask.mockResolvedValue(undefined);
+    const view = create(<TaskDetailDrawer task={task({ state: 'paused' })} onClose={() => {}} />);
+    const resume = view.root.findAllByType('button').find((b) => b.children.includes('Resume task'));
+    expect(resume?.props.disabled).toBe(false);
+    await act(async () => { resume?.props.onClick(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(resumePreflight).toHaveBeenCalledWith('t1');
+    expect(resumeTask).toHaveBeenCalledTimes(1);
+    expect(resumeTask).toHaveBeenCalledWith('t1');
   });
 });

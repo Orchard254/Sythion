@@ -314,3 +314,26 @@ A genuine owner-led reconciliation and UI needs a verifiable principal/scope
 boundary, independent target-state evidence, a durable audited decision
 and an authorization policy that is distinct from model reasoning
 (S186–S187). Until those gates exist, blocked tasks remain blocked.
+
+## 11. Recovery review in the desktop task interface (2026-11-09 slice)
+
+The task drawer now requests and shows a read-only `resume-preflight`
+snapshot when a task is paused or interrupted. It displays fixed-template
+verification guidance and a conservative resume control that is disabled if
+preflight is absent, malformed, in flight, errored or blocked. Successful
+preflight is **not** owner approval; all UI resume entry points perform a
+fresh preflight before posting a resume request, and the TaskRunner repeats
+the decision while holding the task-state writer lock.
+
+The Security screen previously mislabeled its task resume action
+`Authorize`; that action now reads `Resume if safe` and explicitly warns
+that resuming is not permission approval. Independent authenticated human
+consent, a trustworthy profile/session principal and effect reconciliation
+remain *unimplemented*. A per-launch local API token is a control boundary,
+**not** human identity. The work does not enable auto-resume or bypass
+pending-action/uncertain-effect safeguards.
+
+The new UI unit and Axios interaction tests are committed, but React/Vitest,
+full TypeScript build and Windows packaged behavior remain unverified in this
+environment. A small isolated TypeScript behavioral check is not equivalent
+to those integration tests (S186-S188).

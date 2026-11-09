@@ -92,6 +92,15 @@ export function useTasks() {
 
 type TaskListShape = Awaited<ReturnType<typeof api.taskService.list>>;
 
+/** Read-only, task-scoped recovery preflight. Never an approval or resume action. */
+export function useTaskResumePreflight(taskId: string | null) {
+  return useSource<import('../types').TaskResumePreflight>(
+    `task-resume-preflight:${taskId ?? 'none'}`,
+    () => api.taskService.resumePreflight(taskId as string),
+    { enabled: Boolean(taskId), staleMs: 0, refetchInterval: 7_000 },
+  );
+}
+
 export function useTaskEvents(taskId: string | null) {
   return useSource(
     `task-events:${taskId ?? 'none'}`,

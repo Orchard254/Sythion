@@ -22,6 +22,7 @@
  * - Helpers (arrayBufferToBase64), SetupReadiness, default export (apiClient)
  */
 import axios from 'axios';
+import { mayOfferExplicitResume } from '../lib/recoveryPresentation';
 import type {
   AgentActivity,
   AssistantTurn,
@@ -46,6 +47,7 @@ import type {
   SkillSummary,
   Task,
   TaskEvent,
+  TaskResumePreflight,
   ToolInfo,
   ToolProposal,
   VersionInfo,
@@ -252,7 +254,19 @@ export const taskService = {
     await apiClient.post(`/tasks/${taskId}/cancel`);
   },
 
+  resumePreflight: async (taskId: string): Promise<TaskResumePreflight> => {
+    const response = await apiClient.get<TaskResumePreflight>(`/tasks/${taskId}/resume-preflight`);
+    return response.data;
+  },
+
   resume: async (taskId: string): Promise<Task> => {
+    // Every UI resume path uses a FRESH read-only preflight. A cached widget
+    // can never authorize effects, and unknown/contradictory packets fail
+    // closed. The backend repeats admission under its writer lock.
+    const latest = await taskService.resumePreflight(taskId);
+    if (!mayOfferExplicitResume(latest)) {
+      throw new Error('Recovery review is required before this task can resume. Open task details to inspect the blocker.');
+    }
     const response = await apiClient.post(`/tasks/${taskId}/resume`);
     return response.data;
   },
