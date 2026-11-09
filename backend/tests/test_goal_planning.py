@@ -163,6 +163,39 @@ class TestGoalLifecycle:
         assert progress["completed_steps"] == 2
         assert progress["total_required_steps"] == 3  # cancelled excluded
 
+    def test_progress_excludes_superseded_plan_steps(self, db_session):
+        manager = GoalManager(db_session)
+        planner = Planner(db_session)
+        goal = manager.create_goal("G")
+        old_plan = planner.create_plan(
+            goal.id,
+            [
+                CandidateStepModel(key="a", description="step a"),
+                CandidateStepModel(key="b", description="step b"),
+            ],
+        )
+        for s in planner.plan_steps(old_plan.id):
+            if s.step_key == "a":
+                s.status = "completed"
+        db_session.commit()
+        # Replanning supersedes the first plan; its steps are history.
+        new_plan = planner.create_plan(
+            goal.id,
+            [
+                CandidateStepModel(key="x", description="step x"),
+                CandidateStepModel(key="y", description="step y"),
+                CandidateStepModel(key="z", description="step z"),
+            ],
+        )
+        for s in planner.plan_steps(new_plan.id):
+            if s.step_key == "x":
+                s.status = "completed"
+        db_session.commit()
+        progress = manager.progress(goal.id)
+        assert progress["completed_steps"] == 1
+        assert progress["total_required_steps"] == 3
+        assert progress["fraction"] == round(1 / 3, 4)
+
 
 # ===========================================================================
 # Plan validation

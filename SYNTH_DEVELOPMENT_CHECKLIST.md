@@ -295,25 +295,36 @@ Achieved (synthetic/focused evidence unless stated otherwise):
 - Assistant-turn persistence and receipt finalization
 - Conversation task state/result exposure
 - Durable terminal-task wake reconciliation
+- Wake reconciliation regression test
+- Continuity-kernel contract scaffold behind disabled feature flag
+- Progress totals exclude superseded plans
+- Global entry adapters and voice still not unified
 - Companion and Control Center foundations
-- Focused suites: assistant/memory/wake 98 passed; execution/E2E 50 passed;
-  daily-use tools 96 passed/3 skipped; frontend 230 passed; memory scope/ranking
-  regressions passed; real-provider conversation and memory recall succeeded.
+- Real-provider isolated E2E scenario succeeded for persistence/recall, with a
+  pending task that correctly held at permission for memory_store and zero memory
+  injected before execution correctly observed
+- Focused suites: 707 backend + 81 frontend tests passed across selected groups;
+  several large isolated backend batches passed; one native intermittent crash is
+  quarantined in test_phase95_hardening and must not be counted as stable green.
 
 Still to verify or complete:
 
 - Complete backend green baseline.
-- Successful real-provider/installed-runtime end-to-end run.
-- Live daily-use tools and devices.
-- True semantic relevance memory quality.
+- Successful real-provider/installed-runtime end-to-end run without unauthorized
+  purchase paths or unsafe tool execution.
+- Live daily-use tools and unified task/goal/agent orchestration in production
+  browser runtime.
+- True semantic relevance memory quality and next-turn recall proof.
 - Staged payload dependency/build verification.
+- Unify live voice and assistant/task/goal paths through continuity kernel.
 
 Next moves (in order):
 
-1. Finish marker-isolated backend batches without broad reruns.
-2. Verify a real-provider/installed-runtime scenario.
-3. Prove live daily-use tools.
-4. Improve relevance-based memory quality.
+1. Commit current coherent batch, rerun the continuity/E2E evidence after save.
+2. Wire continuity-kernel memory access and entry adapters one at a time behind
+   disabled default.
+3. Verify baseline with exact-file batches and quarantine intermittent failure.
+4. Prove goal-backed delegation and recall through real runtime.
 5. Rebuild/verify staged payload provenance.
 
 Every future report must preserve this achieved/remaining/next sequence rather

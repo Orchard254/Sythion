@@ -754,3 +754,33 @@ class TestWakeOwnedTransaction:
         with pytest.raises(RuntimeError, match="could not determine"):
             agent.absorb_coalescable(target)
         db_session.rollback()
+
+class TestTerminalTaskWakeReconciliation:
+    def test_creates_exactly_one_pending_wake_and_second_recovery_is_idempotent(self, db_session, agent):
+        import uuid
+        from datetime import datetime, timedelta
+
+        from backend.models.database import Task
+
+        now = datetime.utcnow()
+        boot_time = now + timedelta(seconds=5)
+        task = Task(
+            id=str(uuid.uuid4()),
+            original_request="terminal wake reconciliation test",
+            state="completed",
+            created_at=now,
+            updated_at=now,
+        )
+        db_session.add(task)
+        db_session.commit()
+
+        wake_key = "task.completed:" + task.id
+        first = agent.recover_pending_wakes(boot_time)
+        rows = db_session.query(AgentWake).filter_by(wake_key=wake_key).all()
+        assert first["reconciled_terminal_wakes"] == 1
+        assert len(rows) == 1
+        assert rows[0].status == WAKE_PENDING
+
+        second = agent.recover_pending_wakes(boot_time)
+        assert second["reconciled_terminal_wakes"] == 0
+        assert db_session.query(AgentWake).filter_by(wake_key=wake_key).count() == 1

@@ -56,11 +56,23 @@ class ModelContextBuilder:
         tool_summary_cap: Callable[[str], int],
         continuation_summary_cap: Callable[[str], int],
         continuation_patterns: Sequence[str],
+        continuity_kernel_enabled: bool = False,
+        **continuity_kernel_options: Any,
     ) -> None:
         self.db = db_session
         self._tool_summary_cap = tool_summary_cap
         self._continuation_summary_cap = continuation_summary_cap
         self._continuation_patterns = tuple(continuation_patterns)
+        # Optional continuity-kernel interface stub.  The kernel is disabled by
+        # default and this parameter does not alter context-building behavior.
+        merged = bool(
+            continuity_kernel_enabled
+            or continuity_kernel_options.get("continuity_kernel_enabled", False)
+            or continuity_kernel_options.get("continuity_kernel", False)
+            or continuity_kernel_options.get("enabled", False)
+        )
+        self.continuity_kernel_enabled = merged
+        self._continuity_kernel_options = dict(continuity_kernel_options)
         # Memory context cache: key -> (timestamp, (block, stats))
         self._memory_cache: Dict[str, Tuple[float, Tuple[str, Dict]]] = {}
         self._memory_cache_ttl = _MEMORY_CACHE_TTL_SECONDS
@@ -350,8 +362,8 @@ class ModelContextBuilder:
                 .order_by(MemoryEdge.updated_at.desc())
                 .all()
             )
-            stats["links"] = len(edges)
-            # Traverse both incoming and outgoing edges to find connected entries
+            # Neighbor expansion is bounded: derive candidate neighbors from all
+            # active edges touching selected entries, then enforce status/scope.
             neighbor_keys = set()
             for edge in edges:
                 if edge.source_key in selected_keys:
@@ -359,7 +371,8 @@ class ModelContextBuilder:
                 if edge.target_key in selected_keys:
                     neighbor_keys.add(edge.source_key)
             neighbor_keys -= selected_keys
-            # Only include neighbors that exist as MemoryEntry records
+            # Only include neighbors that exist as ACTIVE MemoryEntry records with
+            # visible scope (no inactive or foreign-scoped entries leak).
             neighbor_scope = [MemoryEntry.scope.in_(("USER", "GLOBAL"))]
             if task_id:
                 neighbor_scope.append(
@@ -387,6 +400,15 @@ class ModelContextBuilder:
                 .all()
             ) if neighbor_keys else []
             stats["connected"] = len(neighbors)
+            # Only surface links whose both endpoints were actually included.
+            included_keys = selected_keys | {entry.key for entry in neighbors}
+            edges = [
+                edge for edge in edges
+                if edge.source_key in included_keys
+                and edge.target_key in included_keys
+            ]
+            edges = edges[:_MEMORY_CONTEXT_LIMIT]
+            stats["links"] = len(edges)
 
             lines = [f"- [{entry.category}] {entry.key}: {entry.value}" for entry in selected]
             lines += [f"- [linked] [{entry.category}] {entry.key}: {entry.value}" for entry in neighbors]

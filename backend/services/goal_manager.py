@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from backend.models.database import Objective, PlanStep
+from backend.models.database import GoalPlan, Objective, PlanStep
 from backend.runtime.events import DbEventLedger
 
 
@@ -334,22 +334,40 @@ class GoalManager:
         """Progress derived purely from persisted step state.
 
         Formula: completed_required / total_required where required excludes
-        cancelled steps of the active plan (or all steps for legacy goals).
-        No model-generated percentages.
+        cancelled steps of the ACTIVE plan. Superseded/rejected plans are
+        history and never count toward progress (S016); goals with no
+        plan-backed steps at all use legacy steps. No model-generated
+        percentages.
         """
-        plan = (
-            self.db.query(PlanStep)
+        has_plan_steps = (
+            self.db.query(PlanStep.id)
             .filter(PlanStep.objective_id == goal_id)
             .filter(PlanStep.plan_id.isnot(None))
-            .all()
+            .first()
+            is not None
         )
-        legacy = (
-            self.db.query(PlanStep)
-            .filter(PlanStep.objective_id == goal_id)
-            .filter(PlanStep.plan_id.is_(None))
-            .all()
-        )
-        steps = plan if plan else legacy
+        if has_plan_steps:
+            active_plan_ids = [
+                row[0]
+                for row in self.db.query(GoalPlan.id)
+                .filter_by(goal_id=goal_id, status="active")
+                .all()
+            ]
+            steps = (
+                self.db.query(PlanStep)
+                .filter(PlanStep.objective_id == goal_id)
+                .filter(PlanStep.plan_id.in_(active_plan_ids))
+                .all()
+                if active_plan_ids
+                else []
+            )
+        else:
+            steps = (
+                self.db.query(PlanStep)
+                .filter(PlanStep.objective_id == goal_id)
+                .filter(PlanStep.plan_id.is_(None))
+                .all()
+            )
         required = [s for s in steps if s.status != "cancelled"]
         completed = sum(1 for s in required if s.status == "completed")
         total = len(required)

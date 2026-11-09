@@ -934,4 +934,52 @@ def test_entry_match_score_verified_beats_frequent_weak():
     assert _entry_match_score(verified, tokens) > _entry_match_score(weak, tokens)
 
 
+@pytest.mark.asyncio
+async def test_model_context_builder_linked_neighbors_exclude_foreign_scope(memory_db_setup):
+    """Linked neighbors that are foreign-scoped or inactive never enter model context."""
+    from backend.tools.executor import ToolExecutor
+    from backend.models.database import MemoryEntry, MemoryEdge
+    from backend.services.model_engine import ModelDecisionEngine
+
+    session, _ = memory_db_setup
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    session.add_all([
+        MemoryEntry(key="anchor_mem", value="anchor project value", category="knowledge", status="ACTIVE", scope="GLOBAL"),
+        MemoryEntry(key="foreign_neighbor", value="foreign scoped value", category="knowledge", status="ACTIVE", scope="TASK", scope_ref="other-task"),
+        MemoryEdge(source_key="anchor_mem", target_key="foreign_neighbor", relation="links_to", status="active"),
+    ])
+    session.commit()
+
+    block, stats = engine.context_builder.select_memory_context(
+        "project anchor", session_id="session-scope", task_id="current-task"
+    )
+    assert "anchor_mem" in block
+    assert "foreign_neighbor" not in block
+    assert "foreign scoped value" not in block
+
+
+@pytest.mark.asyncio
+async def test_model_context_builder_neighbor_expansion_bounded(memory_db_setup):
+    """One-hop neighbor expansion stays bounded even with many linked entries."""
+    from backend.tools.executor import ToolExecutor
+    from backend.models.database import MemoryEntry, MemoryEdge
+    from backend.services.model_engine import ModelDecisionEngine
+
+    session, _ = memory_db_setup
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    session.add(MemoryEntry(key="anchor_hub", value="hub project value", category="knowledge", status="ACTIVE", scope="GLOBAL"))
+    for i in range(40):
+        key = f"neighbor_{i}"
+        session.add(MemoryEntry(key=key, value=f"neighbor value {i}", category="knowledge", status="ACTIVE", scope="GLOBAL"))
+        session.add(MemoryEdge(source_key="anchor_hub", target_key=key, relation="relates", status="active"))
+    session.commit()
+
+    block, stats = engine.context_builder.select_memory_context(
+        "hub project", session_id="session-bnd2", task_id="task-bnd2"
+    )
+    assert stats["connected"] <= 25
+    linked_lines = [ln for ln in (block or "").splitlines() if "[linked]" in ln]
+    assert len(linked_lines) <= 25
+
+
 

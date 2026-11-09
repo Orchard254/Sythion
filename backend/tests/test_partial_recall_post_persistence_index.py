@@ -358,7 +358,7 @@ async def test_real_hook_contains_orchestrator_failure(file_db, monkeypatch, cap
 
 
 @pytest.mark.asyncio
-async def test_uncommitted_receipt_transition_blocks_indexing(file_db, monkeypatch, caplog):
+async def test_route_committed_receipt_allows_indexing_before_explicit_session_commit(file_db, monkeypatch, caplog):
     session, engine = file_db
     sid = "partial-index-session"
     set_current_session_id(sid)
@@ -398,17 +398,17 @@ async def test_uncommitted_receipt_transition_blocks_indexing(file_db, monkeypat
     monkeypatch.setattr(scheduled_client, "chat", IndexModelClient().chat)
     monkeypatch.setattr(server_index, "run_server_owned_semantic_index", tracked_orchestrator)
 
-    # While the route transaction is uncommitted, the receipt has only been
-    # flushed and is not durably resolved.  Running the scheduled hook now may
-    # not invoke any model/index work.
+    # The route commits the resolved durable receipt before scheduling, so the
+    # first background run verifies that committed receipt and invokes indexing
+    # immediately; an outer/secondary commit is not required for eligibility.
     with caplog.at_level(logging.INFO, logger="backend.api.routes"):
         await bg()
     assert len(orchestrator_calls) == 1
     assert IndexModelClient.calls == 1
     assert "insufficient" in caplog.text
 
-    # Commit the exact request/receipt transaction, then rerun the same
-    # scheduled task and client without retrying the assistant request.
+    # The same scheduled task can be rerun against the already committed durable
+    # receipt/client without retrying the assistant request.
     session.commit()
     await bg()
     assert len(orchestrator_calls) == 2
