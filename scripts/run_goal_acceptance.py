@@ -110,6 +110,22 @@ def run_command(label: str, argv: list[str]) -> dict:
             "exit_code": status, "elapsed_seconds": round(time.monotonic()-started, 2)}
 
 
+def backend_mirror_preflight() -> dict:
+    """Read-only release parity check; do not spend a long test run on drift."""
+    try:
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts/refresh_staged_backend.py"), "--check"],
+            cwd=ROOT, capture_output=True, text=True, timeout=120, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"suite": "staged_backend_preflight", "status": "not_verified",
+                "reason": type(exc).__name__}
+    if result.returncode == 0:
+        return {"suite": "staged_backend_preflight", "status": "passed"}
+    return {"suite": "staged_backend_preflight", "status": "not_verified",
+            "reason": "backend_mirror_missing_stale_or_unsafe"}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--process-kill", action="store_true",
@@ -147,9 +163,20 @@ def main(argv: list[str] | None = None) -> int:
                      "backend/tests/test_process_crash_recovery.py"],
                     strict_skips=True, env=env))
         if args.full_backend:
-            result["suites"].append(run_suite(
-                "full_backend", [sys.executable, "-m", "pytest", "-q", "backend/tests"],
-                strict_skips=False))
+            mirror = backend_mirror_preflight()
+            result["suites"].append(mirror)
+            if mirror["status"] == "passed":
+                result["suites"].append(run_suite(
+                    "full_backend", [sys.executable, "-m", "pytest", "-q", "backend/tests"],
+                    strict_skips=False))
+            else:
+                print("[acceptance] The generated Tauri backend mirror needs review.")
+                print("[acceptance] To refresh explicitly, run:")
+                print("  python scripts/refresh_staged_backend.py --apply")
+                result["suites"].append({
+                    "suite": "full_backend", "status": "not_verified",
+                    "reason": "staged_backend_preflight_failed",
+                })
         if args.frontend:
             npm = shutil.which("npm")
             result["suites"].append(

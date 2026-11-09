@@ -39,3 +39,22 @@ def test_native_fault_outside_summary_tail_still_blocks_acceptance():
     result = runner.pytest_verdict("12 passed in 0.13s", exit_code=0,
                                    strict_skips=True, native_fault_seen=True)
     assert result["status"] == "not_verified"
+
+
+@pytest.mark.parametrize("returncode,status", [
+    (0, "passed"), (1, "not_verified"), (2, "not_verified"),
+])
+def test_staged_backend_preflight_is_fail_closed(monkeypatch, returncode, status):
+    from types import SimpleNamespace
+    called = []
+
+    def fake_run(command, **kwargs):
+        called.append((command, kwargs))
+        return SimpleNamespace(returncode=returncode)
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    response = runner.backend_mirror_preflight()
+    assert response["status"] == status
+    assert called[0][0][-1] == "--check"
+    assert "refresh_staged_backend.py" in called[0][0][1]
+    assert "--apply" not in called[0][0]

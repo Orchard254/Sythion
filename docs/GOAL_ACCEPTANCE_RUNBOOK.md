@@ -126,3 +126,28 @@ python -m pytest -q backend/tests --maxfail=1 --disable-warnings
 
 Once the complete backend and frontend suites pass, repeat the commit-bound
 acceptance runner with process-kill and the installed-app checks separately.
+
+
+## Refreshed backend mirror workflow (Windows release acceptance)
+
+Owner-run at clean commit 6db6135: goal-preview ORM integration **14 passed**, goal-linked UI **2 passed**. Full backend reached **3,369 passed, 57 skipped, 4 xfailed** before failing `test_staged_backend_mirror_matches_source` with 27 stale/missing paths in `src-tauri/resources/backend`. Full release suite remains **not verified**.
+
+The Tauri resources directory is Git-ignored generated installer output, so `git pull` does not update its backend mirror. The existing `stage_clean_backend.py` purposely never overwrites the live mirror. A separate explicit promotion command now exists.
+
+Run these commands in Windows PowerShell after pulling, with no active Tauri packaging process:
+
+```powershell
+git pull --ff-only origin master
+python scripts/refresh_staged_backend.py --check
+python -m pytest -q scripts/tests/test_refresh_staged_backend.py --disable-warnings
+python scripts/refresh_staged_backend.py --apply
+python scripts/refresh_staged_backend.py --check
+python scripts/verify_release_payload.py --check-backend-mirror
+python -m pytest -q backend/tests/test_release_payload.py --disable-warnings
+```
+
+The default `--check` does not modify anything. `--apply` intentionally stages a new safe backend copy outside Tauri resources, verifies byte equality and release safety, moves the prior mirror into a unique retained `build/staging/clean-backend-backup-*` directory, promotes the verified copy and rechecks. A failed promotion attempts to roll back. Existing prohibited artifacts or reparse points stop the process for manual review. It does not touch the Python runtime, source code or credentials, and the backup is outside bundled resources.
+
+The goal acceptance runner now performs **read-only mirror preflight** before invoking the expensive full backend suite. Stale/missing/unsafe mirror -> `not_verified`, an explicit refresh instruction and no 19-minute full-backend run. It NEVER silently restages or weakens `test_release_payload`.
+
+Five isolated synthetic checks of promotion/rollback passed in the assistant's Linux environment using staging adapters; actual Windows promotion, full packaging verification and installed app acceptance are still pending. Once mirror and release tests pass, repeat the full goal acceptance matrix, and separately verify the installed Tauri app.
