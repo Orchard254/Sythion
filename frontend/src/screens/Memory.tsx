@@ -58,12 +58,28 @@ export function MemoryScreen() {
     offset,
   });
 
+  // The live /memory/report contract is counts/relation_vocabulary/
+  // memory_context_injection{runs,totals,per_run}; the demo dataset ships
+  // stores/relations/mean_items_injected instead. Read both, demo first so
+  // preview rendering is unchanged, then the live shape.
   const stores = (report.data?.stores ?? {}) as Record<string, { count?: number }>;
   const storeEntries = Object.entries(stores).filter(([, v]) => typeof v?.count === 'number');
-  const totalItems = storeEntries.reduce((n, [, v]) => n + (v.count ?? 0), 0);
+  const counts = (report.data?.counts ?? {}) as { memory_entries?: number };
+  const totalItems = storeEntries.length > 0
+    ? storeEntries.reduce((n, [, v]) => n + (v.count ?? 0), 0)
+    : typeof counts.memory_entries === 'number' ? counts.memory_entries : undefined;
 
   const relationStats = (report.data?.relations ?? {}) as Record<string, number>;
-  const injection = (report.data?.memory_context_injection ?? {}) as Record<string, number>;
+  const injectionRaw = (report.data?.memory_context_injection ?? {}) as Record<string, unknown>;
+  const injectionRuns = typeof injectionRaw.runs === 'number' ? injectionRaw.runs : undefined;
+  const injectionTotals = (injectionRaw.totals ?? {}) as {
+    available?: number; relevant?: number; connected?: number; links?: number;
+  };
+  const meanRelevant = typeof injectionRaw.mean_items_injected === 'number'
+    ? injectionRaw.mean_items_injected
+    : (injectionRuns && injectionRuns > 0 && typeof injectionTotals.relevant === 'number')
+      ? injectionTotals.relevant / injectionRuns
+      : undefined;
 
   const edgeList = edges.data ?? [];
   const itemsData = useMemo(() => memoryItems.data?.items ?? [], [memoryItems.data]);
@@ -131,7 +147,7 @@ export function MemoryScreen() {
           <Stat
             label="Stored items"
             icon="database"
-            value={report.isLoading ? '—' : totalItems}
+            value={report.isLoading ? '—' : (typeof totalItems === 'number' ? totalItems : '—')}
             foot="Across all memory stores"
             tone="accent"
           />
@@ -151,7 +167,7 @@ export function MemoryScreen() {
           <Stat
             label="Context per run"
             icon="brain"
-            value={report.isLoading ? '—' : (injection.mean_items_injected ?? '—')}
+            value={report.isLoading ? '—' : (typeof meanRelevant === 'number' ? meanRelevant.toFixed(1) : '—')}
             suffix="items"
             foot="Mean items injected into model context"
           />
@@ -382,6 +398,16 @@ export function MemoryScreen() {
             >
               {report.isLoading ? (
                 <LoadingBlock rows={4} />
+              ) : storeEntries.length === 0 && typeof counts.memory_entries === 'number' ? (
+                <div className="stack stack--tight">
+                  <div className="row row--between">
+                    <span className="t-body">memory (general)</span>
+                    <span className="t-mono t-title">{counts.memory_entries}</span>
+                  </div>
+                  <span className="t-faint" style={{ marginTop: 4 }}>
+                    Scoped stores are not exposed by this backend; the single shared store is shown.
+                  </span>
+                </div>
               ) : storeEntries.length === 0 ? (
                 <EmptyState icon="database" title="No store statistics available" />
               ) : (
@@ -401,10 +427,18 @@ export function MemoryScreen() {
                 <LoadingBlock rows={3} />
               ) : (
                 <KV
-                  items={Object.entries(injection).map(([k, v]) => ({
-                    k: humanize(k),
-                    v: typeof v === 'number' ? v.toFixed(1) : String(v),
-                  }))}
+                  items={injectionRuns !== undefined
+                    ? [
+                        { k: 'Runs sampled', v: String(injectionRuns) },
+                        { k: 'Available memories (window)', v: String(injectionTotals.available ?? '—') },
+                        { k: 'Relevant injected (window)', v: String(injectionTotals.relevant ?? '—') },
+                        { k: 'Connected links (window)', v: String(injectionTotals.connected ?? 0) },
+                        { k: 'Mean injected per run', v: typeof meanRelevant === 'number' ? meanRelevant.toFixed(2) : '—' },
+                      ]
+                    : Object.entries(injectionRaw).map(([k, v]) => ({
+                        k: humanize(k),
+                        v: typeof v === 'number' ? v.toFixed(1) : String(v),
+                      }))}
                 />
               )}
               <p className="t-faint" style={{ marginTop: 10 }}>
