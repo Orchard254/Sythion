@@ -38,10 +38,45 @@ async def test_real_read_and_sha256_tools_agree_with_independent_file_bytes(work
     )
     assert read.success, read.error
     assert hashed.success, hashed.error
-    assert read.data["content"] == raw.decode("utf-8")
+    # file_read uses text-mode universal newline translation, so on Windows
+    # Path.write_text may persist CRLF while the returned text contains LF.
+    # SHA-256 and bytes_read must still describe the exact on-disk bytes.
+    assert read.data["content"] == path.read_text(encoding="utf-8")
     assert [int(x) for x in read.data["content"].splitlines()] == [2, 3, 5]
+    assert read.data["bytes_read"] == len(raw)
     assert hashed.data["file_size"] == len(raw)
     assert hashed.data["algorithm"] == "sha256"
+    assert hashed.data["hash"] == hashlib.sha256(raw).hexdigest()
+    assert path.read_bytes() == raw
+
+
+@pytest.mark.parametrize(
+    "separator", [b"\n", b"\r\n", b"\r"],
+    ids=["lf", "crlf", "cr"],
+)
+@pytest.mark.asyncio
+async def test_file_read_normalizes_line_endings_but_hashes_actual_bytes(
+    workspace, separator,
+):
+    """Distinct raw line endings produce the same text, not the same digest.
+
+    Byte-level evidence remains independent of text newline translation and
+    file_read must not modify the original content.
+    """
+    approved, _, executor = workspace
+    path = approved / "numbers.txt"
+    raw = separator.join((b"2", b"3", b"5")) + separator
+    path.write_bytes(raw)
+    read = await executor.execute_tool("file_read", {"path": str(path)})
+    hashed = await executor.execute_tool(
+        "file_hash", {"path": str(path), "algorithm": "sha256"}
+    )
+    assert read.success, read.error
+    assert hashed.success, hashed.error
+    assert read.data["content"] == "2\n3\n5\n"
+    assert read.data["bytes_read"] == len(raw)
+    assert read.data["size"] == len(read.data["content"].encode("utf-8"))
+    assert hashed.data["file_size"] == len(raw)
     assert hashed.data["hash"] == hashlib.sha256(raw).hexdigest()
     assert path.read_bytes() == raw
 

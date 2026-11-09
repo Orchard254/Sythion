@@ -692,8 +692,14 @@ async def test_three_step_goal_uses_actual_readonly_tool_executor_in_temp_worksp
         )
         assert read.success, read.error
         assert digest.success, digest.error
-        assert read.data["content"].encode("utf-8") == source.read_bytes()
-        assert digest.data["hash"] == hashlib.sha256(source.read_bytes()).hexdigest()
+        # Compare text to text: file_read normalizes CRLF on Windows.
+        # Independently verify the digest and byte count against raw disk
+        # contents, preserving the real-tool evidence checks.
+        raw = source.read_bytes()
+        assert read.data["content"] == source.read_text(encoding="utf-8")
+        assert read.data["bytes_read"] == len(raw)
+        assert digest.data["file_size"] == len(raw)
+        assert digest.data["hash"] == hashlib.sha256(raw).hexdigest()
         checks.append((read.data["bytes_read"], digest.data["hash"]))
         await scripted(_session, task_id, _test_executor)
 

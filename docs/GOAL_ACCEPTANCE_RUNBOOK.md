@@ -33,3 +33,33 @@ has undergone manual UI/OS recovery acceptance. Record the JSON and manually
 verify installed-app UI recovery blockers, no duplicate external action,
 permissions, durable three-step progress and safe owner-directed continuation
 before closing S194–S205. Do not change autonomy defaults to run these tests.
+
+## Windows read-only adapter newline regression (2026-11-10)
+
+The first Windows-focused run reported **220 passed, 2 failed** in the focused
+goal suite. Both failures came from test assertions treating FileReadTool's
+universal-newline-normalized text as identical to raw file bytes. The runtime's
+FileHashTool correctly hashes the raw bytes; this was a test-contract mismatch,
+not evidence of a broken SHA-256 or goal runner.
+
+Tests now compare FileReadTool content to independent text-mode reads while
+continuing to check `bytes_read`, `file_size`, SHA-256 over raw bytes and
+unchanged source files. Three explicit LF/CRLF/CR byte fixtures exercise that
+contract. No production tool code, action gates or goal safety behavior was
+changed. **These fixes still require a fresh Windows rerun**; the previous
+220/2 result must remain recorded as failed, not retroactively passed.
+
+After pulling the commit, first run:
+
+```powershell
+python -m pytest -q backend/tests/test_goal_readonly_tool_adapter.py backend/tests/test_goal_execution_vertical_slice.py --disable-warnings
+```
+
+Then run the acceptance matrix with a commit-bound JSON report:
+
+```powershell
+python scripts/run_goal_acceptance.py --process-kill --full-backend --frontend --report "$env:TEMP\sythion-goal-acceptance.json"
+```
+
+A green focused suite does not prove the process-kill/full-backend/frontend
+suite or manually tested installed Windows/Tauri behavior.
