@@ -19,6 +19,7 @@ from backend.tools.executor import ToolExecutor
 from backend.core.budgets import TaskBudget, BudgetExceededError
 from backend.services.model_context_builder import ModelContextBuilder
 from backend.services.model_prompt_contract import build_system_prompt
+from backend.services.reasoning_dispatch import ReasoningJob, ReasoningPurpose, dispatch_reasoning
 from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
@@ -592,7 +593,14 @@ class ModelDecisionEngine:
                     max_tokens=self.MAX_TOKENS_PER_REQUEST,
                 )
 
-            response = await asyncio.wait_for(_call(), timeout=decision_timeout)
+            response = await dispatch_reasoning(
+                ReasoningJob(
+                    purpose=ReasoningPurpose.TASK_DECISION,
+                    work_id=task_id,
+                    timeout_seconds=decision_timeout,
+                ),
+                _call,
+            )
             
             # Track tokens (estimate)
             usage = response.get('usage', {})

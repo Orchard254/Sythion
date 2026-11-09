@@ -38,6 +38,8 @@ except Exception:  # pragma: no cover - import path compatibility
             validate_discussion_resolution_selection,
         )
 
+from .reasoning_dispatch import ReasoningJob, ReasoningPurpose, dispatch_reasoning
+
 from .conversation_text_policy import (
     PLAIN_PROSE_NO_ACTION_DISCLOSURE,
     looks_like_machine_readable_payload as _looks_like_machine_readable_payload,
@@ -417,7 +419,15 @@ class ConversationTurnEngine:
                 "max_tokens": MAX_ASSISTANT_TEXT,
                 "timeout": 60.0,
             }
-            response = await self.model_client.chat(**call_kwargs)
+            response = await dispatch_reasoning(
+                ReasoningJob(
+                    purpose=ReasoningPurpose.CONVERSATION,
+                    # The provider is already given a 60s timeout; the outer
+                    # deadline is only a safety bound if it ignores that limit.
+                    timeout_seconds=70.0,
+                ),
+                lambda: self.model_client.chat(**call_kwargs),
+            )
         except asyncio.CancelledError:
             # Never retry or mask cancellation.
             raise
