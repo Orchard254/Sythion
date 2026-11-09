@@ -22,6 +22,10 @@ PACKAGED_APP_ORIGINS = frozenset({
 DEVELOPMENT_APP_ORIGINS = frozenset({
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    # Secondary loopback dev port so a second dev instance does not depend on
+    # port 3000 being free (auth only accepts these exact origins, never arbitrary ports).
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
 })
 
 PROTECTED_PATHS = frozenset({"/health", "/tasks", "/tools"})
