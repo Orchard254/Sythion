@@ -308,16 +308,17 @@ Achieved (synthetic/focused evidence unless stated otherwise):
 - Focused suites: assistant/memory/wake 98; execution/E2E 50; daily tools 96/3;
   frontend 230; scoped memory 52.
 
-Still to verify or complete:
+Still the running live dev setup (designed for normal-user browser testing):
+- Backend on 127.0.0.1:8000 with isolated dev identity `SYTHION_CONTROL_TOKEN=live-dev-token-instructions`, `SYTHION_DATA_DIR=…sythion-live-dev-restart`, development mode with 127.0.0.1:3001 trusted (explicit auth edit committed).
+- Vite dev server on http://127.0.0.1:3001/ serving the Companion/Assistant app.
+- 2026-11-09: full rendered onboarding completed: key accepted, `beam` model tested OK, text mode selected, #/assistant shows conversation, turn sent via Enter, Synth answered live from the configured provider.
+- Dev caches/pids isolated; `.wite` none.
 
-- Complete backend green baseline.
-- Successful real-provider/installed-runtime end-to-end run without unauthorized
-  purchase paths or unsafe tool execution.
-- Live daily-use tools and unified task/goal/agent orchestration in production
-  browser runtime.
-- True semantic relevance memory quality and next-turn recall proof.
-- Staged payload dependency/build verification.
-- Unify live voice and assistant/task/goal paths through continuity kernel.
+Still blocked/not done:
+- Real-provider background task execution proof → pending further turns; last provider task failed with HTTP 503/rate limit earlier.
+- Voice mic/speaker: not selected by user, remains untested.
+- `/setup` key UI uses a browser click-through; polish/persistence to be verified on next live session.
+- Local intermittent flakiness in `test_phase95_hardening::TestAdmissionAtomicity` remains uncorrelated with this session.
 
 Next moves (in order):
 
