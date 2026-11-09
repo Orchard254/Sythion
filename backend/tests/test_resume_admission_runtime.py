@@ -160,3 +160,42 @@ def test_preflight_revision_invalidates_when_task_version_changes(db):
     db.commit()
     current = get_task_resume_preflight('resume-me', db=db)['review_binding']['revision']
     assert old != current
+
+
+@pytest.mark.asyncio
+async def test_orphan_reasoning_terminal_blocks_real_runner_resume(db):
+    runner = await _leased_runner(db)
+    try:
+        _receipt(db, event_type='reasoning.response_received', job='orphan')
+        with pytest.raises(RuntimeError, match='corrupt_reasoning_receipt_review_required'):
+            await runner.transition_state('resume-me', TaskState.RUNNING,
+                                          'task.resumed', {'reason': 'explicit_user'})
+        assert db.get(Task, 'resume-me').state == 'interrupted'
+    finally:
+        await runner.release_lease()
+
+
+@pytest.mark.asyncio
+async def test_unknown_reasoning_phase_blocks_real_runner_resume(db):
+    runner = await _leased_runner(db)
+    try:
+        _receipt(db, event_type='reasoning.approved', job='forged')
+        with pytest.raises(RuntimeError, match='corrupt_reasoning_receipt_review_required'):
+            await runner.transition_state('resume-me', TaskState.RUNNING,
+                                          'task.resumed', {'reason': 'explicit_user'})
+        assert db.get(Task, 'resume-me').state == 'interrupted'
+    finally:
+        await runner.release_lease()
+
+
+@pytest.mark.asyncio
+async def test_orphan_receipt_blocks_resume_route_before_execution(db, monkeypatch):
+    import backend.api.routes as routes
+    _receipt(db, event_type='reasoning.response_received', job='orphan')
+    monkeypatch.setattr(routes, 'get_tool_executor',
+                        lambda: pytest.fail('No tool executor should be requested'))
+    with pytest.raises(HTTPException) as exc:
+        await resume_task('resume-me', db=db)
+    assert exc.value.status_code == 409
+    assert exc.value.detail['code'] == 'corrupt_reasoning_receipt_review_required'
+    assert db.get(Task, 'resume-me').state == 'interrupted'

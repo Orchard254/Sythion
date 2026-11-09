@@ -174,3 +174,52 @@ def test_synthetic_db_recovery_review_packet_for_unresolved_model_call(db):
     assert packet['observations']['unresolved_reasoning_calls'] == 1
     assert packet['requires_authenticated_reconciliation'] is True
     assert packet['approved'] is False
+
+
+def test_orphan_reasoning_terminal_blocks_resume(db):
+    event(db,'reasoning.response_received',data={'job_id':'job','purpose':'task_decision'})
+    assert read_task_resume_admission(db,'t')['reason']=='corrupt_reasoning_receipt_review_required'
+
+
+def test_duplicate_start_and_terminal_blocks_resume(db):
+    event(db,'reasoning.started',1,data={'job_id':'job','purpose':'task_decision'})
+    event(db,'reasoning.started',2,data={'job_id':'job','purpose':'task_decision'})
+    event(db,'reasoning.response_received',3,data={'job_id':'job','purpose':'task_decision'})
+    assert read_task_resume_admission(db,'t')['reason']=='corrupt_reasoning_receipt_review_required'
+
+
+def test_terminal_reuse_blocks_resume(db):
+    event(db,'reasoning.started',1,data={'job_id':'job','purpose':'task_decision'})
+    event(db,'reasoning.failed',2,data={'job_id':'job','purpose':'task_decision'})
+    event(db,'reasoning.response_received',3,data={'job_id':'job','purpose':'task_decision'})
+    assert read_task_resume_admission(db,'t')['reason']=='corrupt_reasoning_receipt_review_required'
+
+
+def test_unknown_reasoning_event_type_blocks_resume(db):
+    event(db,'reasoning.approved',data={'approved':True,'job_id':'job','purpose':'task_decision'})
+    assert read_task_resume_admission(db,'t')['reason']=='corrupt_reasoning_receipt_review_required'
+
+
+def test_duplicate_sequence_number_blocks_resume(db):
+    event(db,'reasoning.started',1,data={'job_id':'a','purpose':'task_decision'})
+    event(db,'reasoning.started',1,data={'job_id':'b','purpose':'task_decision'})
+    assert read_task_resume_admission(db,'t')['reason']=='corrupt_reasoning_receipt_review_required'
+
+
+def test_reasoning_receipt_extra_permission_claim_blocks_resume(db):
+    event(db,'reasoning.started',data={'job_id':'job','purpose':'task_decision','approved':True})
+    assert read_task_resume_admission(db,'t')['reason']=='corrupt_reasoning_receipt_review_required'
+
+
+def test_legacy_gap_from_other_event_is_not_corruption(db):
+    event(db,'reasoning.started',1,data={'job_id':'job','purpose':'task_decision'})
+    event(db,'reasoning.response_received',8,data={'job_id':'job','purpose':'task_decision'})
+    assert read_task_resume_admission(db,'t')['preflight_clear'] is True
+
+
+def test_corrupt_receipt_reports_no_raw_metadata(db):
+    event(db,'reasoning.started',data={'job_id':'private-key','purpose':'task_decision','secret':'PRIVATE'})
+    report = read_task_resume_admission(db,'t')
+    assert report['reason']=='corrupt_reasoning_receipt_review_required'
+    assert 'PRIVATE' not in repr(report)
+    assert 'private-key' not in repr(report)

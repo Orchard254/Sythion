@@ -365,3 +365,31 @@ boundary, scoped to exact work/effects, and must bind its audited decision
 to a freshly recomputed revision **inside the task writer transaction**.
 The external system's actual effect outcome also requires independent proof.
 The snapshot alone is never sufficient to reopen uncertain work (S186-S189).
+
+## 13. Fail-closed reasoning receipt chronology (2026-11-09)
+
+Before an interrupted/paused task is considered for explicit manual resume,
+`backend/services/reasoning_receipt_integrity.py` now verifies the committed
+task reasoning-event stream, rather than relying only on a count of unmatched
+`reasoning.started` records. A terminal call receipt must pair with one
+previously observed start, each job ID is single-use, metadata must match the
+actual journal contract, and reasoning event sequence numbers must be strictly
+increasing. Event-sequence gaps are legal when non-reasoning events interleave.
+Unknown `reasoning.*` event types, orphan terminals, duplicates, malformed
+payloads and extra authority claims all make the evidence **corrupt**. They
+never count as authorization or silently erase uncertainty.
+
+The manual resume preflight reads every `reasoning.*` type (including unknown
+ones) and returns the existing
+`corrupt_reasoning_receipt_review_required` blocker on anomalies. The
+writer-locked TaskRunner rechecks this policy before paused/interrupted→running
+transitions. The review UI remains read-only, and the checker returns only
+fixed, privacy-minimal anomaly labels, never raw job IDs or model output.
+
+This is **not** trusted human authentication, effect reconciliation or an
+audited clearance process. The Tauri per-launch control token and system
+session lineage are not proof of a human approval. Actual Windows-integrated
+recovery identity/consent needs a separately verified native host, a fresh
+transaction-fenced evidence binding, and independent proof of external-action
+outcomes. The real repo integration and Windows tests remain open (S185,
+S189-S190); local synthetic SQLite tests do not establish end-to-end safety.

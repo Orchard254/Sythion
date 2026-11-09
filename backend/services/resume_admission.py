@@ -91,7 +91,8 @@ def read_task_resume_admission(db: Any, task_id: str, *, now: datetime | None = 
     from backend.models.database import Task, TaskEvent
     from backend.runtime.task_ownership import TaskOwnershipRow
     from backend.runtime.events import decode_event_data
-    from backend.services.reasoning_journal import unresolved_reasoning_jobs
+    from backend.services.reasoning_receipt_integrity import audit_reasoning_receipts
+    from sqlalchemy import or_
 
     task = db.query(Task).filter_by(id=task_id).populate_existing().first()
     if task is None:
@@ -115,13 +116,11 @@ def read_task_resume_admission(db: Any, task_id: str, *, now: datetime | None = 
             "uncertain_actions": uncertain_actions,
         }
 
-    relevant_types = (
-        "reasoning.started", "reasoning.response_received",
-        "reasoning.timed_out", "reasoning.failed", "reasoning.cancelled",
-        "action.uncertain", "action.started", "tool.executed",
-    )
+    action_types = ("action.uncertain", "action.started", "tool.executed")
     rows = (db.query(TaskEvent)
-            .filter(TaskEvent.task_id == task_id, TaskEvent.event_type.in_(relevant_types))
+            .filter(TaskEvent.task_id == task_id,
+                    or_(TaskEvent.event_type.like("reasoning.%"),
+                        TaskEvent.event_type.in_(action_types)))
             .order_by(TaskEvent.sequence_num.asc()).all())
     events = []
     uncertain_effect_event = False
@@ -141,12 +140,12 @@ def read_task_resume_admission(db: Any, task_id: str, *, now: datetime | None = 
             if not isinstance(data, dict) or data.get("mutating") is not False:
                 prior_mutation = True
             continue
-        if not isinstance(data, dict) or not isinstance(data.get("job_id"), str) or not data["job_id"].strip():
-            corrupt_receipt = True
-        events.append({"event_type": event.event_type, "event_data": data})
+        events.append({"sequence_num": event.sequence_num, "event_type": event.event_type, "event_data": data})
+    audit = audit_reasoning_receipts(events)
+    corrupt_receipt = not audit.valid
     result = evaluate_resume_admission(
         task_state=task.state,
-        unresolved_calls=len(unresolved_reasoning_jobs(events)),
+        unresolved_calls=audit.unresolved_count,
         owner=snapshot,
         has_pending_action=bool(task.pending_action),
         has_task_action=bool(task.active_action_id),
