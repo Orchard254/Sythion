@@ -442,6 +442,76 @@ limits (source, synthetic, provider, installed-runtime).
 | S039–S050, S087–S096, S024–S038 | implementing | Durable wake reconciliation, scoped relevance memory, and Assistant→task→evidence verification work units | none | Coordinator agents; exact file ownership in delegated briefs | Three agents running; targeted tests required, no broad suite reruns |
 | — | queued | Select next bounded unit after baseline and dependency review | — | Coordinator | Initial checklist recorded; no items accepted as done |
 
+## Live dev pass 4 — normal-user interaction sweep, five bugs fixed (2026-11-09)
+
+Driven exclusively through the browser at `http://127.0.0.1:3001` (backend on
+:8000 after a controlled restart to pick up source fixes; provider `beam`).
+Natural-language user turns were sent as a normal user, and every screen was
+visited. Findings, fixes and verification, oldest to newest:
+
+1. **Casual chat failed dead-end for any established session.** The ordinary-
+   prose safety path ("I could not produce a properly formatted answer this
+   time…") fired for *any* turn whose model output wasn't the JSON contract
+   when the session already contained task-context descriptors — i.e. every
+   session that ever ran a background task. Small talk failed ~100% of the
+   time ("Hi! I'm brand new here…"). Fixed in
+   `backend/services/conversation_turn_engine.py`: the answer-only prose
+   fallback now also applies when every descriptor is `task_context` (inert
+   semantic-reference data — dispatches nothing, answers nothing).
+   Clarification/permission descriptors stay strictly non-prose. Live
+   verification: same message now returns the model's real answer (with the
+   explicit "No background task … informative only" disclosure appended).
+   Unit tests added (context-only accepted, mixed clarification stays strict);
+   `test_conversation_turn_engine.py` 76/76, assistant-turn and wait-kind
+   suites 90/90 remain green.
+2. **System health permanently DEGRADED.** `run_health_checks` rolled ANY
+   non-HEALTHY statuses into the aggregate — including the provider check
+   that is *deliberately* UNKNOWN when the remote probe is disabled
+   (opt-in, never a failure). The UI then showed "DEGRADED 6 checks · 1 not
+   healthy" forever. Fixed: deliberate disabled checks report `disabled`,
+   stay visible as UNKNOWN in the evidence list, and are excluded from the
+   rollup; System & Integrations "Health" stat now buckets checks
+   ("6 checks · 5 healthy · 1 unknown"). Backend health tests green;
+   API re-checked after restart: overall HEALTHY.
+3. **Raw JSON evidence rendered to normal users.** The Health checks panel
+   printed `JSON.stringify(evidence).slice(0,160)` — raw machine output in a
+   user-facing list. Now humanized key/value summaries (nested objects as
+   `k=v` lists; empty arrays as "none"). Verified live in browser.
+4. **Demo screens claimed LIVE in the sticky topbar.** `#/life`, `#/devices`,
+   `#/comms` carry "LIVE" in the topbar while their content is explicitly
+   demonstration data (design badge inside the screen says DEMO DATA).
+   TopBar now honors the route's declared `data` mode: demo routes show the
+   Demo tag. Verified: Assistant/Settings stay LIVE; Life/Devices/Comms show
+   DEMO DATA. Preview mode unchanged; TopBar test green.
+5. **Operations "Attention" filled with routine completed work.** Every
+   casual completed task (no goal to verify against) produced a
+   "Completed, not goal-verified" Attention item forever — 7 items in a
+   daily-use profile, contradicting the rail's own "Routine work produces
+   nothing here" spec. Split: items still surface for goal-linked-unverified
+   and for missing-final-result tasks; routine tasks with a recorded result
+   stay quiet. Live verified: Attention rail now "2 items" (the two genuine
+   failures). Frontend 232/232 (two new lib tests; the one encoding insight:
+   "VERIFICATION MISSING RESULT" is still unreachable for goalless tasks, by
+   design).
+
+Plus:
+
+6. **Emoji bytes are fine end-to-end.** Apparent mojibake was my PowerShell
+   decoding, not the app: API returns U+1F984 intact and the provider
+   answered "Dragon" to the emoji prompt. Cosmetic only.
+7. **Composer lag after navigation:** after `WaitState=load` it can take
+   ~1s for the composer to mount; the earlier "Composer missing" reading
+   was sequencing, not a bug.
+8. En-dash mojibake em dashes in console prints confirmed PowerShell-only;
+   API payloads intact.
+9. Operations drawer: open failed task → timeline (51 events) renders all
+   events honestly; Escape closes the drawer. Confirmed.
+10. Health API `GET /api/v1/agent/health` re-verified after restart:
+    `overall HEALTHY`, provider UNKNOWN with `disabled: true`.
+11. Frontend remains green: 232/232 (230 before); `npm run build` OK; vite
+    mirrors — `src-tauri/resources/backend` synced for `system_state.py`
+    (drift suite 65/3 green) and `conversation_turn_engine.py`.
+
 ## Live dev pass 2 — backend wedge discovered, injection proven, tool evidence logged (2026-11-09)
 
 Live profile `sythion-live-dev-restart` (backend :8000, UI :3001, provider
@@ -518,3 +588,4 @@ Live profile `sythion-live-dev-restart` (backend :8000, UI :3001, provider
 - 2026-11-09: Live dev pass 2 recorded exact evidence: backend wedge after a 50-request-budget-failed bundle task (process retained, listener silently dropped; manual restart recovered; persistence verified), live memory injection in task context proven (available/relevant >= 1), per-tool provider execution evidence for 19 read-only tools, the CONSEQUENTIAL/consent boundary (no web-runtime consent path for mutating or app-internal tools; owner decision recorded), and two auto-recovered provider flakes.
 - 2026-11-09: Live dev pass 3 — fixed and committed Memory screen inconsistencies found during normal-user browser testing (STORED ITEMS and CONTEXT PER RUN always rendered "-" because the screen read demo-only report fields while the live /memory/report contract is counts/relation_vocabulary/memory_context_injection{runs,totals,per_run}; now reads both shapes with fallback; Stores tab derives from counts and renders a curated injection panel, no more "[object Object]" garbage). Frontend 230/230, vite build ok, verified live (Stored 2, Context per run 2.0).
 - 2026-11-09: Wedge timeline established from the Vite dev-server proxy log: healthy until 09:23:19 local; first failure `read ECONNRESET /api/v1/agent`, then all subsequent connections refused while the process and background tasks kept running (bundle task c385db99 finished its budget-fail path at 09:24:43). The listening socket closed inside the process; nothing in the app closes it deliberately. A cheap forced-budget repro (SYTHION_MAX_CLOUD_REQUESTS_PER_TASK=2, isolated profile) did NOT wedge the listener. Cause remains unidentified; keep this as an open runtime finding.
+- 2026-11-09: Live dev pass 4 — normal-user browser sweep found and fixed five defects, all verified with evidence in the browser: (1) casual chat returned the "could not produce a properly formatted answer" dead-end for every established session (ordinary-prose fallback now allowed with context-only task descriptors; unit+integration suites green); (2) System health permanently showed DEGRADED because the deliberately-disabled provider probe counted as a failure — disabled checks are now excluded from the rollup (API: overall HEALTHY, provider still shown UNKNOWN disabled); (3) Health-checks rows dumped raw JSON to normal users — now humanized key/value summaries; (4) Life/Devices/Communications showed a LIVE sticky topbar badge while serving demonstration data — demo routes now show DEMO DATA; (5) Operations "Attention" rail filled with routine completed non-goal tasks — routine results now produce nothing, goal-linked-unverified and missing-result cases still surface (frontend 232/232).
