@@ -60,8 +60,23 @@ class ReasoningJob:
 T = TypeVar("T")
 
 
+class ReasoningJournalError(RuntimeError):
+    """A reasoning invocation could not be durably recorded as required."""
+
+
+async def _record_phase(on_event, job, phase):
+    try:
+        await on_event(job, phase)
+    except Exception as exc:
+        # Avoid leaking provider output, task content, or backend DB details.
+        raise ReasoningJournalError("reasoning event persistence failed") from exc
+
+
 async def dispatch_reasoning(
-    job: ReasoningJob, call: Callable[[], Awaitable[T]]
+    job: ReasoningJob,
+    call: Callable[[], Awaitable[T]],
+    *,
+    on_event: Callable[[ReasoningJob, str], Awaitable[None]] | None = None,
 ) -> T:
     """Invoke one model call under a deadline; return its *untrusted* output.
 
@@ -73,7 +88,38 @@ async def dispatch_reasoning(
         raise TypeError("job must be a ReasoningJob")
     if not callable(call):
         raise TypeError("call must be callable")
-    awaitable = call()
-    if not inspect.isawaitable(awaitable):
-        raise TypeError("call must return an awaitable")
-    return await asyncio.wait_for(awaitable, timeout=job.timeout_seconds)
+    if on_event is not None and not callable(on_event):
+        raise TypeError("on_event must be callable")
+
+    # Persistence must succeed *before* invoking a provider. A failed start
+    # receipt is an admission failure, not a reason to make an untracked call.
+    if on_event is not None:
+        await _record_phase(on_event, job, "started")
+    try:
+        awaitable = call()
+        if not inspect.isawaitable(awaitable):
+            raise TypeError("call must return an awaitable")
+        result = await asyncio.wait_for(awaitable, timeout=job.timeout_seconds)
+    except asyncio.CancelledError:
+        # Never turn cancellation into a retry or a successful result. A
+        # failed cancellation receipt remains unresolved after recovery.
+        if on_event is not None:
+            try:
+                await _record_phase(on_event, job, "cancelled")
+            except Exception:
+                pass
+        raise
+    except TimeoutError:
+        if on_event is not None:
+            await _record_phase(on_event, job, "timed_out")
+        raise
+    except Exception:
+        if on_event is not None:
+            await _record_phase(on_event, job, "failed")
+        raise
+
+    # Persist the fact that the provider returned before its untrusted
+    # response can be parsed or used by the caller.
+    if on_event is not None:
+        await _record_phase(on_event, job, "response_received")
+    return result

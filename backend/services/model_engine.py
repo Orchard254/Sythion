@@ -19,7 +19,7 @@ from backend.tools.executor import ToolExecutor
 from backend.core.budgets import TaskBudget, BudgetExceededError
 from backend.services.model_context_builder import ModelContextBuilder
 from backend.services.model_prompt_contract import build_system_prompt
-from backend.services.reasoning_dispatch import ReasoningJob, ReasoningPurpose, dispatch_reasoning
+from backend.services.reasoning_dispatch import ReasoningJob, ReasoningPurpose, ReasoningJournalError, dispatch_reasoning
 from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
@@ -151,6 +151,9 @@ class ModelDecisionEngine:
         self._max_fallback_attempts = max(1, settings.model_max_attempts - 1)
         self.token_count = 0
         self.decision_history: List[Dict[str, Any]] = []
+        # Explicitly wired by TaskExecutionLoop; standalone/model-only callers
+        # do not implicitly gain write authority over a task event ledger.
+        self.reasoning_journal = None
         self._pending_tool_calls: List[Dict[str, Any]] = []
         
         from backend.core.config import settings
@@ -600,6 +603,7 @@ class ModelDecisionEngine:
                     timeout_seconds=decision_timeout,
                 ),
                 _call,
+                on_event=self.reasoning_journal,
             )
             
             # Track tokens (estimate)
@@ -633,6 +637,13 @@ class ModelDecisionEngine:
             
         except BudgetExceededError:
             raise
+        except ReasoningJournalError as exc:
+            # Missing/failed receipts are an admission failure, not a cloud
+            # error. Never fall back to another provider or replay this result.
+            raise ModelDecisionError(
+                code="REASONING_JOURNAL_ERROR",
+                message="Reasoning invocation could not be durably recorded",
+            ) from exc
         except ModelDecisionError:
             raise
         except asyncio.TimeoutError as e:

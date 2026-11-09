@@ -16,6 +16,7 @@ from backend.services.task_runner import TaskRunner
 from backend.services.task_instruction_revision import TaskInstructionRevision
 from backend.runtime.action_guard import OSActionGuard
 from backend.services.model_engine import ModelDecisionEngine, ModelDecisionError, DecisionType
+from backend.services.reasoning_journal import ReasoningJournal
 from backend.services.execution_components import (
     BudgetGuard,
     CancellationController,
@@ -71,6 +72,7 @@ class TaskExecutionLoop:
         "CLOUD_ERROR",
         "RATE_LIMITED",
         "MODEL_UNAVAILABLE",
+        "REASONING_JOURNAL_ERROR",
     })
 
     def __init__(
@@ -83,6 +85,11 @@ class TaskExecutionLoop:
         self.runner = task_runner
         self.tool_executor = tool_executor
         self.model_engine = ModelDecisionEngine(db_session, tool_executor)
+        # Ownership-checked receipts: provider-call lifecycle is durable task
+        # evidence, not a tool authorization or verified completion result.
+        self.model_engine.reasoning_journal = ReasoningJournal(
+            task_runner.record_owned_reasoning_event
+        )
         self.instruction_revision = TaskInstructionRevision(task_runner)
 
         # Extracted components (one responsibility each).

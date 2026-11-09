@@ -357,6 +357,59 @@ class TaskRunner:
         lease = self.db.query(RunnerLease).filter_by(id=1).first()
         return lease and lease.owner_nonce == self._leases.nonce
 
+    async def record_owned_reasoning_event(
+        self, task_id: str, event_type: str, event_data: Dict[str, Any]
+    ) -> None:
+        """Commit a privacy-minimal reasoning receipt under active task ownership.
+
+        Unlike record_event (the global runner-lease path), this method verifies
+        the task-scoped ownership nonce and fencing token. Never write a receipt
+        for a worker that lost its task, or a task that is no longer running.
+        Only a small fixed metadata shape is accepted: prompts, provider
+        outputs, approval claims and action parameters must not enter receipts.
+
+        Refuses caller-owned transactions without committing/rolling them back.
+        """
+        if event_type not in {
+            "reasoning.started", "reasoning.response_received",
+            "reasoning.timed_out", "reasoning.failed", "reasoning.cancelled",
+        }:
+            raise ValueError("unsupported reasoning event type")
+        if (
+            not isinstance(event_data, dict)
+            or set(event_data) != {"job_id", "purpose"}
+            or not isinstance(event_data.get("job_id"), str)
+            or not event_data["job_id"].strip()
+            or event_data["job_id"] != event_data["job_id"].strip()
+            or event_data.get("purpose") != "task_decision"
+        ):
+            raise ValueError("invalid reasoning receipt metadata")
+
+        self._refuse_caller_owned_pending_transaction()
+        self._ensure_transaction()
+        try:
+            if not self.verify_task_ownership(task_id=task_id):
+                raise RuntimeError("Task reasoning event refused: task not owned")
+            task = self.db.query(Task).filter_by(id=task_id).populate_existing().first()
+            if task is None or task.state != TaskState.RUNNING.value:
+                raise RuntimeError("Task reasoning event refused: task not running")
+            self._append_event(task_id, event_type, event_data)
+            self.db.commit()
+        except Exception:
+            self._rollback_owned_transaction()
+            raise
+        finally:
+            self._clear_runner_transaction_ownership()
+
+    def unresolved_reasoning_calls(self, task_id: str) -> tuple[str, ...]:
+        """Read-only recovery view of invocations lacking a terminal receipt.
+
+        This is *uncertain inference state*, never permission to repeat tools.
+        """
+        from backend.services.reasoning_journal import unresolved_reasoning_jobs
+
+        return unresolved_reasoning_jobs(self.ledger.event_history(task_id))
+
     async def record_event(self, task_id: str, event_type: str, event_data: Dict[str, Any]) -> None:
         """Append a durable event without changing task state (e.g. budget usage)."""
         self._refuse_caller_owned_pending_transaction()
