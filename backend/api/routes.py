@@ -2050,15 +2050,26 @@ def get_task_resume_preflight(task_id: str, db: Session = Depends(get_db)):
     """
     from backend.services.resume_admission import read_task_resume_admission
     from backend.services.recovery_review import build_recovery_review_packet
+    from backend.services.recovery_review_binding import read_recovery_review_binding
 
+    # A revision is valid only as a read-only observation of committed data.
+    # Refuse caller-owned pending writes rather than silently autoflush them.
+    if db.new or db.dirty or db.deleted:
+        raise HTTPException(status_code=409, detail="Recovery evidence changed; refresh the task")
     try:
         assessment = read_task_resume_admission(db, task_id)
+        binding = read_recovery_review_binding(db, task_id, assessment)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
+    except (RuntimeError, ValueError) as exc:
+        # A concurrent change or incomplete state must not yield a seemingly
+        # authoritative review revision. Keep internal details private.
+        raise HTTPException(status_code=409, detail="Recovery evidence changed; refresh the task") from exc
     return {
         "task_id": task_id,
         **assessment,
         "review": build_recovery_review_packet(assessment),
+        "review_binding": binding,
     }
 
 

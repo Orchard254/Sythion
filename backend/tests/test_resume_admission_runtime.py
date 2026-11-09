@@ -138,3 +138,25 @@ def test_blocked_recovery_review_does_not_authorize_actions(db):
     assert info['review']['automatic_replay_allowed'] is False
     assert info['review']['uncertainty_cleared'] is False
     assert db.get(Task, 'resume-me').state == 'interrupted'
+
+
+def test_recovery_preflight_includes_non_authorizing_evidence_revision(db):
+    info = get_task_resume_preflight('resume-me', db=db)
+    binder = info['review_binding']
+    assert binder['binding_status'] == 'read_only_observation'
+    assert binder['revision'].startswith('sha256:')
+    assert binder['task_version'] == db.get(Task, 'resume-me').version
+    assert binder['authenticated_human'] is False
+    assert binder['authorization_issued'] is False
+    assert binder['automatic_replay_allowed'] is False
+    assert 'owner_nonce' not in str(binder)
+    assert 'original_request' not in str(binder)
+
+
+def test_preflight_revision_invalidates_when_task_version_changes(db):
+    old = get_task_resume_preflight('resume-me', db=db)['review_binding']['revision']
+    task_row = db.get(Task, 'resume-me')
+    task_row.version += 1
+    db.commit()
+    current = get_task_resume_preflight('resume-me', db=db)['review_binding']['revision']
+    assert old != current

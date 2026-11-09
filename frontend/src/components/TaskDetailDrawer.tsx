@@ -147,6 +147,14 @@ export function TaskDetailDrawer({
                     ))}
                   </ul>
                 )}
+                {resumePreflight.data.review_binding?.binding_status === 'read_only_observation' &&
+                  /^sha256:[0-9a-f]{64}$/.test(resumePreflight.data.review_binding.revision) && (
+                    <span className="t-faint t-mono" title="Snapshot revision, not an approval">
+                      Evidence snapshot {resumePreflight.data.review_binding.revision.slice(7, 19)}
+                      {' · '}Task v{resumePreflight.data.review_binding.task_version}
+                      {' · '}Event #{resumePreflight.data.review_binding.last_event_sequence}
+                    </span>
+                  )}
                 <span className="t-faint">
                   Read-only guidance. This is not an approval or a guarantee that resumption is safe.
                   The backend will verify again before changing task state.

@@ -337,3 +337,31 @@ The new UI unit and Axios interaction tests are committed, but React/Vitest,
 full TypeScript build and Windows packaged behavior remain unverified in this
 environment. A small isolated TypeScript behavioral check is not equivalent
 to those integration tests (S186-S188).
+
+## 12. Evidence revision for later trusted recovery review (2026-11-09)
+
+The read-only task `resume-preflight` report includes a `review_binding`
+revision computed from server-read task version, state/update time, task-event
+watermark, ownership version/fencing token/status/expiry, action-presence
+markers and the current coarse recovery-blocker classification. Its digest is
+a stable change detector for this selected metadata, **not** a signature or
+proof that all event contents are authentic. Raw request text, model output,
+tool parameters, action IDs, owner nonces and credentials are never included
+in the revision input. A changed ledger position, task version or owner fence
+changes the stamp and can invalidate a previously observed review snapshot.
+The reader refuses sessions with pending ORM writes rather than autoflushing
+them as a side effect of this read-only review.
+
+The task drawer may show an abbreviated snapshot revision to help a person
+recognize a changed observation. The API explicitly reports
+`authenticated_human=false`, `authorization_issued=false`,
+`uncertainty_cleared=false` and `automatic_replay_allowed=false`.
+The local API launch token and a system-generated conversation session are
+**not** authenticated human consent. No clearance, native Windows verifier,
+replay authorization or automatic resume is implemented by this slice.
+
+A future human attestor must be independently verified via a native trusted
+boundary, scoped to exact work/effects, and must bind its audited decision
+to a freshly recomputed revision **inside the task writer transaction**.
+The external system's actual effect outcome also requires independent proof.
+The snapshot alone is never sufficient to reopen uncertain work (S186-S189).

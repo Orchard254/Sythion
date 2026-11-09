@@ -207,3 +207,30 @@ describe('TaskDetailDrawer explicit recovery interaction', () => {
     expect(resumeTask).toHaveBeenCalledWith('t1');
   });
 });
+
+
+describe('TaskDetailDrawer recovery snapshot revision', () => {
+  it('shows the bounded evidence revision without implying permission', () => {
+    recoveryMock.data = {
+      ...clearRecovery(),
+      review_binding: {
+        schema: 'sythion.recovery_review_snapshot.v1',
+        revision: 'sha256:' + 'a'.repeat(64),
+        task_version: 7,
+        last_event_sequence: 42,
+        binding_status: 'read_only_observation',
+        authenticated_human: false, authorization_issued: false,
+        uncertainty_cleared: false, automatic_replay_allowed: false,
+        note: 'Snapshot only',
+      },
+    };
+    const view = create(<TaskDetailDrawer task={task({ state: 'interrupted' })} onClose={() => {}} />);
+    const rendered = JSON.stringify(view.toJSON());
+    expect(rendered).toContain('Evidence snapshot');
+    expect(rendered).toContain('aaaaaaaaaaaa');
+    expect(rendered).toContain('Task v');
+    expect(rendered).toContain('Event #');
+    expect(rendered).toContain('not an approval');
+    recoveryMock.data = undefined;
+  });
+});

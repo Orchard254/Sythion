@@ -64,6 +64,20 @@ export interface RecoveryReviewPacket {
   note: string;
 }
 
+/** Non-authorizing server-side change detector for the observed task evidence. */
+export interface RecoveryReviewBinding {
+  schema: string;
+  revision: string;
+  task_version: number;
+  last_event_sequence: number;
+  binding_status: 'read_only_observation';
+  authenticated_human: false;
+  authorization_issued: false;
+  uncertainty_cleared: false;
+  automatic_replay_allowed: false;
+  note: string;
+}
+
 /** A snapshot, not authorization to resume or replay consequential work. */
 export interface TaskResumePreflight {
   task_id: string;
@@ -75,6 +89,8 @@ export interface TaskResumePreflight {
   review_required: boolean;
   automatic_replay_allowed: boolean;
   review: RecoveryReviewPacket;
+  /** A revision label only, not proof of external state or human consent. */
+  review_binding?: RecoveryReviewBinding;
 }
 
 export interface TaskEvent {
