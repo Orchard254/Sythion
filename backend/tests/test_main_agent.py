@@ -583,5 +583,5 @@ class TestSecurityBoundaries:
         # the outcome path fails conservatively.
         started = asyncio.run(orchestrator.start_next_step(goal.id))
         outcome = asyncio.run(orchestrator.apply_task_outcome(started["task"].id))
-        assert outcome["outcome"] in ("failed", "retry_scheduled")
-        assert planner.get_step(started["step"].id).status != "completed"
+        assert outcome["outcome"] == "unverified"
+        assert planner.get_step(started["step"].id).status == "running"

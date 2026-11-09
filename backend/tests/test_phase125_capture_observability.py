@@ -329,7 +329,7 @@ def test_execute_session_tolerates_pipeline_double_apply(db):
 
     result = asyncio.run(orch.execute_session(goal.id, run_task_fn=fake_kernel))
     assert result["executed"], "session should record the executed step"
-    assert result["executed"][0]["outcome"] == "already_applied"
+    assert result["executed"][0]["outcome"] == "completed"
     assert result["stopped_reason"] == "no_eligible_step"
     # evidence captured exactly once despite two apply calls
     rows = (

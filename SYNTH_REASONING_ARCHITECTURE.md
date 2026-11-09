@@ -447,3 +447,32 @@ Existing user opt-in, agent wake, task ownership, tool permission and result
 verification remain the authorities. Local pure/synthetic-SQLite tests verify
 the projection and nonmutating query surface; the full repository ORM/API,
 React and installed Windows runtime remain acceptance work (S193-S194).
+
+## 16. Outcome-adjudicated Goal Execution Vertical Slice V1 (2026-11-09)
+
+The goal continuation orchestration now treats a worker's return value or
+`{"updated": false}` response as **non-authoritative**. That response may
+mean the kernel post-task pipeline has already applied an outcome, but does
+not specify whether it was verified completion, failure or unresolved work.
+`TaskOrchestrator._observed_step_outcome` explicitly refreshes the goal,
+plan step and task from committed ORM state (including changes made in a
+different worker session), requires the exact evidence-task link, and
+rechecks the kernel's completion verifier for a success result.
+
+The output vocabulary is `completed`, `failed`, or `unverified`.
+An unverified outcome halts explicit/background continuation; it is not
+reported as a failed or successful terminal service outcome. A worker
+that returns while the task is still running, interrupted or waiting
+does not have its plan step forcibly failed by `apply_task_outcome`.
+A pre-applied failed step is still a failure and may undergo existing
+bounded retry/goal pause rules. The no-eligible-step branch also no
+longer releases the same runner lease twice.
+
+See `docs/GOAL_EXECUTION_VERTICAL_SLICE_V1.md` for the 11-real-ORM
+scripted-worker scenarios (3-step dependency chain, file/report checks,
+actual DB session restart, exact audit/event counts, failure and mismatch
+cases). **Only 24 pure classification tests were run locally in this
+conversation;** the full integration suite needs the complete private
+repository and is not claimed passed. OS-facing worker behavior in these
+new tests is scripted; no live tool adapter, model or Windows installed
+runtime was exercised. Real execution acceptance remains open S195-S196.

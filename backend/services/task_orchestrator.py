@@ -178,6 +178,7 @@ class TaskOrchestrator:
         step = (
             planner.db.query(PlanStep)
             .filter(PlanStep.evidence_task_id == task_id)
+            .populate_existing()
             .first()
         )
         if step is None or step.plan_id is None:
@@ -199,7 +200,13 @@ class TaskOrchestrator:
         # did not complete (richer than the generic gate message).
         from backend.models.database import Task
 
-        evidence_task = planner.db.query(Task).filter_by(id=task_id).first()
+        evidence_task = planner.db.query(Task).filter_by(id=task_id).populate_existing().first()
+        if evidence_task is None or evidence_task.state not in ("completed", "failed"):
+            # A worker may return while its task is still waiting, running or
+            # interrupted. That is NOT proof of a failed execution. Preserve
+            # the RUNNING plan step for the normal owner/recovery path rather
+            # than manufacturing a terminal step outcome.
+            return {"step": step, "outcome": "unverified", "updated": False}
         precondition_error = (
             verifier_error_fn(task_id)
             if callable(verifier_error_fn) else None
@@ -793,13 +800,12 @@ class TaskOrchestrator:
                     # and the next loop iteration executes it.
                     retry_info = self._retry_one_failed_step(goal_id)
                     if retry_info and retry_info.get("scheduled"):
-                        await self.state_store.release_lease()
+                        # The enclosing finally releases the lease once.
                         continue
                     stopped_reason = stopped_reason or (
                         "step_retry_exhausted"
                         if retry_info else "no_eligible_step"
                     )
-                    await self.state_store.release_lease()
                     break
                 task = started["task"]
                 await self.state_store.transition_state(
@@ -813,18 +819,21 @@ class TaskOrchestrator:
                 await self.state_store.release_lease()
 
             await run_fn(None, task.id, None)  # kernel worker (own session+lease)
-            outcome = await self.apply_task_outcome(task.id)
-            # PostTaskPipeline.apply_plan_outcome may already have applied the
-            # terminal outcome inside the kernel; apply_task_outcome then
-            # short-circuits with {"updated": False} and no "outcome" key.
-            outcome_label = (
-                outcome.get("outcome") if isinstance(outcome, dict) else None
-            ) or ("already_applied" if outcome else "unknown")
+            await self.apply_task_outcome(task.id)
+            # The worker's post-task pipeline may already have updated the
+            # plan. Re-read the task, exact evidence link, step state and
+            # completion gate; do not translate updated=False into success.
+            outcome_label = self._observed_step_outcome(
+                goal_id=goal_id, step_id=started["step"].id, task_id=task.id,
+            )
             executed.append({
                 "task_id": task.id,
                 "step_key": started["step"].step_key,
                 "outcome": outcome_label,
             })
+            if outcome_label == "unverified":
+                stopped_reason = "outcome_unverified"
+                break
             if outcome_label == "failed":
                 # Let the next iteration's retry check decide continuation;
                 # if retries are exhausted the goal is paused and we stop.
@@ -850,6 +859,56 @@ class TaskOrchestrator:
         if failed is None:
             return None
         return self.schedule_retry_if_allowed(failed.id)
+
+    def _observed_step_outcome(
+        self, *, goal_id: str, step_id: int, task_id: str
+    ) -> str:
+        """Re-read the canonical task + exact plan evidence after worker return.
+
+        The post-task pipeline may have applied the outcome first. A generic
+        `updated=False` response does not tell us whether that was success,
+        failure or an unresolved execution. Return only completed/failed when
+        the persisted evidence supports it; anything else is unverified.
+        """
+        from backend.models.database import Objective, PlanStep, Task
+        from backend.services.goal_execution_outcome import classify_step_outcome
+
+        # The worker can commit in a DIFFERENT SQLAlchemy Session. The
+        # orchestrator may still hold cached RUNNING objects from admission;
+        # force a refresh so previously applied outcomes are not double-counted.
+        goal = (
+            self.planner.db.query(Objective)
+            .filter_by(id=goal_id).populate_existing().first()
+        )
+        step = (
+            self.planner.db.query(PlanStep)
+            .filter_by(id=step_id).populate_existing().first()
+        )
+        task = (
+            self.planner.db.query(Task)
+            .filter_by(id=task_id).populate_existing().first()
+        )
+        if (
+            goal is None or step is None or step.plan_id is None or step.objective_id != goal_id
+            or (task is not None and task.objective_id not in (None, goal_id))
+        ):
+            return "unverified"
+
+        completion_error = None
+        if step.status == "completed" and task is not None and task.state == "completed":
+            try:
+                completion_error = _default_completion_precondition(self.planner.db, task_id)(task_id)
+            except Exception:
+                # A broken/unavailable verifier must not become success.
+                return "unverified"
+
+        return classify_step_outcome(
+            requested_task_id=task_id,
+            evidence_task_id=step.evidence_task_id,
+            step_status=step.status,
+            task_state=task.state if task is not None else None,
+            completion_error=completion_error,
+        )
 
     # ------------------------------------------------------------------ #
     # Phase 4: bounded background cycle across MULTIPLE goals (fairness)   #
@@ -907,22 +966,21 @@ class TaskOrchestrator:
                 await self.state_store.release_lease()
 
             await run_task_fn(None, task.id, None)
-            outcome = await self.apply_task_outcome(task.id)
-            # Same short-circuit tolerance as execute_session: the kernel's
-            # PostTaskPipeline may have applied the outcome already.
-            outcome_str = (
-                outcome.get("outcome") if isinstance(outcome, dict) else None
-            ) or ("already_applied" if outcome else "unknown")
-
-            # SERVICE ACCOUNTING (Phase 4.5): "served" is recorded only when
-            # an execution attempt actually STARTED a step — never merely for
-            # selection. Failure accounting feeds the persisted backoff.
-            selector.mark_served(goal_id)
-            from backend.services.goal_manager import GoalManager as _GM
-
-            _GM(self.planner.db).record_service_outcome(
-                goal_id, step_failed=(outcome_str not in ("completed", "already_applied"))
+            await self.apply_task_outcome(task.id)
+            outcome_str = self._observed_step_outcome(
+                goal_id=goal_id, step_id=started["step"].id, task_id=task.id,
             )
+
+            # A started attempt receives fairness credit, but unresolved
+            # evidence must NOT be recorded as a successful or failed
+            # terminal service session.
+            selector.mark_served(goal_id)
+            if outcome_str in ("completed", "failed"):
+                from backend.services.goal_manager import GoalManager as _GM
+
+                _GM(self.planner.db).record_service_outcome(
+                    goal_id, step_failed=(outcome_str == "failed")
+                )
 
             executed.append({
                 "goal_id": goal_id,
@@ -930,6 +988,10 @@ class TaskOrchestrator:
                 "step_key": started["step"].step_key,
                 "outcome": outcome_str,
             })
+
+            if outcome_str == "unverified":
+                stop_reason = "outcome_unverified"
+                break
 
             if outcome_str == "failed":
                 # Deterministic retry decision; exhaustion already paused the
