@@ -350,25 +350,35 @@ Still the running live dev setup (designed for normal-user browser testing):
 Tool inventory (63 registered, live `GET /api/v1/tools`; proven = executed
 end-to-end by a provider turn in a live/isolated profile, unproven = registered
 but never executed by the provider):
-- Proven: system_time, system_battery, system_file_roots, file_list,
-  file_read, file_search (all verified passes, or resolved safety denials that
-  were correct), plus memory path via post-task consolidation
-  (memory entry persisted across restart; recall proven).
+- Proven this session: system_time, system_battery, system_file_roots,
+  file_list, file_read, file_search, file_hash, system_disk,
+  system_processes, system_active_window, window_list, network_status,
+  app_list, package_search, package_list, memory_stats, memory_recall,
+  memory_export, memory_recall_related, activity_recall, system_capabilities,
+  device_status, objective_get_plan, browser_tabs — i.e. every guarded-visible
+  read-only tool has been executed successfully by the live provider at least
+  once (file_read/file_hash/README round trip verified against disk;
+  injection available/relevant proven; memory persisted across a real
+  restart). The browser bridge is live: the provider enumerated 2 real tabs
+  across Chrome and Brave ("Mentra Project Context" active). browser_read_page
+  and browser_interact are routine-visible but were NOT exercised: the active
+  tab is the owner's private browser context, and sending its content to the
+  cloud provider is beyond the mandate — decision deferred to the owner.
 - Exercised but correctly blocked by the permission/consent boundary:
   objective_create, memory_store (parked at approval; by design).
-- Unproven live: system_disk, system_processes, system_active_window,
-  window_list, browser_tabs, browser_switch_tab, browser_open_tab,
-  browser_close_tab, browser_read_page, browser_interact, browser_screenshot,
-  system_volume, system_power, system_power_control, brightness_control,
-  network_status, system_capabilities, tool_propose, clipboard_read,
-  device_status, file_create, file_write, file_move, file_copy, file_delete,
-  file_hash, app_list, app_launch, app_focus, app_close, package_search,
-  package_list, package_install, package_uninstall, gui_observe, gui_focus,
-  gui_click, gui_type, gui_hotkey, gui_paste, gui_invoke, gui_set_value,
-  gui_screenshot, gui_batch_form, memory_store (direct), memory_recall,
-  memory_forget, memory_link, memory_recall_related, memory_export,
-  activity_recall, objective_add_step, objective_complete_step,
-  objective_get_plan, objective_update_summary, memory_stats, browser_*.
+- Unproven live by deliberate design constraint — browser bridge content
+  tools and all mutation class (unreachable without owner decision; see the
+  consent boundary blocker below):
+  browser_read_page, browser_interact, browser_switch_tab, browser_open_tab,
+  browser_close_tab, browser_screenshot, brightness_control,
+  clipboard_read, file_create, file_write, file_move, file_copy, file_delete,
+  memory_store (direct), memory_forget, memory_link, objective_add_step,
+  objective_complete_step, objective_update_summary, system_volume,
+  system_power, system_power_control, app_launch, app_focus, app_close,
+  gui_observe, gui_focus, gui_click, gui_type, gui_hotkey, gui_paste,
+  gui_invoke, gui_set_value, gui_screenshot, gui_batch_form, package_install,
+  package_uninstall, tool_propose (review-only tool authoring; deliberately
+  not polluted with test proposals).
 
 Still blocked/not done:
 - **Owner decision required (unblocks the whole app-internal/consequential
