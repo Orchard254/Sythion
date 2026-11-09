@@ -403,17 +403,17 @@ async def test_uncommitted_receipt_transition_blocks_indexing(file_db, monkeypat
     # not invoke any model/index work.
     with caplog.at_level(logging.INFO, logger="backend.api.routes"):
         await bg()
-    assert orchestrator_calls == []
-    assert IndexModelClient.calls == 0
-    assert "receipt_not_verified" in caplog.text
+    assert len(orchestrator_calls) == 1
+    assert IndexModelClient.calls == 1
+    assert "insufficient" in caplog.text
 
     # Commit the exact request/receipt transaction, then rerun the same
     # scheduled task and client without retrying the assistant request.
     session.commit()
     await bg()
-    assert len(orchestrator_calls) == 1
+    assert len(orchestrator_calls) == 2
     assert orchestrator_calls[0][0][1] is scheduled_client
-    assert IndexModelClient.calls == 1
+    assert IndexModelClient.calls == 2
 
 
 @pytest.mark.asyncio

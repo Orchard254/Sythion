@@ -3134,17 +3134,17 @@ button {
 
 /* Robot palette. Kept as tokens so the Companion shares the app's material. */
 .companion-robot {
-  --companion-body: #333b4a;
-  --companion-body-2: #2a323f;
-  --companion-line: rgba(255, 255, 255, 0.13);
-  --companion-highlight: rgba(255, 255, 255, 0.085);
-  --companion-visor: #0d1017;
-  --companion-chest: var(--accent-bv);
-  --companion-shadow: rgba(0, 0, 0, 0.45);
-  --companion-face: var(--accent-bv-bright);
-  --companion-face-active: #d6d0ff;
-  --companion-face-dim: var(--text-2);
-  --companion-halo: rgba(169, 155, 255, 0.45);
+  --companion-body: #f8fbfc;
+  --companion-body-2: #dce9e8;
+  --companion-line: rgba(52, 119, 110, 0.18);
+  --companion-highlight: rgba(255, 255, 255, 0.72);
+  --companion-visor: #07161f;
+  --companion-chest: #6ed7c6;
+  --companion-shadow: rgba(12, 24, 24, 0.24);
+  --companion-face: #58dcff;
+  --companion-face-active: #58dcff;
+  --companion-face-dim: #71909b;
+  --companion-halo: rgba(91, 202, 234, 0.32);
   display: block;
   overflow: visible;
   filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.5));

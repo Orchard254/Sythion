@@ -209,14 +209,22 @@ def _entry_match_score(entry, tokens: list[str]) -> int:
         elif stem and stem in category:
             score += 1
 
-    # Importance weighting: only apply when there's a token match
+    # Frequency is capped low so a weak but frequent entry can never
+    # outrank a verified / high-confidence relevant entry.
     if score > 0:
         access_count = getattr(entry, "access_count", 0) or 0
-        score += min(access_count, 10)  # cap at 10 to prevent runaway scoring
+        score += min(access_count, 5)  # cap at 5 to prevent runaway scoring
 
         # Category priority tiebreaker: profile > knowledge > preference
         category_priority = {"profile": 3, "knowledge": 2, "preference": 1}
         score += category_priority.get(category, 0)
+
+        # Relevance quality: high confidence and verification lift an entry.
+        confidence = getattr(entry, "confidence", None)
+        if confidence is not None:
+            score += int((confidence or 0) * 5)
+        if str(getattr(entry, "verification_status", "") or "").startswith("VERIFIED"):
+            score += 3
 
     return score
 

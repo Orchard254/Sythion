@@ -318,10 +318,28 @@ async def list_conversations(limit: int = Query(50, ge=1, le=200), cursor: Optio
             if isinstance(exchange_id, str) and isinstance(task_id, str) and task_id.strip():
                 associations_by_exchange.setdefault(exchange_id, []).append(task_id.strip())
 
+    task_ids = [task_id for ids in associations_by_exchange.values() for task_id in ids]
+    tasks_by_id = {}
+    if task_ids:
+        from backend.models.database import Task
+
+        for task in db.query(Task).filter(Task.id.in_(task_ids)).all():
+            tasks_by_id[task.id] = {
+                "id": task.id,
+                "state": task.state,
+                "final_result": task.final_result,
+                "terminal_reason": task.terminal_reason,
+            }
+
     return {"conversations": [
         {"id": row.id, "session_id": row.session_id, "user_text": row.user_text,
          "assistant_text": row.assistant_text, "created_at": row.created_at.isoformat(),
-         "background_task_ids": associations_by_exchange.get(row.id, [])}
+         "background_task_ids": associations_by_exchange.get(row.id, []),
+         "background_tasks": [
+             tasks_by_id[task_id]
+             for task_id in associations_by_exchange.get(row.id, [])
+             if task_id in tasks_by_id
+         ]}
         for row in rows
     ], "next_cursor": next_cursor}
 
@@ -960,8 +978,13 @@ async def assistant_turn(
             )
             try:
                 runtime = ConversationRuntime(db)
-                runtime._persist_conversation(
+                await runtime._persist_conversation(
                     user_text, assistant_text, exchange_id, task_id=None, status="completed",
+                )
+                receipt_manager.transition(
+                    client_request_id,
+                    session_id,
+                    status="resolved",
                 )
                 db.commit()
             except Exception:
@@ -1443,6 +1466,7 @@ async def assistant_turn(
                 status="failed" if assistant_failed_closed else "resolved",
             )
             _receipt_resolved = not assistant_failed_closed
+            db.commit()
         except Exception:
             # Claim remains resolving for an unfinished/crash attempt; retries
             # report this honestly instead of rerunning.

@@ -17,7 +17,7 @@ import json
 from backend.models.database import Task, TaskEvent, MemoryEntry, MemoryEdge
 import logging
 from backend.tools.persistent_memory_tools import _query_tokens, _entry_match_score
-from sqlalchemy import text as sa_text, update
+from sqlalchemy import and_, text as sa_text, update
 
 MEMORY_CONTEXT_LOG_RETAIN = 500
 _RECENT_CONTEXT_LIMIT = 5
@@ -32,6 +32,19 @@ def _cap_tool_summary(summary: str, cap: int, tool_name: str) -> str:
     if len(summary) <= cap:
         return summary
     return summary[:cap - 3] + "..."
+
+
+def _memory_fallback_key(entry: Any) -> Tuple[Any, ...]:
+    """Order fallback candidates: verified, then high-confidence, then frequent.
+
+    Frequency is capped so a weak but repeatedly-accessed entry never
+    outranks a verified/high-confidence one (relevance > popularity).
+    """
+    confidence = float(getattr(entry, "confidence", 0.5) or 0.5)
+    verified = 1 if str(getattr(entry, "verification_status", "") or "").startswith("VERIFIED") else 0
+    access = min(getattr(entry, "access_count", 0) or 0, 10)
+    updated = entry.updated_at.timestamp() if getattr(entry, "updated_at", None) else 0.0
+    return (verified, confidence, access, updated, getattr(entry, "id", 0) or 0)
 
 
 class ModelContextBuilder:
@@ -159,10 +172,10 @@ class ModelContextBuilder:
         except Exception:
             return ""
 
-    def select_memory_context(self, anchor: str, session_id: Optional[str] = None):
+    def select_memory_context(self, anchor: str, session_id: Optional[str] = None, task_id: Optional[str] = None):
         """Inject only the most relevant persistent memories for this request."""
-        # Check cache first
-        cache_key = f"{session_id}:{hash(anchor)}"
+        # Check cache first (task-scoped: a block must never leak across tasks)
+        cache_key = f"{task_id}:{session_id}:{hash(anchor)}"
         now = time.monotonic()
         if cache_key in self._memory_cache:
             ts, cached = self._memory_cache[cache_key]
@@ -172,9 +185,31 @@ class ModelContextBuilder:
         block = ""
         stats = {"available": 0, "relevant": 0, "connected": 0, "links": 0}
         try:
+            # Scope filter always applies: USER/GLOBAL are globally visible;
+            # TASK entries are visible only to their own task, SESSION entries
+            # only to their own session. Other task/session entries, and all
+            # inactive entries, never enter model context.
+            candidate_query = self.db.query(MemoryEntry).filter(MemoryEntry.status == "ACTIVE")
+            from sqlalchemy import or_ as _or
+
+            scope_conditions = [MemoryEntry.scope.in_(("USER", "GLOBAL"))]
+            if task_id:
+                scope_conditions.append(
+                    and_(
+                        MemoryEntry.scope == "TASK",
+                        MemoryEntry.scope_ref == task_id,
+                    )
+                )
+            if session_id:
+                scope_conditions.append(
+                    and_(
+                        MemoryEntry.scope == "SESSION",
+                        MemoryEntry.scope_ref == session_id,
+                    )
+                )
+            candidate_query = candidate_query.filter(_or(*scope_conditions))
             all_entries = (
-                self.db.query(MemoryEntry)
-                .filter(MemoryEntry.status == "ACTIVE")
+                candidate_query
                 .order_by(MemoryEntry.updated_at.desc())
                 .all()
             )
@@ -209,9 +244,11 @@ class ModelContextBuilder:
                         "FROM memory_entries_fts fts "
                         "JOIN memory_entries m ON m.id = fts.rowid "
                         "WHERE memory_entries_fts MATCH :query "
-                        "ORDER BY m.access_count DESC, m.updated_at DESC "
+                        "AND m.status = 'ACTIVE' "
+                        "AND (m.scope IN ('USER', 'GLOBAL') OR (m.scope = 'TASK' AND :task_id <> '' AND m.scope_ref = :task_id) OR (m.scope = 'SESSION' AND :session_id <> '' AND m.scope_ref = :session_id)) "
+                        "ORDER BY (MIN(COALESCE(m.access_count, 0), 10) * 0.2 + COALESCE(m.confidence, 0.5) * 20 + CASE WHEN m.verification_status LIKE 'VERIFIED%' THEN 3 ELSE 0 END + (CASE WHEN m.scope = 'TASK' AND :task_id <> '' AND m.scope_ref = :task_id THEN 4 WHEN m.scope = 'SESSION' AND :session_id <> '' AND m.scope_ref = :session_id THEN 3 ELSE 0 END)) DESC, m.updated_at DESC "
                         f"LIMIT {_MEMORY_CONTEXT_LIMIT}"
-                    ), {"query": fts_query}).fetchall()
+                    ), {"query": fts_query, "task_id": task_id or "", "session_id": session_id or ""}).fetchall()
                 except Exception:
                     fts_results = None
                 
@@ -223,22 +260,46 @@ class ModelContextBuilder:
                 else:
                     # Fallback to scoring if FTS returns nothing
                     scored = []
+                    now = datetime.utcnow()
                     for entry in all_entries:
                         score = _entry_match_score(entry, tokens)
                         if score > 0:
+                            confidence = float(getattr(entry, "confidence", 0.5) or 0.5)
+                            score += confidence * 20
+                            if str(getattr(entry, "verification_status", "")).startswith("VERIFIED"):
+                                score += 3
+                            entry_scope = getattr(entry, "scope", None)
+                            entry_scope_ref = getattr(entry, "scope_ref", None)
+                            if task_id and entry_scope == "TASK" and entry_scope_ref == task_id:
+                                score += 4
+                            elif session_id and entry_scope == "SESSION" and entry_scope_ref == session_id:
+                                score += 3
+                            observed_at = getattr(entry, "observed_at", None) or entry.updated_at
+                            if observed_at is not None:
+                                age_days = max(0, (now - observed_at).days)
+                                score += max(0, 2 - min(2, age_days / 30))
                             scored.append((score, entry))
                     scored.sort(key=lambda pair: (pair[0], pair[1].updated_at), reverse=True)
                     selected = [entry for _, entry in scored[:_MEMORY_CONTEXT_LIMIT]]
-            # Fallback: if tokens exist but no matches, include recent high-access entries
+            # Fallback: if tokens exist but nothing token-matched, surface the
+            # highest-quality active entries (verified, then high-confidence,
+            # then capped frequency; newest as tiebreak) instead of the
+            # merely most-frequent entries.
             if not selected and tokens:
                 fallback = sorted(
                     all_entries,
-                    key=lambda e: (-(e.access_count or 0), -(e.updated_at.timestamp() if e.updated_at else 0)),
+                    key=_memory_fallback_key,
+                    reverse=True,
                 )[:_MEMORY_FALLBACK_LIMIT]
                 selected = fallback
             if not selected and not tokens:
-                # Only fallback to recency when store is empty or query is empty
-                selected = list(all_entries[:_MEMORY_CONTEXT_LIMIT])
+                # No query text: surface the highest-quality active entries,
+                # still bounded (never a full-history dump).
+                selected = sorted(
+                    all_entries,
+                    key=_memory_fallback_key,
+                    reverse=True,
+                )[:_MEMORY_CONTEXT_LIMIT]
             stats["relevant"] = len(selected)
 
             # Increment access_count for selected entries (importance weighting)
@@ -299,9 +360,30 @@ class ModelContextBuilder:
                     neighbor_keys.add(edge.source_key)
             neighbor_keys -= selected_keys
             # Only include neighbors that exist as MemoryEntry records
+            neighbor_scope = [MemoryEntry.scope.in_(("USER", "GLOBAL"))]
+            if task_id:
+                neighbor_scope.append(
+                    and_(
+                        MemoryEntry.scope == "TASK",
+                        MemoryEntry.scope_ref == task_id,
+                    )
+                )
+            if session_id:
+                neighbor_scope.append(
+                    and_(
+                        MemoryEntry.scope == "SESSION",
+                        MemoryEntry.scope_ref == session_id,
+                    )
+                )
             neighbors = (
                 self.db.query(MemoryEntry)
-                .filter(MemoryEntry.key.in_(neighbor_keys))
+                .filter(
+                    MemoryEntry.key.in_(neighbor_keys),
+                    MemoryEntry.status == "ACTIVE",
+                    or_(*neighbor_scope),
+                )
+                .order_by(MemoryEntry.updated_at.desc())
+                .limit(_MEMORY_CONTEXT_LIMIT)
                 .all()
             ) if neighbor_keys else []
             stats["connected"] = len(neighbors)
@@ -445,6 +527,7 @@ class ModelContextBuilder:
         mem_block, mem_stats = self.select_memory_context(
             normalized_goal or original_request,
             session_id=session_id,
+            task_id=task_id,
         )
         if mem_block:
             user_content += mem_block

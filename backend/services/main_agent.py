@@ -399,8 +399,51 @@ class MainAgentService:
         """
         from sqlalchemy import update
 
+        # Fail-closed: do not mutate through a caller-owned transaction.
+        self._refuse_caller_owned_pending_transaction()
+
         reclaimed = 0
         failed_reclaims = 0
+        reconciled_terminal_wakes = 0
+        # A crash can occur between a task's durable terminal commit and the
+        # best-effort terminal-wake hook. Reconcile recent terminal tasks on
+        # boot so those outcomes are not permanently invisible to the worker.
+        try:
+            from datetime import timedelta
+
+            from backend.models.database import Task
+
+            ref_time = boot_time or datetime.utcnow()
+            recent_cutoff = ref_time - timedelta(days=7)
+            terminal_tasks = [
+                task for task in self.db.query(Task).filter(
+                    Task.state.in_(("completed", "failed", "cancelled")),
+                ).all()
+                if (task.updated_at or task.created_at) is None
+                or (task.updated_at or task.created_at) >= recent_cutoff
+            ]
+            terminal_tasks.sort(
+                key=lambda task: task.updated_at or task.created_at or recent_cutoff
+            )
+            terminal_tasks = terminal_tasks[:100]
+            for task in terminal_tasks:
+                try:
+                    trigger = f"task.{task.state}"
+                    key = f"{trigger}:{task.id}"
+                    existing = self.db.query(AgentWake).filter_by(wake_key=key).first()
+                    if existing is None:
+                        self.submit_wake(
+                            trigger, trigger_reference=task.id, wake_key=key
+                        )
+                        reconciled_terminal_wakes += 1
+                except Exception:
+                    logger.warning(
+                        "Task-terminal wake reconciliation skipped for task %s",
+                        getattr(task, "id", None),
+                        exc_info=True,
+                    )
+        except Exception:
+            logger.warning("Task-terminal wake reconciliation skipped", exc_info=True)
         orphans = (
             self.db.query(AgentWake)
             .filter(AgentWake.status == WAKE_RUNNING)
@@ -430,6 +473,7 @@ class MainAgentService:
             .count()
         )
         return {"reclaimed": reclaimed, "failed_reclaims": failed_reclaims,
+                "reconciled_terminal_wakes": reconciled_terminal_wakes,
                 "pending": pending}
 
     # --- activity / self-model -------------------------------------------------------

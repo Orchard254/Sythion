@@ -648,3 +648,290 @@ async def test_post_task_intelligence_save_conversation_turn_verification(memory
     assert "Verification failed" in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_model_context_builder_scope_filters_other_task_memory(memory_db_setup):
+    """Task-scoped memory from another task must not enter current model context."""
+    from backend.tools.executor import ToolExecutor
+    from backend.models.database import MemoryEntry
+    from backend.services.model_engine import ModelDecisionEngine
+
+    session, _ = memory_db_setup
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    session.add_all([
+        MemoryEntry(
+            key="other_task_secret",
+            value="other-task-only value",
+            category="knowledge",
+            status="ACTIVE",
+            scope="TASK",
+            scope_ref="task-a",
+        ),
+        MemoryEntry(
+            key="current_task_memory",
+            value="current task memory value",
+            category="knowledge",
+            status="ACTIVE",
+            scope="TASK",
+            scope_ref="task-b",
+        ),
+        MemoryEntry(
+            key="global_memory",
+            value="global memory value",
+            category="knowledge",
+            status="ACTIVE",
+            scope="GLOBAL",
+        ),
+    ])
+    session.commit()
+
+    block, _ = engine.context_builder.select_memory_context(
+        "task b memory",
+        session_id="session-b",
+        task_id="task-b",
+    )
+
+    assert "other_task_secret" not in block
+    assert "other-task-only value" not in block
+    assert "current_task_memory" in block
+    assert "global_memory" in block
+
+
+@pytest.mark.asyncio
+async def test_model_context_builder_prefers_verified_relevant_memory(memory_db_setup):
+    """Verified/high-confidence memory should outrank a merely frequent weak entry."""
+    from backend.tools.executor import ToolExecutor
+    from backend.models.database import MemoryEntry
+    from backend.services.model_engine import ModelDecisionEngine
+
+    session, _ = memory_db_setup
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    session.add_all([
+        MemoryEntry(
+            key="weak_memory",
+            value="project alpha is an external preference",
+            category="knowledge",
+            status="ACTIVE",
+            scope="GLOBAL",
+            access_count=99,
+            confidence=0.1,
+            verification_status="UNVERIFIED",
+        ),
+        MemoryEntry(
+            key="verified_memory",
+            value="project alpha is the verified priority",
+            category="knowledge",
+            status="ACTIVE",
+            scope="GLOBAL",
+            access_count=1,
+            confidence=0.98,
+            verification_status="VERIFIED",
+        ),
+    ])
+    session.commit()
+
+    block, _ = engine.context_builder.select_memory_context(
+        "project alpha",
+        session_id="session-ranking",
+        task_id="task-ranking",
+    )
+
+    assert "verified_memory" in block
+    assert "weak_memory" in block
+    assert block.index("verified_memory") < block.index("weak_memory")
+
+
+@pytest.mark.asyncio
+async def test_model_context_builder_scope_filter_without_task_session_ids(memory_db_setup):
+    """With no task/session ids, only USER/GLOBAL memory is injected."""
+    from backend.tools.executor import ToolExecutor
+    from backend.models.database import MemoryEntry
+    from backend.services.model_engine import ModelDecisionEngine
+
+    session, _ = memory_db_setup
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    session.add_all([
+        MemoryEntry(
+            key="scoped_task_memory",
+            value="scoped task value",
+            category="knowledge",
+            status="ACTIVE",
+            scope="TASK",
+            scope_ref="task-x",
+        ),
+        MemoryEntry(
+            key="scoped_session_memory",
+            value="scoped session value",
+            category="knowledge",
+            status="ACTIVE",
+            scope="SESSION",
+            scope_ref="session-x",
+        ),
+        MemoryEntry(
+            key="global_memory",
+            value="global memory value",
+            category="knowledge",
+            status="ACTIVE",
+            scope="GLOBAL",
+        ),
+    ])
+    session.commit()
+
+    block, _ = engine.context_builder.select_memory_context("scoped global")
+    assert "scoped_task_memory" not in block
+    assert "scoped_session_memory" not in block
+    assert "global_memory" in block
+
+    # With a session id but no task id, the matching SESSION entry is
+    # visible while the TASK entry is still excluded.
+    block, _ = engine.context_builder.select_memory_context(
+        "scoped session", session_id="session-x"
+    )
+    assert "scoped_session_memory" in block
+    assert "scoped_task_memory" not in block
+
+
+@pytest.mark.asyncio
+async def test_model_context_builder_excludes_inactive_entries(memory_db_setup):
+    """FORGOTTEN/SUPERSEDED/ARCHIVED entries never enter model context."""
+    from backend.tools.executor import ToolExecutor
+    from backend.models.database import MemoryEntry
+    from backend.services.model_engine import ModelDecisionEngine
+
+    session, _ = memory_db_setup
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    session.add_all([
+        MemoryEntry(
+            key="forgotten_memory",
+            value="forgotten secret value",
+            category="knowledge",
+            status="FORGOTTEN",
+            scope="GLOBAL",
+        ),
+        MemoryEntry(
+            key="superseded_memory",
+            value="superseded secret value",
+            category="knowledge",
+            status="SUPERSEDED",
+            scope="GLOBAL",
+        ),
+        MemoryEntry(
+            key="active_memory",
+            value="active memory value",
+            category="knowledge",
+            status="ACTIVE",
+            scope="GLOBAL",
+        ),
+    ])
+    session.commit()
+
+    block, _ = engine.context_builder.select_memory_context(
+        "secret active memory", session_id="session-inact", task_id="task-inact"
+    )
+    assert "forgotten_memory" not in block
+    assert "forgotten secret value" not in block
+    assert "superseded_memory" not in block
+    assert "superseded secret value" not in block
+    assert "active_memory" in block
+
+
+@pytest.mark.asyncio
+async def test_model_context_builder_no_match_fallback_ranks_quality(memory_db_setup):
+    """No-token-match fallback ranks verified/high-confidence above frequent weak."""
+    from backend.tools.executor import ToolExecutor
+    from backend.models.database import MemoryEntry
+    from backend.services.model_engine import ModelDecisionEngine
+
+    session, _ = memory_db_setup
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    session.add_all([
+        MemoryEntry(
+            key="fallback_weak",
+            value="zzqf alpha value",
+            category="knowledge",
+            status="ACTIVE",
+            scope="GLOBAL",
+            access_count=999,
+            confidence=0.1,
+            verification_status="UNVERIFIED",
+        ),
+        MemoryEntry(
+            key="fallback_verified",
+            value="zzqf beta value",
+            category="knowledge",
+            status="ACTIVE",
+            scope="GLOBAL",
+            access_count=1,
+            confidence=0.98,
+            verification_status="VERIFIED",
+        ),
+    ])
+    session.commit()
+
+    # Query tokens match no stored value textually: fallback ordering decides.
+    block, _ = engine.context_builder.select_memory_context(
+        "nomatchbeam quortex", session_id="session-fb", task_id="task-fb"
+    )
+    assert "fallback_verified" in block
+    assert "fallback_weak" in block
+    assert block.index("fallback_verified") < block.index("fallback_weak")
+
+
+@pytest.mark.asyncio
+async def test_model_context_builder_selection_is_bounded(memory_db_setup):
+    """Selection stays capped well below a large store (no full dump)."""
+    from backend.tools.executor import ToolExecutor
+    from backend.models.database import MemoryEntry
+    from backend.services.model_engine import ModelDecisionEngine
+
+    session, _ = memory_db_setup
+    engine = ModelDecisionEngine(session, ToolExecutor())
+    session.add_all([
+        MemoryEntry(
+            key=f"bounded_memory_{i}",
+            value=f"bounded project item {i}",
+            category="knowledge",
+            status="ACTIVE",
+            scope="GLOBAL",
+            confidence=0.9,
+            verification_status="VERIFIED",
+        )
+        for i in range(60)
+    ])
+    session.commit()
+
+    block, stats = engine.context_builder.select_memory_context(
+        "bounded project", session_id="session-bnd", task_id="task-bnd"
+    )
+    assert stats["available"] == 60
+    assert 0 < stats["relevant"] <= 25
+    # A full dump would name all 60 keys; the block names at most 25.
+    entry_lines = [ln for ln in block.splitlines() if "bounded_memory_" in ln]
+    assert len(entry_lines) <= 25
+
+
+def test_entry_match_score_verified_beats_frequent_weak():
+    """Scorer: verified/high-confidence relevance outranks raw frequency."""
+    from backend.tools.persistent_memory_tools import _entry_match_score
+
+    class FakeEntry:
+        def __init__(self, **kw):
+            self.key = kw["key"]
+            self.value = kw["value"]
+            self.category = kw["category"]
+            self.access_count = kw["access_count"]
+            self.confidence = kw["confidence"]
+            self.verification_status = kw["verification_status"]
+
+    weak = FakeEntry(
+        key="weak", value="project alpha note", category="knowledge",
+        access_count=999, confidence=0.1, verification_status="UNVERIFIED",
+    )
+    verified = FakeEntry(
+        key="verified", value="project alpha note", category="knowledge",
+        access_count=1, confidence=0.98, verification_status="VERIFIED",
+    )
+    tokens = ["project", "alpha"]
+    assert _entry_match_score(verified, tokens) > _entry_match_score(weak, tokens)
+
+
+
