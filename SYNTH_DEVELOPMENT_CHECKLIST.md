@@ -321,6 +321,7 @@ Still blocked/not done:
 - Voice mic/speaker: not selected by user, remains untested.
 - `/setup` key UI uses a browser click-through; polish/persistence to be verified on next live session.
 - Local intermittent flakiness in `test_phase95_hardening::TestAdmissionAtomicity` remains uncorrelated with this session.
+- Full default backend marker-isolated suite rerun after mirror sync: **3744 passed, 45 skipped, 10 xfailed, 0 failed**.
 
 Next moves (in order):
 
