@@ -259,9 +259,28 @@ class ModelDecisionEngine:
         """
         return self.context_builder.previous_task_context(task_id, request)
 
-    def _select_memory_context(self, anchor: str):
-        """Selectively inject persistent memory relevant to the current request."""
-        return self.context_builder.select_memory_context(anchor)
+    def _select_memory_context(
+        self,
+        anchor: str,
+        task_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        access_context: Optional[Any] = None,
+        context: Optional[Any] = None,
+    ):
+        """Selectively inject persistent memory relevant to the current request.
+
+        Scope propagation (S014): the task/session identity and the optional
+        typed access context are threaded into selection so scoped memory
+        cannot leak across tasks/sessions. All scope arguments default to
+        ``None``, preserving the historical unscoped call exactly.
+        """
+        return self.context_builder.select_memory_context(
+            anchor,
+            session_id=session_id,
+            task_id=task_id,
+            access_context=access_context,
+            context=context,
+        )
 
     def _record_memory_context_stats(self, task_id: str, mem_stats: Dict[str, int]) -> None:
         """Best-effort persistence of injection stats for the validation dump."""
@@ -276,8 +295,15 @@ class ModelDecisionEngine:
         current_state: str,
         pending_question: Optional[str] = None,
         session_id: Optional[str] = None,
+        access_context: Optional[Any] = None,
+        context: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
-        """Build conversation context for the model."""
+        """Build conversation context for the model.
+
+        The optional typed access context is forwarded to memory selection;
+        it defaults to ``None`` so existing callers keep the legacy
+        task/session-only behavior.
+        """
         return self.context_builder.build_context(
             system_prompt=self._build_system_prompt(),
             task_id=task_id,
@@ -287,6 +313,8 @@ class ModelDecisionEngine:
             current_state=current_state,
             pending_question=pending_question,
             session_id=session_id,
+            access_context=access_context,
+            context=context,
         )
 
     _REASONING_FIELDS = frozenset({
@@ -491,6 +519,8 @@ class ModelDecisionEngine:
         repair_context: Optional[str] = None,
         budget: Optional[TaskBudget] = None,
         session_id: Optional[str] = None,
+        access_context: Optional[Any] = None,
+        context: Optional[Any] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Make a decision for the current task state.
@@ -519,6 +549,8 @@ class ModelDecisionEngine:
             current_state=current_state,
             pending_question=pending_question,
             session_id=session_id,
+            access_context=access_context,
+            context=context,
         )
         
         # Add repair context if this is a repair attempt
@@ -616,6 +648,8 @@ class ModelDecisionEngine:
                     repair_context=repair_context,
                     budget=budget,
                     session_id=session_id,
+                    access_context=access_context,
+                    context=context,
                 )
             raise ModelDecisionError(code="TIMEOUT", message=f"model request timed out: {e}")
         except Exception as e:
@@ -638,6 +672,8 @@ class ModelDecisionEngine:
                     repair_context=repair_context,
                     budget=budget,
                     session_id=session_id,
+                    access_context=access_context,
+                    context=context,
                 )
             raise ModelDecisionError(
                 code="CLOUD_ERROR",

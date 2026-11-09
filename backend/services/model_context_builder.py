@@ -184,10 +184,90 @@ class ModelContextBuilder:
         except Exception:
             return ""
 
-    def select_memory_context(self, anchor: str, session_id: Optional[str] = None, task_id: Optional[str] = None):
-        """Inject only the most relevant persistent memories for this request."""
+    def _coerce_access_context(self, access_context: Any, context: Any, memory_access_context: Any) -> Any:
+        """Coerce the typed access-context aliases to ``MemoryAccessContext``.
+
+        Returns ``None`` when no context is supplied so the legacy
+        task/session-only path is preserved exactly. The import is local to
+        avoid any import-cycle risk; ``memory_service`` has no dependency on
+        this module.
+        """
+        raw = access_context if access_context is not None else (
+            context if context is not None else memory_access_context
+        )
+        if raw is None:
+            return None
+        try:
+            from backend.services.memory_service import _coerce_memory_access_context
+        except ImportError:
+            from services.memory_service import _coerce_memory_access_context
+
+        return _coerce_memory_access_context(raw)
+
+    def access_context_for_scope(
+        self,
+        task_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        goal_id: Optional[str] = None,
+    ) -> Any:
+        """Build the typed ``MemoryAccessContext`` for a task/session scope."""
+        try:
+            from backend.services.memory_service import MemoryAccessContext
+        except ImportError:
+            from services.memory_service import MemoryAccessContext
+
+        return MemoryAccessContext(
+            session_id=session_id, task_id=task_id, goal_id=goal_id
+        )
+
+    def select_memory_context_with_access(
+        self,
+        anchor: str,
+        access_context: Any,
+        session_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ) -> Tuple[str, Dict]:
+        """Adapter: select memory with an explicit typed access context.
+
+        Thin wrapper over :meth:`select_memory_context` for the
+        continuity-kernel entry adapters. When the typed context carries a
+        task/session identity it is used unless an explicit ``task_id`` /
+        ``session_id`` is given (explicit arguments win, as before).
+        """
+        return self.select_memory_context(
+            anchor,
+            session_id=session_id,
+            task_id=task_id,
+            access_context=access_context,
+        )
+
+    def select_memory_context(self, anchor: str, session_id: Optional[str] = None, task_id: Optional[str] = None, access_context: Any = None, context: Any = None, memory_access_context: Any = None):
+        """Inject only the most relevant persistent memories for this request.
+
+        Scope propagation (S014): an optional typed ``MemoryAccessContext``
+        (also accepted as ``context=`` / ``memory_access_context=``) is
+        intersected with the legacy task/session scope filter. When it is
+        ``None`` the behavior is exactly the historical default: USER/GLOBAL
+        plus the explicitly given TASK/SESSION identities only. When given,
+        its ``task_id``/``session_id`` supply the effective identities unless
+        explicit arguments are provided, and its allowed (scope, ref) pairs
+        (including GOAL/ENTITY) further restrict every retrieval lane. The
+        cache key includes the scope fingerprint so a block built for one
+        scope is never served for another (S013).
+        """
+        # Typed access context propagation: explicit arguments win, the
+        # context only supplies identities it carries.
+        _typed_ctx = self._coerce_access_context(access_context, context, memory_access_context)
+        if _typed_ctx is not None:
+            if session_id is None:
+                session_id = _typed_ctx.resolved_session_id
+            if task_id is None:
+                task_id = _typed_ctx.resolved_task_id
+        _scope_fingerprint = (
+            repr(sorted(_typed_ctx.allowed_pairs())) if _typed_ctx is not None else ""
+        )
         # Check cache first (task-scoped: a block must never leak across tasks)
-        cache_key = f"{task_id}:{session_id}:{hash(anchor)}"
+        cache_key = f"{task_id}:{session_id}:{hash(anchor)}:{_scope_fingerprint}"
         now = time.monotonic()
         if cache_key in self._memory_cache:
             ts, cached = self._memory_cache[cache_key]
@@ -196,11 +276,21 @@ class ModelContextBuilder:
 
         block = ""
         stats = {"available": 0, "relevant": 0, "connected": 0, "links": 0}
+        # A typed context that allows nothing (e.g. no scopes, no identity)
+        # must not surface any memory. Cache the empty result too so the
+        # empty/scope boundary is stable within the TTL.
+        if _typed_ctx is not None and not _typed_ctx.allowed_pairs():
+            result = (block, stats)
+            self._memory_cache[cache_key] = (now, result)
+            return result
         try:
             # Scope filter always applies: USER/GLOBAL are globally visible;
             # TASK entries are visible only to their own task, SESSION entries
             # only to their own session. Other task/session entries, and all
-            # inactive entries, never enter model context.
+            # inactive entries, never enter model context. When a typed
+            # context is supplied, its non-TASK/SESSION pairs (GOAL/ENTITY/
+            # PROFILE) extend this base set and the full pair set is then
+            # intersected below so include_* restrictions still hold.
             candidate_query = self.db.query(MemoryEntry).filter(MemoryEntry.status == "ACTIVE")
             from sqlalchemy import or_ as _or
 
@@ -219,7 +309,37 @@ class ModelContextBuilder:
                         MemoryEntry.scope_ref == session_id,
                     )
                 )
+            if _typed_ctx is not None:
+                try:
+                    from backend.services.memory_service import _scope_pair_filter
+                except ImportError:
+                    from services.memory_service import _scope_pair_filter
+
+                for _scope, _ref in sorted(_typed_ctx.allowed_pairs()):
+                    if _scope in ("USER", "GLOBAL", "TASK", "SESSION"):
+                        continue
+                    if _ref is None:
+                        scope_conditions.append(MemoryEntry.scope == _scope)
+                    else:
+                        scope_conditions.append(
+                            and_(
+                                MemoryEntry.scope == _scope,
+                                MemoryEntry.scope_ref == _ref,
+                            )
+                        )
+                _pair_filter = _scope_pair_filter(_typed_ctx.allowed_pairs())
+                if _pair_filter is None:
+                    result = (block, stats)
+                    self._memory_cache[cache_key] = (now, result)
+                    return result
             candidate_query = candidate_query.filter(_or(*scope_conditions))
+            if _typed_ctx is not None:
+                try:
+                    from backend.services.memory_service import _scope_pair_filter as _spf
+                except ImportError:
+                    from services.memory_service import _scope_pair_filter as _spf
+
+                candidate_query = candidate_query.filter(_spf(_typed_ctx.allowed_pairs()))
             all_entries = (
                 candidate_query
                 .order_by(MemoryEntry.updated_at.desc())
@@ -248,9 +368,16 @@ class ModelContextBuilder:
             tokens = _query_tokens(search_text)
             if tokens:
                 # FTS5 may not exist in raw-metadata test DBs; fall back to
-                # Python scoring rather than failing the injection.
+                # Python scoring rather than failing the injection. When a
+                # typed access context is supplied the raw FTS SQL cannot
+                # express its full pair set (GOAL/ENTITY/PROFILE), so force
+                # the Python scoring lane over the already filtered candidate
+                # rows instead of letting unfiltered FTS rows leak in.
                 fts_query = " OR ".join(tokens)
+                fts_results = None
                 try:
+                    if _typed_ctx is not None:
+                        raise RuntimeError("FTS skipped for typed access context")
                     fts_results = self.db.execute(sa_text(
                         "SELECT m.id, m.category, m.key, m.value, m.access_count, m.updated_at "
                         "FROM memory_entries_fts fts "
@@ -272,7 +399,10 @@ class ModelContextBuilder:
                 else:
                     # Fallback to scoring if FTS returns nothing
                     scored = []
-                    now = datetime.utcnow()
+                    # NOTE: distinct from the cache ``now`` (monotonic); reusing
+                    # the name would poison the cache timestamp with a datetime
+                    # and break the TTL comparison on the next lookup.
+                    scored_now = datetime.utcnow()
                     for entry in all_entries:
                         score = _entry_match_score(entry, tokens)
                         if score > 0:
@@ -288,7 +418,7 @@ class ModelContextBuilder:
                                 score += 3
                             observed_at = getattr(entry, "observed_at", None) or entry.updated_at
                             if observed_at is not None:
-                                age_days = max(0, (now - observed_at).days)
+                                age_days = max(0, (scored_now - observed_at).days)
                                 score += max(0, 2 - min(2, age_days / 30))
                             scored.append((score, entry))
                     scored.sort(key=lambda pair: (pair[0], pair[1].updated_at), reverse=True)
@@ -388,13 +518,41 @@ class ModelContextBuilder:
                         MemoryEntry.scope_ref == session_id,
                     )
                 )
-            neighbors = (
+            if _typed_ctx is not None:
+                try:
+                    from backend.services.memory_service import _scope_pair_filter as _nspf
+                except ImportError:
+                    from services.memory_service import _scope_pair_filter as _nspf
+
+                for _scope, _ref in sorted(_typed_ctx.allowed_pairs()):
+                    if _scope in ("USER", "GLOBAL", "TASK", "SESSION"):
+                        continue
+                    if _ref is None:
+                        neighbor_scope.append(MemoryEntry.scope == _scope)
+                    else:
+                        neighbor_scope.append(
+                            and_(
+                                MemoryEntry.scope == _scope,
+                                MemoryEntry.scope_ref == _ref,
+                            )
+                        )
+            _neighbor_query = (
                 self.db.query(MemoryEntry)
                 .filter(
                     MemoryEntry.key.in_(neighbor_keys),
                     MemoryEntry.status == "ACTIVE",
                     or_(*neighbor_scope),
                 )
+            )
+            if _typed_ctx is not None:
+                try:
+                    from backend.services.memory_service import _scope_pair_filter as _nspf2
+                except ImportError:
+                    from services.memory_service import _scope_pair_filter as _nspf2
+
+                _neighbor_query = _neighbor_query.filter(_nspf2(_typed_ctx.allowed_pairs()))
+            neighbors = (
+                _neighbor_query
                 .order_by(MemoryEntry.updated_at.desc())
                 .limit(_MEMORY_CONTEXT_LIMIT)
                 .all()
@@ -513,8 +671,17 @@ class ModelContextBuilder:
         current_state: str,
         pending_question: Optional[str] = None,
         session_id: Optional[str] = None,
+        access_context: Any = None,
+        context: Any = None,
+        memory_access_context: Any = None,
     ) -> List[Dict[str, Any]]:
-        """Build the model message list from task/runtime state."""
+        """Build the model message list from task/runtime state.
+
+        ``access_context`` / ``context`` / ``memory_access_context`` carry
+        the typed scope context into memory selection (see
+        :meth:`select_memory_context`); all default to ``None`` so the
+        historical task/session-only path is unchanged.
+        """
         messages: List[Dict[str, Any]] = [{
             "role": "system",
             "content": system_prompt,
@@ -550,6 +717,9 @@ class ModelContextBuilder:
             normalized_goal or original_request,
             session_id=session_id,
             task_id=task_id,
+            access_context=access_context,
+            context=context,
+            memory_access_context=memory_access_context,
         )
         if mem_block:
             user_content += mem_block

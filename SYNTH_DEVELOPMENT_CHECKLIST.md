@@ -292,6 +292,8 @@ trustworthy.
 Achieved (synthetic/focused evidence unless stated otherwise):
 
 - Scoped memory retrieval, verified/confidence/relevance ranking
+- Scoped wiring behind disabled continuity flag (typed access context, cache
+  isolation, adapter seams; default paths unchanged)
 - Assistant-turn persistence and receipt finalization
 - Conversation task state/result exposure
 - Durable terminal-task wake reconciliation
