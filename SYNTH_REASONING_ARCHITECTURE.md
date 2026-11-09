@@ -240,3 +240,23 @@ tests for permission bypasses and fabricated completion. Synthetic
 unit/integration checks and real-provider/installed-runtime evidence must be
 reported separately. Keep the detailed tracking in checklist S051-S063,
 S068-S075, S076-S096, and the architecture-specific additions S178+.
+
+## 8. Ownership-aware restart preflight (2026-11-09 implementation slice)
+
+The read-only `GET /api/v1/goals/{goal_id}/continuity` response now adds a
+`recovery_preflight` summary and a `recovery` classification on each returned
+task. This reconciles recorded reasoning-call lifecycle with the current task
+state and a snapshot of its task-ownership lease. A current ACTIVE lease means
+the worker **may** still be running; it is not proof of liveness. An expired
+lease triggers review rather than proving worker death. Unresolved inference
+receipts and uncertain external actions remain explicit, never silently
+converted into completed work, a clean restart, or an execution permission.
+
+Only goal-scoped task IDs are considered, and the report discloses whether its
+bounded task window is complete. It never returns ownership nonces, worker IDs,
+or external action IDs. The preflight reads existing records; it **does not**
+reclaim owners, replay tools, resume interrupted tasks, enable background
+orchestration or issue consequential consent. Restart admission/recovery and
+end-to-end Windows execution remain open acceptance work (S184-S185). Focused
+local tests and synthetic-schema SQLite smoke tests do not establish complete
+production integration.

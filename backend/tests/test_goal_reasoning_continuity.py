@@ -131,3 +131,42 @@ def test_paused_goal_does_not_implicitly_request_resume_from_waiting_task():
 def test_terminal_goal_does_not_implicitly_request_new_work():
     result = view([task("t", "waiting_for_user")], status="completed")
     assert result["attention"] == "goal_terminal"
+
+# Restart preflight is observational; the original task/goal attention
+# classification remains backwards compatible for existing clients.
+from datetime import datetime as _datetime, timedelta as _timedelta
+
+
+def test_recovery_preflight_flags_stale_owner_without_executing():
+    now = _datetime(2026, 11, 9, 12)
+    rows = [dict(task("t", "running", [ev("started", "call")]),
+                 ownership={"status": "ACTIVE", "expires_at": now - _timedelta(seconds=1)})]
+    result = project_goal_reasoning("g", "active", rows, total_tasks=1, now=now)
+    assert result["attention"] == "inspect_unresolved_receipts"
+    assert result["recovery_preflight"]["review_required_tasks"] == 1
+    assert result["tasks"][0]["recovery"]["state"] == "stale_reasoning_review"
+    assert not result["recovery_preflight"]["automatic_replay_allowed"]
+
+
+def test_recovery_preflight_current_lease_is_not_claimed_to_be_alive():
+    now = _datetime(2026, 11, 9, 12)
+    rows = [dict(task("t", "running", [ev("started", "call")]),
+                 ownership={"status": "ACTIVE", "expires_at": now + _timedelta(seconds=5)})]
+    result = project_goal_reasoning("g", "active", rows, total_tasks=1, now=now)
+    assert result["tasks"][0]["recovery"]["state"] == "possibly_running"
+    assert result["recovery_preflight"]["possibly_running_tasks"] == 1
+    assert result["recovery_preflight"]["review_required_tasks"] == 0
+
+
+def test_recovery_preflight_prioritizes_uncertain_external_effect():
+    now = _datetime(2026, 11, 9, 12)
+    rows = [dict(task("t", "interrupted"), ownership={"status": "RELEASED", "active_action": True})]
+    result = project_goal_reasoning("g", "active", rows, total_tasks=1, now=now)
+    assert result["recovery_preflight"]["external_effect_uncertain_tasks"] == 1
+    assert result["tasks"][0]["recovery"]["state"] == "external_effect_review"
+
+
+def test_recovery_preflight_discloses_partial_task_window():
+    result = project_goal_reasoning("g", "active", [task("one", "completed")], total_tasks=22)
+    assert not result["recovery_preflight"]["window_complete"]
+    assert result["task_window"]["truncated"]
