@@ -294,18 +294,19 @@ Achieved (synthetic/focused evidence unless stated otherwise):
 - Scoped memory retrieval, verified/confidence/relevance ranking
 - Scoped wiring behind disabled continuity flag (typed access context, cache
   isolation, adapter seams; default paths unchanged)
-- Full default backend suite now green in a single pass: 3747 passed, 60
-  skipped, 10 xfailed, 0 failed (CI 3.11 vs local 3.14; intermittent
-  test_phase95_hardening native-crash flake recorded, not stable-pass)
-- Acceptance suite 208 passed/2 skipped; release-payload and mirror drift fixed
-  and holding (60 passed after safe mirror sync)
-- Assistant-turn persistence and receipt finalization; conversation task result
-  exposure; terminal-wake reconciliation; continuity-kernel scaffold behind
-  disabled flag; progress totals exclude superseded plans
-- Browser→API chain verified with synthetic profile: health 200, memory/conversations/
-  setup readiness 200, 401/403 boundaries hold; real-provider health reports
-  cloud_configured=true
-- Focused suites: 707 backend + 81 frontend tests passed across selected groups
+- Narrow backend baseline re-verified after release-payload mirror sync:
+  release payload + canonical drift 71/1 skipped; clean build/install 15/7;
+  data dir 15; conversation memory 30; scoped memory 11; assistant turns 44;
+  goals 46; wake 35/3; tools 27/3 — total 294 passed, 14 skipped, 0 failed.
+- Acceptance suite 208 passed/2 skipped; release-payload sync holds.
+- Full default backend run earlier reported 3747 passed with one mirror-drift
+  failure, which is fixed; CI local 3.14 vs CI 3.11 still outstanding.
+- Browser→API chain verified with synthetic profile; real-provider health and
+  conversation/memory recall verified (blue keyboard, synth-prototype-check
+  previously; keyboard recall this run); provider turn created and parked task
+  blocked by permission at memory_store (by design).
+- Focused suites: assistant/memory/wake 98; execution/E2E 50; daily tools 96/3;
+  frontend 230; scoped memory 52.
 
 Still to verify or complete:
 
