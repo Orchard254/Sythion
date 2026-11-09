@@ -24,7 +24,7 @@ vi.mock('../hooks/useBackend', () => ({
 const draftSetter = vi.fn();
 vi.mock('../store/appStore', () => ({
   useAppStore: (select: (state: unknown) => unknown) =>
-    select({ dataMode: 'live', setTranscriptDraft: draftSetter, transcriptDraft: 'Hello Synth' }),
+    select({ setTranscriptDraft: draftSetter, transcriptDraft: 'Hello Synth' }),
 }));
 
 describe('Companion spoken replies', () => {

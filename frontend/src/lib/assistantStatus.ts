@@ -18,7 +18,7 @@ import type { Task, Tone } from '../types';
  *   awaiting    a task is waiting_for_user or interrupted with a question —
  *               this is the safety-critical state and outranks everything
  *               except an actual error
- *   offline     preview mode, or no backend attached
+ *   offline     no backend attached
  *   error       a real error surfaced from voice or the task query
  *
  * `speaking` means the *user* is speaking. The backend exposes
@@ -44,10 +44,8 @@ export interface AssistantStatus {
   label: string;
   /** One line of context, or '' when the label already says everything. */
   detail: string;
-  /**
-   * True only when the state describes real backend activity. Preview mode is
-   * always false. Anything that makes an activity claim must gate on this.
-   */
+  /** True only when the state describes real backend activity. Anything that
+   * makes an activity claim must gate on this. */
   live: boolean;
   /** The task responsible for the state, when the state came from a task. */
   taskId: string | null;
@@ -61,7 +59,6 @@ export interface AssistantStatus {
 }
 
 export interface AssistantStatusInput {
-  dataMode: 'live' | 'preview';
   isConnected: boolean;
   isListening: boolean;
   /** Real VAD flag from the audio-frame response. */
@@ -131,7 +128,6 @@ function clampLevel(level: number | null | undefined): number | null {
 
 export function deriveAssistantStatus(input: AssistantStatusInput): AssistantStatus {
   const {
-    dataMode,
     isConnected,
     isListening,
     isSpeaking,
@@ -141,7 +137,6 @@ export function deriveAssistantStatus(input: AssistantStatusInput): AssistantSta
   } = input;
 
   const audioLevel = clampLevel(input.audioLevel);
-  const preview = dataMode === 'preview';
 
   // A real error outranks everything: the user needs to know why.
   if (error) {
@@ -150,23 +145,20 @@ export function deriveAssistantStatus(input: AssistantStatusInput): AssistantSta
       tone: 'danger',
       label: 'Something went wrong',
       detail: error,
-      live: !preview,
+      live: true,
       taskId: null,
       audioLevel: null,
     };
   }
 
-  // Offline outranks the voice and task states, because in preview mode none of
-  // them can truthfully occur. Labelling demo data as "executing" is exactly the
-  // contradiction this screen must not have.
-  if (preview || !isConnected) {
+  // Offline outranks the voice and task states: without a backend none of them
+  // can truthfully occur.
+  if (!isConnected) {
     return {
       state: 'offline',
       tone: 'warn',
-      label: preview ? 'Preview mode' : 'Backend offline',
-      detail: preview
-        ? 'Nothing here runs. Messages are not sent and no task will be created.'
-        : 'Reconnect to a Sythion runtime to send messages.',
+      label: 'Backend offline',
+      detail: 'Reconnect to a Sythion runtime to send messages.',
       live: false,
       taskId: null,
       audioLevel: null,

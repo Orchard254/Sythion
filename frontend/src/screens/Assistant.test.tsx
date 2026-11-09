@@ -137,16 +137,6 @@ describe('assistant turns', () => {
     expect(text()).not.toContain('exec-line__toggle');
   });
 
-  it('does not show live conversation in preview mode', async () => {
-    mock.turn.mockResolvedValueOnce({ exchange_id: 'conv-1', user_text: 'Hello Synth', assistant_text: 'Private response', status: 'completed', background_task_ids: [] });
-    await draft(); await send();
-    expect(text()).toContain('Private response');
-    await settle(() => useAppStore.setState({ dataMode: 'preview' }));
-    expect(text()).not.toContain('Private response');
-    await settle(() => useAppStore.setState({ dataMode: 'live' }));
-    expect(text()).toContain('Private response');
-  });
-
   it('preserves text after spoken playback failure', async () => {
     localStorage.setItem('sythion.replyMode', 'voice');
     await settle(() => { view.unmount(); view = create(<QueryClientProvider client={client}><AssistantScreen /></QueryClientProvider>); });
@@ -1052,7 +1042,7 @@ beforeEach(async () => {
   let mode = 'text';
   vi.stubGlobal('localStorage', { getItem: () => mode, setItem: (_key: string, value: string) => { mode = value; } });
   vi.stubGlobal('document', { visibilityState: 'visible' });
-  useAppStore.setState({ isConnected: true, dataMode: 'live', isListening: false, isVoiceSpeaking: false, transcriptDraft: '' });
+  useAppStore.setState({ isConnected: true, isListening: false, isVoiceSpeaking: false, transcriptDraft: '' });
   mock.taskList = [];
   mock.conversations.mockResolvedValue({ conversations: [], next_cursor: null });
   mock.turn.mockResolvedValue({ exchange_id: 'turn-1', user_text: 'Hello Synth', assistant_text: 'Saved reply', status: 'completed', background_task_ids: [] });

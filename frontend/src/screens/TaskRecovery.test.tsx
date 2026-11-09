@@ -44,7 +44,7 @@ const settled = async (fn?: () => void) => {
 
 beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
-  useAppStore.setState({ isConnected: true, dataMode: 'live', transcriptDraft: '', notifications: [], unreadNotifications: 0, isVoiceSpeaking: false });
+  useAppStore.setState({ isConnected: true, transcriptDraft: '', notifications: [], unreadNotifications: 0, isVoiceSpeaking: false });
   vi.stubGlobal('document', { addEventListener: vi.fn(), removeEventListener: vi.fn(), visibilityState: 'visible' });
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: vi.fn(), removeItem: vi.fn() });
   const storage: Record<string, string> = { 'sythion.taskAssociations': JSON.stringify({ 'conv-saved': ['task-hidden'] }) };

@@ -23,7 +23,7 @@ beforeEach(async () => {
   vi.stubGlobal('document', { documentElement: { style: { setProperty: vi.fn() } } });
   mock.data = { retention_days: 90, file_roots: ['C:\\env'], persisted_file_roots: ['C:\\one,two'], environment_file_roots: [], effective_file_roots: ['C:\\one,two', 'C:\\backend'], fallback_file_roots: ['C:\\home', 'C:\\cwd'] };
   mock.update.mockResolvedValue({});
-  useAppStore.setState({ dataMode: 'live', isConnected: true });
+  useAppStore.setState({ isConnected: true });
   await act(async () => { view = create(<SettingsScreen />); });
 });
 afterEach(() => { act(() => view.unmount()); vi.unstubAllGlobals(); });

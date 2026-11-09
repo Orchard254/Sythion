@@ -27,7 +27,6 @@ describe('Control Center tray reveal action', () => {
     view = create(
       <TopBar
         route={route}
-        origin="live"
         connected={true}
         runtimeState="healthy"
         attentionCount={0}

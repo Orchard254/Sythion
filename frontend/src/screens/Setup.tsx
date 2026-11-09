@@ -137,9 +137,9 @@ export function SetupScreen({ onComplete }: SetupProps) {
           {loading ? <p role="status">Checking your setup…</p> : <>
             {step === 0 && <Panel title="1. Connect Synth" icon="key">
               <div className="stack" style={{ gap: 12 }}>
-                <p className="t-muted">Synth uses your Ollama Cloud account to answer. Your messages go to the selected cloud model. Your API key is saved in this computer’s secure credential store.</p>
+                <p className="t-muted">Synth answers through your Ollama Cloud account. Your key is saved in this computer's secure credential store.</p>
                 {!readiness?.checks.ollama_api_key_ok && <div>
-                  <p>Don’t have a key yet? You’ll need an Ollama account and an internet connection. Ollama’s terms and usage limits apply.</p>
+                  <p>No key yet? You'll need an Ollama account and an internet connection.</p>
                   <ol>
                     <li>In your browser, visit <strong>ollama.com/settings/keys</strong> and sign in or create an account.</li>
                     <li>Create an API key and copy it. Keep it private, like a password.</li>
@@ -160,7 +160,7 @@ export function SetupScreen({ onComplete }: SetupProps) {
               <div className="stack" style={{ gap: 12 }}>
                 {(models.length > 0 || selectedModel) && <>
                   <label htmlFor="setup-model">Choose a model</label>
-                  <p className="t-muted" id="setup-model-help">A model is the AI that writes Synth’s answers. If you’re unsure, try one from the list. You can choose another if the test fails.</p>
+                  <p className="t-muted" id="setup-model-help">A model is the AI that writes Synth's answers. Pick one from the list — you can change it later.</p>
                   <select id="setup-model" aria-describedby="setup-model-help" className="input" value={selectedModel} disabled={busy} onChange={(e) => { setSelectedModel(e.target.value); setMessage(null); }}>
                     <option value="">Select a model</option>
                     {[...new Set([...(selectedModel ? [selectedModel] : []), ...models])].map((m) => <option key={m} value={m}>{m}</option>)}
@@ -169,8 +169,8 @@ export function SetupScreen({ onComplete }: SetupProps) {
                 </>}
                 {models.length === 0 && !selectedModel && <p>No models found yet. Check your connection and try again.</p>}
                 <Button variant="subtle" disabled={busy} onClick={() => void findModels()}>Refresh available models</Button>
-                <p className="t-muted">{selectedModelReady ? 'Your connection is ready.' : 'The test sends a short request to check that your chosen model can respond before your first conversation.'}</p>
-                <p className="t-muted">Continuing checks that permissions are guarded. History retention defaults to 90 days unless you already have a valid setting.</p>
+                <p className="t-muted">{selectedModelReady ? 'Your connection is ready.' : 'The test sends a short request so you know the model can respond.'}</p>
+                <p className="t-muted">Continue applies guarded permissions and 90-day history retention.</p>
                 <div className="row" style={{ gap: 8 }}>
                 <Button disabled={busy} onClick={() => { setError(null); setMessage(null); setStep(0); }}>Back</Button>
                 <Button variant="primary" disabled={busy || !selectedModelReady} onClick={() => void run(async () => {
@@ -190,7 +190,7 @@ export function SetupScreen({ onComplete }: SetupProps) {
                   <label className="row" style={{ gap: 8, marginTop: 12 }}><input type="radio" name="reply-mode" checked={replyMode === 'text'} onChange={() => setReplyMode('text')} />Text — read replies in the conversation</label>
                   <label className="row" style={{ gap: 8, marginTop: 12 }}><input type="radio" name="reply-mode" checked={replyMode === 'voice'} onChange={() => setReplyMode('voice')} />Voice and text — also read new replies aloud</label>
                 </fieldset>
-                <p className="t-muted">Speech recognition and playback run locally. The microphone opens only when you choose it. You can type in either mode and change reply mode in Settings → Voice.</p>
+                <p className="t-muted">Speech runs locally; the microphone opens only when you tap it. Change in Settings → Voice.</p>
                 {replyMode === 'voice' && <Button disabled={busy} onClick={() => void run(async () => {
                   setTtsVerified(false);
                   const result = await voiceService.speak('Hello, I’m Synth. I’m ready to help.');
@@ -198,7 +198,7 @@ export function SetupScreen({ onComplete }: SetupProps) {
                   setTtsVerified(true); await refresh(); setMessage('Speaker test completed.');
                 })}>Test speaker</Button>}
                 <details><summary>Optional: use your microphone</summary><div className="stack" style={{ gap: 12, marginTop: 12 }}>
-                  <p className="t-muted">Install speech recognition once, then test your microphone. The download may take a few minutes. Microphone access is optional for spoken replies.</p>
+                  <p className="t-muted">One-time download, optional. Needed only for spoken replies.</p>
                   <Button disabled={busy} onClick={() => void run(async () => { await voiceService.installAssets(); await refresh(); setMessage('Speech assets checked. You can test your microphone.'); })}>Install speech recognition</Button>
                   <Button disabled={busy || !readiness?.checks.stt_model_installed} onClick={() => void testMicrophone()}>Test microphone</Button>
                   {voiceVerified && <p>Microphone and speech recognition verified.</p>}
@@ -209,8 +209,8 @@ export function SetupScreen({ onComplete }: SetupProps) {
             {step === 3 && <Panel title="4. Say hello to Synth" icon="check">
               <div className="stack" style={{ gap: 12 }}>
                 <ul>{checks.map(([label, ok]) => <li key={label}>{ok ? '✓' : 'Needs attention:'} {label}</li>)}</ul>
-                <p>Try “Hello Synth, what can you help me with?” Type your message and press Enter. For voice input, tap the microphone, speak, tap it again, review the transcript, then send.</p>
-                <p className="t-muted">While your message is being sent, Sythion shows its progress. Your message and Synth’s answer appear in the conversation{replyMode === 'voice' ? ', and the answer is read aloud. Text remains available if playback fails.' : '.'}</p>
+                <p>Try “Hello Synth, what can you help me with?” Type and press Enter — or tap the microphone and speak.</p>
+                <p className="t-muted">Progress is shown while sending; your message and the answer appear in the conversation{replyMode === 'voice' ? ', and the answer is read aloud.' : '.'}</p>
                 <div className="row" style={{ gap: 8 }}><Button disabled={busy} onClick={() => { setError(null); setStep(2); }}>Back</Button><Button variant="primary" disabled={busy || !canStartChat(readiness)} onClick={() => void finish()}>Start conversation</Button></div>
               </div>
             </Panel>}

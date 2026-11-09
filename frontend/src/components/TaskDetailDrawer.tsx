@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Icon } from './icons';
-import { Badge, Bar, Button, DataBadge, Drawer, KV, LoadingBlock, Notice, Rail } from './ui';
-import { useActions, useTaskEvents, useDataMode } from '../hooks/useBackend';
+import { Badge, Bar, Button, Drawer, KV, LoadingBlock, Notice, Rail } from './ui';
+import { useActions, useTaskEvents } from '../hooks/useBackend';
 import { clockTime, dateTime, duration, humanize, relTime, taskLabel, taskTone } from '../lib/format';
 import type { Task } from '../types';
 
@@ -19,18 +19,15 @@ const EVENT_TONE: Record<string, string> = {
 
 export function TaskDetailDrawer({
   task,
-  origin,
   onClose,
   onChanged,
 }: {
   task: Task;
-  origin: 'live' | 'demo';
   onClose: () => void;
   onChanged?: () => void;
 }) {
   const events = useTaskEvents(task.id);
   const actions = useActions();
-  const dataMode = useDataMode();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reply, setReply] = useState('');
@@ -59,7 +56,7 @@ export function TaskDetailDrawer({
   };
 
   const footer =
-    dataMode === 'live' && running ? (
+    running ? (
       <Button
         variant="danger"
         icon="stop"
@@ -68,7 +65,7 @@ export function TaskDetailDrawer({
       >
         {busy ? 'Cancelling…' : task.state === 'created' ? 'Cancel queued request' : 'Interrupt task'}
       </Button>
-    ) : dataMode === 'live' && task.state === 'interrupted' ? (
+    ) : task.state === 'interrupted' ? (
       <Button
         variant="primary"
         icon="play"
@@ -86,7 +83,6 @@ export function TaskDetailDrawer({
         <span className="row" style={{ gap: 8 }}>
           <Badge tone={tone}>{taskLabel(task.state)}</Badge>
           <span className="t-mono">{task.id}</span>
-          <DataBadge origin={origin} />
         </span>
       }
       onClose={onClose}
@@ -122,7 +118,7 @@ export function TaskDetailDrawer({
             </span>
             <span>{task.pending_question}</span>
           </div>
-          {dataMode === 'live' && canReplyByText && (
+          {canReplyByText && (
             <div className="row" style={{ marginTop: 9, gap: 7 }}>
               <input
                 className="input"
@@ -143,7 +139,7 @@ export function TaskDetailDrawer({
               </Button>
             </div>
           )}
-          {dataMode === 'live' && !canReplyByText && (
+          {!canReplyByText && (
             <p role="status" style={{ marginTop: 9 }}>
               This wait cannot be resumed by typing an answer here.
             </p>

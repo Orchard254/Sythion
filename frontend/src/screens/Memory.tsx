@@ -5,8 +5,6 @@ import {
   Bar,
   Button,
   Chips,
-  DataBadge,
-  DemoTag,
   EmptyState,
   KV,
   LoadingBlock,
@@ -42,7 +40,6 @@ export function MemoryScreen() {
   const report = useMemoryReport();
   const edges = useMemoryEdges();
   const actions = useActions();
-  const dataMode = useAppStore((s) => s.dataMode);
   const notify = useAppStore((s) => s.notify);
 
   const [tab, setTab] = useState<Tab>('items');
@@ -125,10 +122,9 @@ export function MemoryScreen() {
         <ScreenHead
           eyebrow="Personal"
           title="Memory & Knowledge"
-          description="Everything Sythion believes about you, where it came from, and how confident it is — with the controls to correct it."
+          description="What Sythion knows about you — and how to correct it."
           actions={
             <>
-              {dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
               <Segmented
                 value={tab}
                 onChange={setTab}
@@ -169,7 +165,7 @@ export function MemoryScreen() {
             icon="brain"
             value={report.isLoading ? '—' : (typeof meanRelevant === 'number' ? meanRelevant.toFixed(1) : '—')}
             suffix="items"
-            foot="Mean items injected into model context"
+            foot="Mean items per model turn"
           />
         </div>
 
@@ -181,7 +177,6 @@ export function MemoryScreen() {
               <EmptyState
                 icon="memory"
                 title="No remembered items"
-                description="Memory entries appear here once Sythion has stored them."
               />
             ) : null}
 
@@ -213,13 +208,13 @@ export function MemoryScreen() {
                       <span>Bulk export — no endpoint exists</span>
                     </span>
                     <p className="t-faint" style={{ marginTop: 4 }}>
-                      Retention purging is not automatic. Receipts from explicitly requested purges are listed under System &amp; Integrations.
+                      Purging is never automatic; purge receipts appear under System &amp; Integrations.
                     </p>
                   </div>
                 </Panel>
               </div>
 
-              <Panel title="Remembered items" icon="memory" flush actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}>
+              <Panel title="Remembered items" icon="memory" flush>
                 {itemList.length === 0 ? (
                   <EmptyState
                     icon="search"
@@ -272,7 +267,7 @@ export function MemoryScreen() {
                 {itemList.length > 0 && (
                   <div className="panel__body row row--between" style={{ gap: 8 }}>
                     <span className="t-faint">
-                      Showing up to 100 items (offset {offset}). The memory listing is not capped at 500; search is a keyword (substring) match over key and value, paginated in stable order. Semantic retrieval used in chat uses a separate bounded recent pool.
+                      Showing up to 100 items (offset {offset}). Keyword match over key and value.
                     </span>
                     <div className="row" style={{ gap: 6 }}>
                       <Button
@@ -304,12 +299,12 @@ export function MemoryScreen() {
             title="Memory relations"
             icon="link"
             flush
-            actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+           
           >
             <div className="panel__body--tight">
               <p className="t-faint">
-                Relations decay in weight when unused and surface as <strong>stale</strong> for your review. They are
-                never auto-deleted. Withdrawing a relation removes it from recall walks but keeps the record.
+                Unused relations surface as <strong>stale</strong> for review; they are never auto-deleted. Withdrawing
+                removes them from recall but keeps the record.
               </p>
             </div>
             {edges.isLoading ? (
@@ -320,7 +315,6 @@ export function MemoryScreen() {
               <EmptyState
                 icon="link"
                 title="No relations recorded"
-                description="Relations appear once Sythion has linked remembered items to each other."
               />
             ) : (
               <div className="list">
@@ -354,12 +348,8 @@ export function MemoryScreen() {
                         <Button
                           size="sm"
                           variant="subtle"
-                          disabled={busyEdge === e.id || dataMode === 'preview'}
-                          title={
-                            dataMode === 'preview'
-                              ? 'Preview mode — no backend to reinforce against'
-                              : `Reinforce relation #${e.id}`
-                          }
+                          disabled={busyEdge === e.id}
+                          title={`Reinforce relation #${e.id}`}
                           onClick={() => void actOnEdge(e.id, 'reinforce')}
                         >
                           Reinforce
@@ -370,12 +360,8 @@ export function MemoryScreen() {
                           size="sm"
                           variant="ghost"
                           icon="trash"
-                          disabled={busyEdge === e.id || dataMode === 'preview'}
-                          title={
-                            dataMode === 'preview'
-                              ? 'Preview mode — no backend to withdraw from'
-                              : `Withdraw relation #${e.id} from recall`
-                          }
+                          disabled={busyEdge === e.id}
+                          title={`Withdraw relation #${e.id} from recall`}
                           onClick={() => void actOnEdge(e.id, 'remove')}
                         >
                           Withdraw
@@ -394,7 +380,7 @@ export function MemoryScreen() {
             <Panel
               title="Memory stores"
               icon="database"
-              actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+             
             >
               {report.isLoading ? (
                 <LoadingBlock rows={4} />
@@ -405,7 +391,7 @@ export function MemoryScreen() {
                     <span className="t-mono t-title">{counts.memory_entries}</span>
                   </div>
                   <span className="t-faint" style={{ marginTop: 4 }}>
-                    Scoped stores are not exposed by this backend; the single shared store is shown.
+                    Scoped stores are not exposed by this backend; this is the single shared store.
                   </span>
                 </div>
               ) : storeEntries.length === 0 ? (
@@ -422,7 +408,7 @@ export function MemoryScreen() {
               )}
             </Panel>
 
-            <Panel title="Context injection" icon="brain" actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}>
+            <Panel title="Context injection" icon="brain">
               {report.isLoading ? (
                 <LoadingBlock rows={3} />
               ) : (
@@ -442,7 +428,7 @@ export function MemoryScreen() {
                 />
               )}
               <p className="t-faint" style={{ marginTop: 10 }}>
-                Sampled from the last 50 model-engine rollout runs. This is what Sythion actually recalls per turn.
+                Last 50 model-engine runs — what Sythion recalls per turn.
               </p>
             </Panel>
           </div>

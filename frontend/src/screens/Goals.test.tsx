@@ -14,7 +14,6 @@ vi.mock('../hooks/useBackend', () => ({
   useGoalPlans: () => ({ data: [] }),
   useTaskEvents: () => ({ data: [] }),
   useActions: () => ({}),
-  useDataMode: () => 'preview',
 }));
 
 const task: Task = { id: 'task-1', original_request: 'A task', normalized_goal: null, state: 'created', version: 1, active_action_id: null, pending_question: null, final_result: null, terminal_reason: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' };

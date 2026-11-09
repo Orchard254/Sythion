@@ -2,7 +2,6 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AutomationsScreen } from './Automations';
 import { useAppStore } from '../store/appStore';
-import { demoAutomations } from '../data/demo';
 
 const mock = vi.hoisted(() => ({ approve: vi.fn(), reject: vi.fn(), proposalsRefetch: vi.fn(), skillsRefetch: vi.fn(), status: 'proposed' }));
 vi.mock('../hooks/useBackend', async () => {
@@ -12,7 +11,7 @@ vi.mock('../hooks/useBackend', async () => {
     useSkills: () => ({ data: [], refetch: mock.skillsRefetch }),
     useSkillProposals: () => ({ data: [{ id: 42, status: mock.status, definition: { name: 'test skill', steps: ['inspect'] }, trace_ids: [1, 2] }], refetch: mock.proposalsRefetch }),
     useAgentActivity: () => ({ data: { wakes: [] } }),
-    useActions: () => ({ live: useAppStore((s) => s.dataMode === 'live' && s.isConnected), approveSkillProposal: mock.approve, rejectSkillProposal: mock.reject }),
+    useActions: () => ({ live: useAppStore((s) => s.isConnected), approveSkillProposal: mock.approve, rejectSkillProposal: mock.reject }),
   };
 });
 
@@ -23,7 +22,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
   mock.status = 'proposed';
-  useAppStore.setState({ dataMode: 'live', isConnected: true });
+  useAppStore.setState({ isConnected: true });
   act(() => { view = create(<AutomationsScreen />); });
 });
 afterEach(() => { act(() => view.unmount()); vi.unstubAllGlobals(); });
@@ -66,13 +65,12 @@ describe('Automations proposal review', () => {
     expect(mock.proposalsRefetch).not.toHaveBeenCalled();
   });
 
-  it('blocks preview, disconnected and already decided proposals', () => {
+  it('blocks disconnected and already decided proposals', () => {
     openReview();
-    act(() => useAppStore.setState({ dataMode: 'preview' }));
+    act(() => useAppStore.setState({ isConnected: false }));
     expect(button('Approve').props.disabled).toBe(true);
     act(() => button('Approve').props.onClick());
     expect(mock.approve).not.toHaveBeenCalled();
-    act(() => useAppStore.setState({ dataMode: 'live', isConnected: false }));
     expect(button('Reject').props.disabled).toBe(true);
     mock.status = 'enabled';
     act(() => useAppStore.setState({ isConnected: true }));
@@ -80,10 +78,4 @@ describe('Automations proposal review', () => {
     expect(button('Approve').props.disabled).toBe(true);
   });
 
-  it('shows session toggle state in workflow details', () => {
-    const first = demoAutomations[0];
-    act(() => view.root.findAllByProps({ role: 'switch' })[0].props.onClick());
-    act(() => view.root.findByProps({ 'aria-label': `Inspect ${first.name}` }).props.onClick());
-    expect(JSON.stringify(view.toJSON())).toContain(first.enabled ? 'Paused' : 'Enabled');
-  });
 });

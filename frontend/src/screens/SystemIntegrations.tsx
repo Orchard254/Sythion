@@ -1,9 +1,7 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 import { Icon } from '../components/icons';
 import {
   Badge,
-  DataBadge,
-  DemoTag,
   EmptyState,
   KV,
   LoadingBlock,
@@ -18,6 +16,7 @@ import {
   useAgentHealth,
   useAppSettings,
   useCapabilityConsistency,
+  useCapabilities,
   useHealth,
   useModels,
   useRetentionReceipts,
@@ -27,18 +26,9 @@ import {
   useVersion,
   useVoiceAssets,
 } from '../hooks/useBackend';
-import { useAppStore } from '../store/appStore';
-import { demoIntegrations } from '../data/demo';
 import { dateTime, humanize, relTime } from '../lib/format';
 
-type Tab = 'runtime' | 'models' | 'integrations' | 'diagnostics';
-
-const INTEGRATION_TONE: Record<string, 'ok' | 'warn' | 'danger' | 'idle' | 'info'> = {
-  connected: 'ok',
-  configured: 'info',
-  degraded: 'warn',
-  unavailable: 'danger',
-};
+type Tab = 'runtime' | 'models' | 'capabilities' | 'diagnostics';
 
 function summarizeEvidenceValue(value: unknown): string {
   if (value === null || value === undefined) return '—';
@@ -72,9 +62,9 @@ export function SystemScreen() {
   const tools = useTools();
   const skills = useSkills();
   const consistency = useCapabilityConsistency();
+  const capabilities = useCapabilities();
   const receipts = useRetentionReceipts();
   const assets = useVoiceAssets();
-  const dataMode = useAppStore((s) => s.dataMode);
 
   const checks = agentHealth.data?.checks ?? [];
   const receiptList = receipts.data ?? [];
@@ -85,10 +75,9 @@ export function SystemScreen() {
         <ScreenHead
           eyebrow="Control"
           title="System & Integrations"
-          description="Runtime state, the models it can reach, what is connected, and the evidence behind every claim on this screen."
+          description="Runtime state, models, connections and evidence."
           actions={
             <>
-              {dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
               <Segmented
                 value={tab}
                 onChange={setTab}
@@ -96,7 +85,7 @@ export function SystemScreen() {
                 options={[
                   { value: 'runtime', label: 'Runtime' },
                   { value: 'models', label: 'Models' },
-                  { value: 'integrations', label: 'Integrations' },
+                  { value: 'capabilities', label: 'Capabilities' },
                   { value: 'diagnostics', label: 'Diagnostics' },
                 ]}
               />
@@ -142,7 +131,7 @@ export function SystemScreen() {
             <Panel
               title="Process"
               icon="server"
-              actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+             
             >
               {health.isLoading ? (
                 <LoadingBlock rows={4} />
@@ -164,7 +153,7 @@ export function SystemScreen() {
             <Panel
               title="Execution limits"
               icon="shield"
-              actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+             
             >
               {settings.isLoading ? (
                 <LoadingBlock rows={3} />
@@ -179,8 +168,7 @@ export function SystemScreen() {
                     ]}
                   />
                   <p className="t-faint" style={{ marginTop: 10 }}>
-                    These are the only real bounds the backend applies today. They limit a single task, not the system —
-                    which is why bounded autonomy is labelled proposed rather than offered.
+                    Per-task bounds only — they limit one task, not the system.
                   </p>
                   {(settings.data?.effective_file_roots?.length ?? 0) > 0 && (
                     <div className="chips" style={{ marginTop: 8 }}>
@@ -199,7 +187,7 @@ export function SystemScreen() {
             <Panel
               title="Voice pipeline"
               icon="microphone"
-              actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+             
             >
               {assets.isLoading ? (
                 <LoadingBlock rows={3} />
@@ -217,8 +205,7 @@ export function SystemScreen() {
                   {!assets.data?.stt_sha256_verified && assets.data?.stt_installed && (
                     <Notice tone="warn" icon="alert">
                       <span>
-                        The speech model is present but its checksum has not been verified. Sythion will not download it
-                        for you.
+                        The speech model's checksum is unverified. Sythion will not download or verify it for you.
                       </span>
                     </Notice>
                   )}
@@ -229,7 +216,7 @@ export function SystemScreen() {
             <Panel
               title="Health checks"
               icon="activity"
-              actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+             
               flush
             >
               {agentHealth.isLoading ? (
@@ -281,7 +268,7 @@ export function SystemScreen() {
             <Panel
               title="Model registry"
               icon="cpu"
-              actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+             
               flush
             >
               {models.isLoading ? (
@@ -319,8 +306,7 @@ export function SystemScreen() {
               )}
               <div className="panel__foot">
                 <span className="t-faint">
-                  The registry reports intent and verification status. It does not report token spend — Sythion has no
-                  cost accounting endpoint, so no figures are shown here.
+                  Registry reports intent and verification only — no cost accounting endpoint exists.
                 </span>
               </div>
             </Panel>
@@ -328,7 +314,7 @@ export function SystemScreen() {
             <Panel
               title="Credentials"
               icon="key"
-              actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+             
             >
               <KV
                 items={[
@@ -346,56 +332,47 @@ export function SystemScreen() {
               />
               <Notice tone="accent" icon="lock">
                 <span>
-                  Secret values are write-only. The API returns only which names are configured, never their contents,
-                  and this interface never displays or stores a credential.
+                  Secrets are write-only — names only, never values.
                 </span>
               </Notice>
             </Panel>
           </div>
         )}
 
-        {tab === 'integrations' && (
-          <>
-            <Notice tone="warn" icon="alert">
-              <span>
-                <strong>The integration list below is a demonstration</strong> of the intended surface. The runtime,
-                database and model rows reflect real health data; external services genuinely do not exist in this
-                backend, which the capability registry independently confirms.
-              </span>
-            </Notice>
-
+        {tab === 'capabilities' && (
             <div className="grid grid--main">
-              <Panel title="Integration status" icon="plug" flush actions={<DemoTag />}>
-                <div className="list">
-                  {demoIntegrations.map((i) => (
-                    <div className="list__row" key={i.id}>
-                      <Rail tone={INTEGRATION_TONE[i.state]} />
-                      <div className="list__main">
-                        <span className="t-title" style={{ fontSize: 12.5 }}>
-                          {i.name}
-                        </span>
-                        <span className="list__meta">
-                          <Badge tone="plain">{i.kind}</Badge>
-                          <span>· {i.detail}</span>
-                        </span>
-                      </div>
-                      <div className="list__trail">
-                        <div style={{ textAlign: 'right' }}>
-                          <Badge tone={INTEGRATION_TONE[i.state]}>{i.state}</Badge>
-                          <div className="t-faint" style={{ marginTop: 3 }}>
-                            checked {i.lastCheck}
-                          </div>
+              <Panel title="Capabilities" icon="shield" flush>
+                {capabilities.isLoading ? (
+                  <div className="panel__body">
+                    <LoadingBlock rows={5} />
+                  </div>
+                ) : (capabilities.data ?? []).length === 0 ? (
+                  <EmptyState icon="plug" title="No capabilities registered" />
+                ) : (
+                  <div className="list">
+                    {(capabilities.data ?? []).map((c) => (
+                      <div className="list__row" key={c.id}>
+                        <Rail tone={c.status === 'AVAILABLE' ? 'ok' : c.status === 'UNAVAILABLE' ? 'danger' : c.status === 'DEGRADED' ? 'warn' : c.status === 'REQUIRES_PERMISSION' ? 'warn' : 'idle'} />
+                        <div className="list__main">
+                          <span className="t-title" style={{ fontSize: 12.5 }}>
+                            {c.name}
+                          </span>
+                          <span className="list__meta">
+                            <Badge tone={c.status === 'AVAILABLE' ? 'ok' : c.status === 'UNAVAILABLE' ? 'danger' : c.status === 'DEGRADED' ? 'warn' : c.status === 'REQUIRES_PERMISSION' ? 'warn' : 'idle'}>{c.status}</Badge>
+                            <Badge tone={c.risk_class === 'HIGH' ? 'danger' : c.risk_class === 'MEDIUM' ? 'warn' : 'ok'}>{c.risk_class} risk</Badge>
+                            {c.requires_external_service && <span>· external service</span>}
+                          </span>
+                          <span className="t-muted t-clamp-2">{c.description}</span>
                         </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </Panel>
 
               <Panel
                 title="Capability consistency"
                 icon="shield"
-                actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
               >
                 {consistency.isLoading ? (
                   <LoadingBlock rows={3} />
@@ -416,12 +393,10 @@ export function SystemScreen() {
                   </div>
                 )}
                 <p className="t-faint" style={{ marginTop: 10 }}>
-                  Consistency is reported, never auto-repaired. A capability whose tools are missing resolves to
-                  UNAVAILABLE regardless of autonomy mode.
+                  Reported, never auto-repaired. Missing tools resolve to UNAVAILABLE regardless of mode.
                 </p>
               </Panel>
             </div>
-          </>
         )}
 
         {tab === 'diagnostics' && (
@@ -430,7 +405,7 @@ export function SystemScreen() {
               title="Retention purge receipts"
               icon="trash"
               flush
-              actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+             
             >
               {receipts.isLoading ? (
                 <div className="panel__body">
@@ -440,7 +415,7 @@ export function SystemScreen() {
                 <EmptyState
                   icon="trash"
                   title="Nothing purged"
-                  description="Receipts appear here after an explicitly requested retention purge."
+                  description="Receipts appear after an explicit purge request."
                 />
               ) : (
                 <div className="list">
@@ -472,8 +447,7 @@ export function SystemScreen() {
               flush
               actions={
                 <>
-                  {dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
-                  <span className="t-faint">{tools.data?.length ?? 0}</span>
+                      <span className="t-faint">{tools.data?.length ?? 0}</span>
                 </>
               }
             >
@@ -506,8 +480,8 @@ export function SystemScreen() {
             <div className="stack stack--tight">
               <span className="field__label">Update state</span>
               <span className="t-muted">
-                Sythion reports its own version through <span className="t-mono">GET /api/v1/version</span>. There is no
-                update channel and no self-update mechanism, so no update is offered here.
+                Sythion reports its version via <span className="t-mono">GET /api/v1/version</span>. No update channel
+                exists, so no update is offered.
               </span>
             </div>
             <div className="stack stack--tight">
@@ -520,8 +494,7 @@ export function SystemScreen() {
             <div className="stack stack--tight">
               <span className="field__label">Resource usage</span>
               <span className="t-muted">
-                No CPU, memory or cost telemetry is exposed over the API, so none is displayed. Inventing figures here
-                would be worse than showing nothing.
+                No CPU, memory or cost telemetry is exposed, so none is displayed.
               </span>
             </div>
           </div>

@@ -19,7 +19,7 @@ vi.mock('../hooks/useBackend', () => ({
   useActions: () => ({ live: false }),
 }));
 vi.mock('../store/appStore', () => ({
-  useAppStore: (select: (state: unknown) => unknown) => select({ dataMode: 'live', setTranscriptDraft: vi.fn() }),
+  useAppStore: (select: (state: unknown) => unknown) => select({ setTranscriptDraft: vi.fn() }),
 }));
 vi.mock('./Companion', () => ({
   Companion: ({ onClose }: { onClose: () => void }) => <button onClick={onClose}>Dismiss</button>,
