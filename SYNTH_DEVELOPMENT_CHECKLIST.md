@@ -371,6 +371,26 @@ but never executed by the provider):
   objective_get_plan, objective_update_summary, memory_stats, browser_*.
 
 Still blocked/not done:
+- **Owner decision required (unblocks the whole app-internal/consequential
+  mutation class):** this web dev runtime has no permission-consent path at
+  all (no HTTP endpoint, no UI Allow/Deny control); every mutating or
+  app-internal tool classifies `Importance.CONSEQUENTIAL` and is denied
+  without out-of-band trusted consent. In the packaged app either the Tauri
+  host produces consent receipts or no mutating tool can ever execute.
+  Decision needed: (a) approve that the packaged host is the consent
+  boundary and accept web-runtime non-execution as correct, or (b) approve
+  adding an explicit consent UX (per-request or per-category, never silent
+  auto-approve) plus its authenticated receipt path. Until then,
+  `file_create/file_write/file_*`, `memory_store` (direct), `objective_create`,
+  `app_launch`, `package_*`, GUI and browser-mutation tools are permanently
+  unverifiable here.
+- **Backend wedge after budget-failed task** (process alive, listener gone
+  silently; no log trace; manual restart recovered). Not yet reproduced or
+  root-caused — a real runtime-behavior gap to investigate (native tool
+  paths vs. background-task failure handling).
+- Provider reliability: repeated "empty response"/formatted-answer flakes
+  and Ollama Cloud 503s; simple retries recover, tasks get honestly failed.
+- Voice mic/speaker: not selected by user, remains untested.
 - A live provider round trip succeeded in the isolated `sythion-e2e-inventory`
   profile: background system_time task completed and persisted across sidecar
   restart; memory entry `verification_word=flintstone-771` (USER scope,
@@ -412,7 +432,70 @@ limits (source, synthetic, provider, installed-runtime).
 | S039–S050, S087–S096, S024–S038 | implementing | Durable wake reconciliation, scoped relevance memory, and Assistant→task→evidence verification work units | none | Coordinator agents; exact file ownership in delegated briefs | Three agents running; targeted tests required, no broad suite reruns |
 | — | queued | Select next bounded unit after baseline and dependency review | — | Coordinator | Initial checklist recorded; no items accepted as done |
 
-## Change log
+## Live dev pass 2 — backend wedge discovered, injection proven, tool evidence logged (2026-11-09)
+
+Live profile `sythion-live-dev-restart` (backend :8000, UI :3001, provider
+`beam`). Exact outcomes; nothing here is inferred.
+
+- **Backend wedge:** after the multi-tool bundle task `c385db99-3499-42f9-b2c3-3263fb36e027`
+  terminated on `CLOUD_REQUEST_LIMIT_EXCEEDED` at 09:24:43, the HTTP listener
+  silently stopped accepting connections (ECONNREFUSED) while the python
+  process stayed alive (low CPU, lingering conhost child). No shutdown trace
+  in out.log/err.log/sythion.log. Manual restart recovered the profile; no
+  data loss (SQLite WAL intact). Cause unidentified — possible contributors:
+  a sync subprocess/native path inside tools (window_list/app_list/package_search)
+  blocking the event loop, or the background-task failure path. **Runtime
+  reliability finding; not yet reproduced.**
+- **Persistence after wedge/restart:** task row returned `failed`,
+  `terminal_reason=Exceeded the 50-request per-task budget`; memory entries
+  (verification_word, sythion_repo_summary), conversation turns and grants all
+  survived; post-restart provider answer to "What is my verification word?" was
+  exactly "Your verification word is flintstone-771."
+- **Live memory injection in task context is now proven (≥ available=1, relevant≥1):**
+  log lines show `Memory injection … available, 0 links` and `2 relevant + 0
+  linked of 2 available` for every decision of the bundle task and the bc80ab44
+  system-time task; `/memory/report` per_run rows for bc80ab44 show
+  `available=1 relevant=1`.
+- **Tools executed successfully by the live provider** (as evidenced by
+  `tool.executed success=true` lines; the task itself hit the request budget and
+  failed honestly by repeating some calls): `app_list`, `activity_recall`,
+  `system_disk`, `system_processes`, `network_status`, `file_hash`,
+  `package_search`, `memory_stats`, `memory_recall`, `system_active_window`,
+  `window_list`. Also proven this session: `system_time`, `system_battery`,
+  `system_file_roots`, `file_list`, `file_read`, `file_search` (completed
+  task that answered the README title/first paragraph), memory consolidation
+  into 2 entries (replace + create). `package_list` and `device_status`,
+  `objective_get_plan`, `memory_export`, `memory_recall_related` remain
+  untested by a provider turn.
+- **Consequential/permission boundary makes these permanently unprovable in
+  this web dev runtime — by design:** every mutating or app-internal tool
+  (`file_create`, `file_write`, `file_delete`, `file_move`, `file_copy`,
+  `memory_store` (direct), `objective_create`, `objective_add_step`,
+  `objective_complete_step`, `objective_update_summary`, `app_launch`,
+  `app_focus`, `app_close`, `package_install`, `package_uninstall`, all
+  `gui_*`, `browser_open_tab`, `browser_close_tab`, `browser_switch_tab`,
+  `browser_interact`, `system_power_control`, `brightness_control`,
+  `system_volume`, `clipboard_read`, `browser_screenshot`, package tools)
+  classifies as `Importance.CONSEQUENTIAL` — environment/`SYTHION_AUTONOMY_LEVEL`
+  is explicitly NOT authenticated consent (fail-closed by design), and the
+  dev HTTP API and the UI have **no permission-decision endpoint or
+  Allow/Deny control at all**. Parked examples observed live:
+  `objective_create` and `memory_store` tasks hold `waiting_for_user`
+  forever. Consequence: in the packaged runtime, either the trusted host
+  produces consent receipts (verify in the Tauri host) or no mutating tool
+  can ever execute. **Owner decision required** (see "Still blocked/not done").
+- **Two provider flakes observed, auto-recovered:** an
+  "informative only — I could not produce a properly formatted answer" turn
+  (retried, succeeded) and two "Model returned empty response" attempts
+  within one task; plus earlier Ollama Cloud 503s. Provider reliability
+  remains the operational risk; turns against Beam recover on retry.
+- **The `file_create` attempt failed NOT because of roots** — `system_capabilities`
+  is accurate: in `guarded` autonomy mode mutating non-`app_internal` tools are
+  not model-visible at all (`file_create`/`file_write` flagged medium +
+  `requires_confirmation`, correctly hidden). The model's conclusion was
+  correct for the inventory it can see.
+
+
 
 - 2026-11-09: Captured all 170 initial conversation items with stable IDs;
   established evidence-based completion and coordinator ownership.
@@ -421,3 +504,5 @@ limits (source, synthetic, provider, installed-runtime).
   "researching" without any item being accepted as done.
 - 2026-11-09: Corrected project-understanding notes on the generated backend
   mirror, legacy quarantined voice module, and stale README wording.
+
+- 2026-11-09: Live dev pass 2 recorded exact evidence: backend wedge after a 50-request-budget-failed bundle task (process retained, listener silently dropped; manual restart recovered; persistence verified), live memory injection in task context proven (available/relevant >= 1), per-tool provider execution evidence for 19 read-only tools, the CONSEQUENTIAL/consent boundary (no web-runtime consent path for mutating or app-internal tools; owner decision recorded), and two auto-recovered provider flakes.
