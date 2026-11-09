@@ -476,3 +476,29 @@ conversation;** the full integration suite needs the complete private
 repository and is not claimed passed. OS-facing worker behavior in these
 new tests is scripted; no live tool adapter, model or Windows installed
 runtime was exercised. Real execution acceptance remains open S195-S196.
+
+## 17. Registered executor binding for goal workers (2026-11-09)
+
+The ordinary API installs one registered ToolExecutor through
+`backend.api.dependencies.get_tool_executor`. Goal execution previously
+passed `None` as the third argument of the production `run_task`, even
+though that worker constructs the real `TaskExecutionLoop` and
+`ModelDecisionEngine` with the supplied executor. As a result, the
+goal planner could start real tasks without a usable tool registry.
+
+The bounded `bind_goal_worker` adapter now resolves the application
+executor once before a real goal task starts and forwards the same object
+to default workers in both explicit and background cycles. If the
+provider fails, the session stops with `tool_executor_unavailable`
+without creating a task. An explicitly injected deterministic worker
+keeps the existing test seam and does not contact the production tool
+provider.
+
+This is *composition-root repair*, not an enlargement of the LLM's
+permissions. All runtime and action-approval gates remain authoritative.
+The binding helper passed 15 local pure tests. Six full-ORM regression cases
+were committed but not executed here; the separate-worker-session
+acceptance fixture now uses a genuine file-backed SQLite database with
+different physical connections. Live ToolExecutor behavior, installed
+Windows, and the full application goal lifecycle remain unverified
+(S195-S197).

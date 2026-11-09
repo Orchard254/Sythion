@@ -39,6 +39,23 @@ def db():
     engine.dispose()
 
 
+@pytest.fixture
+def file_db(tmp_path):
+    """Real file-backed SQLite: two Sessions must use different connections."""
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'goal-v1.sqlite3'}",
+        connect_args={"check_same_thread": False, "timeout": 10.0},
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, expire_on_commit=False)
+    session = Session()
+    try:
+        yield session
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def setup_goal(db, title="Three-step report"):
     goal = GoalManager(db).create_goal(title, priority=2)
     plan = Planner(db).create_plan(goal.id, [
@@ -356,8 +373,9 @@ async def test_completed_task_without_exact_step_evidence_link_stops(
 
 @pytest.mark.asyncio
 async def test_preapplied_outcomes_from_separate_worker_session_are_not_duplicated(
-    db, tmp_path, monkeypatch,
+    file_db, tmp_path, monkeypatch,
 ):
+    db = file_db
     monkeypatch.setattr(settings, "max_steps_per_goal_execution", 5)
     goal, plan = setup_goal(db, "Fresh sessions")
     runner = TaskRunner(db)
@@ -370,6 +388,12 @@ async def test_preapplied_outcomes_from_separate_worker_session_are_not_duplicat
         # explicitly reloaded. This simulates the real kernel's own session.
         separate = Session()
         try:
+            # This file-backed database must be observed through a distinct
+            # physical SQLite connection, not a shared StaticPool connection.
+            assert (
+                separate.connection().connection.dbapi_connection
+                is not db.connection().connection.dbapi_connection
+            )
             worker_runner = TaskRunner(separate)
             worker_orchestrator = TaskOrchestrator(
                 state_store=worker_runner, planner=Planner(separate),
@@ -397,3 +421,132 @@ async def test_preapplied_outcomes_from_separate_worker_session_are_not_duplicat
     assert [s.status for s in Planner(db).plan_steps(plan.id)] == [
         "completed", "completed", "completed",
     ]
+
+
+# --- Production wiring contract: real worker receives installed tool executor ---
+
+@pytest.mark.asyncio
+async def test_explicit_default_worker_receives_registered_executor(
+    db, tmp_path, monkeypatch,
+):
+    from backend.api import dependencies
+    from backend.services import task_execution_loop
+
+    monkeypatch.setattr(settings, "max_steps_per_goal_execution", 5)
+    sentinel_executor = object()
+    provider_calls = []
+    monkeypatch.setattr(dependencies, "get_tool_executor",
+                        lambda: (provider_calls.append(1), sentinel_executor)[1])
+    goal, _ = setup_goal(db, "Explicit executor wiring")
+    runner = TaskRunner(db)
+    orchestrator = TaskOrchestrator(state_store=runner, planner=Planner(db))
+    scripted, seen = create_scripted_worker(db, runner, tmp_path)
+    worker_calls = []
+
+    async def default_worker(_session, task_id, executor):
+        assert executor is sentinel_executor
+        worker_calls.append(task_id)
+        await scripted(_session, task_id, executor)
+
+    monkeypatch.setattr(task_execution_loop, "run_task", default_worker)
+    result = await orchestrator.execute_session(goal.id)
+    assert [entry["outcome"] for entry in result["executed"]] == ["completed"] * 3
+    assert seen == ["inspect", "summarize", "verify"]
+    assert len(worker_calls) == 3
+    assert provider_calls == [1]
+    assert GoalManager(db).get_goal(goal.id).status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_background_default_worker_receives_registered_executor(
+    db, tmp_path, monkeypatch,
+):
+    from backend.api import dependencies
+    from backend.services import task_execution_loop
+    from backend.services.goal_selector import RunnableGoalSelector
+
+    sentinel_executor = object()
+    monkeypatch.setattr(dependencies, "get_tool_executor", lambda: sentinel_executor)
+    goal, _ = setup_goal(db, "Background executor wiring")
+    runner = TaskRunner(db)
+    orchestrator = TaskOrchestrator(state_store=runner, planner=Planner(db))
+    scripted, seen = create_scripted_worker(db, runner, tmp_path)
+
+    async def default_worker(_session, task_id, executor):
+        assert executor is sentinel_executor
+        await scripted(_session, task_id, executor)
+
+    monkeypatch.setattr(task_execution_loop, "run_task", default_worker)
+    result = await orchestrator.run_background_cycle(
+        RunnableGoalSelector(db), max_steps=3,
+    )
+    assert [entry["outcome"] for entry in result["executed"]] == ["completed"] * 3
+    assert seen == ["inspect", "summarize", "verify"]
+    assert GoalManager(db).get_goal(goal.id).status == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("background", [False, True])
+async def test_unavailable_executor_does_not_create_goal_tasks(
+    db, monkeypatch, background,
+):
+    from backend.api import dependencies
+    from backend.services.goal_selector import RunnableGoalSelector
+
+    monkeypatch.setattr(dependencies, "get_tool_executor", lambda: None)
+    goal, plan = setup_goal(db, "Executor unavailable")
+    runner = TaskRunner(db)
+    orchestrator = TaskOrchestrator(state_store=runner, planner=Planner(db))
+    if background:
+        result = await orchestrator.run_background_cycle(
+            RunnableGoalSelector(db), max_steps=3,
+        )
+    else:
+        result = await orchestrator.execute_session(goal.id)
+
+    assert result == {"executed": [], "stopped_reason": "tool_executor_unavailable"}
+    assert db.query(Task).filter_by(objective_id=goal.id).count() == 0
+    assert [step.status for step in Planner(db).plan_steps(plan.id)] == [
+        "ready", "blocked", "blocked",
+    ]
+    assert not [evt for evt in DbEventLedger(db).event_history(f"goal:{goal.id}")
+                if evt["event_type"] == "plan_step.started"]
+
+
+@pytest.mark.asyncio
+async def test_scripted_worker_does_not_consult_production_tool_provider(
+    db, tmp_path, monkeypatch,
+):
+    from backend.api import dependencies
+
+    monkeypatch.setattr(settings, "max_steps_per_goal_execution", 5)
+    def forbidden():
+        pytest.fail("Scripted worker must not load the registered executor")
+    monkeypatch.setattr(dependencies, "get_tool_executor", forbidden)
+    goal, _ = setup_goal(db, "Injected worker")
+    runner = TaskRunner(db)
+    orchestrator = TaskOrchestrator(state_store=runner, planner=Planner(db))
+    scripted, seen = create_scripted_worker(db, runner, tmp_path)
+    result = await orchestrator.execute_session(goal.id, run_task_fn=scripted)
+    assert [entry["outcome"] for entry in result["executed"]] == ["completed"] * 3
+    assert seen == ["inspect", "summarize", "verify"]
+
+
+@pytest.mark.asyncio
+async def test_executor_provider_exception_stops_before_task_creation(
+    db, monkeypatch,
+):
+    from backend.api import dependencies
+
+    def broken_provider():
+        raise RuntimeError("internal provider failure; do not expose")
+
+    monkeypatch.setattr(dependencies, "get_tool_executor", broken_provider)
+    goal, _ = setup_goal(db, "Provider broken")
+    orchestrator = TaskOrchestrator(
+        state_store=TaskRunner(db), planner=Planner(db),
+    )
+    result = await orchestrator.execute_session(goal.id)
+    assert result == {"executed": [], "stopped_reason": "tool_executor_unavailable"}
+    assert db.query(Task).filter_by(objective_id=goal.id).count() == 0
+    assert "internal provider failure" not in repr(result)

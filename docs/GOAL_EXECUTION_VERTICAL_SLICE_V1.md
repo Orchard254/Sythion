@@ -89,6 +89,7 @@ completion, and false worker claims.
 ```bash
 python -m pytest -q \
   backend/tests/test_goal_execution_outcome.py \
+  backend/tests/test_goal_worker_binding.py \
   backend/tests/test_goal_execution_vertical_slice.py \
   backend/tests/test_work_orchestration.py \
   backend/tests/test_goal_planning.py \
@@ -107,7 +108,7 @@ Do not count this as a live-tool or installed-Windows success.
 
 ## Next acceptance gates
 
-- Run the 11 real-ORM vertical-slice scenarios and address any failures.
+- Run the 17 real-ORM vertical-slice scenarios and address any failures.
 - Add actual tool-adapter output verification within an approved test-only
   workspace, including idempotent/mutating action receipts and permission
   checks. A scripted worker is **not** a security verification of real tools.
@@ -116,3 +117,55 @@ Do not count this as a live-tool or installed-Windows success.
   replaying ambiguous external effects.
 - Reconcile an independent goal-completion criteria verifier before
   allowing unobserved model text to close a goal.
+
+
+## Registered real-worker executor wiring (2026-11-09)
+
+The first V1 review exposed an actual integration defect: both
+`TaskOrchestrator.execute_session` and `run_background_cycle` passed
+`tool_executor=None` into the default production `run_task`. That worker
+constructs `TaskExecutionLoop(session, runner, tool_executor)` and uses
+the supplied executor to expose registered tools to the model and to
+execute authorized tool calls. A `None` placeholder was not a valid
+tool capability binding.
+
+`backend/services/goal_worker_binding.py` now selects one of two paths:
+
+- **Production default:** resolve `backend.api.dependencies.get_tool_executor`
+  once **before** acquiring a runner lease or creating a task; pass that same
+  registered executor to each goal worker. This preserves the application's
+  existing provider/fallback registration and its tool permission gates.
+- **Explicit scripted worker:** retain the existing
+  `run_task_fn(None, task_id, None)` test-injection behavior without
+  calling the registered tool provider.
+
+When the production executor provider returns `None` or raises, the goal
+session returns `{"executed": [], "stopped_reason": "tool_executor_unavailable"}`
+without creating a task, invoking a model, or altering the goal. The
+binding object hides its executor from `repr` to reduce accidental
+credential disclosure. No new tool privileges or background opt-in were
+added.
+
+`backend/tests/test_goal_worker_binding.py` has **15 locally passing
+unit tests** (real provider identity/once-only behavior; test injection;
+missing/failed provider; malformed callback rejection; non-authorizing
+result; secret-redacted representation).
+
+Six further cases were added to the full-repository
+`backend/tests/test_goal_execution_vertical_slice.py`: explicit and
+background production worker injection, both executor-unavailable paths,
+scripted-worker isolation, and provider exception containment. This brings
+the vertical-slice matrix to **17 parameter-expanded cases**. These cases
+are committed, **not executed** in the local partial environment.
+
+The worker-session persistence scenario now uses a **file-backed SQLite
+database with distinct DBAPI connections**, rather than two ORM sessions
+sharing one in-memory StaticPool connection. This will make the intended
+cross-connection visibility and cache-refresh regression meaningful when
+executed in the complete checkout.
+
+**Remaining blockers:** full Sythion repository execution; test adapter
+tools in a disposable workspace; complete Windows packaged app and
+permissions; process kill/restart tests. This change repairs a verified
+argument-wiring defect but does not itself demonstrate a live model or
+tool successfully completing a goal.

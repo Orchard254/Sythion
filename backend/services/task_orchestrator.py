@@ -783,8 +783,19 @@ class TaskOrchestrator:
         from backend.api.schemas import TaskState
         from backend.core.config import settings
         from backend.services.task_execution_loop import run_task as default_run
+        from backend.api.dependencies import get_tool_executor
+        from backend.services.goal_worker_binding import bind_goal_worker
 
-        run_fn = run_task_fn or default_run
+        # Resolve the registered tool executor BEFORE acquiring a runner lease
+        # or creating a task. A null executor is not a workable goal runner.
+        # Explicitly injected workers retain the old test seam (executor=None).
+        worker = bind_goal_worker(
+            override=run_task_fn, default_worker=default_run,
+            executor_provider=get_tool_executor,
+        )
+        if not worker.available:
+            return {"executed": [], "stopped_reason": worker.stop_reason}
+        run_fn = worker.run
         executed = []
         stopped_reason = None
 
@@ -818,7 +829,7 @@ class TaskOrchestrator:
             finally:
                 await self.state_store.release_lease()
 
-            await run_fn(None, task.id, None)  # kernel worker (own session+lease)
+            await run_fn(None, task.id, worker.tool_executor)  # kernel worker (own session+lease)
             await self.apply_task_outcome(task.id)
             # The worker's post-task pipeline may already have updated the
             # plan. Re-read the task, exact evidence link, step state and
@@ -925,8 +936,20 @@ class TaskOrchestrator:
         """
         from backend.api.schemas import TaskState
 
+        from backend.api.dependencies import get_tool_executor
+        from backend.services.goal_worker_binding import bind_goal_worker
+
         if run_task_fn is None:
-            from backend.services.task_execution_loop import run_task as run_task_fn
+            from backend.services.task_execution_loop import run_task as default_run
+        else:
+            default_run = run_task_fn
+
+        worker = bind_goal_worker(
+            override=run_task_fn, default_worker=default_run,
+            executor_provider=get_tool_executor,
+        )
+        if not worker.available:
+            return {"executed": [], "stopped_reason": worker.stop_reason}
 
         executed = []
         stop_reason = None
@@ -965,7 +988,7 @@ class TaskOrchestrator:
             finally:
                 await self.state_store.release_lease()
 
-            await run_task_fn(None, task.id, None)
+            await worker.run(None, task.id, worker.tool_executor)
             await self.apply_task_outcome(task.id)
             outcome_str = self._observed_step_outcome(
                 goal_id=goal_id, step_id=started["step"].id, task_id=task.id,
