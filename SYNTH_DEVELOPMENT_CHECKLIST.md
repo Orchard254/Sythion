@@ -294,20 +294,18 @@ Achieved (synthetic/focused evidence unless stated otherwise):
 - Scoped memory retrieval, verified/confidence/relevance ranking
 - Scoped wiring behind disabled continuity flag (typed access context, cache
   isolation, adapter seams; default paths unchanged)
-- Assistant-turn persistence and receipt finalization
-- Conversation task state/result exposure
-- Durable terminal-task wake reconciliation
-- Wake reconciliation regression test
-- Continuity-kernel contract scaffold behind disabled feature flag
-- Progress totals exclude superseded plans
-- Global entry adapters and voice still not unified
-- Companion and Control Center foundations
-- Real-provider isolated E2E scenario succeeded for persistence/recall, with a
-  pending task that correctly held at permission for memory_store and zero memory
-  injected before execution correctly observed
-- Focused suites: 707 backend + 81 frontend tests passed across selected groups;
-  several large isolated backend batches passed; one native intermittent crash is
-  quarantined in test_phase95_hardening and must not be counted as stable green.
+- Full default backend suite now green in a single pass: 3747 passed, 60
+  skipped, 10 xfailed, 0 failed (CI 3.11 vs local 3.14; intermittent
+  test_phase95_hardening native-crash flake recorded, not stable-pass)
+- Acceptance suite 208 passed/2 skipped; release-payload and mirror drift fixed
+  and holding (60 passed after safe mirror sync)
+- Assistant-turn persistence and receipt finalization; conversation task result
+  exposure; terminal-wake reconciliation; continuity-kernel scaffold behind
+  disabled flag; progress totals exclude superseded plans
+- Browser→API chain verified with synthetic profile: health 200, memory/conversations/
+  setup readiness 200, 401/403 boundaries hold; real-provider health reports
+  cloud_configured=true
+- Focused suites: 707 backend + 81 frontend tests passed across selected groups
 
 Still to verify or complete:
 
