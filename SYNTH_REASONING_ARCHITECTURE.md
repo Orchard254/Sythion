@@ -393,3 +393,30 @@ recovery identity/consent needs a separately verified native host, a fresh
 transaction-fenced evidence binding, and independent proof of external-action
 outcomes. The real repo integration and Windows tests remain open (S185,
 S189-S190); local synthetic SQLite tests do not establish end-to-end safety.
+
+## 14. Native recovery presence handshake: offline protocol only (2026-11-09)
+
+`backend/services/recovery_native_challenge.py` defines a **default-deny,
+offline** one-shot challenge/host-message verification contract. The
+challenge is bound to an exact task and the existing evidence revision,
+expires quickly, is single use, and does not survive process restart. A
+separately provisioned per-launch host secret is needed to authenticate the
+fixed, domain-separated HMAC assertion. The webview, LLM, API control token
+or a caller's claimed `approved: true` flag cannot satisfy it without that
+host secret.
+
+Importantly, host-message integrity is **not** Windows user verification,
+authenticated owner consent, verification of external effects, or a grant.
+Every observation produced by this foundation keeps
+`authenticated_human`, `independent_effect_verified`,
+`recovery_cleared`, `authorization_issued`, and
+`automatic_replay_allowed` false. There is no API/TaskRunner integration:
+native host key provisioning, a window-owned OS verifier, audited approvals
+and lock-fenced clearance have not been built.
+
+Detailed requirements and test limitations are in
+`docs/RECOVERY_NATIVE_ATTESTATION_PROTOCOL.md`. Windows desktop
+verification must use the HWND-owned UserConsentVerifier interop path;
+do not use the UWP overload or assume a generic Tauri modal proves human
+identity. Existing uncertain-effect resume blockers remain in place
+(S189-S192).
