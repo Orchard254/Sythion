@@ -550,3 +550,171 @@ async def test_executor_provider_exception_stops_before_task_creation(
     assert result == {"executed": [], "stopped_reason": "tool_executor_unavailable"}
     assert db.query(Task).filter_by(objective_id=goal.id).count() == 0
     assert "internal provider failure" not in repr(result)
+
+
+# --- Worker/recorder exceptions must not launch the next dependent step ---
+
+@pytest.mark.asyncio
+async def test_explicit_worker_exception_halts_without_synthesizing_terminal_failure(
+    db, tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(settings, "max_steps_per_goal_execution", 5)
+    goal, plan = setup_goal(db, "Worker raises after task starts")
+    runner = TaskRunner(db)
+    orch = TaskOrchestrator(state_store=runner, planner=Planner(db))
+    calls = []
+
+    async def broken_worker(_session, task_id, _executor):
+        calls.append(task_id)
+        raise RuntimeError("SECRET_WORKER_EXCEPTION")
+
+    result = await orch.execute_session(goal.id, run_task_fn=broken_worker)
+    assert len(calls) == 1
+    assert result["stopped_reason"] == "worker_or_outcome_error"
+    assert result["executed"][0]["outcome"] == "unverified"
+    assert "SECRET_WORKER_EXCEPTION" not in repr(result)
+    assert db.get(Task, calls[0]).state == "running"
+    assert [s.status for s in Planner(db).plan_steps(plan.id)] == [
+        "running", "blocked", "blocked",
+    ]
+    assert GoalManager(db).get_goal(goal.id).status == "active"
+    assert not (tmp_path / "verified.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_post_worker_outcome_writer_exception_stops_without_retry(
+    db, tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(settings, "max_steps_per_goal_execution", 5)
+    goal, plan = setup_goal(db, "Outcome writer fails")
+    runner = TaskRunner(db)
+    orch = TaskOrchestrator(state_store=runner, planner=Planner(db))
+    scripted, visited = create_scripted_worker(db, runner, tmp_path)
+
+    async def broken_applier(_task_id):
+        raise RuntimeError("SECRET_POST_TASK_ERROR")
+
+    monkeypatch.setattr(orch, "apply_task_outcome", broken_applier)
+    result = await orch.execute_session(goal.id, run_task_fn=scripted)
+    assert visited == ["inspect"]
+    assert result["stopped_reason"] == "worker_or_outcome_error"
+    assert result["executed"][0]["outcome"] == "unverified"
+    assert "SECRET_POST_TASK_ERROR" not in repr(result)
+    assert [s.status for s in Planner(db).plan_steps(plan.id)] == [
+        "running", "blocked", "blocked",
+    ]
+    assert GoalManager(db).progress(goal.id)["fraction"] == 0.0
+    assert not (tmp_path / "summary.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_background_worker_exception_is_not_counted_as_failed_session(
+    db, tmp_path,
+):
+    from backend.services.goal_selector import RunnableGoalSelector
+
+    goal, plan = setup_goal(db, "Background failure")
+    runner = TaskRunner(db)
+    orch = TaskOrchestrator(state_store=runner, planner=Planner(db))
+    calls = []
+
+    async def broken_worker(_session, task_id, _executor):
+        calls.append(task_id)
+        raise OSError("PRIVATE_PATH")
+
+    result = await orch.run_background_cycle(
+        RunnableGoalSelector(db), max_steps=3, run_task_fn=broken_worker,
+    )
+    assert len(calls) == 1
+    assert result["stopped_reason"] == "worker_or_outcome_error"
+    assert result["executed"][0]["outcome"] == "unverified"
+    assert "PRIVATE_PATH" not in repr(result)
+    goal_row = GoalManager(db).get_goal(goal.id)
+    assert goal_row.status == "active"
+    assert goal_row.times_served == 1
+    assert goal_row.consecutive_failed_sessions == 0
+    assert [s.status for s in Planner(db).plan_steps(plan.id)] == [
+        "running", "blocked", "blocked",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_worker_propagates_and_does_not_start_followup_step(
+    db, tmp_path, monkeypatch,
+):
+    import asyncio
+    monkeypatch.setattr(settings, "max_steps_per_goal_execution", 5)
+    goal, plan = setup_goal(db, "Cancelled session")
+    runner = TaskRunner(db)
+    orch = TaskOrchestrator(state_store=runner, planner=Planner(db))
+    calls = []
+
+    async def cancelled_worker(_session, task_id, _executor):
+        calls.append(task_id)
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await orch.execute_session(goal.id, run_task_fn=cancelled_worker)
+    assert len(calls) == 1
+    assert [s.status for s in Planner(db).plan_steps(plan.id)] == [
+        "running", "blocked", "blocked",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_three_step_goal_uses_actual_readonly_tool_executor_in_temp_workspace(
+    db, tmp_path, monkeypatch,
+):
+    """Real FileRead/FileHash through ToolExecutor; scripted worker only writes test outputs."""
+    import hashlib
+    from backend.tools import file_tools
+    from backend.tools.executor import PolicyContext, ToolExecutor
+    from backend.tools.file_tools import FileCreateTool, FileHashTool, FileReadTool
+
+    monkeypatch.setattr(settings, "max_steps_per_goal_execution", 5)
+    monkeypatch.setattr(file_tools, "_approved_roots", lambda: [tmp_path.resolve()])
+    executor = ToolExecutor()
+    for tool in (FileReadTool(), FileHashTool(), FileCreateTool()):
+        executor.register_tool(tool)
+
+    goal, plan = setup_goal(db, "Read-only tool inspection goal")
+    runner = TaskRunner(db)
+    orchestrator = TaskOrchestrator(state_store=runner, planner=Planner(db))
+    scripted, visited = create_scripted_worker(db, runner, tmp_path)
+    source = tmp_path / "numbers.txt"
+    original = source.read_bytes()
+    checks = []
+
+    async def worker_using_real_read_tools(_session, task_id, _test_executor):
+        read = await executor.execute_tool("file_read", {"path": str(source)})
+        digest = await executor.execute_tool(
+            "file_hash", {"path": str(source), "algorithm": "sha256"}
+        )
+        assert read.success, read.error
+        assert digest.success, digest.error
+        assert read.data["content"].encode("utf-8") == source.read_bytes()
+        assert digest.data["hash"] == hashlib.sha256(source.read_bytes()).hexdigest()
+        checks.append((read.data["bytes_read"], digest.data["hash"]))
+        await scripted(_session, task_id, _test_executor)
+
+    result = await orchestrator.execute_session(
+        goal.id, run_task_fn=worker_using_real_read_tools,
+    )
+    assert [e["outcome"] for e in result["executed"]] == ["completed"] * 3
+    assert visited == ["inspect", "summarize", "verify"]
+    assert len(checks) == 3
+    assert all(size == len(original) for size, _digest in checks)
+    assert all(digest == hashlib.sha256(original).hexdigest() for _size, digest in checks)
+    assert GoalManager(db).get_goal(goal.id).status == "completed"
+    assert json.loads((tmp_path / "summary.json").read_text(encoding="utf-8")) == {
+        "total": 10, "count": 3,
+    }
+    # A direct-instruction flag alone is NEVER permission to mutate files.
+    target = tmp_path / "not-authorized.txt"
+    rejected = await executor.execute_tool(
+        "file_create", {"path": str(target), "content": "must not exist"},
+        policy_context=PolicyContext(direct_user_instruction=True, task_id="test-task"),
+    )
+    assert not rejected.success
+    assert rejected.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
+    assert not target.exists()

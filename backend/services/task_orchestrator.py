@@ -785,6 +785,7 @@ class TaskOrchestrator:
         from backend.services.task_execution_loop import run_task as default_run
         from backend.api.dependencies import get_tool_executor
         from backend.services.goal_worker_binding import bind_goal_worker
+        from backend.services.goal_worker_handoff import run_goal_worker_handoff
 
         # Resolve the registered tool executor BEFORE acquiring a runner lease
         # or creating a task. A null executor is not a workable goal runner.
@@ -829,8 +830,24 @@ class TaskOrchestrator:
             finally:
                 await self.state_store.release_lease()
 
-            await run_fn(None, task.id, worker.tool_executor)  # kernel worker (own session+lease)
-            await self.apply_task_outcome(task.id)
+            handoff = await run_goal_worker_handoff(
+                worker=run_fn,
+                task_id=task.id,
+                tool_executor=worker.tool_executor,
+                apply_outcome=self.apply_task_outcome,
+            )
+            if not handoff.settled_without_error:
+                # A worker or its post-task writer may have failed after an
+                # external effect. Do not retry, claim failure, or advance to
+                # another plan step without authoritative task evidence.
+                self.planner.db.rollback()
+                executed.append({
+                    "task_id": task.id,
+                    "step_key": started["step"].step_key,
+                    "outcome": "unverified",
+                })
+                stopped_reason = handoff.stop_reason
+                break
             # The worker's post-task pipeline may already have updated the
             # plan. Re-read the task, exact evidence link, step state and
             # completion gate; do not translate updated=False into success.
@@ -938,6 +955,7 @@ class TaskOrchestrator:
 
         from backend.api.dependencies import get_tool_executor
         from backend.services.goal_worker_binding import bind_goal_worker
+        from backend.services.goal_worker_handoff import run_goal_worker_handoff
 
         if run_task_fn is None:
             from backend.services.task_execution_loop import run_task as default_run
@@ -988,8 +1006,25 @@ class TaskOrchestrator:
             finally:
                 await self.state_store.release_lease()
 
-            await worker.run(None, task.id, worker.tool_executor)
-            await self.apply_task_outcome(task.id)
+            handoff = await run_goal_worker_handoff(
+                worker=worker.run,
+                task_id=task.id,
+                tool_executor=worker.tool_executor,
+                apply_outcome=self.apply_task_outcome,
+            )
+            if not handoff.settled_without_error:
+                self.planner.db.rollback()
+                # One execution attempt consumed a fairness slot, but a
+                # thrown worker/recorder is not a terminal failed session.
+                selector.mark_served(goal_id)
+                executed.append({
+                    "goal_id": goal_id,
+                    "task_id": task.id,
+                    "step_key": started["step"].step_key,
+                    "outcome": "unverified",
+                })
+                stop_reason = handoff.stop_reason
+                break
             outcome_str = self._observed_step_outcome(
                 goal_id=goal_id, step_id=started["step"].id, task_id=task.id,
             )

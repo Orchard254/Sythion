@@ -90,6 +90,8 @@ completion, and false worker claims.
 python -m pytest -q \
   backend/tests/test_goal_execution_outcome.py \
   backend/tests/test_goal_worker_binding.py \
+  backend/tests/test_goal_worker_handoff.py \
+  backend/tests/test_goal_readonly_tool_adapter.py \
   backend/tests/test_goal_execution_vertical_slice.py \
   backend/tests/test_work_orchestration.py \
   backend/tests/test_goal_planning.py \
@@ -108,7 +110,7 @@ Do not count this as a live-tool or installed-Windows success.
 
 ## Next acceptance gates
 
-- Run the 17 real-ORM vertical-slice scenarios and address any failures.
+- Run the 22 parameter-expanded real-ORM vertical-slice scenarios and address any failures.
 - Add actual tool-adapter output verification within an approved test-only
   workspace, including idempotent/mutating action receipts and permission
   checks. A scripted worker is **not** a security verification of real tools.
@@ -169,3 +171,57 @@ tools in a disposable workspace; complete Windows packaged app and
 permissions; process kill/restart tests. This change repairs a verified
 argument-wiring defect but does not itself demonstrate a live model or
 tool successfully completing a goal.
+
+## Fail-closed worker and post-task handoff (2026-11-09)
+
+A worker may raise after effects were performed but before a terminal task
+receipt was persisted. Likewise, the outcome recorder can raise after a
+terminal task exists but before the plan step is updated. Neither incident
+proves success or a retryable failure.
+
+`backend/services/goal_worker_handoff.py` now wraps **one** worker call and
+**one** existing `apply_task_outcome` call. On an ordinary exception it
+returns the fixed `worker_or_outcome_error` stop category with no exception
+text or tool parameters. The explicit goal session stops immediately,
+reporting the attempt as `unverified` and leaving the persisted task/step
+for the existing ownership and recovery path. The background cycle also
+stops and records fairness service credit for the attempted step, but **does
+not** record a terminal failed session or start any later goal. The caller
+rolls back its own incomplete ORM transaction before returning.
+
+An `asyncio.CancelledError` is deliberately *not* swallowed; cancellation
+is propagated so the caller's existing stop/ownership path remains in
+control. This change does not automatically retry effects, mutate a
+nonterminal task into FAILED, or relax the completion verifier.
+
+**Executed locally:** 14 pure handoff tests, including exception-type-only diagnostic logging, exceptions during
+worker/outcome application, cancellation propagation, immutable result,
+invalid callable contracts, and secret-free stop labels. Together with the
+previous worker binding suite: **29 passed**. The full-repository V1 suite
+has four added scenarios that exercise these cases with actual TaskRunner and
+Planner entities; those integration scenarios remain **unexecuted here**.
+
+## Real read-only file tool acceptance (2026-11-09)
+
+`backend/tests/test_goal_readonly_tool_adapter.py` exercises real reviewed
+`FileReadTool` and `FileHashTool` implementations **through**
+`ToolExecutor.execute_tool` in a pytest-owned temporary workspace. It
+compares results to independently read bytes and SHA-256 digests, checks
+tamper detection, refuses paths outside the temporary approved root, and
+verifies that `FileCreateTool` is blocked even when the caller claims
+`direct_user_instruction=True`. These five cases need the full backend
+checkout and have not been run in this environment.
+
+The V1 three-step suite also has a new test that executes real read-only
+file tools before each scripted step. This demonstrates dispatch and
+verification of **read-only observations**, while the scripted test worker
+still creates the summary artifact directly in `tmp_path`. That scripting
+does **not** authorize writing to user files through the real tool executor,
+does not invoke a live model, and does not constitute production goal
+execution verification.
+
+The V1 matrix now has **22 parameter-expanded real-ORM scenarios**, still
+awaiting execution in the full private Sythion checkout. The above five
+direct tool-adapter tests are additional. The Windows app, provider calls,
+permission-approval system, crash/restart, and real mutating tool receipts
+remain separate acceptance work.

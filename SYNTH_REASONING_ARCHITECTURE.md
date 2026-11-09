@@ -502,3 +502,25 @@ acceptance fixture now uses a genuine file-backed SQLite database with
 different physical connections. Live ToolExecutor behavior, installed
 Windows, and the full application goal lifecycle remain unverified
 (S195-S197).
+
+## 18. Fail-closed goal worker handoff and read-only tool acceptance (2026-11-09)
+
+`run_goal_worker_handoff` isolates one awaited worker and its canonical
+post-task outcome application. An exception from either results in the
+fixed `worker_or_outcome_error` stop reason (logging only the exception type) rather than an implicit retry,
+verified success or terminal failure. The explicit or bounded background
+session reports the attempt as `unverified`; the background fairness
+counter still accounts for a started attempt without treating it as a
+failed terminal session. Cancellation propagates. No subsequent dependent
+step executes because of a worker/recorder exception.
+
+The real file-tool acceptance tests now check `ToolExecutor.execute_tool`
+with Sythion's exact reviewed `FileReadTool` and `FileHashTool`
+implementations, SHA-256 independent reads, approved disposable roots,
+out-of-root refusal, and denial of file creation despite a claimed
+direct instruction. A new three-step acceptance scenario combines read-only
+tool dispatch with the real Planner/TaskRunner and a scripted temporary
+artifact writer. The script is **not** a real mutating tool authority.
+The 29 local pure binding/handoff tests passed; full-ORM and file-tool
+adapter scenarios remain unexecuted pending a complete checkout
+(S195-S198).
