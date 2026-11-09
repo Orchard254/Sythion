@@ -19,6 +19,12 @@ RESOURCES = REPO_ROOT / "src-tauri" / "resources"
 MIRROR = RESOURCES / "backend"
 BACKUP_PARENT = REPO_ROOT / "build" / "staging"
 
+# Tests import this as scripts.refresh_staged_backend; the CLI runs it as a
+# standalone script. Both need the sibling staging modules on sys.path.
+SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, SCRIPTS_DIR)
+
 from stage_clean_backend import (  # noqa: E402
     _contains_reparse_point, _is_reparse_point, stage,
 )
