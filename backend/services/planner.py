@@ -342,30 +342,36 @@ class Planner:
         return unlocked
 
     def select_next_step(self, goal_id: str) -> Optional[PlanStep]:
-        """Deterministically choose the next eligible step, or None.
+        """Choose the same dependency-safe candidate shown by read-only preview.
 
-        Ordering policy (documented + tested):
-          1. dependency eligibility (READY only; BLOCKED steps are unlocked
-             first when their dependencies completed);
-          2. priority ascending (1 = most important);
-          3. stable tie-break by step_order then id.
-        The LLM cannot influence this ordering beyond what was validated into
-        the persisted plan.
+        The caller owns the runner lease. Only here may a virtually eligible
+        BLOCKED row be promoted through the planner's audited readiness path.
+        A stale READY row whose dependencies regressed cannot be executed.
         """
+        from backend.services.goal_work_preview import project_goal_work
+
         plan = self.active_plan(goal_id)
         if plan is None:
             return None
-        self.refresh_readiness(plan.id)
-        candidates = (
-            self.db.query(PlanStep)
-            .filter(
-                PlanStep.plan_id == plan.id,
-                PlanStep.status.in_(("ready",)),
-            )
-            .order_by(PlanStep.priority.asc(), PlanStep.step_order.asc(), PlanStep.id.asc())
-            .all()
-        )
-        return candidates[0] if candidates else None
+        steps = self.plan_steps(plan.id)
+        preview = project_goal_work("active", [
+            {
+                "id": s.id, "step_key": s.step_key, "description": s.description,
+                "status": s.status, "priority": s.priority,
+                "step_order": s.step_order, "depends_on": s.depends_on,
+            } for s in steps
+        ], has_active_plan=True, respect_backoff=False)
+        choice = preview["next_step"]
+        if choice is None:
+            return None
+        selected = next((step for step in steps if step.id == choice["id"]), None)
+        if selected is None:
+            return None
+        if choice["would_unlock"]:
+            # The real planner is the only authority that persists readiness.
+            self.refresh_readiness(plan.id)
+            selected = self.get_step(selected.id)
+        return selected if selected is not None and selected.status == "ready" else None
 
     # --- execution-state updates (evidence-gated) ------------------------------
 

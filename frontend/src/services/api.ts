@@ -54,6 +54,7 @@ import type {
   VoiceAssets,
   GoalDetail,
   GoalPlanVersion,
+  GoalWorkPreview,
 } from '../types';
 
 const API_BASE_URL = '/api/v1';
@@ -325,6 +326,12 @@ export const goalService = {
   /** Goal, deterministic progress and the active plan version with its steps. */
   detail: async (goalId: string): Promise<GoalDetail> => {
     const response = await apiClient.get(`/goals/${goalId}`);
+    return response.data;
+  },
+
+  /** Side-effect-free next-step preview, including dependency and backoff blockers. */
+  nextWork: async (goalId: string): Promise<GoalWorkPreview> => {
+    const response = await apiClient.get<GoalWorkPreview>(`/goals/${goalId}/next-work`);
     return response.data;
   },
 

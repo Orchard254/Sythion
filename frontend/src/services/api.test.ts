@@ -5,7 +5,7 @@ import {
   type InternalAxiosRequestConfig,
 } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import apiClient, { assistantService, taskService } from './api';
+import apiClient, { assistantService, goalService, taskService } from './api';
 
 /**
  * The control token the request interceptor attaches. The response
@@ -326,5 +326,36 @@ describe('central taskService.resume recovery gate', () => {
     };
     await expect(taskService.resume('t1')).rejects.toThrow('Network Error');
     expect(seen).toEqual(['GET /tasks/t1/resume-preflight']);
+  });
+});
+
+describe('goalService.nextWork read-only preview contract', () => {
+  afterEach(() => { delete apiClient.defaults.adapter; });
+
+  it('fetches next-work without POST or background execution', async () => {
+    const seen: string[] = [];
+    const preview = {
+      goal_id: 'g1', plan_version: 1, state: 'ready', goal_state: 'active',
+      explanation: 'A step is eligible', runnable: true, structurally_ready: true,
+      in_backoff: false,
+      next_step: { id: 7, key: 'next', description: 'Work', priority: 2, persisted_status: 'blocked', would_unlock: true },
+      counts: { total: 2, completed: 1, running: 0, failed: 0, blocked: 0, effectively_ready: 1 },
+      blocked_steps: [], read_only: true, execution_started: false, authorization_issued: false,
+    };
+    const adapter: AxiosAdapter = async (config) => {
+      seen.push(`${(config.method ?? '').toUpperCase()} ${config.url}`);
+      return { data: preview, status: 200, statusText: 'OK', headers: {}, config } as AxiosResponse;
+    };
+    apiClient.defaults.adapter = adapter;
+    const result = await goalService.nextWork('g1');
+    expect(result.next_step?.would_unlock).toBe(true);
+    expect(result.read_only).toBe(true);
+    expect(result.execution_started).toBe(false);
+    expect(seen).toEqual(['GET /goals/g1/next-work']);
+  });
+
+  it('propagates failure rather than guessing next work', async () => {
+    apiClient.defaults.adapter = networkErrorAdapter;
+    await expect(goalService.nextWork('g1')).rejects.toThrow('Network Error');
   });
 });

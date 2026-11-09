@@ -420,3 +420,30 @@ verification must use the HWND-owned UserConsentVerifier interop path;
 do not use the UWP overload or assume a generic Tauri modal proves human
 identity. Existing uncertain-effect resume blockers remain in place
 (S189-S192).
+
+## 15. Goal actionability and pure readiness (2026-11-09)
+
+Goal work now has a deterministic `goal_work_preview.py` projection and
+read-only `GET /api/v1/goals/{goal_id}/next-work` endpoint. The Goal detail
+drawer shows the next eligible step, which dependencies are outstanding,
+whether failure backoff applies, and when a failed/running/completed plan
+requires review. These are **observations**, not a claim of completion or
+authorization. The LLM does not decide or approve eligibility.
+
+Previously, `RunnableGoalSelector.list_runnable_goals()` called the
+mutating `Planner.refresh_readiness()` just to assemble a read-only
+eligibility listing. That helper commits step-state changes and ledger events.
+The selector now evaluates *virtual readiness* without writes. When a blocked
+step's recorded dependencies are all completed, the preview may show it as
+eligible while the durable row remains BLOCKED. The Planner owns the only
+actual readiness transition, inside its existing runner-lease-protected
+step-start path. The Planner uses the same projection to prevent a stale
+READY row with unmet dependencies from being started. Malformed, unknown,
+duplicated, self-referential, and cyclic dependency data blocks plan
+selection rather than producing unjustified work.
+
+The UI does not introduce an automatic run button or background scheduler.
+Existing user opt-in, agent wake, task ownership, tool permission and result
+verification remain the authorities. Local pure/synthetic-SQLite tests verify
+the projection and nonmutating query surface; the full repository ORM/API,
+React and installed Windows runtime remain acceptance work (S193-S194).

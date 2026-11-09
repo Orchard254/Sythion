@@ -189,6 +189,38 @@ export interface Objective {
   sub_objectives: Objective[];
 }
 
+/** Read-only next-step diagnostic. It never starts work or authorizes tools. */
+export interface GoalWorkPreview {
+  goal_id: string;
+  plan_version: number | null;
+  state: string;
+  goal_state: string;
+  explanation: string;
+  runnable: boolean;
+  structurally_ready: boolean;
+  in_backoff: boolean;
+  next_step: {
+    id: number;
+    key: string;
+    description: string;
+    priority: number;
+    persisted_status: string;
+    would_unlock: boolean;
+  } | null;
+  counts: {
+    total: number;
+    completed: number;
+    running: number;
+    failed: number;
+    blocked: number;
+    effectively_ready: number;
+  };
+  blocked_steps: Array<{ step_key: string; waiting_for: string[] }>;
+  read_only: true;
+  execution_started: false;
+  authorization_issued: false;
+}
+
 /** GET /api/v1/goals */
 export interface GoalSummary {
   id: string;

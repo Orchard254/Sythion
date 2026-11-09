@@ -19,7 +19,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.core.auth import LocalControlBoundaryMiddleware, control_origins
-from backend.models.database import Base, GoalPlan, get_db
+from backend.models.database import Base, GoalPlan, PlanStep, TaskEvent, get_db
 
 
 @pytest.fixture
@@ -141,3 +141,47 @@ class TestGoalsApiContract:
         r = client.get("/api/v1/goals/runnable")
         assert r.status_code == 200
         assert any(g["goal_id"] == goal_id for g in r.json()["runnable"])
+
+
+    def test_next_work_preview_is_read_only_but_detects_virtual_unlock(self, client, db_session):
+        from sqlalchemy import event
+
+        goal_id = _create_goal(client).json()["goal"]["id"]
+        step_a, step_b = (db_session.query(PlanStep)
+                          .filter_by(objective_id=goal_id)
+                          .order_by(PlanStep.step_order.asc()).all())
+        step_a.status = "completed"
+        db_session.commit()
+        assert step_b.status == "blocked"
+        old_events = db_session.query(TaskEvent).count()
+        committed = []
+        event.listen(db_session, "after_commit", lambda _: committed.append(True))
+
+        preview = client.get(f"/api/v1/goals/{goal_id}/next-work")
+        assert preview.status_code == 200
+        data = preview.json()
+        assert data["state"] == "ready"
+        assert data["next_step"]["key"] == "second"
+        assert data["next_step"]["would_unlock"] is True
+        assert data["read_only"] is True
+        assert data["authorization_issued"] is False
+
+        listed = client.get("/api/v1/goals/runnable")
+        assert listed.status_code == 200
+        assert any(g["goal_id"] == goal_id and g["next_step"]["key"] == "second"
+                   for g in listed.json()["runnable"])
+        assert db_session.get(PlanStep, step_b.id).status == "blocked"
+        assert db_session.query(TaskEvent).count() == old_events
+        assert not committed
+
+    def test_next_work_preview_unknown_goal_is_404(self, client):
+        result = client.get("/api/v1/goals/does-not-exist/next-work")
+        assert result.status_code == 404
+
+    def test_next_work_preview_respects_paused_goal_state(self, client):
+        goal_id = _create_goal(client).json()["goal"]["id"]
+        client.post(f"/api/v1/goals/{goal_id}/pause")
+        result = client.get(f"/api/v1/goals/{goal_id}/next-work")
+        assert result.status_code == 200
+        assert result.json()["state"] == "goal_paused"
+        assert result.json()["runnable"] is False

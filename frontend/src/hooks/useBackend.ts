@@ -1,7 +1,7 @@
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { useAppStore } from '../store/appStore';
-import type { DataOrigin, GoalDetail, GoalPlanVersion, GoalSummary, MemoryItemsPage } from '../types';
+import type { DataOrigin, GoalDetail, GoalPlanVersion, GoalSummary, GoalWorkPreview, MemoryItemsPage } from '../types';
 import * as api from '../services/api';
 
 /* Data access layer.
@@ -136,6 +136,15 @@ export function useGoalDetail(goalId: string | null) {
     `goal-detail:${goalId ?? 'none'}`,
     () => api.goalService.detail(goalId as string),
     { enabled: Boolean(goalId), staleMs: 10_000, refetchInterval: 15_000 }
+  );
+}
+
+/** Preview only. Reading eligible work must never persist a readiness change. */
+export function useGoalNextWork(goalId: string | null) {
+  return useSource<GoalWorkPreview>(
+    `goal-next-work:${goalId ?? 'none'}`,
+    () => api.goalService.nextWork(goalId as string),
+    { enabled: Boolean(goalId), staleMs: 0, refetchInterval: 12_000 },
   );
 }
 

@@ -2873,6 +2873,23 @@ async def get_goal(goal_id: str, db: Session = Depends(get_db)):
     return _goal_detail(db, goal_id)
 
 
+@router.get("/goals/{goal_id}/next-work")
+def get_goal_next_work(goal_id: str, db: Session = Depends(get_db)):
+    """Explain the next eligible plan step without a model call or DB writes.
+
+    This is a preview, not an execution token. The Planner must re-evaluate
+    dependencies under the runner lease before starting a task.
+    """
+    from backend.services.goal_work_preview import read_goal_work_preview
+
+    try:
+        return read_goal_work_preview(db, goal_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Goal not found") from exc
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="Goal work state changed; refresh the goal") from exc
+
+
 @router.get("/goals/{goal_id}/continuity")
 def get_goal_continuity(
     goal_id: str,

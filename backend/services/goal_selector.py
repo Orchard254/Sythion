@@ -4,7 +4,7 @@ Extracts goal-selection from the HTTP layer so the Main Agent, the API, and a
 future scheduler all share ONE structural-eligibility implementation. The
 selector never executes anything and never consults an LLM.
 
-Ordering policy (deterministic + explainable):
+Ordering policy (deterministic + explainable, no readiness writes):
   1. structural eligibility (ACTIVE goal, ACTIVE plan, READY step);
   2. priority ascending (1 = most important);
   3. same-priority fairness: least-recently-served first (last_served_at,
@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from backend.models.database import GoalPlan, Objective, PlanStep
 from backend.services.goal_manager import GoalManager
+from backend.services.goal_work_preview import read_goal_work_preview
 
 
 class RunnableGoalSelector:
@@ -27,95 +28,50 @@ class RunnableGoalSelector:
     # ------------------------------------------------------------------ #
 
     def explain_ineligibility(self, goal_id: str) -> Dict[str, Any]:
-        """Why is this goal not currently runnable? (diagnostics)"""
-        goal = self.manager.get_goal(goal_id)
-        if goal is None:
+        """Explain current eligibility without changing the goal or plan."""
+        try:
+            preview = read_goal_work_preview(self.db, goal_id)
+        except LookupError:
             return {"runnable": False, "reasons": ["goal_not_found"]}
 
-        reasons: List[str] = []
-        if goal.status != "active":
-            reasons.append(f"goal_state_{goal.status}")
-
-        plan = (
-            self.db.query(GoalPlan)
-            .filter_by(goal_id=goal_id, status="active")
-            .order_by(GoalPlan.version.desc())
-            .first()
-        )
-        if plan is None:
-            reasons.append("no_active_plan")
+        if preview["runnable"]:
+            reasons: List[str] = []
+        elif preview["state"] == "goal_paused":
+            reasons = ["goal_state_paused"]
+        elif preview["state"] == "goal_not_active":
+            reasons = [f"goal_state_{preview['goal_state']}"]
+        elif preview["state"] == "plan_needed":
+            reasons = ["no_active_plan"]
+        elif preview["state"] == "waiting_for_dependencies":
+            reasons = ["steps_blocked_by_dependencies"]
+        elif preview["state"] == "step_in_progress":
+            reasons = ["step_already_running"]
         else:
-            has_ready = (
-                self.db.query(PlanStep.id)
-                .filter(PlanStep.plan_id == plan.id)
-                .filter(PlanStep.status == "ready")
-                .first()
-                is not None
-            )
-            if not has_ready:
-                blocked = (
-                    self.db.query(PlanStep.id)
-                    .filter(PlanStep.plan_id == plan.id)
-                    .filter(PlanStep.status == "blocked")
-                    .count()
-                )
-                open_states = ("pending", "running", "in_progress")
-                running = (
-                    self.db.query(PlanStep.id)
-                    .filter(PlanStep.plan_id == plan.id)
-                    .filter(PlanStep.status.in_(open_states))
-                    .count()
-                )
-                if blocked:
-                    reasons.append("steps_blocked_by_dependencies")
-                if running:
-                    reasons.append("step_already_running")
-
-        return {"runnable": not reasons, "reasons": reasons,
-                "goal_state": goal.status}
+            reasons = [preview["state"]]
+        return {
+            "runnable": preview["runnable"], "reasons": reasons,
+            "goal_state": preview["goal_state"], "next_step": preview["next_step"],
+            "state": preview["state"],
+        }
 
     # ------------------------------------------------------------------ #
 
     def list_runnable_goals(self, respect_backoff: bool = True) -> List[Dict[str, Any]]:
-        """Eligible goals in serving order (see module docstring).
+        """Side-effect-free scheduler candidates in persisted fairness order.
 
-        Dependency readiness is refreshed first so BLOCKED steps whose
-        dependencies completed unlock deterministically (same rule the
-        Planner applies everywhere else).
-
-        ``respect_backoff=True`` excludes goals in their persisted failure
-        backoff window (background selection). Explicit user-driven
-        execution passes False to override.
+        BLOCKED steps with complete dependencies are *virtually* eligible here;
+        the Planner performs the actual audited readiness transition only in
+        the lease-protected step-start path. A GET must not commit or append
+        plan_step.ready events. Plan corruption never becomes permission to run.
         """
-        from datetime import datetime as _dt
-
-        from backend.services.planner import Planner
-
-        planner = Planner(self.db)
-        now = _dt.utcnow()
         eligible: List[Dict[str, Any]] = []
         for goal in self.db.query(Objective).filter_by(status="active").all():
-            if respect_backoff and goal.backoff_until and goal.backoff_until > now:
-                continue
-            plan = (
-                self.db.query(GoalPlan)
-                .filter_by(goal_id=goal.id, status="active")
-                .order_by(GoalPlan.version.desc())
-                .first()
+            preview = read_goal_work_preview(
+                self.db, goal.id, respect_backoff=respect_backoff,
             )
-            if plan is None:
+            if not preview["runnable"]:
                 continue
-            planner.refresh_readiness(plan.id)
-            step = (
-                self.db.query(PlanStep)
-                .filter(PlanStep.plan_id == plan.id)
-                .filter(PlanStep.status == "ready")
-                .order_by(PlanStep.priority.asc(), PlanStep.step_order.asc(),
-                          PlanStep.id.asc())
-                .first()
-            )
-            if step is None:
-                continue
+            step = preview["next_step"]
             eligible.append({
                 "goal_id": goal.id,
                 "title": goal.title,
@@ -123,18 +79,19 @@ class RunnableGoalSelector:
                 "last_served_at": goal.last_served_at,
                 "times_served": goal.times_served or 0,
                 "created_at": goal.created_at,
-                "in_backoff": bool(goal.backoff_until and goal.backoff_until > now),
+                "in_backoff": preview["in_backoff"],
                 "next_step": {
-                    "id": step.id,
-                    "key": step.step_key,
-                    "priority": step.priority,
+                    "id": step["id"],
+                    "key": step["key"],
+                    "priority": step["priority"],
+                    "would_unlock": step["would_unlock"],
                 },
             })
 
         epoch = datetime_min()
         eligible.sort(key=lambda g: (
             g["priority"],
-            g["times_served"],                # least-served first (strict RR)
+            g["times_served"],
             g["last_served_at"] or epoch,
             g["created_at"] or epoch,
             g["goal_id"],

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Icon } from './icons';
 import { Badge, Button, EmptyState, LoadingBlock, Panel, Rail } from './ui';
-import { useGoalDetail, useGoalPlans, useTasks } from '../hooks/useBackend';
+import { useGoalDetail, useGoalPlans, useGoalNextWork, useTasks } from '../hooks/useBackend';
 import { goalService } from '../services/api';
 import { useAppStore } from '../store/appStore';
 import { dateTime, parseTimestamp, taskLabel, taskTone } from '../lib/format';
@@ -54,6 +54,7 @@ export function GoalDetailDrawer({
 
   const detail = useGoalDetail(goalId);
   const plans = useGoalPlans(goalId);
+  const nextWork = useGoalNextWork(goalId);
   const tasks = useTasks();
   const notify = useAppStore((s) => s.notify);
 
@@ -151,6 +152,52 @@ export function GoalDetailDrawer({
                   />
                 </div>
               </div>
+
+              <Panel title="Next work" icon="target" tight>
+                {nextWork.isError ? (
+                  <p className="t-warn">Could not inspect goal readiness. The preview is unavailable.</p>
+                ) : nextWork.isLoading && !nextWork.data ? (
+                  <LoadingBlock rows={2} />
+                ) : nextWork.data ? (
+                  <div className="stack stack--tight">
+                    <div className="row row--wrap" style={{ gap: 8 }}>
+                      <Badge tone={nextWork.data.runnable ? 'ok' : 'warn'}>
+                        {nextWork.data.state.replace(/_/g, ' ')}
+                      </Badge>
+                      <span className="t-faint">
+                        {nextWork.data.counts.completed} of {nextWork.data.counts.total} plan steps complete
+                      </span>
+                    </div>
+                    <p className="t-body">{nextWork.data.explanation}</p>
+                    {nextWork.data.next_step && (
+                      <div className="stack stack--tight">
+                        <span className="t-title" style={{ fontSize: 12.5 }}>
+                          Next: {nextWork.data.next_step.description}
+                        </span>
+                        {nextWork.data.next_step.would_unlock && (
+                          <p className="t-faint">
+                            Dependencies are complete. The stored step will become ready only when execution begins.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {nextWork.data.blocked_steps.length > 0 && (
+                      <div className="stack stack--tight">
+                        {nextWork.data.blocked_steps.slice(0, 3).map((item) => (
+                          <p className="t-muted" key={item.step_key}>
+                            {item.step_key} is waiting for {item.waiting_for.join(', ')}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                    <p className="t-faint">
+                      This is a read-only preview, not an execution command. Runtime checks still apply.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="t-muted">Next-work status is unavailable.</p>
+                )}
+              </Panel>
 
               {!plan ? (
                 <EmptyState
@@ -342,6 +389,7 @@ export function GoalDetailDrawer({
       await goalService.lifecycle(id, action);
       detail.refetch();
       plans.refetch();
+      nextWork.refetch();
       tasks.refetch();
       notify({ tone: 'ok', title: `Goal ${action}d` });
     } catch (err) {
