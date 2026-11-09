@@ -135,7 +135,11 @@ def project_goal_work(
             else:
                 ready.append(step)
     ready.sort(key=lambda s: (s["priority"], s["step_order"], s["id"]))
-    selected = ready[0] if ready and not invalid else None
+    # Only one plan step may be in flight at a time. After a crash, a
+    # quarantined RUNNING step must prevent even independent READY steps
+    # from silently advancing the goal before the old work is reviewed.
+    running_exists = any(step["status"] in _STEPS_IN_FLIGHT for step in normalized)
+    selected = ready[0] if ready and not invalid and not running_exists else None
     completed = sum(step["status"] == "completed" for step in normalized)
     counts = {
         "total": len(steps),
@@ -143,7 +147,7 @@ def project_goal_work(
         "running": sum(step["status"] in _STEPS_IN_FLIGHT for step in normalized),
         "failed": sum(step["status"] == "failed" for step in normalized),
         "blocked": len(blocked),
-        "effectively_ready": len(ready) if not invalid else 0,
+        "effectively_ready": len(ready) if not invalid and not running_exists else 0,
     }
     if goal_status != "active":
         state = "goal_paused" if goal_status == "paused" else "goal_not_active"
@@ -205,7 +209,7 @@ def project_goal_work(
 def read_goal_work_preview(db: Any, goal_id: str, *, now: datetime | None = None,
                            respect_backoff: bool = True) -> dict[str, Any]:
     """Read active goal+plan state without refreshing or committing readiness."""
-    from backend.models.database import GoalPlan, Objective, PlanStep
+    from backend.models.database import GoalPlan, Objective, PlanStep, Task
 
     if db.new or db.dirty or db.deleted:
         raise RuntimeError("goal preview requires a clean ORM session")
@@ -224,4 +228,28 @@ def read_goal_work_preview(db: Any, goal_id: str, *, now: datetime | None = None
             goal.status, step_data, has_active_plan=plan is not None,
             backoff_until=goal.backoff_until, now=now, respect_backoff=respect_backoff,
         )
+        # The pure plan projection only knows step statuses. For the goal UI,
+        # distinguish an actually running task from an interrupted/cancelled
+        # task or broken evidence link. Return a fixed explanation, never raw
+        # task IDs, event payloads or owner credentials.
+        if goal.status == "active" and result["state"] == "step_in_progress":
+            running = [s for s in rows if s.status in _STEPS_IN_FLIGHT]
+            ids = [s.evidence_task_id for s in running if s.evidence_task_id]
+            known = {t.id: t for t in db.query(Task).filter(Task.id.in_(ids)).all()} if ids else {}
+            requires_review = any(
+                not s.evidence_task_id
+                or s.linked_task_id != s.evidence_task_id
+                or s.evidence_task_id not in known
+                or known[s.evidence_task_id].state in ("interrupted", "cancelled")
+                or known[s.evidence_task_id].objective_id not in (None, goal_id)
+                for s in running
+            )
+            if requires_review:
+                result["state"] = "recovery_review_required"
+                result["explanation"] = (
+                    "A previous step has no verified continuation. Review its "
+                    "task and external-action outcome before starting new work."
+                )
+                result["runnable"] = False
+                result["next_step"] = None
     return {"goal_id": goal_id, "plan_version": plan.version if plan else None, **result}

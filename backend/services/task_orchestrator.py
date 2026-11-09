@@ -534,17 +534,15 @@ class TaskOrchestrator:
     def recover_step(self, step_id: int) -> Dict[str, Any]:
         """Deterministically resolve one RUNNING plan step after a crash.
 
-        Rules (see ):
-          - evidence task terminal-completed + clean verifier → COMPLETED
-          - evidence task failed                              → FAILED (+retry policy)
-          - evidence task interrupted/cancelled               → READY (recoverable;
-                                                                attempt NOT re-counted)
-          - evidence task missing                             → PENDING + event
-          - evidence task still RUNNING                       → deferred (stale-lease
-                                                                takeover path owns it);
-                                                                step stays RUNNING
-        Idempotent: transitions fire only from RUNNING; repeated calls with no
-        state change append nothing.
+        Rules:
+          - evidence task completed + clean verifier → COMPLETED
+          - evidence task failed                     → FAILED
+          - task absent, interrupted, cancelled, or nonterminal
+            → deferred, step remains RUNNING, no replay permitted
+
+        Startup must not silently re-queue uncertain external effects.
+        Idempotent: deferred states are read-only; terminal reconciliation
+        changes the step only when evidence supports a terminal result.
         """
         planner = self.planner
         step = planner.get_step(step_id)
@@ -561,16 +559,26 @@ class TaskOrchestrator:
 
         task = planner.db.query(Task).filter_by(id=task_id).first() if task_id else None
 
-        if task is None:
-            # Missing task: never forge success/failure — safe recoverable state.
-            step.status = "pending"
-            step.updated_at = datetime.utcnow()
-            ledger.append_event(scope, "plan_step.recovery.resolved", {
-                "step_id": step.id, "step_key": step.step_key,
-                "outcome": "missing_task", "task_id": task_id,
-            })
-            planner.db.commit()
-            return {"step_id": step.id, "resolved": True, "outcome": "missing_task"}
+        from backend.services.goal_restart_policy import classify_goal_restart
+
+        # A persisted terminal task cannot complete a goal step if the step's
+        # original link was replaced or the task belongs to another goal.
+        # Review the mismatch; do not commit a terminal outcome or replay it.
+        if task is not None and (
+            step.linked_task_id != task_id
+            or task.objective_id not in (None, step.objective_id)
+        ):
+            return {
+                "step_id": step.id, "resolved": False,
+                "outcome": "deferred_evidence_binding_review_required",
+            }
+
+        decision = classify_goal_restart(task.state if task is not None else None)
+        if not decision.reconcile_terminal:
+            # No state mutation or event append: repeated startup passes must
+            # not manufacture a new runnable attempt or duplicate evidence.
+            # The existing manual task-resume/admission path owns resolution.
+            return {"step_id": step.id, "resolved": False, "outcome": decision.outcome}
 
         error_fn = _default_completion_precondition(planner.db, task_id)
         precondition_error = error_fn(task_id) if task.state == "completed" else None
@@ -662,78 +670,52 @@ class TaskOrchestrator:
                 log_capture_failure("planning_real_recovery_failed_verification", exc, task_id=task_id, step_id=step.id)
             return {"step_id": step.id, "resolved": True, "outcome": "failed"}
 
-        if task.state in ("failed", "cancelled", "interrupted"):
-            if task.state == "failed":
-                planner.fail_step(
-                    step.id,
-                    reason=(task.terminal_reason or "failed"),
-                    task_id=task_id,
-                )
-                # Phase 12.5 recovery REAL capture for failed task (dedup)
-                try:
-                    import hashlib as _hl3, json as _js3
-                    from backend.learning.capture import infer_planning_strategy as _inf3
-                    from backend.learning.planning_store import PlanningOutcomeStore as _POS3
-                    from backend.models.database import GoalPlan as _GPR3
-                    fresh3 = planner.get_step(step.id)
-                    eff3 = fresh3 or step
-                    plan3 = planner.active_plan(eff3.objective_id)
-                    if plan3 is None:
-                        try:
-                            plan3 = planner.db.query(_GPR3).filter(_GPR3.id == eff3.plan_id).first()
-                        except Exception:
-                            plan3 = None
-                    psteps3 = planner.plan_steps(plan3.id) if plan3 and getattr(plan3, "id", None) else []
-                    has_deps3 = any(s.depends_on and s.depends_on not in (None, "", "[]") for s in psteps3) if psteps3 else False
+        if task.state == "failed":
+            planner.fail_step(
+                step.id,
+                reason=(task.terminal_reason or "failed"),
+                task_id=task_id,
+            )
+            # Phase 12.5 recovery REAL capture for failed task (dedup)
+            try:
+                import hashlib as _hl3, json as _js3
+                from backend.learning.capture import infer_planning_strategy as _inf3
+                from backend.learning.planning_store import PlanningOutcomeStore as _POS3
+                from backend.models.database import GoalPlan as _GPR3
+                fresh3 = planner.get_step(step.id)
+                eff3 = fresh3 or step
+                plan3 = planner.active_plan(eff3.objective_id)
+                if plan3 is None:
                     try:
-                        dep3 = sum(len(_js3.loads(s.depends_on)) if s.depends_on else 0 for s in psteps3) if psteps3 else None
+                        plan3 = planner.db.query(_GPR3).filter(_GPR3.id == eff3.plan_id).first()
                     except Exception:
-                        dep3 = None
-                    strat3 = _inf3(plan_steps=len(psteps3) if psteps3 else None, has_dependencies=bool(has_deps3))
-                    retries3 = max(0, (eff3.attempt_count or 1) - 1)
-                    replans3 = (plan3.version - 1) if plan3 and getattr(plan3, "version", None) else 0
-                    fp3 = _hl3.sha256(f"planning_real_task|{eff3.objective_id}|{eff3.plan_id}|{task_id}|{eff3.attempt_count}|FAILED".encode()).hexdigest()[:16]
-                    res3 = _POS3(planner.db).record(
-                        planning_strategy=strat3, task_class="goal", goal_id=eff3.objective_id, plan_id=eff3.plan_id,
-                        initial_plan_steps=len(psteps3) if psteps3 else None, final_plan_steps=len(psteps3) if psteps3 else None,
-                        retries=retries3, replans=replans3, verified_success=False, outcome="FAILED",
-                        evidence_refs=[f"goal:{eff3.objective_id}", f"plan:{eff3.plan_id}", f"task:{task_id}", f"plan_step:{eff3.id}"],
-                        evidence_fingerprint=fp3, provenance="REAL_EXECUTION", dependency_complexity=dep3,
-                    )
-                    from backend.learning.capture import report_capture_result as _rcr3
-                    _rcr3("planning_real_recovery_failed", res3, task_id=task_id, step_id=eff3.id)
-                except Exception as exc:
-                    from backend.learning.capture import log_capture_failure
-                    log_capture_failure("planning_real_recovery_failed", exc, task_id=task_id, step_id=step.id)
-                outcome = "failed"
-            else:
-                # Interrupted / cancelled attempts are recoverable, not
-                # failures: the step returns to READY without consuming an
-                # extra attempt. Retry/execution decisions belong to the
-                # explicit session/advance path.
-                step.status = "ready"
-                step.updated_at = datetime.utcnow()
-                ledger.append_event(scope, "plan_step.recovery.resolved", {
-                    "step_id": step.id, "step_key": step.step_key,
-                    "outcome": f"recoverable_{task.state}", "task_id": task_id,
-                })
-                planner.db.commit()
-                outcome = f"recoverable_{task.state}"
-            return {"step_id": step.id, "resolved": True, "outcome": outcome}
+                        plan3 = None
+                psteps3 = planner.plan_steps(plan3.id) if plan3 and getattr(plan3, "id", None) else []
+                has_deps3 = any(s.depends_on and s.depends_on not in (None, "", "[]") for s in psteps3) if psteps3 else False
+                try:
+                    dep3 = sum(len(_js3.loads(s.depends_on)) if s.depends_on else 0 for s in psteps3) if psteps3 else None
+                except Exception:
+                    dep3 = None
+                strat3 = _inf3(plan_steps=len(psteps3) if psteps3 else None, has_dependencies=bool(has_deps3))
+                retries3 = max(0, (eff3.attempt_count or 1) - 1)
+                replans3 = (plan3.version - 1) if plan3 and getattr(plan3, "version", None) else 0
+                fp3 = _hl3.sha256(f"planning_real_task|{eff3.objective_id}|{eff3.plan_id}|{task_id}|{eff3.attempt_count}|FAILED".encode()).hexdigest()[:16]
+                res3 = _POS3(planner.db).record(
+                    planning_strategy=strat3, task_class="goal", goal_id=eff3.objective_id, plan_id=eff3.plan_id,
+                    initial_plan_steps=len(psteps3) if psteps3 else None, final_plan_steps=len(psteps3) if psteps3 else None,
+                    retries=retries3, replans=replans3, verified_success=False, outcome="FAILED",
+                    evidence_refs=[f"goal:{eff3.objective_id}", f"plan:{eff3.plan_id}", f"task:{task_id}", f"plan_step:{eff3.id}"],
+                    evidence_fingerprint=fp3, provenance="REAL_EXECUTION", dependency_complexity=dep3,
+                )
+                from backend.learning.capture import report_capture_result as _rcr3
+                _rcr3("planning_real_recovery_failed", res3, task_id=task_id, step_id=eff3.id)
+            except Exception as exc:
+                from backend.learning.capture import log_capture_failure
+                log_capture_failure("planning_real_recovery_failed", exc, task_id=task_id, step_id=step.id)
+            return {"step_id": step.id, "resolved": True, "outcome": "failed"}
 
-        if task.state in ("running", "created"):
-            # Kernel has not produced a terminal outcome (or never started):
-            # ownership resolution belongs to the lease takeover / resume
-            # path. Defer; the step stays RUNNING.
-            ledger.append_event(scope, "plan_step.recovery.detected", {
-                "step_id": step.id, "step_key": step.step_key,
-                "task_id": task_id, "deferred": f"task_state_{task.state}",
-            })
-            planner.db.commit()
-            return {"step_id": step.id, "resolved": False,
-                    "outcome": f"deferred_{task.state}"}
-
-        return {"step_id": step.id, "resolved": False, "outcome": f"unexpected_task_state({task.state})"}
+        return {"step_id": step.id, "resolved": False,
+                "outcome": "deferred_unrecognized_task_state"}
 
     def recover_all(self) -> List[Dict[str, Any]]:
         """Idempotent startup recovery over every RUNNING plan-backed step."""
@@ -750,9 +732,12 @@ class TaskOrchestrator:
             try:
                 results.append(self.recover_step(step.id))
             except Exception as exc:  # pragma: no cover - best-effort recovery
-                logger.exception("Recovery failed for step %s", step.id)
+                # Do not include raw traceback or exception messages in the
+                # startup recovery summary; these can contain private task data.
+                logger.warning("Recovery failed for step %s (%s)", step.id,
+                               type(exc).__name__)
                 results.append({"step_id": step.id, "resolved": False,
-                                "outcome": "recovery_failure", "error": str(exc)})
+                                "outcome": "recovery_failure"})
         resolved = sum(1 for r in results if r.get("resolved"))
         if results:
             logger.info("Startup recovery inspected %d running step(s); resolved %d",
@@ -807,9 +792,25 @@ class TaskOrchestrator:
             try:
                 started = await self.start_next_step(goal_id)
                 if started is None:
-                    # Before giving up, apply the bounded retry policy to any
-                    # FAILED step (audited); a scheduled retry becomes READY
-                    # and the next loop iteration executes it.
+                    from backend.services.goal_work_preview import read_goal_work_preview
+
+                    preview = read_goal_work_preview(
+                        self.planner.db, goal_id, respect_backoff=False,
+                    )
+                    if preview["state"] == "step_in_progress":
+                        # A task from an earlier session may still be running
+                        # or waiting for review. No new goal task or retry
+                        # may be started until its outcome is reconciled.
+                        stopped_reason = "unresolved_step_review_required"
+                        break
+                    if preview["state"] == "invalid_dependency_data":
+                        stopped_reason = "invalid_plan_review_required"
+                        break
+                    # Only a clean failed-step state can schedule an audited
+                    # retry. Never mutate retry state for blocked/unknown work.
+                    if preview["state"] != "failed_step_needs_review":
+                        stopped_reason = stopped_reason or "no_eligible_step"
+                        break
                     retry_info = self._retry_one_failed_step(goal_id)
                     if retry_info and retry_info.get("scheduled"):
                         # The enclosing finally releases the lease once.

@@ -718,3 +718,126 @@ async def test_three_step_goal_uses_actual_readonly_tool_executor_in_temp_worksp
     assert not rejected.success
     assert rejected.error["code"] == "DIRECT_INSTRUCTION_REQUIRED"
     assert not target.exists()
+
+
+# --- Startup recovery must never turn unresolved steps into new work ---
+
+@pytest.mark.asyncio
+async def test_unresolved_running_step_blocks_independent_ready_step(
+    db, monkeypatch,
+):
+    from backend.services.planner import CandidateStepModel
+
+    monkeypatch.setattr(settings, "max_steps_per_goal_execution", 5)
+    goal = GoalManager(db).create_goal("Interrupted and independent work")
+    plan = Planner(db).create_plan(goal.id, [
+        CandidateStepModel(key="old", description="Old unfinished work"),
+        CandidateStepModel(key="independent", description="Independent work"),
+    ])
+    steps = Planner(db).plan_steps(plan.id)
+    steps[0].status = "running"
+    db.commit()
+
+    called = []
+    async def worker(*_):
+        called.append(True)
+        pytest.fail("Unresolved goal must not start another worker")
+
+    runner = TaskRunner(db)
+    orchestrator = TaskOrchestrator(state_store=runner, planner=Planner(db))
+    result = await orchestrator.execute_session(goal.id, run_task_fn=worker)
+    assert result == {
+        "executed": [],
+        "stopped_reason": "unresolved_step_review_required",
+    }
+    assert called == []
+    assert [step.status for step in Planner(db).plan_steps(plan.id)] == [
+        "running", "ready",
+    ]
+    assert db.query(Task).filter_by(objective_id=goal.id).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_running_step_blocks_retry_mutation_of_other_failed_step(
+    db, monkeypatch,
+):
+    from backend.services.planner import CandidateStepModel
+
+    monkeypatch.setattr(settings, "max_steps_per_goal_execution", 5)
+    goal = GoalManager(db).create_goal("Unresolved step and retryable failure")
+    plan = Planner(db).create_plan(goal.id, [
+        CandidateStepModel(key="failed", description="Failed old work"),
+        CandidateStepModel(key="unresolved", description="Unresolved old work"),
+    ])
+    steps = Planner(db).plan_steps(plan.id)
+    steps[0].status = "failed"
+    steps[1].status = "running"
+    db.commit()
+    runner = TaskRunner(db)
+    orchestrator = TaskOrchestrator(state_store=runner, planner=Planner(db))
+
+    async def unexpected(*_):
+        pytest.fail("No worker must be dispatched with unresolved plan work")
+    result = await orchestrator.execute_session(goal.id, run_task_fn=unexpected)
+    assert result["stopped_reason"] == "unresolved_step_review_required"
+    assert result["executed"] == []
+    assert [step.status for step in Planner(db).plan_steps(plan.id)] == [
+        "failed", "running",
+    ]
+    assert db.query(Task).filter_by(objective_id=goal.id).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_verified_three_step_goal_continues_across_two_fresh_database_sessions(
+    file_db, tmp_path, monkeypatch,
+):
+    """Session #2 resumes at the next step; it cannot redo the verified first."""
+    monkeypatch.setattr(settings, "max_steps_per_goal_execution", 1)
+    db = file_db
+    goal, plan = setup_goal(db, "Goal spanning independent DB sessions")
+    runner1 = TaskRunner(db)
+    orch1 = TaskOrchestrator(state_store=runner1, planner=Planner(db))
+    first_worker, first_visited = create_scripted_worker(db, runner1, tmp_path)
+    first = await orch1.execute_session(goal.id, run_task_fn=first_worker)
+    assert first["stopped_reason"] == "step_budget_reached"
+    assert first_visited == ["inspect"]
+    assert [item["outcome"] for item in first["executed"]] == ["completed"]
+    assert [s.status for s in Planner(db).plan_steps(plan.id)] == [
+        "completed", "blocked", "blocked",
+    ]
+    # The selector will virtually unlock the next step only when it is
+    # actually selected; finishing a task does not prematurely mutate it.
+
+    # The second session sees independently committed data in file-backed
+    # SQLite, not the first session's identity map or in-memory state.
+    Session = sessionmaker(bind=db.bind, expire_on_commit=False)
+    fresh = Session()
+    try:
+        assert (
+            fresh.connection().connection.dbapi_connection
+            is not db.connection().connection.dbapi_connection
+        )
+        monkeypatch.setattr(settings, "max_steps_per_goal_execution", 2)
+        runner2 = TaskRunner(fresh)
+        orch2 = TaskOrchestrator(state_store=runner2, planner=Planner(fresh))
+        second_worker, second_visited = create_scripted_worker(
+            fresh, runner2, tmp_path,
+        )
+        second = await orch2.execute_session(goal.id, run_task_fn=second_worker)
+        assert second_visited == ["summarize", "verify"]
+        assert [item["outcome"] for item in second["executed"]] == [
+            "completed", "completed",
+        ]
+        assert GoalManager(fresh).get_goal(goal.id).status == "completed"
+        steps = Planner(fresh).plan_steps(plan.id)
+        assert [step.status for step in steps] == ["completed"] * 3
+        assert len({step.evidence_task_id for step in steps}) == 3
+        events = DbEventLedger(fresh).event_history(f"goal:{goal.id}")
+        assert [e["event_type"] for e in events].count("plan_step.started") == 3
+        assert [e["event_type"] for e in events].count("plan_step.completed") == 3
+        assert json.loads((tmp_path / "summary.json").read_text(encoding="utf-8")) == {
+            "total": 10, "count": 3,
+        }
+        assert (tmp_path / "verified.txt").read_text(encoding="utf-8") == "PASS"
+    finally:
+        fresh.close()

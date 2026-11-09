@@ -307,7 +307,8 @@ class TestRealProcessKillRecovery:
 
         recovery = result["recovery"]
         assert len(recovery) == 1
-        assert recovery[0]["outcome"] == "recoverable_interrupted"
+        assert recovery[0]["outcome"] == "deferred_interrupted_manual_review_required"
+        assert recovery[0]["resolved"] is False
 
         # No duplicate task was created.
         assert result["task_count"] == 1
@@ -315,8 +316,8 @@ class TestRealProcessKillRecovery:
         # The interrupted task is NOT guessed as success.
         assert result["task_states"] == ["interrupted"]
 
-        # Step reached the documented recoverable state.
-        assert result["step_status"] == "ready"
+        # The step stays quarantined, not re-queued for automatic execution.
+        assert result["step_status"] == "running"
 
         # Attempts were NOT incremented by recovery.
         assert result["attempt_count"] == 1
@@ -333,7 +334,8 @@ class TestRealProcessKillRecovery:
                     s.close()
 
         assert again["task_count"] == 1  # still exactly one task
-        assert again["step_status"] == "ready"
+        assert again["step_status"] == "running"
+        assert again["recovery"][0]["outcome"] == "deferred_interrupted_manual_review_required"
         assert again["attempt_count"] == 1
 class TestWakeDurabilityAcrossProcessDeath:
     def test_pending_wake_survives_forceful_kill_and_is_recovered(self, tmp_path):

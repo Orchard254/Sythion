@@ -9,7 +9,7 @@ Safety:
   * uses a disposable SQLite DB under a temp directory;
   * no provider/model/network access;
   * leaves cancelled/waiting/uncertain task state untouched (only the orphaned
-    RUNNING task is interrupted and its step returned to READY);
+    RUNNING task is interrupted; its step is not re-queued);
   * does not replay or resolve any uncertain action.
 """
 
@@ -107,18 +107,28 @@ def test_offline_crash_recovery_preserves_interrupted_state_and_idempotency(monk
             current_step = Planner(session2).get_step(saved["step_id"])
 
             assert len(first) == 1
-            assert first[0]["outcome"] == "recoverable_interrupted"
+            assert first[0]["outcome"] == "deferred_interrupted_manual_review_required"
+            assert first[0]["resolved"] is False
             assert len(tasks) == 1
             assert [t.state for t in tasks] == ["interrupted"]
-            assert current_step.status == "ready"
+            assert current_step.status == "running"
             assert current_step.attempt_count == 1
+
+            # A new connection must never offer the orphaned work as a new
+            # plan attempt, even when a goal is otherwise still ACTIVE.
+            from backend.services.goal_selector import RunnableGoalSelector
+            selector = RunnableGoalSelector(session2)
+            assert selector.list_runnable_goals() == []
+            assert Planner(session2).select_next_step(saved["goal_id"]) is None
 
             # A subsequent recovery pass over the same DB must not duplicate
             # or alter the already-recovered state.
             second_count_before = session2.query(Task).count()
-            orchestrator.recover_all()
+            second_result = orchestrator.recover_all()
+            assert second_result[0]["outcome"] == "deferred_interrupted_manual_review_required"
+            assert second_result[0]["resolved"] is False
             assert session2.query(Task).count() == second_count_before
-            assert Planner(session2).get_step(saved["step_id"]).status == "ready"
+            assert Planner(session2).get_step(saved["step_id"]).status == "running"
             assert Planner(session2).get_step(saved["step_id"]).attempt_count == 1
         finally:
             session2.close()

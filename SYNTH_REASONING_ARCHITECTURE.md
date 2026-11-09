@@ -524,3 +524,30 @@ artifact writer. The script is **not** a real mutating tool authority.
 The 29 local pure binding/handoff tests passed; full-ORM and file-tool
 adapter scenarios remain unexecuted pending a complete checkout
 (S195-S198).
+
+## 19. Goal restart does not replay uncertain work (2026-11-09)
+
+Startup `TaskOrchestrator.recover_step` previously promoted INTERRUPTED
+and CANCELLED task-bound plan steps from RUNNING to READY, and missing-task
+steps to PENDING. This could let goal scheduling create a *new* task for the
+same uncertain effect, bypassing the original task's strict resume gate.
+The `goal_restart_policy.py` classification now defers those cases
+without changing plan status, attempts, task ownership or audit history.
+Only durable terminal COMPLETED/FAILED tasks are eligible for the existing
+verified reconciliation path; task-step evidence linkage and goal scope
+are checked before doing so.
+
+The pure goal readiness projection and planner now block new steps when
+any active-plan step is RUNNING, including unrelated READY work and retries
+of FAILED sibling steps. The explicit bounded goal session stops with
+`unresolved_step_review_required` instead of scheduling a retry in that
+state. The goal next-work API distinguishes persisted interrupted/cancelled,
+missing, mismatched and foreign-bound evidence as
+`recovery_review_required` without leaking task IDs or prompt text.
+
+This slice retains the previous manual task-resume and consequence
+permission boundary. It does not clear uncertain effects or automatically
+start replacement work. The 13 new pure restart-policy tests passed locally
+(42 total focused Python tests); true ORM, process-kill, separate-connection
+and Windows packaged acceptance remains pending S199-S200. See
+`docs/GOAL_RESTART_NO_REPLAY_V1.md`.

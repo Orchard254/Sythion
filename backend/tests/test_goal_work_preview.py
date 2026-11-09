@@ -98,3 +98,26 @@ def test_diamond_dependencies_are_not_cycles():
     out=preview([s(1,'root','completed'),s(2,'left','completed',['root']),
                  s(3,'right','completed',['root']),s(4,'join','blocked',['left','right'])])
     assert out['state']=='ready' and out['next_step']['key']=='join'
+
+
+def test_inflight_step_blocks_another_independent_ready_step():
+    out = preview([s(1,'uncertain','running'),s(2,'independent','ready')])
+    assert out['state'] == 'step_in_progress'
+    assert out['runnable'] is False
+    assert out['next_step'] is None
+    assert out['counts']['effectively_ready'] == 0
+
+
+def test_inflight_step_blocks_virtual_dependency_unlock():
+    out = preview([s(1,'done','completed'),s(2,'interrupted','running',['done']),
+                   s(3,'later','blocked',['done'])])
+    assert out['state'] == 'step_in_progress'
+    assert out['runnable'] is False
+    assert out['next_step'] is None
+    assert out['counts']['running'] == 1
+
+
+def test_no_block_when_no_step_inflight():
+    out=preview([s(1,'done','completed'),s(2,'next','blocked',['done'])])
+    assert out['state'] == 'ready'
+    assert out['next_step']['key'] == 'next'

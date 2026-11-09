@@ -17,7 +17,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.api.schemas import TaskState
-from backend.models.database import Base, GoalPlan, PlanStep, TaskEvent
+from backend.models.database import Base, GoalPlan, PlanStep, Task, TaskEvent
 from backend.services.goal_manager import GoalManager, InvalidGoalTransitionError
 from backend.services.planner import CandidateStepModel, Planner
 from backend.services.task_orchestrator import (
@@ -149,9 +149,10 @@ class TestRecovery:
         _run_and_finish(db_session, runner, orch, started["task"].id,
                         TaskState.INTERRUPTED, terminal_reason="runner crash")
         result = orch.recover_step(started["step"].id)
-        assert result["outcome"] == "recoverable_interrupted"
+        assert result["outcome"] == "deferred_interrupted_manual_review_required"
+        assert result["resolved"] is False
         step = planner.get_step(started["step"].id)
-        assert step.status == "ready"
+        assert step.status == "running"
         # Attempt NOT re-counted by recovery.
         assert step.attempt_count == 1
 
@@ -161,8 +162,9 @@ class TestRecovery:
         _run_and_finish(db_session, runner, orch, started["task"].id,
                         TaskState.CANCELLED, terminal_reason="user stop")
         result = orch.recover_step(started["step"].id)
-        assert result["outcome"] == "recoverable_cancelled"
-        assert planner.get_step(started["step"].id).status == "ready"
+        assert result["outcome"] == "deferred_cancelled_manual_review_required"
+        assert result["resolved"] is False
+        assert planner.get_step(started["step"].id).status == "running"
 
     def test_missing_task_safe_state_never_forged(self, db_session, runner):
         goal, planner, orch = _goal_with_steps(db_session, runner, ("a", ""))
@@ -174,9 +176,10 @@ class TestRecovery:
         db_session.commit()
 
         result = orch.recover_step(step.id)
-        assert result["outcome"] == "missing_task"
+        assert result["outcome"] == "deferred_missing_task_review_required"
+        assert result["resolved"] is False
         fresh = planner.get_step(step.id)
-        assert fresh.status == "pending"
+        assert fresh.status == "running"
         assert fresh.status != "completed"
 
     def test_still_running_task_defers_to_lease_path(self, db_session, runner):
@@ -187,6 +190,9 @@ class TestRecovery:
         assert result["outcome"] == "deferred_created"
         assert result["resolved"] is False
         assert planner.get_step(started["step"].id).status == "running"
+        before_events = len(planner.ledger.event_history(f"goal:{goal.id}"))
+        assert orch.recover_step(started["step"].id) == result
+        assert len(planner.ledger.event_history(f"goal:{goal.id}")) == before_events
 
     def test_recovery_of_verified_only_completion(self, db_session, runner):
         """A 'completed' task whose last mutating action failed verification
@@ -272,6 +278,69 @@ def runner_for(db):
     from backend.services.task_runner import TaskRunner
 
     return TaskRunner(db)
+
+
+
+# ===========================================================================
+# Recovery cannot authorize a new attempt after uncertain old work
+# ===========================================================================
+
+
+class TestRestartNoReplay:
+    def test_interrupted_with_uncertain_action_is_not_requeued(self, db_session, runner):
+        from backend.services.goal_selector import RunnableGoalSelector
+
+        goal, planner, orch = _goal_with_steps(
+            db_session, runner, ("first", ""), ("next", "first"),
+        )
+        started = asyncio.run(orch.start_next_step(goal.id))
+        task_id = started["task"].id
+        asyncio.run(runner.transition_state(task_id, TaskState.RUNNING, "task.execution_started", {}))
+        asyncio.run(runner.record_event(task_id, "action.uncertain", {
+            "action_id": "previous-unresolved-effect", "reason": "crash",
+        }))
+        asyncio.run(runner.transition_state(
+            task_id, TaskState.INTERRUPTED, "task.interrupted", {"reason": "crash"},
+        ))
+        before = len(planner.ledger.event_history(f"goal:{goal.id}"))
+        initial_attempts = planner.get_step(started["step"].id).attempt_count
+        for _ in range(2):
+            result = orch.recover_step(started["step"].id)
+            assert result["outcome"] == "deferred_interrupted_manual_review_required"
+            assert result["resolved"] is False
+        assert len(planner.ledger.event_history(f"goal:{goal.id}")) == before
+        assert planner.get_step(started["step"].id).status == "running"
+        assert planner.get_step(started["step"].id).attempt_count == initial_attempts
+        assert planner.select_next_step(goal.id) is None
+        assert RunnableGoalSelector(db_session).list_runnable_goals() == []
+        assert db_session.query(Task).filter_by(objective_id=goal.id).count() == 1
+
+    def test_mismatched_link_blocks_recovery_even_when_task_is_completed(self, db_session, runner):
+        goal, planner, orch = _goal_with_steps(db_session, runner, ("a", ""))
+        started = asyncio.run(orch.start_next_step(goal.id))
+        task_id = started["task"].id
+        _run_and_finish(db_session, runner, orch, task_id, TaskState.COMPLETED, final_result="done")
+        step = planner.get_step(started["step"].id)
+        step.linked_task_id = "different-task-id"
+        db_session.commit()
+        before = len(planner.ledger.event_history(f"goal:{goal.id}"))
+        result = orch.recover_step(step.id)
+        assert result["outcome"] == "deferred_evidence_binding_review_required"
+        assert result["resolved"] is False
+        assert planner.get_step(step.id).status == "running"
+        assert len(planner.ledger.event_history(f"goal:{goal.id}")) == before
+
+    def test_foreign_goal_task_cannot_complete_local_step(self, db_session, runner):
+        goal, planner, orch = _goal_with_steps(db_session, runner, ("a", ""))
+        started = asyncio.run(orch.start_next_step(goal.id))
+        task = db_session.query(Task).filter_by(id=started["task"].id).one()
+        task.objective_id = "different-objective"
+        db_session.commit()
+        result = orch.recover_step(started["step"].id)
+        assert result["outcome"] == "deferred_evidence_binding_review_required"
+        assert result["resolved"] is False
+        assert planner.get_step(started["step"].id).status == "running"
+
 
 
 # ===========================================================================

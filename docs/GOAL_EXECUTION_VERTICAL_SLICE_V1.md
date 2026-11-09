@@ -225,3 +225,25 @@ awaiting execution in the full private Sythion checkout. The above five
 direct tool-adapter tests are additional. The Windows app, provider calls,
 permission-approval system, crash/restart, and real mutating tool receipts
 remain separate acceptance work.
+
+## Goal restart and no-replay safety (2026-11-09)
+
+The V1 implementation now covers **both** halves of durable progress:
+a verified first step can remain completed when a later database session
+continues with steps two and three, while an INTERRUPTED, CANCELLED,
+missing or otherwise unresolved task remains bound to its RUNNING plan
+step and cannot be requeued by startup recovery.
+
+`backend/services/goal_restart_policy.py` supplies a fail-closed
+classification for `TaskOrchestrator.recover_step`; the goal readiness
+projection now suppresses independent READY steps while one step is
+unresolved. `execute_session` refuses to retry an unrelated failed step
+until the running work is reviewed. The goal next-work read-only preview
+reports `recovery_review_required` in task-linked review cases.
+
+The V1 suite now has **25 parameter-expanded real-ORM scenarios** after
+adding two blocked-work cases and a three-step verified continuation
+across independent SQLite connections. Those integration cases and
+updated process-kill assertions have **not run here**. The new classifier
+has 13 passing pure Python cases; the isolated combined suite has
+42 passing tests. See `docs/GOAL_RESTART_NO_REPLAY_V1.md`.

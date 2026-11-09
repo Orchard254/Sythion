@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.models.database import Base, Objective, GoalPlan, PlanStep, TaskEvent
+from backend.models.database import Base, Objective, GoalPlan, PlanStep, Task, TaskEvent
 from backend.services.goal_selector import RunnableGoalSelector
 from backend.services.planner import Planner, CandidateStepModel
 from backend.services.goal_manager import GoalManager
@@ -122,3 +122,67 @@ def test_preview_refuses_pending_uncommitted_orm_mutations(db):
     with pytest.raises(RuntimeError, match="clean ORM"):
         read_goal_work_preview(db, goal.id)
     db.rollback()
+
+
+@pytest.mark.parametrize("state", ["interrupted", "cancelled"])
+def test_interrupted_task_preview_requires_review_without_exposing_task_data(db, state):
+    goal, plan = goal_and_plan(db)
+    first, second = Planner(db).plan_steps(plan.id)
+    task = Task(
+        id="task-private", original_request="SECRET sensitive action details",
+        state=state, version=1, objective_id=goal.id,
+    )
+    db.add(task)
+    first.status = "running"
+    first.linked_task_id = task.id
+    first.evidence_task_id = task.id
+    db.commit()
+
+    preview = read_goal_work_preview(db, goal.id)
+    assert preview["state"] == "recovery_review_required"
+    assert not preview["runnable"]
+    assert preview["next_step"] is None
+    assert "Review" in preview["explanation"]
+    assert "SECRET" not in repr(preview)
+    assert "task-private" not in repr(preview)
+    assert RunnableGoalSelector(db).list_runnable_goals() == []
+    assert first.status == "running"
+    assert second.status == "blocked"
+
+
+def test_missing_task_preview_requires_review_without_autorequeue(db):
+    goal, plan = goal_and_plan(db)
+    first, _ = Planner(db).plan_steps(plan.id)
+    first.status = "running"
+    first.linked_task_id = "lost-task"
+    first.evidence_task_id = "lost-task"
+    db.commit()
+    preview = read_goal_work_preview(db, goal.id)
+    assert preview["state"] == "recovery_review_required"
+    assert preview["runnable"] is False
+    assert "lost-task" not in repr(preview)
+    assert Planner(db).select_next_step(goal.id) is None
+
+
+def test_running_task_preview_blocks_independent_ready_step(db):
+    goal = GoalManager(db).create_goal("Independent work")
+    plan = Planner(db).create_plan(goal.id, [
+        CandidateStepModel(key="running", description="In-flight work"),
+        CandidateStepModel(key="independent", description="Other ready work"),
+    ])
+    first, second = Planner(db).plan_steps(plan.id)
+    task = Task(
+        id="active-task", original_request="active work",
+        state="running", version=1, objective_id=goal.id,
+    )
+    db.add(task)
+    first.status = "running"
+    first.linked_task_id = task.id
+    first.evidence_task_id = task.id
+    db.commit()
+    preview = read_goal_work_preview(db, goal.id)
+    assert preview["state"] == "step_in_progress"
+    assert preview["runnable"] is False
+    assert preview["next_step"] is None
+    assert second.status == "ready"
+    assert RunnableGoalSelector(db).list_runnable_goals() == []
