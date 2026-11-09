@@ -247,3 +247,21 @@ across independent SQLite connections. Those integration cases and
 updated process-kill assertions have **not run here**. The new classifier
 has 13 passing pure Python cases; the isolated combined suite has
 42 passing tests. See `docs/GOAL_RESTART_NO_REPLAY_V1.md`.
+
+
+## Unique active-plan task binding (2026-11-09, S202 partial)
+
+A terminal Task row and an evidence_task_id match alone are insufficient for
+goal progress. The direct Planner completion gate, the TaskOrchestrator outcome
+writer and the post-worker observation now require exact evidence and linked
+task IDs, one and only one matching plan step, a matching task/plan goal scope,
+and an active plan version. Legacy Task rows without an objective_id retain the
+existing exact-link compatibility rule. A foreign-goal task, stale superseded
+plan, changed display link or duplicate evidence binding stays unverified;
+no completion event, false goal progress or next-step advance is authorized.
+
+**Executed locally:** 19 pure binding policy tests passed (43 alongside the
+previous 24 retry-policy tests); source compiled. **Added but NOT executed in
+this partial runtime:** 4 full-ORM terminal outcome regressions exercising
+Planner, TaskRunner, Orchestrator and the goal event ledger. Full installed
+Windows/SQLite process-kill and end-to-end suites are still required.

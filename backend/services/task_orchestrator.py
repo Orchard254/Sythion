@@ -169,18 +169,20 @@ class TaskOrchestrator:
         to :meth:`_capture_retry_outcome` and
         :meth:`_capture_planning_real_outcome`.
         """
-        from backend.models.database import PlanStep
+        from backend.models.database import GoalPlan, PlanStep
+        from backend.services.goal_execution_binding import goal_step_task_binding_is_valid
 
         planner = self.planner
-        # Evidence binding is exact: only evidence_task_id establishes plan-step
-        # binding. linked_task_id is display/projection only and must not be
-        # treated as task outcome evidence.
-        step = (
+        # The evidence task must point to exactly one plan step. A corrupted
+        # duplicate association is uncertain, never a terminal outcome.
+        bindings = (
             planner.db.query(PlanStep)
             .filter(PlanStep.evidence_task_id == task_id)
-            .populate_existing()
-            .first()
+            .limit(2).populate_existing().all()
         )
+        if len(bindings) > 1:
+            return {"step": None, "outcome": "unverified", "updated": False}
+        step = bindings[0] if bindings else None
         if step is None or step.plan_id is None:
             return None  # not a plan-backed execution; nothing to do
 
@@ -201,7 +203,19 @@ class TaskOrchestrator:
         from backend.models.database import Task
 
         evidence_task = planner.db.query(Task).filter_by(id=task_id).populate_existing().first()
-        if evidence_task is None or evidence_task.state not in ("completed", "failed"):
+        plan = planner.db.query(GoalPlan).filter_by(id=step.plan_id).populate_existing().first()
+        if not goal_step_task_binding_is_valid(
+            requested_task_id=task_id,
+            evidence_task_id=step.evidence_task_id,
+            linked_task_id=step.linked_task_id,
+            step_goal_id=step.objective_id,
+            task_goal_id=evidence_task.objective_id if evidence_task is not None else None,
+            plan_goal_id=plan.goal_id if plan is not None else None,
+            plan_status=plan.status if plan is not None else None,
+            matching_step_count=len(bindings),
+        ) or evidence_task is None:
+            return {"step": step, "outcome": "unverified", "updated": False}
+        if evidence_task.state not in ("completed", "failed"):
             # A worker may return while its task is still waiting, running or
             # interrupted. That is NOT proof of a failed execution. Preserve
             # the RUNNING plan step for the normal owner/recovery path rather
@@ -939,8 +953,9 @@ class TaskOrchestrator:
         failure or an unresolved execution. Return only completed/failed when
         the persisted evidence supports it; anything else is unverified.
         """
-        from backend.models.database import Objective, PlanStep, Task
+        from backend.models.database import GoalPlan, Objective, PlanStep, Task
         from backend.services.goal_execution_outcome import classify_step_outcome
+        from backend.services.goal_execution_binding import goal_step_task_binding_is_valid
 
         # The worker can commit in a DIFFERENT SQLAlchemy Session. The
         # orchestrator may still hold cached RUNNING objects from admission;
@@ -960,6 +975,25 @@ class TaskOrchestrator:
         if (
             goal is None or step is None or step.plan_id is None or step.objective_id != goal_id
             or (task is not None and task.objective_id not in (None, goal_id))
+        ):
+            return "unverified"
+
+        plan = (self.planner.db.query(GoalPlan).filter_by(id=step.plan_id)
+                .populate_existing().first())
+        matching_count = len(
+            self.planner.db.query(PlanStep)
+            .filter(PlanStep.evidence_task_id == task_id)
+            .limit(2).all()
+        )
+        if task is None or not goal_step_task_binding_is_valid(
+            requested_task_id=task_id,
+            evidence_task_id=step.evidence_task_id,
+            linked_task_id=step.linked_task_id,
+            step_goal_id=step.objective_id,
+            task_goal_id=task.objective_id,
+            plan_goal_id=plan.goal_id if plan is not None else None,
+            plan_status=plan.status if plan is not None else None,
+            matching_step_count=matching_count,
         ):
             return "unverified"
 

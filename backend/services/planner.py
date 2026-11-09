@@ -427,6 +427,24 @@ class Planner:
         task = self.db.query(Task).filter_by(id=task_id).first()
         if task is None or task.id != task_id:
             raise ValueError(f"Evidence task {task_id} not found")
+        from backend.services.goal_execution_binding import goal_step_task_binding_is_valid
+
+        plan = self.db.query(GoalPlan).filter_by(id=step.plan_id).first() if step.plan_id else None
+        matching_count = len(
+            self.db.query(PlanStep).filter(PlanStep.evidence_task_id == task_id)
+            .limit(2).all()
+        )
+        if not goal_step_task_binding_is_valid(
+            requested_task_id=task_id,
+            evidence_task_id=step.evidence_task_id,
+            linked_task_id=step.linked_task_id,
+            step_goal_id=step.objective_id,
+            task_goal_id=task.objective_id,
+            plan_goal_id=plan.goal_id if plan is not None else None,
+            plan_status=plan.status if plan is not None else None,
+            matching_step_count=matching_count,
+        ):
+            raise ValueError("Goal-step task evidence binding is not authoritative")
         if task.state != TaskState.COMPLETED.value:
             raise ValueError(
                 f"Cannot complete step {step.step_key}: evidence task is "

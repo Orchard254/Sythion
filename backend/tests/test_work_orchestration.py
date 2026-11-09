@@ -808,3 +808,58 @@ class TestSecurityBoundaries:
         assert planner.get_step(started["step"].id).status == "running"
         blocked = planner.plan_steps(planner.active_plan(goal.id).id)[1]
         assert blocked.status == "blocked"
+
+
+# ===========================================================================
+# Terminal task evidence cannot be borrowed from a foreign or old plan
+# ===========================================================================
+
+class TestGoalEvidenceBinding:
+    @pytest.mark.parametrize("corruption", [
+        "wrong_link", "foreign_goal", "superseded_plan", "duplicate_binding",
+    ])
+    def test_terminal_outcome_requires_unique_active_goal_binding(
+        self, db_session, runner, corruption,
+    ):
+        from backend.runtime.events import DbEventLedger
+
+        goal, planner, orch = _goal_with_steps(
+            db_session, runner, ("a", ""), ("b", ""),
+        )
+        started = asyncio.run(orch.start_next_step(goal.id))
+        task_id = started["task"].id
+        step_id = started["step"].id
+        _run_and_finish(
+            db_session, runner, orch, task_id,
+            TaskState.COMPLETED, final_result="worker says done",
+        )
+        step = planner.get_step(step_id)
+        if corruption == "wrong_link":
+            step.linked_task_id = "unrelated-task"
+        elif corruption == "foreign_goal":
+            foreign = GoalManager(db_session).create_goal("Foreign objective")
+            db_session.query(Task).filter_by(id=task_id).one().objective_id = foreign.id
+        elif corruption == "superseded_plan":
+            planner.create_plan(goal.id, [
+                CandidateStepModel(key="replacement", description="New work"),
+            ])
+        else:
+            sibling = next(s for s in planner.plan_steps(step.plan_id) if s.id != step_id)
+            sibling.evidence_task_id = task_id
+            sibling.linked_task_id = task_id
+        db_session.commit()
+
+        scope = f"goal:{goal.id}"
+        before = len(DbEventLedger(db_session).event_history(scope))
+        with pytest.raises(ValueError, match="binding"):
+            planner.complete_step_from_evidence(step_id, task_id)
+        outcome = asyncio.run(orch.apply_task_outcome(task_id))
+        assert outcome is not None
+        assert outcome["outcome"] == "unverified"
+        assert outcome["updated"] is False
+        assert planner.get_step(step_id).status == "running"
+        assert orch._observed_step_outcome(
+            goal_id=goal.id, step_id=step_id, task_id=task_id,
+        ) == "unverified"
+        assert len(DbEventLedger(db_session).event_history(scope)) == before
+        assert GoalManager(db_session).get_goal(goal.id).status == "active"
