@@ -287,6 +287,26 @@ trustworthy.
 - [ ] S176 — Build: Represent permission requests or urgent outcomes through the Companion while routing detailed task and evidence inspection to the Control Center.
 - [ ] S177 — Verify: Test the packaged Companion window lifetime, captions, input, speech output, drag, mic permissions and interruption in a synthetic profile.
 
+## 18. Reasoning-processor architecture (owner clarification, 2026-11-09)
+
+Reference: [SYNTH_REASONING_ARCHITECTURE.md](SYNTH_REASONING_ARCHITECTURE.md).
+The owner-set principle is that **Synth is the persistent computing system and
+the LLM is its reasoning processor (CPU analogy)**. Synth controls scheduling,
+context, memory, goals, authority, effects and evidence, independently of any
+particular model invocation. The analogy is conceptual, not a mandate to
+implement an OS kernel or to keep model inference continuously active.
+Items below remain open; writing this design does not demonstrate acceptance
+or implementation. Avoid duplicating work already covered by S051-S063
+(orchestration), S068-S075 (authority), S076-S086 (initiative), and S087-S096
+(memory).
+
+- [ ] S178 — Design: Specify a versioned, model-independent reasoning-request/result contract, explicitly distinguishing reasoning, state transitions, permission and evidence (supports S001, S002, S051).
+- [ ] S179 — Design/Build: Define the context-working-set contract for task/goal/session scope, provenance, freshness, uncertainty and cancellation; verify isolation using actual model-message construction (supports S014, S088-S095).
+- [ ] S180 — Design: Define an event-driven reasoning dispatcher that can select direct procedure, model invocation, waiting or idle without busy model calls (supports S039-S046, S076-S086).
+- [ ] S181 — Build: Make work identity and commitments survive model timeout/provider change, conversation disconnect and runtime restart without duplicate consequential effects (supports S042, S051-S063).
+- [ ] S182 — Verify: Prove Assistant/direct-task/goal entry points preserve the same trust, policy, evidence and recovery invariants when reasoning results hand off to execution (supports S018, S051-S063, S068-S075).
+- [ ] S183 — Evaluate: Measure reasoning requests, latency/cost, unnecessary idle calls, context relevance and verified useful work; reject activity-only success measures (supports S086, S095, S142, S162).
+
 ## Current status and next moves
 
 Achieved (synthetic/focused evidence unless stated otherwise):
@@ -589,3 +609,5 @@ Live profile `sythion-live-dev-restart` (backend :8000, UI :3001, provider
 - 2026-11-09: Live dev pass 3 — fixed and committed Memory screen inconsistencies found during normal-user browser testing (STORED ITEMS and CONTEXT PER RUN always rendered "-" because the screen read demo-only report fields while the live /memory/report contract is counts/relation_vocabulary/memory_context_injection{runs,totals,per_run}; now reads both shapes with fallback; Stores tab derives from counts and renders a curated injection panel, no more "[object Object]" garbage). Frontend 230/230, vite build ok, verified live (Stored 2, Context per run 2.0).
 - 2026-11-09: Wedge timeline established from the Vite dev-server proxy log: healthy until 09:23:19 local; first failure `read ECONNRESET /api/v1/agent`, then all subsequent connections refused while the process and background tasks kept running (bundle task c385db99 finished its budget-fail path at 09:24:43). The listening socket closed inside the process; nothing in the app closes it deliberately. A cheap forced-budget repro (SYTHION_MAX_CLOUD_REQUESTS_PER_TASK=2, isolated profile) did NOT wedge the listener. Cause remains unidentified; keep this as an open runtime finding.
 - 2026-11-09: Live dev pass 4 — normal-user browser sweep found and fixed five defects, all verified with evidence in the browser: (1) casual chat returned the "could not produce a properly formatted answer" dead-end for every established session (ordinary-prose fallback now allowed with context-only task descriptors; unit+integration suites green); (2) System health permanently showed DEGRADED because the deliberately-disabled provider probe counted as a failure — disabled checks are now excluded from the rollup (API: overall HEALTHY, provider still shown UNKNOWN disabled); (3) Health-checks rows dumped raw JSON to normal users — now humanized key/value summaries; (4) Life/Devices/Communications showed a LIVE sticky topbar badge while serving demonstration data — demo routes now show DEMO DATA; (5) Operations "Attention" rail filled with routine completed non-goal tasks — routine results now produce nothing, goal-linked-unverified and missing-result cases still surface (frontend 232/232).
+
+- 2026-11-09: Recorded the owner's CPU analogy as a system-level architectural principle, added the reasoning-processor design reference, and appended open architecture acceptance items S178-S183. Documentation-only; no product code or test results changed.

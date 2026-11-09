@@ -22,6 +22,25 @@ worked out.
 [![Boundary](https://img.shields.io/badge/boundary-runtime%20core-blue)]()
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F%2F11-lightgrey)]()
 
+## Architecture principle: reasoning is a system resource
+
+**Synth is the persistent system; an LLM is a replaceable reasoning processor,
+analogous to a CPU rather than the whole computer.** The runtime owns goals,
+memory, commitments, scheduling, capabilities, permissions, work state and
+evidence. It assembles relevant authorized context, invokes a model for bounded
+reasoning when useful, validates the result, and controls any subsequent action.
+An available Synth need not make continuous model calls.
+
+This is the **target architecture**, not a claim that the existing Assistant,
+task and goal flows already share one scheduler or that all autonomous
+capabilities are implemented. A model's response is not execution evidence or
+authenticated user consent.
+
+See [reasoning architecture](SYNTH_REASONING_ARCHITECTURE.md) for the detailed
+processor boundary and incremental acceptance plan, and
+[project understanding](SYNTH_PROJECT_UNDERSTANDING.md) for product intent versus
+observed implementation.
+
 ## What this repo is
 
 Sythion provides the execution-facing local runtime on Windows 10/11:
@@ -65,8 +84,10 @@ agency, but those layers must sit above this runtime rather than bypassing it.
 
 ## Source of truth
 
-Source code, tests, scripts, and configuration in this repository are the
-authority; no Markdown documentation files remain alongside this README.
+Source code, tests, scripts, configuration and verified runtime behavior are
+authoritative for implemented behavior. The README and linked design documents
+record intent and evidence with explicit limitations; documentation alone is
+not proof that a capability is shipped.
 
 ## Development
 
@@ -105,7 +126,9 @@ npx --prefix frontend tauri build --no-bundle
 
 ## Configuration
 
-See [`CONFIGURATION.md`](CONFIGURATION.md).
+See the authoritative configuration definitions in
+[`backend/core/config.py`](backend/core/config.py) and the active runtime
+settings paths; configuration must be verified against current source.
 
 Important current rules:
 

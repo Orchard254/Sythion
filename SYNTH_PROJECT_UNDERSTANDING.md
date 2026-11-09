@@ -30,6 +30,29 @@ the runtime owns execution and persistence; evidence determines what the system
 can truthfully say happened. Adding more tools or a better model alone does not
 solve missing connections between these responsibilities.
 
+### Core architectural principle: the LLM is a reasoning unit
+
+The owner clarified the computing model on 2026-11-09: **the LLM is a reasoning
+unit, analogous to a CPU, not Synth itself.** Synth is the persistent system
+that provides memory, goals, active context, scheduling, I/O, permissions,
+execution, evidence and continuity. It supplies a bounded reasoning problem
+and relevant authorized context to a model, receives a proposed answer/plan/
+decision, and retains control of validation and any effects. Synth can
+continue tracking work while no model call is running.
+
+The analogy directs responsibility boundaries; it does not claim deterministic
+model execution, literal CPU instruction semantics, or an already-built
+operating system. The runtime must be able to replace or interrupt a provider
+without losing Synth's commitments or identity. Model-generated approvals
+are never authenticated consent. A model's assertions of progress are not
+evidence that tools ran or outcomes were verified.
+
+The intended control architecture and proposed reasoning-job interface are
+documented in [SYNTH_REASONING_ARCHITECTURE.md](SYNTH_REASONING_ARCHITECTURE.md).
+That document separates existing implementation primitives from integration
+work. It is an architectural direction, not blanket authorization to build
+everything it proposes or to enable background autonomy.
+
 Think of Synth as having two coupled loops:
 
 1. **Interaction loop:** perceive a request or event, understand its context,
@@ -96,7 +119,7 @@ It defines responsibilities, not approved new services or a fixed class diagram.
 | Responsibility | Owns | Must not be confused with |
 | --- | --- | --- |
 | Interaction | Voice/text input, conversational context, feedback | Lifetime or authority of ongoing work |
-| Reasoning | Interpretation, proposals, uncertainty, choice of approach | Permission or proof of execution |
+| Reasoning processor (LLM) | Bounded interpretation, proposals, uncertainty, candidate approach | System identity, scheduling, permission, persistent state or proof of execution |
 | Memory | Durable knowledge, provenance, retrieval scope, correction | Merely saving every transcript |
 | Goal management | Desired outcomes, priorities and completion criteria | A single task's status |
 | Planning | Dependencies and candidate steps toward outcomes | Evidence that steps happened |
