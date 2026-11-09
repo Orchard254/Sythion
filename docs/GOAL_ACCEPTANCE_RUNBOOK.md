@@ -151,3 +151,8 @@ The default `--check` does not modify anything. `--apply` intentionally stages a
 The goal acceptance runner now performs **read-only mirror preflight** before invoking the expensive full backend suite. Stale/missing/unsafe mirror -> `not_verified`, an explicit refresh instruction and no 19-minute full-backend run. It NEVER silently restages or weakens `test_release_payload`.
 
 Five isolated synthetic checks of promotion/rollback passed in the assistant's Linux environment using staging adapters; actual Windows promotion, full packaging verification and installed app acceptance are still pending. Once mirror and release tests pass, repeat the full goal acceptance matrix, and separately verify the installed Tauri app.
+
+
+## Full automated Windows matrix passed — installed app still required
+
+Owner-supplied results for clean commit `09cc363` confirm 225 focused goal tests, 3 real process-kill cases, 4,392 backend passes (60 skipped/10 xfailed), green frontend build and 257 Vitest passes. Refresh/packaging parity also passed. The runner explicitly records `installed_windows_acceptance_performed: false`; the next gate is packaged installed-app UI and runtime recovery. The exact hashes, provenance, pass/skip counts and safe manual checklist are in `docs/evidence/GOAL_WINDOWS_TEST_MATRIX_2026-11-10.md`. Earlier sections above are chronological diagnoses and not the current automated matrix verdict.
