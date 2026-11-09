@@ -16,6 +16,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from backend.models.database import Objective
+from backend.services.work_attention import AttentionAction, decide_background_attention
 
 logger = logging.getLogger(__name__)
 
@@ -878,20 +879,21 @@ class TaskOrchestrator:
             try:
                 # Background selection respects persisted failure backoff;
                 # explicit owner paths call with respect_backoff=False.
-                chosen = selector.pick_goal(respect_backoff=True)
-                if chosen is None:
-                    stop_reason = "no_runnable_goal"
-                    await self.state_store.release_lease()
+                # Deterministic attention: deciding to remain idle does not
+                # need an LLM. The existing selector still owns fairness and
+                # persisted backoff; the lease still protects step admission.
+                attention = decide_background_attention(selector)
+                if attention.action is AttentionAction.IDLE:
+                    stop_reason = attention.reason
                     break
-                started = await self.start_next_step(chosen["goal_id"])
+                goal_id = attention.goal_id
+                started = await self.start_next_step(goal_id)
                 if started is None:
                     # Became ineligible between pick and start (race with
                     # pause/cancel). Skip this slot rather than spin.
                     stop_reason = "goal_became_ineligible"
-                    await self.state_store.release_lease()
                     break
                 task = started["task"]
-                goal_id = chosen["goal_id"]
                 await self.state_store.transition_state(
                     task_id=task.id,
                     new_state=TaskState.RUNNING,
