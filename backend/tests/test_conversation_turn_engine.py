@@ -42,6 +42,16 @@ def descriptor(task_id="c1", version=4):
     }
 
 
+def context_descriptor(task_id="c9", version=7):
+    return {
+        "task_id": task_id,
+        "kind": "task_context",
+        "expected_version": version,
+        "question": "Current state: completed; result: Battery is at 90 percent",
+        "request": "Check battery level\nCurrent instructions:\n",
+    }
+
+
 @pytest.mark.asyncio
 async def test_basic_run_and_one_model_call():
     fake = FakeModel(json.dumps({"assistant_text": "hello", "commands": []}))
@@ -497,6 +507,29 @@ async def test_plain_prose_without_descriptors_returns_informative_fallback():
     assert PLAIN_PROSE_NO_ACTION_DISCLOSURE.strip() in result["assistant_text"]
     assert len(fake.calls) == 2
     assert engine.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_plain_prose_with_context_only_descriptors_returns_informative_fallback():
+    prose = "I can help with that in ordinary language."
+    fake = FakeModel(prose)
+    engine = ConversationTurnEngine(fake)
+    result = await engine.run("hi", [], [context_descriptor()])
+    assert result.commands == []
+    assert prose in result["assistant_text"]
+    assert PLAIN_PROSE_NO_ACTION_DISCLOSURE.strip() in result["assistant_text"]
+    assert len(fake.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_plain_prose_with_mixed_descriptors_stays_strict():
+    prose = "I can help with that in ordinary language."
+    fake = FakeModel(prose)
+    engine = ConversationTurnEngine(fake)
+    with pytest.raises(ConversationTurnValidationError) as exc:
+        await engine.run("hi", [], [context_descriptor(), descriptor()])
+    assert exc.value.reason_code == "json_malformed"
+    assert len(fake.calls) == 2
 
 
 @pytest.mark.asyncio

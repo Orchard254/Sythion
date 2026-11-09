@@ -331,12 +331,15 @@ class ConversationTurnEngine:
                 return self._validate_output(raw, descriptors)
             except ConversationTurnValidationError as exc:
                 # Preserve the existing strict JSON correction retry first.  Only
-                # after that bounded retry is exhausted may a descriptor-free,
-                # genuinely prose-shaped response become an answer-only result.
-                # JSON-shaped text remains unusable in that final position too.
+                # after that bounded retry is exhausted may a prose-shaped
+                # response become an answer-only result — and only when no
+                # descriptor carries routing semantics. Task-context
+                # descriptors are inert semantic-reference data, so a session
+                # that once ran a background task still answers plainly instead
+                # of dropping a perfectly good prose reply on the floor.
                 if (
                     exc.reason_code == "json_malformed"
-                    and not descriptors
+                    and self._descriptors_are_context_only(descriptors)
                     and self._is_ordinary_prose(raw)
                     and attempt + 1 >= self.MAX_TOTAL_MODEL_CALLS
                 ):
@@ -692,6 +695,33 @@ class ConversationTurnEngine:
     @staticmethod
     def _strip_legacy_no_action_disclosure(text: Any) -> Any:
         return _strip_legacy_no_action_disclosure(text)
+
+    @staticmethod
+    def _descriptors_are_context_only(descriptors: Any) -> bool:
+        """True when no descriptor carries routing semantics.
+
+        Clarification and permission descriptors require the exact typed
+        protocols (clarification resume / trusted consent); prose can never
+        satisfy or bypass them. A *task_context* descriptor is inert
+        reference data for semantic disambiguation only — it can dispatch
+        nothing and answer nothing — so it is treated like the descriptor-free
+        case for the answer-only prose fallback. An empty descriptor list is
+        context-only.
+        """
+        if descriptors is None:
+            return True
+        try:
+            items = list(descriptors)
+        except TypeError:
+            return False
+        for item in items:
+            if isinstance(item, Mapping):
+                kind = item.get("kind")
+            else:
+                kind = getattr(item, "kind", None)
+            if kind != "task_context":
+                return False
+        return True
 
     @staticmethod
     def _is_ordinary_prose(raw: Any) -> bool:
