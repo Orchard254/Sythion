@@ -2816,6 +2816,27 @@ async def get_goal(goal_id: str, db: Session = Depends(get_db)):
     return _goal_detail(db, goal_id)
 
 
+@router.get("/goals/{goal_id}/continuity")
+def get_goal_continuity(
+    goal_id: str,
+    limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Read-only task/reasoning continuity from the committed event ledger.
+
+    Reports an explicitly bounded task window, including unresolved inference
+    receipts. It does not inspect provider prompts, invoke a model, mutate
+    goal state, or authorize/replay actions. Unresolved means *unknown*, not
+    safe to retry. Goal/task links are scoped to the requested goal.
+    """
+    from backend.services.goal_reasoning_continuity import read_goal_reasoning_continuity
+
+    try:
+        return read_goal_reasoning_continuity(db, goal_id, limit=limit)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Goal not found") from exc
+
+
 @router.get("/goals/{goal_id}/plans")
 async def list_goal_plans(goal_id: str, db: Session = Depends(get_db)):
     """Plan version history (replanning audit trail; nothing is erased)."""
