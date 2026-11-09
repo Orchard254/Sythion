@@ -41,61 +41,86 @@ def _req(main_id, role="ANALYSIS", objective="Analyze X", **kw):
 # ------------------------------------------------------------------- #
 
 class TestAdmissionAtomicity:
-    """In-memory (StaticPool) case: exercises the shared-connection harness
-    contract, not the cross-process writer guarantee. Production-parity
-    evidence lives in
-    backend/tests/test_admission_concurrency_filebacked.py. Not skipped or
-    xfail'd; intermittent flakiness is a documented diagnostic signal."""
+    """Admission validation tests. Concurrent callers use independent
+    file-backed SQLite connections; dedicated tests also cover cross-process
+    production admission behavior."""
 
-    def test_two_callers_at_boundary_only_one_admits(self, env, monkeypatch):
-        db, svc, main = env
-        monkeypatch.setattr("backend.core.config.settings.max_specialists_per_task", 2)
-        # One existing active delegation
-        ds = DelegationService(db)
-        first = ds.propose(_req(main.id, task_id="t-boundary", objective="first job"))
-        assert first["error"] is None
-        assert ds.validate(first["delegation"].id)["ok"]
+    def test_two_callers_at_boundary_only_one_admits(self, tmp_path, monkeypatch):
+        """Concurrent callers must have independent SQLite connections.
 
-        # Two concurrent validations for two new proposals on same task
-        second = ds.propose(_req(main.id, task_id="t-boundary", objective="second job"))
-        third = ds.propose(_req(main.id, task_id="t-boundary", objective="third job"))
-        assert second["delegation"] is not None
-        assert third["delegation"] is not None
-
-        results = []
-        # Use threads sharing the same engine via new sessions (StaticPool)
+        The global test_db fixture uses one StaticPool connection, which
+        cannot safely service simultaneous SQLite queries from two threads
+        even when the SQLAlchemy Session objects are different. Test the
+        real SQLite writer-admission boundary with a disposable file DB.
+        """
+        from sqlalchemy import create_engine, text
         from sqlalchemy.orm import sessionmaker
-        Session = sessionmaker(bind=db.get_bind() if hasattr(db, "get_bind") else db.bind)
-
-        def validate_in_thread(deleg_id, out_list, idx):
-            sess = Session()
-            try:
-                svc2 = DelegationService(sess)
-                out_list.append((idx, svc2.validate(deleg_id)))
-                sess.commit()
-            except Exception as e:
-                out_list.append((idx, {"ok": False, "exc": str(e)}))
-            finally:
-                sess.close()
-
-        threads = [
-            threading.Thread(target=validate_in_thread, args=(second["delegation"].id, results, 0)),
-            threading.Thread(target=validate_in_thread, args=(third["delegation"].id, results, 1)),
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5)
-
-        oks = [r for _, r in results if r.get("ok")]
-        # With 1 existing + limit 2, only one of the two should succeed
-        assert len(oks) <= 1, f"fan-out exceeded: {results}"
-        # Overall active count never exceeds limit
-        active = [d for d in ds.db.query(ds.db.query(DelegationService).first().__class__).all()] if False else None
-        # Count via helper
+        from backend.models.database import Base
         from backend.agents.delegation import active_delegations_for_task
-        total = active_delegations_for_task(ds.db, "t-boundary", None)
-        assert total <= 2
+
+        monkeypatch.setattr("backend.core.config.settings.max_specialists_per_task", 2)
+        engine = create_engine(
+            f"sqlite:///{tmp_path / 'phase95-boundary.sqlite3'}",
+            connect_args={"check_same_thread": False, "timeout": 30.0},
+        )
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("PRAGMA journal_mode=WAL"))
+                connection.execute(text("PRAGMA busy_timeout=5000"))
+                connection.commit()
+            Base.metadata.create_all(engine)
+            Session = sessionmaker(bind=engine)
+            with Session() as seed:
+                svc = AgentService(seed)
+                svc.ensure_definitions()
+                main = svc.get_or_create_main()
+                ds = DelegationService(seed)
+                first = ds.propose(_req(main.id, task_id="t-boundary", objective="first job"))
+                assert first["error"] is None
+                assert ds.validate(first["delegation"].id)["ok"]
+                second = ds.propose(_req(main.id, task_id="t-boundary", objective="second job"))
+                third = ds.propose(_req(main.id, task_id="t-boundary", objective="third job"))
+                assert second["delegation"] is not None
+                assert third["delegation"] is not None
+                targets = (second["delegation"].id, third["delegation"].id)
+
+            barrier = threading.Barrier(2)
+            results = [None, None]
+            connections = [None, None]
+
+            def validate_in_thread(deleg_id, idx):
+                with Session() as session:
+                    try:
+                        # Hold distinct DBAPI connections on both threads
+                        # before racing admission, never one StaticPool handle.
+                        connections[idx] = id(session.connection().connection.dbapi_connection)
+                        barrier.wait(timeout=10)
+                        results[idx] = DelegationService(session).validate(deleg_id)
+                        session.commit()
+                    except Exception as exc:
+                        session.rollback()
+                        results[idx] = {"ok": False, "error_type": type(exc).__name__}
+
+            threads = [
+                threading.Thread(target=validate_in_thread, args=(targets[0], 0)),
+                threading.Thread(target=validate_in_thread, args=(targets[1], 1)),
+            ]
+            for worker in threads:
+                worker.start()
+            for worker in threads:
+                worker.join(timeout=30)
+
+            assert all(not worker.is_alive() for worker in threads), "admission worker hung"
+            assert all(isinstance(item, dict) for item in results), results
+            assert all(value is not None for value in connections), connections
+            assert connections[0] != connections[1], "threads reused one DBAPI connection"
+            admitted = [item for item in results if item.get("ok")]
+            assert len(admitted) <= 1, f"fan-out exceeded: {results}"
+
+            with Session() as review:
+                assert active_delegations_for_task(review, "t-boundary", None) <= 2
+        finally:
+            engine.dispose()
 
     def test_more_callers_than_limit(self, env, monkeypatch):
         db, svc, main = env

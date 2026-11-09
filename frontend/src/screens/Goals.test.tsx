@@ -12,6 +12,9 @@ vi.mock('../hooks/useBackend', () => ({
   useTasks: () => ({ data: mock.tasks, origin: 'live', refetch: vi.fn() }),
   useGoalDetail: () => ({ data: { goal, active_plan: { version: 1, status: 'active', steps: [step] } } }),
   useGoalPlans: () => ({ data: [] }),
+  // The drawer always requests next-work; these linked-task tests have no
+  // preview result. Never manufacture a runnable goal in the mock.
+  useGoalNextWork: () => ({ data: null, isLoading: false, isError: false }),
   useTaskEvents: () => ({ data: [] }),
   useActions: () => ({}),
 }));

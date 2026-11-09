@@ -63,3 +63,31 @@ python scripts/run_goal_acceptance.py --process-kill --full-backend --frontend -
 
 A green focused suite does not prove the process-kill/full-backend/frontend
 suite or manually tested installed Windows/Tauri behavior.
+
+
+## Windows full-run diagnosis and targeted regression fixes (2026-11-10)
+
+On clean commit e590bf8 / Windows 11 / Python 3.14.7, user-provided test evidence reports:
+
+- Focused goal ORM/policy **225 passed**; real Windows process-kill **3 passed**; frontend build passed.
+- Full backend **NOT VERIFIED**: native access violation (exit 3221225477) while two concurrent Phase 9.5 test threads queried the same SQLite StaticPool connection from independent Sessions. There was also an earlier unreported test F before the crash; its cause is **unknown**.
+- Frontend Vitest **255 passed, 2 failed**: Goals.test.tsx mocked useBackend without the now-required useGoalNextWork hook.
+- Installed Windows/Tauri application acceptance has not been performed; overall matrix remains **not verified**.
+
+The Phase 9.5 test now uses disposable file-backed SQLite, two independent DBAPI connections and per-thread sessions; normal SQLite writer admission remains under test. Production agent delegation code and autonomy permissions are unchanged. The frontend test now supplies an explicitly absent next-work preview, without changing the application component.
+
+After updating the checkout, run these tests first:
+
+```powershell
+git pull --ff-only origin master
+python -m pytest -q backend/tests/test_phase95_hardening.py::TestAdmissionAtomicity::test_two_callers_at_boundary_only_one_admits --disable-warnings
+npm run test --prefix frontend -- src/screens/Goals.test.tsx
+```
+
+Next identify the **other earlier backend failure** without restarting the entire long suite:
+
+```powershell
+python -m pytest -q backend/tests --maxfail=1 --disable-warnings
+```
+
+Once resolved, run the full acceptance runner with report capture. These repairs are *not yet rerun on Windows*; do not mark the full backend or frontend suite green based solely on this commit.
