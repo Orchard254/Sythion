@@ -270,3 +270,8 @@ Windows/SQLite process-kill and end-to-end suites are still required.
 ## S203: Active plan completion and mandatory verification
 
 Goal auto/manual completion now ignores obsolete superseded plan steps and refuses missing or multiple active plans. Legacy unplanned completion remains supported. Planner completion unconditionally invokes the runtime CompletionVerifier; a caller-provided callback can only veto, never waive, kernel evidence. Locally verified 23 new pure tests (66 combined with prior focused checks) and Python compilation. Added seven full ORM regressions but they were not executed in the partial checkout. Full backend, process-kill, Windows and React acceptance remain pending.
+
+
+## S205: Reproducible goal acceptance runner
+
+A clean-local-checkout acceptance script and operator runbook now exist in `scripts/run_goal_acceptance.py` and `docs/GOAL_ACCEPTANCE_RUNBOOK.md`. On Windows it can explicitly run real process-kill recovery, the full ORM/backend suites and frontend tests without GitHub Actions. It records commit/OS/test summaries while refusing skipped-only results or dirty checkout observations. This script itself has **not** been run against a complete Windows checkout; local partial-checkout pure checks report 79 passed (69 policy plus 10 runner checks). Installed-app acceptance remains outstanding.
