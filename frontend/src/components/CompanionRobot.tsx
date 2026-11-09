@@ -85,6 +85,7 @@ export function CompanionRobot({
       </g>
       <ellipse cx="47" cy="140" rx="13" ry="4" fill="var(--companion-body-2)" />
       <ellipse cx="73" cy="140" rx="13" ry="4" fill="var(--companion-body-2)" />
+      {active && !reducedMotion && <circle className="companion-robot__halo" cx="60" cy="44" r="52" fill="none" stroke="var(--companion-halo)" strokeWidth="2" />}
     </svg>
   );
 }
