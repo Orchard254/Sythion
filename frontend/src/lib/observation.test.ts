@@ -229,6 +229,26 @@ describe('collectAttention', () => {
     expect(items.map((i) => i.kind)).toEqual(['unverified']);
   });
 
+  it('stays quiet on routine completed work that has a result but no goal', () => {
+    // Casual, completed, has a recorded result — this is the normal shape of
+    // daily assistant work and must not fill the Attention rail.
+    const items = collectAttention({
+      tasks: [task({ state: 'completed', final_result: 'the answer' })],
+      objectives: [],
+      now,
+    });
+    expect(items).toHaveLength(0);
+  });
+
+  it('still reports a completed task whose result was never recorded', () => {
+    const items = collectAttention({
+      tasks: [task({ state: 'completed', final_result: null })],
+      objectives: [],
+      now,
+    });
+    expect(items.map((i) => i.kind)).toEqual(['unverified']);
+  });
+
   it('stays quiet when a completed goal is fully verified', () => {
     const items = collectAttention({
       tasks: [task({ state: 'completed', final_result: 'ok', objective_id: 'o1' })],
@@ -272,8 +292,14 @@ describe('collectAttention', () => {
         task({ id: 'stall', state: 'running', updated_at: '2026-10-19T09:00:00' }),
         task({ id: 'fail', state: 'failed', terminal_reason: 'boom' }),
         task({ id: 'appr', state: 'waiting_for_user', pending_question: 'which one?', waiting_kind: 'permission' }),
-        task({ id: 'unver', state: 'completed', final_result: 'x' }),
+        task({
+          id: 'unver',
+          state: 'completed',
+          final_result: 'x',
+          objective_id: 'o1',
+        }),
       ],
+      objectives: [objective({ criteria_verified: false, completion_criteria: 'c' })],
       now,
     });
     expect(items.map((i) => i.kind)).toEqual([

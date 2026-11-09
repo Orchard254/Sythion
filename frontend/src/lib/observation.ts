@@ -300,11 +300,19 @@ export function collectAttention(input: {
       continue;
     }
 
-    // 3. Completed but the outcome is not verified.
+    // 3. Completed but the outcome is not verified. A routine task that left a
+    //    result and simply has no Goal to verify against produces no Attention
+    //    item — that is the expected shape of casual work, not a problem.
+    //    Missing evidence (no final result) and goal-linked-but-unverified do.
     if (task.state === 'completed') {
       const objective = task.objective_id ? objectiveById.get(task.objective_id) : null;
       const assessment = assessCompletion(task, objective ?? null);
-      if (assessment.verdict === 'completed_unverified' || assessment.verdict === 'verification_unavailable') {
+      const missingResult = !task.final_result;
+      const goalLinked = !!objective;
+      const attentionWorthy =
+        assessment.verdict === 'completed_unverified' ||
+        (assessment.verdict === 'verification_unavailable' && (missingResult || goalLinked));
+      if (attentionWorthy) {
         items.push({
           id: `unverified:${task.id}`,
           kind: 'unverified',
