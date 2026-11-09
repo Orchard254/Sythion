@@ -349,7 +349,7 @@ function AppContent() {
 
       <TopBar
         route={def}
-        origin={dataMode === 'preview' ? 'demo' : 'live'}
+        origin={dataMode === 'preview' || def.data === 'demo' ? 'demo' : 'live'}
         connected={isConnected}
         runtimeState={runtimeHealth.state}
         attentionCount={attentionCount}
