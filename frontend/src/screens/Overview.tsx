@@ -6,8 +6,6 @@ import {
   Badge,
   Bar,
   Button,
-  DataBadge,
-  DemoTag,
   EmptyState,
   KV,
   LoadingBlock,
@@ -59,7 +57,6 @@ function greeting(d = new Date()): string {
 
 export function OverviewScreen() {
   const navigate = useNavStore((s) => s.setRoute);
-  const dataMode = useAppStore((s) => s.dataMode);
 
   const health = useHealth();
   const agent = useAgent();
@@ -139,22 +136,18 @@ export function OverviewScreen() {
     .slice(0, 6);
 
   const runtimeTone =
-    dataMode === 'preview'
-      ? 'warn'
-      : !health.isLoading && !health.data
-        ? 'danger'
-        : HEALTH_TONE[agentHealth.data?.overall ?? 'UNKNOWN'];
+    !health.isLoading && !health.data
+      ? 'danger'
+      : HEALTH_TONE[agentHealth.data?.overall ?? 'UNKNOWN'];
 
   const runtimeLabel =
-    dataMode === 'preview'
-      ? 'Preview — no backend'
-      : agentHealth.data?.overall === 'HEALTHY'
-        ? 'Operational'
-        : agentHealth.data?.overall === 'DEGRADED'
-          ? 'Degraded'
-          : agentHealth.data
-            ? 'Checking'
-            : 'Unavailable';
+    agentHealth.data?.overall === 'HEALTHY'
+      ? 'Operational'
+      : agentHealth.data?.overall === 'DEGRADED'
+        ? 'Degraded'
+        : agentHealth.data
+          ? 'Checking'
+          : 'Unavailable';
 
   const refreshAll = () => {
     health.refetch();
@@ -177,7 +170,7 @@ export function OverviewScreen() {
           description="Live state of the runtime, what it is working on, and anything waiting on your decision."
           actions={
             <>
-              {dataMode === 'preview' && <DemoTag />}
+              
               <Badge tone={runtimeTone === 'warn' ? 'warn' : runtimeTone}>
                 <span className="dot" style={{ background: 'currentColor' }} />
                 {runtimeLabel}
@@ -254,7 +247,7 @@ export function OverviewScreen() {
               title="Delegate work to Sythion"
               icon="assistant"
               hint="Describe an outcome. Sythion plans, asks for authorization where required, and reports what it did."
-              actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+             
             >
               <CommandComposer onStarted={(id) => setPendingOpenId(id)} />
             </Panel>
@@ -323,7 +316,7 @@ export function OverviewScreen() {
                           )}
                         </div>
                         <div className="list__trail">
-                          {dataMode === 'live' && (task.state === 'running' || task.state === 'waiting_for_user') ? (
+                          {(task.state === 'running' || task.state === 'waiting_for_user') ? (
                             <Button
                               size="sm"
                               variant="ghost"
@@ -349,7 +342,7 @@ export function OverviewScreen() {
             <Panel
               title="Recent activity"
               icon="clock"
-              actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+             
             >
               {activity.isLoading ? (
                 <LoadingBlock rows={3} />
@@ -448,8 +441,7 @@ export function OverviewScreen() {
               icon="activity"
               actions={
                 <>
-                  {dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
-                  <Button size="sm" variant="ghost" onClick={() => navigate('system')}>
+                      <Button size="sm" variant="ghost" onClick={() => navigate('system')}>
                     Diagnostics
                   </Button>
                 </>
@@ -577,7 +569,7 @@ export function OverviewScreen() {
               <Panel
                 title="Specialist delegations"
                 icon="layers"
-                actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+               
               >
                 <div className="stack stack--tight">
                   {(delegations.data ?? []).slice(0, 4).map((d) => (
@@ -653,7 +645,6 @@ export function OverviewScreen() {
       {selectedTask && (
         <TaskDetailDrawer
           task={selectedTask}
-          origin={tasks.origin}
           onClose={() => setSelectedTask(null)}
           onChanged={tasks.refetch}
         />

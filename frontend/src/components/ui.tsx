@@ -337,17 +337,7 @@ export function Notice({
   );
 }
 
-/** Marks a panel as demonstration data. Always rendered when data is invented. */
-export function DemoTag({ compact }: { compact?: boolean }) {
-  return (
-    <Badge tone="warn" title="Demonstration data — not read from the Sythion backend.">
-      {compact ? 'demo' : 'Demo data'}
-    </Badge>
-  );
-}
-
-export function DataBadge({ origin, label }: { origin: 'live' | 'demo'; label?: string }) {
-  if (origin === 'demo') return <DemoTag compact />;
+export function DataBadge({ label }: { label?: string }) {
   return <Badge tone="ok" title="Read live from the Sythion backend.">{label ?? 'Live'}</Badge>;
 }
 

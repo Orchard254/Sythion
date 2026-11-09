@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { conversationService, taskService, voiceService } from '../services/api';
 import { conversationTasks, nextSpokenReply } from '../lib/firstConversation';
@@ -9,7 +9,6 @@ import { useVoiceCapture } from '../hooks/useVoiceCapture';
 import {
   Badge,
   Button,
-  DemoTag,
   EmptyState,
 } from '../components/ui';
 import { useActions, useAgent, useTasks, useVoiceAssets } from '../hooks/useBackend';
@@ -26,9 +25,9 @@ import type { Task } from '../types';
  *
  * Two rules govern what this screen is allowed to claim:
  *
- *  1. In preview mode nothing runs. There is no state in which demo data is
- *     described as executing, and the composer says so plainly rather than
- *     implying that enabling it would start real work.
+ *  1. Every status is justified by a value that arrived from the backend, the
+ *     voice service or the local transport. Nothing here describes demo task
+ *     state as real activity.
  *  2. An approval request is never behind a tab or below the fold. Tasks
  *     waiting on the owner are pinned above the thread with a reply control.
  */
@@ -101,7 +100,6 @@ useLayoutEffect(() => {
   const voiceSttAvailable = useAppStore((s) => s.voiceSttAvailable);
   const isConnected = useAppStore((s) => s.isConnected);
   const notify = useAppStore((s) => s.notify);
-  const dataMode = useAppStore((s) => s.dataMode);
   const setRoute = useNavStore((s) => s.setRoute);
 
   // Pure conversations are persisted separately from executable tasks.
@@ -110,7 +108,7 @@ useLayoutEffect(() => {
     queryFn: ({ pageParam }) => conversationService.list(pageParam),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.next_cursor ?? undefined,
-    enabled: dataMode === 'live' && isConnected,
+    enabled: isConnected,
     staleTime: 10_000,
     retry: 1,
   });
@@ -159,10 +157,9 @@ useLayoutEffect(() => {
   }, []);
 
   useEffect(() => {
-    if (dataMode !== 'live') return;
     if (!conversationAssociatedTaskIds.length) return;
     void recoverTasksById(conversationAssociatedTaskIds);
-  }, [conversationAssociatedTaskIds, dataMode, recoverTasksById]);
+  }, [conversationAssociatedTaskIds, recoverTasksById]);
 
   // Poll only recovered terminal tasks whose diagnostic repair is still pending.
   // Terminal completed/cancelled tasks and repaired failures do not need refresh.
@@ -186,13 +183,13 @@ useLayoutEffect(() => {
     [pendingDiagnosticTaskIds]
   );
   useEffect(() => {
-    if (dataMode !== 'live' || pendingDiagnosticTaskIdsKey === '[]') return;
+    if (pendingDiagnosticTaskIdsKey === '[]') return;
     const timer = setInterval(() => {
       const ids = pendingDiagnosticTaskIdsRef.current;
       if (ids.length) void recoverTasksById(ids);
     }, 5000);
     return () => clearInterval(timer);
-  }, [dataMode, pendingDiagnosticTaskIdsKey, recoverTasksById]);
+  }, [pendingDiagnosticTaskIdsKey, recoverTasksById]);
   useEffect(() => {
     if (!storedConversations.length || !recentResponses.length) return;
     const persisted = new Set(storedConversations.map((item) => item.id));
@@ -211,16 +208,15 @@ useLayoutEffect(() => {
     return [...allTasks, ...recoveredTasks.filter((task) => !seen.has(task.id))];
   }, [allTasks, recoveredTasks]);
   const threadItems = useMemo(
-    () => dataMode === 'preview' ? allTasksWithRecovered : [...allTasksWithRecovered, ...Array.from(
+    () => [...allTasksWithRecovered, ...Array.from(
       new Map([...storedConversations, ...recentResponses].map((item) => [item.id, item])).values()
     )],
-    [allTasksWithRecovered, storedConversations, recentResponses, dataMode]
+    [allTasksWithRecovered, storedConversations, recentResponses]
   );
 
   const status = useMemo(
     () =>
       deriveAssistantStatus({
-        dataMode,
         isConnected,
         isListening,
         isSpeaking,
@@ -230,7 +226,7 @@ useLayoutEffect(() => {
         // No analyser is attached, so no level is claimed.
         audioLevel: null,
       }),
-    [dataMode, isConnected, isListening, isSpeaking, submitting, allTasksWithRecovered, voiceError, tasks.error]
+    [isConnected, isListening, isSpeaking, submitting, allTasksWithRecovered, voiceError, tasks.error]
   );
 
   // Tasks blocked on the owner. Pinned, and excluded from the thread so they
@@ -268,7 +264,7 @@ useLayoutEffect(() => {
 
   const sttReady = voiceSttAvailable ?? assets.data?.stt_installed ?? false;
   const voiceUnavailable = !sttReady;
-  const voiceBlocked = dataMode === 'preview' || !actions.live;
+  const voiceBlocked = !actions.live;
 
   const onToggleVoice = useCallback(async () => {
     if (captureBusy) return;
@@ -362,8 +358,7 @@ useLayoutEffect(() => {
           <h1 className="sr-only">Talk to Sythion</h1>
           <AssistantStatusIndicator status={status} />
           <span className="spacer" />
-          {dataMode === 'preview' ? <DemoTag /> : null}
-        </div>
+                  </div>
 
         {/* Essential safety information, pinned and always visible. */}
         {visibleAwaiting.length > 0 && (
@@ -389,14 +384,14 @@ useLayoutEffect(() => {
 
         <div className="chat chat--assistant">
               <div className="chat__scroll" ref={scrollRef}>
-                {dataMode === 'live' && conversationQuery.isError && (
+                {conversationQuery.isError && (
                   <div role="alert">
                     <p>Conversation history could not be loaded. Check the connection and try again.</p>
                     <Button size="sm" variant="subtle" onClick={() => void conversationQuery.refetch()}>Retry history</Button>
                   </div>
                 )}
-                {dataMode === 'live' && conversationQuery.isLoading && <p role="status">Loading conversation history…</p>}
-                {dataMode === 'live' && conversationQuery.hasNextPage && (
+                {conversationQuery.isLoading && <p role="status">Loading conversation history…</p>}
+                {conversationQuery.hasNextPage && (
                   <Button size="sm" variant="subtle" disabled={conversationQuery.isFetchingNextPage} onClick={() => {
                     const el = scrollRef.current;
                     if (el) olderScroll.current = { height: el.scrollHeight, top: el.scrollTop };
@@ -414,12 +409,8 @@ useLayoutEffect(() => {
                   // reads as a broken or loading screen.
                   <EmptyState
                     icon="assistant"
-                    title={dataMode === 'preview' ? 'Nothing to show' : 'Ask Sythion something'}
-                    description={
-                      dataMode === 'preview'
-                        ? 'This is a demonstration thread. Start a backend to hold a real conversation.'
-                        : 'Hello, I’m Synth. Type a message below, or use the microphone, review your words, then send.'
-                    }
+                    title={'Ask Sythion something'}
+                    description="Type a message below, or tap the microphone."
                   />
                 ) : (
                   thread.map((t) => <Exchange key={t.id} task={t} />)
@@ -429,13 +420,13 @@ useLayoutEffect(() => {
               <div className="composer-foot composer-foot--assistant">
                 {speechHelpOpen && voiceUnavailable && (
                   <div className="ac__voice-help" role="status" aria-live="polite">
-                    <p>Speech-to-text is not installed on this machine, so voice input cannot start. You can still type your message. Install the speech model in Settings.</p>
+                    <p>Speech-to-text isn't installed. Install the speech model in Settings — or just type.</p>
                     <Button size="sm" variant="primary" aria-label="Open Settings" onClick={() => { setSpeechHelpOpen(false); setRoute('settings'); }}>Settings</Button>
                     <Button size="sm" variant="ghost" onClick={() => setSpeechHelpOpen(false)}>Dismiss</Button>
                   </div>
                 )}
-                {playbackTaskId && <p role="status">Requesting spoken playback… The full reply stays in the conversation.</p>}
-                {thread.length === 0 && dataMode === 'live' && <Button variant="subtle" disabled={submitting || captureBusy} onClick={() => setTranscriptDraft('Hello Synth, what can you help me with?')}>Try a first message</Button>}
+                {playbackTaskId && <p role="status">Requesting spoken playback…</p>}
+                {thread.length === 0 && <Button variant="subtle" disabled={submitting || captureBusy} onClick={() => setTranscriptDraft('Hello Synth, what can you help me with?')}>Try a first message</Button>}
                 <AssistantComposer
                   value={transcriptDraft}
                   onChange={setTranscriptDraft}
@@ -698,7 +689,6 @@ useLayoutEffect(() => {
       {selected && (
         <TaskDetailDrawer
           task={allTasks.find((task) => task.id === selected.id) ?? selected}
-          origin={tasks.origin}
           onClose={() => setSelected(null)}
           onChanged={tasks.refetch}
         />
@@ -789,7 +779,7 @@ function AssistantComposer({
   const canSend = value.trim().length > 0 && !blocked && !submitting && !voiceActive;
 
   const placeholder = blocked
-    ? 'Preview mode — nothing here runs'
+    ? 'Backend offline'
     : voiceActive
       ? 'Listening… stop the microphone to review and send'
       : 'Message Sythion';
@@ -843,7 +833,7 @@ function AssistantComposer({
             type="button"
             className="mic-btn mic-btn--send"
             aria-label="Send message"
-            title={blocked ? 'Preview mode — messages are not sent' : 'Send message'}
+            title={blocked ? 'Backend offline' : 'Send message'}
             ref={sendButtonRef}
             disabled={!canSend}
             onClick={() => {
@@ -868,15 +858,11 @@ function AssistantComposer({
           {authorizationLabel}
         </span>
         <span className="spacer" />
-        {blocked ? (
-          <span className="ac__preview">
-            Preview mode — messages are not sent and no task will be created.
-          </span>
-        ) : voiceNotice ? (
+        {!blocked && (voiceNotice ? (
           <span className="t-faint">{voiceNotice}</span>
         ) : (
           <span className="ac__meta">{submitting ? 'Sending…' : 'Enter to send'}</span>
-        )}
+        ))}
       </div>
 
       {/* Screen-reader confirmation of the current state. The visible indicator
@@ -897,9 +883,6 @@ function ApprovalCard({ task, onOpen }: { task: Task; onOpen: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const actions = useActions();
   const notify = useAppStore((s) => s.notify);
-  const dataMode = useAppStore((s) => s.dataMode);
-  const blocked = dataMode === 'preview';
-
   // `waiting_for_user` asks a question; `interrupted` records an
   // authorization hold. A live backend may report either with no text at all,
   // so the state alone decides what is pinned; the explanation is a fallback.
@@ -941,9 +924,7 @@ function ApprovalCard({ task, onOpen }: { task: Task; onOpen: () => void }) {
             {held ? 'This task was interrupted and will not continue until resumed.' : 'Sythion is paused on this and will not continue until you reply.'}
           </p>
         )}
-        {blocked ? (
-          <p className="t-faint attention__note">{held ? 'Demonstration record. Start a backend to resume this task.' : 'Demonstration record. Start a backend to answer this.'}</p>
-        ) : held ? (
+        {held ? (
           <div className="attention__reply">
             <Button size="sm" variant="primary" disabled={busy} onClick={() => void resume()}>
               {busy ? 'Resuming…' : 'Resume task'}
@@ -972,7 +953,6 @@ function ApprovalCard({ task, onOpen }: { task: Task; onOpen: () => void }) {
 function Exchange({ task }: { task: Task }) {
   const actions = useActions();
   const notify = useAppStore((s) => s.notify);
-  const dataMode = useAppStore((s) => s.dataMode);
   // Only a genuine failure reads as a failure. An interrupted task is held for
   // authorization and is pinned above instead of appearing here.
   const failed = task.state === 'failed';
@@ -1013,7 +993,7 @@ function Exchange({ task }: { task: Task }) {
           )}
 
           {!task.final_result && !askedQuestion && !failed && <div className="msg__bubble" role="status">{task.state === 'cancelled' ? 'This message was cancelled.' : task.state === 'created' ? 'This request is queued and has not started yet.' : 'Synth is working on your message…'}</div>}
-          {(task.state === 'running' || task.state === 'created') && dataMode === 'live' && (
+          {(task.state === 'running' || task.state === 'created') && (
             <Button
               size="sm"
               variant="ghost"

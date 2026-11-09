@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Icon } from './icons';
 import { activateCompanion } from '../services/companion';
-import { Badge, Button, IconButton, Popover, DemoTag } from './ui';
+import { Badge, Button, IconButton, Popover } from './ui';
 import { relTime } from '../lib/format';
 import { useAppStore } from '../store/appStore';
 import type { RouteDef } from '../lib/routes';
@@ -18,14 +18,12 @@ function useNow(intervalMs = 30_000) {
 
 export function TopBar({
   route,
-  origin,
   connected,
   runtimeState,
   attentionCount,
   onNavigate,
 }: {
   route: RouteDef;
-  origin: 'live' | 'demo';
   connected: boolean;
   runtimeState?: RuntimeHealthState;
   attentionCount: number;
@@ -49,19 +47,38 @@ export function TopBar({
     <header className="topbar">
       <div className="topbar__heading">
         <span className="topbar__title">{route.label}</span>
-        {route.id !== 'assistant' && <span className="topbar__subtitle">{route.blurb}</span>}
       </div>
 
       <div className="topbar__spacer" />
 
       <div className="topbar__actions">
-        {origin === 'demo' ? (
-          <DemoTag />
-        ) : (
-          <Badge tone={runtimeState === 'healthy' ? 'ok' : runtimeState === 'degraded' ? 'warn' : runtimeState === 'checking' ? 'idle' : runtimeState === 'stale' ? 'warn' : connected ? 'ok' : 'danger'}>
-            {runtimeState === 'healthy' ? 'Live' : runtimeState === 'degraded' ? 'Degraded' : runtimeState === 'checking' ? 'Checking' : runtimeState === 'stale' ? 'Stale' : connected ? 'Live' : 'Offline'}
-          </Badge>
-        )}
+        <Badge
+          tone={
+            runtimeState === 'healthy'
+              ? 'ok'
+              : runtimeState === 'degraded'
+                ? 'warn'
+                : runtimeState === 'checking'
+                  ? 'idle'
+                  : runtimeState === 'stale'
+                    ? 'warn'
+                    : connected
+                      ? 'ok'
+                      : 'danger'
+          }
+        >
+          {runtimeState === 'healthy'
+            ? 'Live'
+            : runtimeState === 'degraded'
+              ? 'Degraded'
+              : runtimeState === 'checking'
+                ? 'Checking'
+                : runtimeState === 'stale'
+                  ? 'Stale'
+                  : connected
+                    ? 'Live'
+                    : 'Offline'}
+        </Badge>
 
         <div className="clock">
           <div className="clock__time">{time}</div>
@@ -134,9 +151,6 @@ export function TopBar({
                       <Icon name="check" size={22} strokeWidth={1.4} />
                     </span>
                     <p className="empty__title">Nothing needs you</p>
-                    <p className="empty__desc">
-                      Approvals, failures and background outcomes appear here.
-                    </p>
                   </div>
                 ) : (
                   <div className="list">
@@ -150,7 +164,6 @@ export function TopBar({
                           {n.body && <span className="t-muted">{n.body}</span>}
                           <span className="list__meta">
                             <span>{relTime(new Date(n.createdAt).toISOString())}</span>
-                            {n.demo && <DemoTag compact />}
                           </span>
                         </div>
                         <div className="list__trail">

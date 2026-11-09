@@ -69,7 +69,6 @@ beforeEach(() => {
     error: null,
     healthStatus: null,
     isConnected: false,
-    dataMode: 'live',
   });
   isTauri.mockReturnValue(false);
   resolveBridgeConfig.mockResolvedValue({ baseUrl: '/api/v1', controlToken: '' });
@@ -259,22 +258,6 @@ describe('useAppInit expanded deterministic guards', () => {
     expect(tasks.some((t) => t.id === 'stale')).toBe(false);
     expect(useAppStore.getState().error).toBeNull();
     expect(useAppStore.getState().isLoading).toBe(false);
-  });
-
-  it('preview=1 preserves dataMode semantics', async () => {
-    useAppStore.setState({ dataMode: 'preview' });
-    const originalLocation = window.location;
-    // @ts-expect-error test location override
-    delete window.location;
-    // @ts-expect-error test location override
-    window.location = new URL('http://localhost/?preview=1');
-    await act(async () => {
-      view = create(<Harness />);
-    });
-    await flush(12);
-    expect(useAppStore.getState().dataMode).toBe('preview');
-    // @ts-expect-error test location restore
-    window.location = originalLocation;
   });
 
   it('abort during polling sleep does not continue after timer fires', async () => {

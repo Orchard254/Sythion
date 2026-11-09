@@ -34,7 +34,7 @@ describe('connection gating', () => {
 
   beforeEach(() => {
     healthRef.current = { isError: false, data: {}, dataUpdatedAt: Date.now(), error: null };
-    useAppStore.setState({ isConnected: true, dataMode: 'live', error: null, notifications: [], unreadNotifications: 0 });
+    useAppStore.setState({ isConnected: true, error: null, notifications: [], unreadNotifications: 0 });
     vi.stubGlobal('document', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
   });
 
@@ -77,11 +77,4 @@ describe('connection gating', () => {
     expect(JSON.stringify(view.toJSON())).not.toContain('Sythion backend unreachable');
   });
 
-  it('does not flip the gate in preview mode', async () => {
-    useAppStore.setState({ dataMode: 'preview' });
-    await act(async () => { view = create(<App />); });
-    healthRef.current = { isError: true, data: undefined, dataUpdatedAt: 0, error: new Error('backend health failed') };
-    await act(async () => { view.update(<App />); });
-    expect(useAppStore.getState().dataMode).toBe('preview');
-  });
 });

@@ -65,7 +65,6 @@ import { isTauri } from '../services/bridge';
 export function CompanionSurface() {
   const assets = useVoiceAssets();
   const actions = useActions();
-  const dataMode = useAppStore((s) => s.dataMode);
   const setTranscriptDraft = useAppStore((s) => s.setTranscriptDraft);
 
   const [submitting, setSubmitting] = useState(false);
@@ -93,15 +92,10 @@ export function CompanionSurface() {
   const onSubmit = useCallback(
     async (text: string) => {
       if (!actions.live) {
-        // `live` is false for two very different reasons and they must not be
-        // conflated: the user may have deliberately chosen preview mode, or the
-        // app may be in live mode with the backend unreachable. Telling
-        // someone in the second case that they are in "preview" invents a
-        // choice they never made.
+        // `live` is false when the backend is unreachable; the message must
+        // say exactly that, not imply some other mode the user never chose.
         setSurfaceError(
-          dataMode === 'preview'
-            ? 'Preview mode — nothing was sent and no task was created.'
-            : 'Sythion is not reachable right now, so nothing was sent. Try again when the local runtime is back.'
+          'Sythion is not reachable right now, so nothing was sent. Try again when the local runtime is back.'
         );
         return;
       }
@@ -147,7 +141,7 @@ export function CompanionSurface() {
         setSubmitting(false);
       }
     },
-    [actions, dataMode, setTranscriptDraft]
+    [actions, setTranscriptDraft]
   );
 
   /* Publish the interactive rectangles to the native hit-test poller.

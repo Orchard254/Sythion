@@ -27,7 +27,7 @@ const task: Task = { id: 'task-1', original_request: 'A task', normalized_goal: 
 describe('task notification polling', () => {
   beforeEach(() => {
     mock.tasks = [task];
-    useAppStore.setState({ isConnected: true, dataMode: 'live', notifications: [], unreadNotifications: 0 });
+    useAppStore.setState({ isConnected: true, notifications: [], unreadNotifications: 0 });
     vi.stubGlobal('document', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
   });
   afterEach(() => { vi.unstubAllGlobals(); });

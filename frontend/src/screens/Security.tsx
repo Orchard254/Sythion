@@ -4,8 +4,6 @@ import {
   Badge,
   Button,
   ConfirmDialog,
-  DataBadge,
-  DemoTag,
   EmptyState,
   KV,
   LoadingBlock,
@@ -60,7 +58,6 @@ export function SecurityScreen() {
   const skillProposals = useSkillProposals();
   const toolProposals = useToolProposals();
   const actions = useActions();
-  const dataMode = useAppStore((s) => s.dataMode);
   const notify = useAppStore((s) => s.notify);
   const navigate = useNavStore((s) => s.setRoute);
 
@@ -116,14 +113,6 @@ export function SecurityScreen() {
   }, [background.data?.enabled, bgOptimistic]);
 
   const setMode = (mode: AutonomyModeId) => {
-    if (dataMode === 'preview') {
-      notify({
-        tone: 'warn',
-        title: 'Preview mode',
-        body: 'Autonomy switches are real backend state. Start Sythion to change them.',
-      });
-      return;
-    }
     // Advisory/Proactive map onto the two real switches. Bounded has no
     // backend representation, so it is never offered as a target here.
     if (mode === 'advisory') {
@@ -194,14 +183,8 @@ export function SecurityScreen() {
         <ScreenHead
           eyebrow="Control"
           title="Security & Control"
-          description="Exactly what Sythion may do without you, what it must ask about, and what it can never do."
-          actions={
-            dataMode === 'preview' ? (
-              <DemoTag />
-            ) : (
-              <DataBadge origin="live" label={`${pendingCount} awaiting you`} />
-            )
-          }
+          description="What Sythion may do, must ask about, and never does."
+          actions={<Badge tone="accent">{pendingCount} awaiting you</Badge>}
         />
 
         {/* --- Emergency controls ------------------------------------- */}
@@ -222,14 +205,12 @@ export function SecurityScreen() {
                   variant="danger-solid"
                   icon="stop"
                   disabled={
-                    busy === 'pause' || dataMode === 'preview' || autonomy.agentState === 'paused'
+                    busy === 'pause' || autonomy.agentState === 'paused'
                   }
                   title={
-                    dataMode === 'preview'
-                      ? 'Preview mode — there is no backend to pause'
-                      : autonomy.agentState === 'paused'
-                        ? 'The Main Agent is already paused'
-                        : 'Pause the Main Agent so it starts no new work'
+                    autonomy.agentState === 'paused'
+                      ? 'The Main Agent is already paused'
+                      : 'Pause the Main Agent so it starts no new work'
                   }
                   onClick={emergencyStop}
                 >
@@ -241,8 +222,7 @@ export function SecurityScreen() {
                 </Button>
               </div>
               <p className="t-muted">
-                Calls <span className="t-mono">POST /api/v1/agent/pause</span>. Running tasks are not destroyed — their
-                outcomes still apply — but no new work starts and no trigger fires until you resume.
+                Running tasks are not destroyed, but no new work starts or triggers until you resume.
               </p>
               <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
                 <Button
@@ -250,15 +230,12 @@ export function SecurityScreen() {
                   icon="play"
                   disabled={
                     busy === 'resume' ||
-                    dataMode === 'preview' ||
                     autonomy.agentState === 'active'
                   }
                   title={
-                    dataMode === 'preview'
-                      ? 'Preview mode — there is no backend to resume'
-                      : autonomy.agentState === 'active'
-                        ? 'The Main Agent is already active'
-                        : 'Resume the Main Agent'
+                    autonomy.agentState === 'active'
+                      ? 'The Main Agent is already active'
+                      : 'Resume the Main Agent'
                   }
                   onClick={() =>
                     void run('resume', actions.resumeAgent, () =>
@@ -284,12 +261,7 @@ export function SecurityScreen() {
                 </div>
                 <Switch
                   checked={bgOptimistic ?? background.data?.enabled ?? false}
-                  disabled={busy === 'bg' || dataMode === 'preview'}
-                  title={
-                    dataMode === 'preview'
-                      ? 'Preview mode — there is no backend to change'
-                      : undefined
-                  }
+                  disabled={busy === 'bg'}
                   onChange={(v) => {
                     setBgOptimistic(v);
                     void run(
@@ -309,7 +281,6 @@ export function SecurityScreen() {
               </div>
               <KV
                 items={[
-                  { k: 'Endpoint', v: <span className="t-mono">PUT /api/v1/agent/background</span> },
                   { k: 'Effect', v: 'Recorded in the agent event ledger' },
                   { k: 'Scope', v: 'Does not change any capability permission' },
                 ]}
@@ -322,7 +293,7 @@ export function SecurityScreen() {
         <Panel
           title="Autonomy mode"
           icon="key"
-          hint="Mode is derived from two real backend switches. A card that is not backed by an endpoint is labelled proposed and cannot be selected."
+          hint="Derived from two backend switches. Cards without a backing endpoint are labelled proposed and cannot be selected."
         >
           {/* --- Real authorization axis, reported read-only ----------- */}
           <div className="notice notice--accent" style={{ marginBottom: 14 }}>
@@ -441,9 +412,7 @@ export function SecurityScreen() {
 
           <Notice tone="accent" icon="shield">
             <span>
-              These labels are interface vocabulary. Authorization is enforced by the backend execution policy for every
-              tool call — selecting a different card here cannot make an unsafe action safe, and no toggle in this
-              application grants a capability.
+              Authorization is enforced by backend execution policy — no card or toggle here grants a capability.
             </span>
           </Notice>
         </Panel>
@@ -478,13 +447,13 @@ export function SecurityScreen() {
             title="Pending authorization"
             icon="lock"
             flush
-            actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+           
           >
             {pendingSkill.length + pendingTools.length + heldTasks.length === 0 ? (
               <EmptyState
                 icon="check"
                 title="Nothing pending"
-                description="New skill proposals, tool proposals and held tasks would queue here for your decision."
+                description="Proposals and held tasks queue here."
               />
             ) : (
               <div className="list">
@@ -505,7 +474,7 @@ export function SecurityScreen() {
                       <Button
                         size="sm"
                         variant="primary"
-                        disabled={dataMode === 'preview' || busy === 'resume-t'}
+                        disabled={busy === 'resume-t'}
                         onClick={() =>
                           void run('resume-t', () => actions.resumeTask(t.id), () =>
                             notify({ tone: 'ok', title: 'Task resumed' })
@@ -534,9 +503,9 @@ export function SecurityScreen() {
                       <Button
                         size="sm"
                         variant="primary"
-                        disabled={dataMode === 'preview' || !actions.live || p.status !== 'proposed' || busy !== null}
+                        disabled={!actions.live || p.status !== 'proposed' || busy !== null}
                         onClick={() =>
-                          dataMode === 'live' && actions.live && p.status === 'proposed' && busy === null && void run(`sk-${p.id}`, () => actions.approveSkillProposal(p.id), () => {
+                          actions.live && p.status === 'proposed' && busy === null && void run(`sk-${p.id}`, () => actions.approveSkillProposal(p.id), () => {
                             skillProposals.refetch();
                             notify({ tone: 'ok', title: 'Proposal approved' });
                           })
@@ -547,9 +516,9 @@ export function SecurityScreen() {
                       <Button
                         size="sm"
                         variant="ghost"
-                        disabled={dataMode === 'preview' || !actions.live || p.status !== 'proposed' || busy !== null}
+                        disabled={!actions.live || p.status !== 'proposed' || busy !== null}
                         onClick={() =>
-                          dataMode === 'live' && actions.live && p.status === 'proposed' && busy === null && void run(`sk-${p.id}`, () => actions.rejectSkillProposal(p.id), () => {
+                          actions.live && p.status === 'proposed' && busy === null && void run(`sk-${p.id}`, () => actions.rejectSkillProposal(p.id), () => {
                             skillProposals.refetch();
                             notify({ tone: 'ok', title: 'Proposal rejected' });
                           })
@@ -579,7 +548,7 @@ export function SecurityScreen() {
                       <Button
                         size="sm"
                         variant="subtle"
-                        disabled={dataMode === 'preview'}
+                        disabled={!actions.live}
                         onClick={() =>
                           void run(`tp-${p.id}`, () => actions.approveToolProposal(p.id), () => {
                             toolProposals.refetch();
@@ -599,7 +568,7 @@ export function SecurityScreen() {
           <Panel
             title="Privacy controls"
             icon="eye"
-            actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+           
           >
             <div className="stack stack--tight">
               <KV
@@ -620,8 +589,8 @@ export function SecurityScreen() {
                 </Button>
               </div>
               <p className="t-faint" style={{ marginTop: 4 }}>
-                Individual memory items cannot be edited or deleted from this interface — there is no endpoint for it.
-                Relations can be reinforced or withdrawn on the Memory screen.
+                Individual memory items cannot be edited or deleted — no endpoint exists. Relations can be reinforced
+                or withdrawn on the Memory screen.
               </p>
             </div>
           </Panel>
@@ -632,8 +601,8 @@ export function SecurityScreen() {
           title="Capability permissions"
           icon="shield"
           flush
-          hint="Live from GET /api/v1/capabilities. Status is resolved from runtime facts by the backend; this table only displays it."
-          actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+          hint="Reported by the backend; this table only displays it."
+         
         >
           {capabilities.isLoading ? (
             <div className="panel__body">
@@ -704,13 +673,13 @@ export function SecurityScreen() {
           title="Activity & audit log"
           icon="activity"
           flush
-          actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+         
         >
           {audit.length === 0 ? (
             <EmptyState
               icon="activity"
               title="No recorded actions"
-              description="Agent events and terminal task outcomes appear here as they happen."
+              description="Events appear here as they happen."
             />
           ) : (
             <div className="list" style={{ maxHeight: 380, overflowY: 'auto' }}>
@@ -769,16 +738,15 @@ export function SecurityScreen() {
           <Panel title="What this screen cannot do" icon="info">
             <div className="stack stack--tight">
               <span className="t-muted">
-                There is no per-capability permission editor. Permissions are declared by the backend capability
-                registry and enforced by the executor — this interface cannot widen them.
+                Permissions are declared by the backend capability registry and enforced by the executor — this interface
+                cannot widen them.
               </span>
               <span className="t-muted">
-                There is no session or device-access list. Sythion runs as a single local process; there are no remote
-                sessions to revoke.
+                No session or device-access list — Sythion runs as a single local process; there are no remote sessions
+                to revoke.
               </span>
               <span className="t-muted">
-                There is no kill switch that bypasses the backend. Pausing the agent stops new work; it does not abort a
-                tool already executing.
+                Pausing stops new work; it does not abort a tool already executing.
               </span>
             </div>
           </Panel>

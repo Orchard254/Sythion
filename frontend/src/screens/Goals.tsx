@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+﻿import { useMemo, useState } from 'react';
 import { Icon } from '../components/icons';
 import { GoalDetailDrawer } from '../components/GoalDetailDrawer';
 import { TaskDetailDrawer } from '../components/TaskDetailDrawer';
@@ -6,15 +6,12 @@ import {
   Badge,
   Bar,
   Chips,
-  DataBadge,
-  DemoTag,
   Drawer,
   EmptyState,
   Panel,
   ScreenHead,
 } from '../components/ui';
 import { useGoals, useObjectives, useTasks } from '../hooks/useBackend';
-import { useAppStore } from '../store/appStore';
 import { relTime } from '../lib/format';
 import type { GoalSummary } from '../types';
 
@@ -55,7 +52,6 @@ export function GoalsScreen() {
   const objectives = useObjectives();
   const tasks = useTasks();
 
-  const dataMode = useAppStore((s) => s.dataMode);
   const [filter, setFilter] = useState('__all__');
   const [openGoal, setOpenGoal] = useState<string | null>(null);
   const [openTask, setOpenTask] = useState<string | null>(null);
@@ -75,7 +71,6 @@ export function GoalsScreen() {
     return counts;
   }, [tasks.data]);
 
-  const isDemo = dataMode === 'preview';
   const selectedTask = openTask ? (tasks.data ?? []).find((t) => t.id === openTask) : undefined;
 
   return (
@@ -84,8 +79,8 @@ export function GoalsScreen() {
         <ScreenHead
           eyebrow="Operate"
           title="Goals"
-          description="Each goal holds a versioned plan. Plans hold steps, steps hold tasks, and results are only called verified when the criteria evidence says so."
-          actions={isDemo ? <DemoTag /> : <DataBadge origin="live" />}
+          description="Versioned plans; outcomes verified, not self-reported."
+         
         />
 
         <Chips value={filter} onChange={setFilter} options={FILTERS} />
@@ -96,13 +91,7 @@ export function GoalsScreen() {
           <Panel title="Goals" icon="target" flush>
             <EmptyState
               icon="target"
-              title={all.length === 0 ? 'No goals yet' : 'Nothing matches this filter'}
-              description={
-                all.length === 0
-                  ? 'No goal exists. Goals are created through the backend; this screen only reads them.'
-                  : 'Switch the filter to see other goals.'
-              }
-            />
+              title={all.length === 0 ? 'No goals yet' : 'Nothing matches this filter'}            />
           </Panel>
         ) : (
           <div className="grid grid--2">
@@ -154,7 +143,6 @@ export function GoalsScreen() {
       {openGoal && (
         <GoalDetailDrawer
           goalId={openGoal}
-          origin={goals.origin}
           onClose={() => setOpenGoal(null)}
           onOpenTask={(id) => {
             setOpenGoal(null);
@@ -165,7 +153,6 @@ export function GoalsScreen() {
       {openTask && selectedTask ? (
         <TaskDetailDrawer
           task={selectedTask}
-          origin={tasks.origin}
           onClose={() => setOpenTask(null)}
           onChanged={tasks.refetch}
         />

@@ -43,12 +43,10 @@ const STEP_TONE: Record<string, 'ok' | 'warn' | 'danger' | 'info' | 'idle' | 'ac
 
 export function GoalDetailDrawer({
   goalId,
-  origin,
   onClose,
   onOpenTask,
 }: {
   goalId: string;
-  origin: 'live' | 'demo';
   onClose: () => void;
   onOpenTask?: (taskId: string) => void;
 }) {
@@ -58,7 +56,6 @@ export function GoalDetailDrawer({
   const plans = useGoalPlans(goalId);
   const tasks = useTasks();
   const notify = useAppStore((s) => s.notify);
-  const dataMode = useAppStore((s) => s.dataMode);
 
   const goal = detail.data?.goal ?? null;
   const plan = detail.data?.active_plan ?? null;
@@ -100,7 +97,6 @@ export function GoalDetailDrawer({
           <div className="stack stack--tight" style={{ flex: 1, minWidth: 0 }}>
             <div className="row row--wrap" style={{ gap: 8 }}>
               <Badge tone={goalStatusTone}>{goal?.status ?? 'unknown'}</Badge>
-              {origin === 'demo' && <Badge tone="warn">preview data</Badge>}
               {goal?.priority !== undefined && <span className="t-faint">Priority {goal.priority}</span>}
             </div>
             <h2 className="t-title" style={{ fontSize: 15, lineHeight: 1.35 }}>
@@ -154,16 +150,13 @@ export function GoalDetailDrawer({
                     aria-label="Goal step completion"
                   />
                 </div>
-                <p className="t-faint">
-                  Derived from persisted step status. No model-reported percentage is involved.
-                </p>
               </div>
 
               {!plan ? (
                 <EmptyState
                   icon="layers"
                   title="No active plan"
-                  description="This goal has no plan version yet. Nothing is claimed about what it will do."
+                  description="This goal has no plan version yet."
                 />
               ) : (
                 <Panel title={`Plan v${plan.version}`} icon="layers" tight
@@ -220,7 +213,7 @@ export function GoalDetailDrawer({
                 <EmptyState
                   icon="inbox"
                   title="No associated tasks"
-                  description="No associated task records are currently available. Plan steps may still reference tasks."
+                  description="No linked task records. Plan steps may still reference tasks."
                 />
               ) : (
                 <div className="list">
@@ -272,7 +265,7 @@ export function GoalDetailDrawer({
                   <EmptyState
                     icon="target"
                     title="No criteria recorded"
-                    description="This goal stores no completion criteria, so its outcome cannot be verified either way."
+                    description="No completion criteria stored — the outcome cannot be verified."
                   />
                 )}
               </Panel>
@@ -283,7 +276,7 @@ export function GoalDetailDrawer({
                   <EmptyState
                     icon="file"
                     title="No evidence recorded"
-                    description="No step has recorded a result summary, evidence task or failure reason."
+                    description="No step has recorded a result yet."
                   />
                 ) : (
                   <div className="stack stack--tight">
@@ -315,7 +308,7 @@ export function GoalDetailDrawer({
           )}
         </div>
 
-        {goal && dataMode === 'live' && (
+        {goal && (
           <div className="drawer__foot">
             {goal.status === 'active' && (
               <Button

@@ -82,7 +82,7 @@ const waitFor = async (fn: () => boolean, timeout = 1000) => {
 beforeEach(async () => {
   vi.clearAllMocks();
   localStorage.setItem('sythion.replyMode', 'text');
-  useAppStore.setState({ isConnected: true, dataMode: 'live', isListening: false, isVoiceSpeaking: false, transcriptDraft: '' });
+  useAppStore.setState({ isConnected: true, isListening: false, isVoiceSpeaking: false, transcriptDraft: '' });
   mock.taskList = [];
   mock.conversations.mockResolvedValue({ conversations: [], next_cursor: null });
   mock.turn.mockResolvedValue({ exchange_id: 'turn-1', user_text: 'Hello Synth', assistant_text: 'Saved reply', status: 'completed', background_task_ids: [] });

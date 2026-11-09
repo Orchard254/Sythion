@@ -1,8 +1,6 @@
 import { create } from 'zustand';
 import type { Task, HealthStatus, TaskEvent } from '../types';
 
-export type DataMode = 'live' | 'preview';
-
 export interface AppNotification {
   id: string;
   tone: 'ok' | 'warn' | 'danger' | 'info' | 'accent';
@@ -10,8 +8,6 @@ export interface AppNotification {
   body?: string;
   createdAt: number;
   route?: string;
-  /** A preview-mode notice is marked so it is never read as a real alert. */
-  demo?: boolean;
 }
 
 interface AppState {
@@ -43,9 +39,7 @@ interface AppState {
   // Events (timeline for active task)
   activeTaskEvents: TaskEvent[];
 
-  // Where screen data comes from. 'preview' is an explicit, user-chosen
-  // demonstration mode entered when no backend is reachable.
-  dataMode: DataMode;
+  // Where screen data comes from: the real backend contract in services/api.ts.
   notifications: AppNotification[];
   unreadNotifications: number;
 
@@ -69,20 +63,9 @@ interface AppState {
   setFileRoots: (roots: string[]) => void;
   setActiveTaskEvents: (events: TaskEvent[]) => void;
   resetVoice: () => void;
-  setDataMode: (mode: DataMode) => void;
   notify: (n: Omit<AppNotification, 'id' | 'createdAt'> & { id?: string; createdAt?: number }) => void;
   dismissNotification: (id: string) => void;
   clearNotifications: () => void;
-}
-
-/**
- * Preview mode can be entered from the URL (`?preview=1`) so a demonstration
- * view is shareable and survives a reload without a backend running.
- */
-function initialDataMode(): DataMode {
-  if (typeof window === 'undefined') return 'live';
-  const params = new URLSearchParams(window.location.search);
-  return params.get('preview') === '1' ? 'preview' : 'live';
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -104,7 +87,6 @@ export const useAppStore = create<AppState>((set) => ({
   retentionDays: 90,
   fileRoots: [],
   activeTaskEvents: [],
-  dataMode: initialDataMode(),
   notifications: [],
   unreadNotifications: 0,
 
@@ -139,8 +121,6 @@ export const useAppStore = create<AppState>((set) => ({
       transcriptSegments: [],
       transcriptDraft: '',
     }),
-
-  setDataMode: (dataMode) => set({ dataMode }),
 
   notify: (n) =>
     set((state) => {

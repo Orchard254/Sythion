@@ -21,7 +21,6 @@ export function Sidebar({
   connected,
   runtimeState,
   runtimeAgeMs,
-  preview,
   version,
   onOpenSettings,
 }: {
@@ -33,13 +32,12 @@ export function Sidebar({
   connected: boolean;
   runtimeState: RuntimeHealthState;
   runtimeAgeMs: number | null;
-  preview: boolean;
   version: string | undefined;
   onOpenSettings: () => void;
 }) {
   const agentState = agent?.state ?? 'unknown';
   const stateTone = AGENT_STATE_TONE[agentState] ?? 'idle';
-  const runtimeTone = preview ? 'warn' : connected ? (runtimeState === 'degraded' ? 'warn' : (HEALTH_DOT[overallHealth ?? 'UNKNOWN'])) : 'danger';
+  const runtimeTone = connected ? (runtimeState === 'degraded' ? 'warn' : (HEALTH_DOT[overallHealth ?? 'UNKNOWN'])) : 'danger';
 
   return (
     <>
@@ -91,33 +89,29 @@ export function Sidebar({
             onClick={() => onNavigate('system')}
             title="Open System & Integrations"
           >
-            <Dot tone={runtimeTone} pulse={runtimeState === 'healthy' && !preview} />
+            <Dot tone={runtimeTone} pulse={runtimeState === 'healthy' && connected} />
             <span className="runtime-card__text">
               <span className="runtime-card__title">
-                {preview
-                  ? 'Preview mode'
-                  : runtimeState === 'healthy'
-                    ? 'Runtime online'
-                    : runtimeState === 'checking'
-                      ? 'Checking runtime…'
-                      : runtimeState === 'degraded'
-                        ? 'Runtime degraded'
-                        : runtimeState === 'stale'
-                          ? 'Runtime unconfirmed'
-                          : 'Backend offline'}
+                {runtimeState === 'healthy'
+                  ? 'Runtime online'
+                  : runtimeState === 'checking'
+                    ? 'Checking runtime…'
+                    : runtimeState === 'degraded'
+                      ? 'Runtime degraded'
+                      : runtimeState === 'stale'
+                        ? 'Runtime unconfirmed'
+                        : 'Backend offline'}
               </span>
               <span className="runtime-card__meta">
-                {preview
-                  ? 'Demonstration data'
-                  : runtimeState === 'healthy'
-                    ? `${humanize(agentState)} agent · v${version ?? '—'}`
-                    : runtimeState === 'degraded'
-                      ? 'Backend is serving with a degraded startup'
-                      : runtimeState === 'stale'
-                        ? `Last seen ${runtimeAgeMs !== null ? `${Math.round(runtimeAgeMs / 1000)}s ago` : 'recently'} · may be offline`
-                        : runtimeState === 'checking'
-                          ? 'Confirming connection…'
-                          : 'No connection to local backend'}
+                {runtimeState === 'healthy'
+                  ? `${humanize(agentState)} agent · v${version ?? '—'}`
+                  : runtimeState === 'degraded'
+                    ? 'Backend is serving with a degraded startup'
+                    : runtimeState === 'stale'
+                      ? `Last seen ${runtimeAgeMs !== null ? `${Math.round(runtimeAgeMs / 1000)}s ago` : 'recently'} · may be offline`
+                      : runtimeState === 'checking'
+                        ? 'Confirming connection…'
+                        : 'No connection to local backend'}
               </span>
             </span>
           </button>

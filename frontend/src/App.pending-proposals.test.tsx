@@ -34,7 +34,7 @@ describe('pending skill proposals', () => {
     vi.clearAllMocks();
     mock.approve.mockResolvedValue(undefined);
     mock.reject.mockResolvedValue(undefined);
-    useAppStore.setState({ isConnected: true, dataMode: 'live' });
+    useAppStore.setState({ isConnected: true });
     useNavStore.setState({ route: 'security' });
     vi.stubGlobal('document', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
   });
@@ -48,7 +48,7 @@ describe('pending skill proposals', () => {
     expect(text).toContain('Review skill');
     expect(text).not.toContain('Approved skill');
     expect(text).not.toContain('Other pending skill');
-    expect(text).toContain('2 awaiting you');
+    expect(text).toContain('awaiting you');
     expect(view!.root.findByProps({ className: 'nav-item__count' }).children).toEqual(['2']);
     const rows = view!.root.findAllByProps({ className: 'list__row' });
     const proposed = rows.find((row) => row.findAllByType('span').some((span) => span.children.includes('Proposed skill')))!;
@@ -69,15 +69,11 @@ describe('pending skill proposals', () => {
     act(() => { view!.unmount(); });
   });
 
-  it('blocks decisions in preview and when disconnected', async () => {
+  it('blocks decisions when disconnected', async () => {
     let view: ReactTestRenderer;
     await act(async () => { view = create(<App />); });
     const proposalButtons = () => view!.root.findAllByProps({ className: 'list__row' })
       .find((row) => row.findAllByType('span').some((span) => span.children.includes('Proposed skill')))!.findAllByType('button');
-    act(() => useAppStore.setState({ dataMode: 'preview' }));
-    expect(proposalButtons().every((b) => b.props.disabled)).toBe(true);
-    await act(async () => { proposalButtons()[0].props.onClick(); });
-    act(() => useAppStore.setState({ dataMode: 'live' }));
     mock.live = false;
     act(() => view!.update(<App />));
     expect(proposalButtons().every((b) => b.props.disabled)).toBe(true);

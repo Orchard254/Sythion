@@ -8,7 +8,7 @@ import { isTauri } from './bridge';
  * window with no taskbar button. The Control Center calls this once the gate
  * has been cleared.
  *
- * Outside the Tauri shell (browser development, preview mode) there is no
+ * Outside the Tauri shell (a plain browser session) there is no
  * overlay to reveal, so this is a no-op.
  */
 export async function activateCompanion(): Promise<void> {

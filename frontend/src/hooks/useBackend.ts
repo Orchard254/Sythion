@@ -3,14 +3,13 @@ import { useMemo } from 'react';
 import { useAppStore } from '../store/appStore';
 import type { DataOrigin, GoalDetail, GoalPlanVersion, GoalSummary, MemoryItemsPage } from '../types';
 import * as api from '../services/api';
-import * as demo from '../data/demo';
 
 /* Data access layer.
  *
- * Every screen reads through here. In `live` mode it calls the real backend
- * contract defined in services/api.ts. In `preview` mode it serves the
- * demonstration dataset in data/demo.ts and reports origin='demo' so callers
- * can label it. No screen ever mixes the two for the same panel.
+ * Every screen reads through here. All data comes from the real backend
+ * contract defined in services/api.ts; every query is gated on the bridge
+ * handshake so panels never fire at a dead proxy while the offline screen is
+ * showing.
  */
 
 export interface SourceResult<T> {
@@ -24,22 +23,14 @@ export interface SourceResult<T> {
   refetch: () => void;
 }
 
-function usePreview() {
-  return useAppStore((s) => s.dataMode === 'preview');
-}
-
 function useSource<T>(
   key: string,
   live: () => Promise<T>,
-  demoValue: T,
   options: { enabled?: boolean; refetchInterval?: number; staleMs?: number; ignoreConnection?: boolean } = {}
 ): SourceResult<T> {
-  const preview = usePreview();
   const connected = useAppStore((s) => s.isConnected);
 
-  // A query only runs once the bridge handshake has succeeded. Without this,
-  // every panel would fire at a dead proxy while the offline screen is showing.
-  const canQuery = (options.ignoreConnection || connected) && !preview && (options.enabled ?? true);
+  const canQuery = (options.ignoreConnection || connected) && (options.enabled ?? true);
 
   const query = useQuery<T>({
     queryKey: [key],
@@ -51,13 +42,13 @@ function useSource<T>(
   });
 
   return {
-    data: preview ? demoValue : query.data,
-    isLoading: preview ? false : query.isLoading,
+    data: query.data,
+    isLoading: query.isLoading,
     isFetching: query.isFetching,
-    isError: preview ? false : query.isError,
+    isError: query.isError,
     error: (query.error as Error | null) ?? null,
-    dataUpdatedAt: preview ? Date.now() : query.dataUpdatedAt,
-    origin: preview ? 'demo' : 'live',
+    dataUpdatedAt: query.dataUpdatedAt,
+    origin: 'live',
     refetch: () => {
       void query.refetch();
     },
@@ -68,17 +59,12 @@ function useSource<T>(
 
 /** True when real backend calls are permitted. */
 export function useBackendLive(): boolean {
-  const dataMode = useAppStore((s) => s.dataMode);
   const isConnected = useAppStore((s) => s.isConnected);
   const health = useHealth();
   // A failed health check is definitive enough to stop uncertain mutations even
   // when the original bridge handshake succeeded. Safe, read-only features that
   // tolerate partial degradation keep working while the check is only degraded.
-  return dataMode === 'live' && isConnected && !health.isError;
-}
-
-export function useDataMode() {
-  return useAppStore((s) => s.dataMode);
+  return isConnected && !health.isError;
 }
 
 /* --- Runtime ------------------------------------------------------------- */
@@ -86,20 +72,20 @@ export function useDataMode() {
 export function useHealth() {
   // The health check keeps running even after the handshake gate drops so that
   // a lost backend can be observed and a recovered one can flip the gate back.
-  return useSource('health', api.healthService.check, demo.demoHealth, {
+  return useSource('health', api.healthService.check, {
     refetchInterval: 20_000,
     ignoreConnection: true,
   });
 }
 
 export function useVersion() {
-  return useSource('version', api.healthService.version, demo.demoVersion, { staleMs: 300_000 });
+  return useSource('version', api.healthService.version, { staleMs: 300_000 });
 }
 
 /* --- Tasks --------------------------------------------------------------- */
 
 export function useTasks() {
-  return useSource<TaskListShape>('tasks', api.taskService.list, demo.demoTasks, {
+  return useSource<TaskListShape>('tasks', api.taskService.list, {
     refetchInterval: 5_000,
   });
 }
@@ -110,7 +96,6 @@ export function useTaskEvents(taskId: string | null) {
   return useSource(
     `task-events:${taskId ?? 'none'}`,
     () => (taskId ? api.taskService.events(taskId) : Promise.resolve([])),
-    taskId ? demo.demoTaskEvents[taskId] ?? [] : [],
     { enabled: Boolean(taskId), refetchInterval: 3_000 }
   );
 }
@@ -118,13 +103,13 @@ export function useTaskEvents(taskId: string | null) {
 /* --- Objectives / goals -------------------------------------------------- */
 
 export function useObjectives() {
-  return useSource('objectives', api.objectiveService.list, demo.demoObjectives, {
+  return useSource('objectives', api.objectiveService.list, {
     staleMs: 15_000,
   });
 }
 
 export function useGoals() {
-  return useSource<GoalSummary[]>('goals', api.goalService.list, demo.demoGoals, {
+  return useSource<GoalSummary[]>('goals', api.goalService.list, {
     staleMs: 15_000,
     refetchInterval: 20_000,
   });
@@ -141,7 +126,6 @@ export function useGoalDetail(goalId: string | null) {
   return useSource<GoalDetail>(
     `goal-detail:${goalId ?? 'none'}`,
     () => api.goalService.detail(goalId as string),
-    goalId ? demo.demoGoalDetail(goalId) : demo.demoGoalDetail(null),
     { enabled: Boolean(goalId), staleMs: 10_000, refetchInterval: 15_000 }
   );
 }
@@ -151,7 +135,6 @@ export function useGoalPlans(goalId: string | null) {
   return useSource<GoalPlanVersion[]>(
     `goal-plans:${goalId ?? 'none'}`,
     () => api.goalService.plans(goalId as string),
-    goalId ? demo.demoGoalPlans[goalId] ?? [] : [],
     { enabled: Boolean(goalId), staleMs: 60_000 }
   );
 }
@@ -159,29 +142,29 @@ export function useGoalPlans(goalId: string | null) {
 /* --- Agent --------------------------------------------------------------- */
 
 export function useAgent() {
-  return useSource('agent', api.agentService.identity, demo.demoAgent, { refetchInterval: 15_000 });
+  return useSource('agent', api.agentService.identity, { refetchInterval: 15_000 });
 }
 
 export function useAgentHealth() {
-  return useSource('agent-health', () => api.agentService.health(false), demo.demoAgentHealth, {
+  return useSource('agent-health', () => api.agentService.health(false), {
     refetchInterval: 30_000,
   });
 }
 
 export function useAgentActivity() {
-  return useSource('agent-activity', () => api.agentService.activity(20), demo.demoActivity, {
+  return useSource('agent-activity', () => api.agentService.activity(20), {
     refetchInterval: 15_000,
   });
 }
 
 export function useBackgroundPolicy() {
-  return useSource('agent-background', api.agentService.backgroundPolicy, demo.demoBackground, {
+  return useSource('agent-background', api.agentService.backgroundPolicy, {
     refetchInterval: 30_000,
   });
 }
 
 export function useAgentRegistry() {
-  return useSource('agents', api.agentRegistryService.list, demo.demoAgentRegistry, {
+  return useSource('agents', api.agentRegistryService.list, {
     staleMs: 30_000,
   });
 }
@@ -190,7 +173,6 @@ export function useDelegations() {
   return useSource(
     'delegations',
     () => api.agentRegistryService.delegations(50),
-    demo.demoDelegations,
     { staleMs: 15_000 }
   );
 }
@@ -201,7 +183,6 @@ export function useCapabilities() {
   return useSource(
     'capabilities',
     () => api.capabilityService.list().then((r) => r.capabilities),
-    demo.demoCapabilities,
     { staleMs: 30_000 }
   );
 }
@@ -210,27 +191,26 @@ export function useCapabilityConsistency() {
   return useSource(
     'capabilities-consistency',
     () => api.capabilityService.list().then((r) => r.consistency_issues),
-    ['browser.read_page references a tool that is not registered'] as string[],
     { staleMs: 60_000 }
   );
 }
 
 export function useTools() {
-  return useSource('tools', api.toolService.list, demo.demoTools, { staleMs: 60_000 });
+  return useSource('tools', api.toolService.list, { staleMs: 60_000 });
 }
 
 export function useSkills() {
-  return useSource('skills', api.skillService.list, demo.demoSkills, { staleMs: 30_000 });
+  return useSource('skills', api.skillService.list, { staleMs: 30_000 });
 }
 
 export function useSkillProposals() {
-  return useSource('skill-proposals', api.skillService.proposals, demo.demoSkillProposals, {
+  return useSource('skill-proposals', api.skillService.proposals, {
     staleMs: 30_000,
   });
 }
 
 export function useToolProposals() {
-  return useSource('tool-proposals', api.toolProposalService.list, demo.demoToolProposals, {
+  return useSource('tool-proposals', api.toolProposalService.list, {
     staleMs: 30_000,
   });
 }
@@ -238,13 +218,13 @@ export function useToolProposals() {
 /* --- Memory, settings, models -------------------------------------------- */
 
 export function useMemoryReport() {
-  return useSource('memory-report', api.memoryService.report, demo.demoMemoryReport, {
+  return useSource('memory-report', api.memoryService.report, {
     staleMs: 30_000,
   });
 }
 
 export function useMemoryEdges() {
-  return useSource('memory-edges', api.memoryService.edges, demo.demoMemoryEdges, {
+  return useSource('memory-edges', api.memoryService.edges, {
     staleMs: 30_000,
   });
 }
@@ -257,54 +237,37 @@ export function useMemoryItems(params?: {
   offset?: number;
 }) {
   const key = `memory-items:${JSON.stringify(params ?? {})}`;
-  const demoValue: MemoryItemsPage = {
-    items: demo.demoMemoryItems.map((m) => ({
-      id: Number(String(m.id).replace('mem-', '')) || 0,
-      kind: String(m.kind).toUpperCase(),
-      scope: 'USER',
-      key: m.key,
-      value: m.value,
-      confidence: m.confidence,
-      verification_status: (m.confidence ?? 0) >= 0.95 ? 'VERIFIED_USER' : 'UNVERIFIED',
-      source_type: 'USER_EXPLICIT',
-      observed_at: m.updated,
-      updated_at: m.updated,
-      score: 0,
-    })),
-    has_more: false,
-  };
   return useSource<MemoryItemsPage>(
     key,
     () => api.memoryService.items(params ?? {}),
-    demoValue,
     { staleMs: 30_000 }
   );
 }
 
 export function useAppSettings() {
-  return useSource('settings', api.settingsService.get, demo.demoSettings, { staleMs: 30_000 });
+  return useSource('settings', api.settingsService.get, { staleMs: 30_000 });
 }
 
 export function useSecrets() {
-  return useSource('secrets', api.secretService.status, { configured: demo.demoSecrets }, {
+  return useSource('secrets', api.secretService.status, {
     staleMs: 60_000,
   });
 }
 
 export function useModels() {
-  return useSource('models', () => api.modelService.registry(), demo.demoModels, {
+  return useSource('models', () => api.modelService.registry(), {
     staleMs: 120_000,
   });
 }
 
 export function useRetentionReceipts() {
-  return useSource('retention-receipts', api.retentionService.receipts, demo.demoPurgeReceipts, {
+  return useSource('retention-receipts', api.retentionService.receipts, {
     staleMs: 60_000,
   });
 }
 
 export function useVoiceAssets() {
-  return useSource('voice-assets', api.voiceService.assets, demo.demoVoiceAssets, {
+  return useSource('voice-assets', api.voiceService.assets, {
     staleMs: 300_000,
   });
 }

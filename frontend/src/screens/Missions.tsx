@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+﻿import { useMemo, useState } from 'react';
 import { Icon } from '../components/icons';
 import {
   Badge,
@@ -6,7 +6,6 @@ import {
   Button,
   Chips,
   DataBadge,
-  DemoTag,
   Drawer,
   EmptyState,
   KV,
@@ -18,7 +17,6 @@ import {
   SearchInput,
 } from '../components/ui';
 import { useGoals, useObjectives, useTasks } from '../hooks/useBackend';
-import { useAppStore } from '../store/appStore';
 import {
   OBJECTIVE_TONE,
   PLAN_STEP_TONE,
@@ -48,7 +46,6 @@ export function MissionsScreen() {
   const objectives = useObjectives();
   const goals = useGoals();
   const tasks = useTasks();
-  const dataMode = useAppStore((s) => s.dataMode);
 
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'__all__' | 'active' | 'paused' | 'completed'>('__all__');
@@ -83,13 +80,7 @@ export function MissionsScreen() {
           eyebrow="Missions"
           title="Missions & Goals"
           description="Durable objectives with ordered plans. Progress is computed from verified steps, not self-reported progress."
-          actions={
-            dataMode === 'preview' ? (
-              <DemoTag />
-            ) : (
-              <DataBadge origin="live" label={`${all.length} objectives`} />
-            )
-          }
+          actions={<DataBadge label={`${all.length} objectives`} />}
         />
 
         <div className="grid grid--4">
@@ -160,9 +151,7 @@ export function MissionsScreen() {
             title="Objectives"
             icon="missions"
             flush
-            actions={
-              dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />
-            }
+           
           >
             {objectives.isLoading ? (
               <div className="panel__body">

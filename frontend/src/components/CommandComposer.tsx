@@ -74,11 +74,7 @@ export function CommandComposer({
           disabled
         />
         <div className="composer__bar">
-          <Badge tone="warn">Preview mode</Badge>
-          <span className="t-faint t-truncate">
-            The composer submits real tasks through <span className="t-mono">POST /api/v1/tasks</span>. Start the
-            backend to use it.
-          </span>
+          <Badge tone="warn">Offline</Badge>
           <span className="spacer" />
           <Button icon="send" variant="primary" disabled>
             Start mission

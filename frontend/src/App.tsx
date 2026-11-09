@@ -1,16 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Icon, SythionMark } from './components/icons';
+import { SythionMark } from './components/icons';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
-import { Button, Notice, Panel, DemoTag } from './components/ui';
+import { Button, Notice, Panel } from './components/ui';
 import { AssistantScreen } from './screens/Assistant';
 import { AutomationsScreen } from './screens/Automations';
-import { CommunicationsScreen } from './screens/Communications';
-import { DevicesScreen } from './screens/Devices';
-import { LifeManagementScreen } from './screens/LifeManagement';
 import { MemoryScreen } from './screens/Memory';
-import { CompanionPreviewScreen } from './screens/CompanionPreview';
 import { CompanionSurface } from './components/CompanionSurface';
 import { GoalsScreen } from './screens/Goals';
 import { isCompanionSurface } from './lib/surface';
@@ -56,15 +52,6 @@ function ScreenFor({ route }: { route: RouteId }) {
       // Canonical user-facing term is Goals. `missions` is retained as the route
       // id so existing deep links keep resolving (see ROUTE_ALIASES).
       return <GoalsScreen />;
-    case 'companion-preview':
-      // Development-only. Not reachable from the navigation.
-      return <CompanionPreviewScreen />;
-    case 'life':
-      return <LifeManagementScreen />;
-    case 'devices':
-      return <DevicesScreen />;
-    case 'comms':
-      return <CommunicationsScreen />;
     case 'memory':
       return <MemoryScreen />;
     case 'automations':
@@ -86,8 +73,6 @@ function AppContent() {
   const { isInitialized, retry } = useAppInit();
   const isConnected = useAppStore((s) => s.isConnected);
   const error = useAppStore((s) => s.error);
-  const dataMode = useAppStore((s) => s.dataMode);
-  const setDataMode = useAppStore((s) => s.setDataMode);
   const setConnectedStore = useAppStore((s) => s.setConnected);
   const setErrorStore = useAppStore((s) => s.setError);
   const notify = useAppStore((s) => s.notify);
@@ -129,7 +114,6 @@ function AppContent() {
   // does not drop the gate, so safe features stay available. The health query
   // itself keeps polling (ignoreConnection) to observe both directions.
   useEffect(() => {
-    if (dataMode === 'preview') return;
     if (health.isError) {
       setConnectedStore(false);
       if (health.error?.message) setErrorStore(health.error.message);
@@ -137,7 +121,7 @@ function AppContent() {
       setConnectedStore(true);
       setErrorStore(null);
     }
-  }, [dataMode, health.isError, health.data, health.error, setConnectedStore, setErrorStore]);
+  }, [health.isError, health.data, health.error, setConnectedStore, setErrorStore]);
 
   const runtimeHealth = useMemo(
     () =>
@@ -179,7 +163,6 @@ function AppContent() {
   // Raise an in-app notification whenever a task enters an interesting
   // terminal state. Derived from polled backend state, not fabricated.
   useEffect(() => {
-    if (dataMode !== 'live') return;
     const interesting = new Set(['failed', 'waiting_for_user', 'interrupted']);
     const next = { ...seenTaskStates };
     let changed = false;
@@ -201,7 +184,7 @@ function AppContent() {
     if (changed) {
       setSeenTaskStates(next);
     }
-  }, [tasks.data, dataMode, notify, seenTaskStates]);
+  }, [tasks.data, notify, seenTaskStates]);
 
   const attentionCount = useMemo(() => {
     const skillPending = (skillProposals.data ?? []).filter((p) => p.status === 'proposed' || p.status === 'pending_review').length;
@@ -260,7 +243,7 @@ function AppContent() {
     );
   }
 
-  if (!isConnected && dataMode !== 'preview') {
+  if (!isConnected) {
     return (
       <div className="shell" style={singleScreenShellStyle()}>
         <div className="shell__main" style={singleScreenContentStyle({ overflowY: 'auto', padding: 40 })}>
@@ -272,9 +255,8 @@ function AppContent() {
                   Sythion backend unreachable
                 </h1>
                 <p className="t-muted" style={{ margin: '3px 0 0' }}>
-                  The interface needs the local FastAPI runtime to show live state.
-                </p>
-              </div>
+                  Start the local backend to see live state.
+                </p>              </div>
             </div>
 
             <Notice tone="danger" icon="alert">
@@ -288,38 +270,12 @@ function AppContent() {
                     Start the backend
                   </strong>{' '}
                   — run <span className="t-mono">start_sythion.cmd</span> from the project root, or{' '}
-                  <span className="t-mono">python -m uvicorn backend.main:app</span>, then retry.
-                </span>
-                <span className="t-muted">
-                  <strong className="t-body" style={{ color: 'var(--text-0)' }}>
-                    Retry the connection
-                  </strong>{' '}
-                  — re-resolves the bridge handshake and re-checks health.
-                </span>
-                <span className="t-muted">
-                  <strong className="t-body" style={{ color: 'var(--text-0)' }}>
-                    Open the interface in preview mode
-                  </strong> — every screen renders with clearly labelled demonstration data so the layout and
-                  navigation can be inspected. No command submitted here will do anything.
+                  <span className="t-mono">python -m uvicorn backend.main:app</span>.
                 </span>
               </div>
               <div className="row" style={{ gap: 8, marginTop: 14 }}>
                 <Button variant="primary" icon="refresh" onClick={() => void retry()}>
                   Retry connection
-                </Button>
-                <Button
-                  variant="subtle"
-                  icon="eye"
-                  onClick={() => {
-                    setDataMode('preview');
-                    notify({
-                      tone: 'warn',
-                      title: 'Preview mode',
-                      body: 'Demonstration data. Nothing here is read from a backend.',
-                    });
-                  }}
-                >
-                  Open preview mode
                 </Button>
               </div>
             </Panel>
@@ -342,14 +298,12 @@ function AppContent() {
         connected={isConnected}
         runtimeState={runtimeHealth.state}
         runtimeAgeMs={runtimeHealth.ageMs}
-        preview={dataMode === 'preview'}
         version={version.data?.version ?? health.data?.version}
         onOpenSettings={() => setRoute('settings')}
       />
 
       <TopBar
         route={def}
-        origin={dataMode === 'preview' || def.data === 'demo' ? 'demo' : 'live'}
         connected={isConnected}
         runtimeState={runtimeHealth.state}
         attentionCount={attentionCount}
@@ -357,27 +311,6 @@ function AppContent() {
       />
 
       <main className="shell__main">
-        {dataMode === 'preview' && (
-          <div className="banner">
-            <Icon name="alert" size={14} />
-            <strong>Preview mode.</strong>
-            <span className="banner__text">
-              Panels marked <DemoTag compact /> show demonstration data. No backend is attached and nothing on these
-              screens will run.
-            </span>
-            <span className="banner__spacer" />
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setDataMode('live');
-                void retry();
-              }}
-            >
-              Try live connection
-            </Button>
-          </div>
-        )}
         <ScreenFor route={route} />
       </main>
     </div>

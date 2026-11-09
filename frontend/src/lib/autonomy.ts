@@ -54,7 +54,7 @@ export const AUTONOMY_MODES: AutonomyMode[] = [
     cannot: ['Running tools', 'Starting background work'],
     enforced: true,
     enforcementNote:
-      'Enforced by the backend: Main Agent is paused and background orchestration is disabled.',
+      'Enforced: Main Agent is paused and background orchestration is disabled.',
   },
   {
     id: 'assisted',
@@ -72,7 +72,7 @@ export const AUTONOMY_MODES: AutonomyMode[] = [
     cannot: ['Starting work on its own initiative'],
     enforced: true,
     enforcementNote:
-      'Enforced by the backend: Main Agent is active with background orchestration disabled.',
+      'Enforced: Main Agent is active with background orchestration disabled.',
   },
   {
     id: 'bounded',
@@ -83,7 +83,7 @@ export const AUTONOMY_MODES: AutonomyMode[] = [
     cannot: ['Unbounded recurring work'],
     enforced: false,
     enforcementNote:
-      'Not implemented as a mode. The backend does expose an execution gate — autonomy_level, guarded or autonomous — but that is a separate axis, not a budget-bounded mode. The only real limits today are the per-task budgets in Settings (max actions per task, max cloud requests per task), which bound a single task and not the system.',
+      'Not implemented as a mode. Real limits today are the per-task budgets in Settings (max actions / cloud requests per task), which bound a single task, not the system.',
   },
   {
     id: 'proactive',
@@ -98,7 +98,7 @@ export const AUTONOMY_MODES: AutonomyMode[] = [
     cannot: ['Bypassing capability-level authorization'],
     enforced: true,
     enforcementNote:
-      'Enforced by the backend: Main Agent is active with background orchestration enabled. Individual capability permissions still apply.',
+      'Enforced: Main Agent is active with background orchestration enabled. Capability permissions still apply.',
   },
 ];
 
@@ -149,7 +149,7 @@ export function deriveAuthorization(agent: AgentIdentity | null | undefined): Au
         'Consequential actions can be auto-approved by the importance classifier without asking you first.',
       tone: 'warn',
       readOnlyReason:
-        'Set by the backend configuration (autonomy_level / SYTHION_AUTONOMY_LEVEL). No REST endpoint changes it, so this interface does not offer a control.',
+        'Set by the backend configuration. No endpoint changes it, so there is no control.',
     };
   }
 
@@ -163,7 +163,7 @@ export function deriveAuthorization(agent: AgentIdentity | null | undefined): Au
         : 'The backend did not report an authorization level. Treat every consequential action as guarded.',
     tone: 'ok',
     readOnlyReason:
-      'Set by the backend configuration (autonomy_level / SYTHION_AUTONOMY_LEVEL). No REST endpoint changes it, so this interface does not offer a control.',
+      'Set by the backend configuration. No endpoint changes it, so there is no control.',
   };
 }
 

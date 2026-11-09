@@ -48,7 +48,6 @@ export function useAppInit() {
   const setError = useAppStore((s) => s.setError);
   const setTasks = useAppStore((s) => s.setTasks);
   const setLoading = useAppStore((s) => s.setLoading);
-  const setDataMode = useAppStore((s) => s.setDataMode);
 
   const [isInitialized, setIsInitialized] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -68,10 +67,6 @@ export function useAppInit() {
         setHealthStatus(health);
         setConnected(true);
         setError(null);
-        // A deep-linked ?preview=1 is honoured only while no backend answers.
-        if (typeof window === 'undefined' || new URLSearchParams(window.location.search).get('preview') !== '1') {
-          setDataMode('live');
-        }
 
         const tasks = await taskService.list();
         if (controller.signal.aborted) return;
@@ -84,7 +79,7 @@ export function useAppInit() {
         if (controller.signal.aborted) return;
         setError(err instanceof Error ? err.message : 'Failed to connect to backend');
         setConnected(false);
-        // Mark initialised so the UI can offer the offline / preview paths
+        // Mark initialised so the UI can show the offline screen with a retry
         // instead of an indefinite spinner.
         setIsInitialized(true);
       } finally {
@@ -98,7 +93,7 @@ export function useAppInit() {
     return () => {
       controller.abort();
     };
-  }, [attempt, setConnected, setDataMode, setError, setHealthStatus, setLoading, setTasks]);
+  }, [attempt, setConnected, setError, setHealthStatus, setLoading, setTasks]);
 
   const retry = useCallback(() => {
     setIsInitialized(false);

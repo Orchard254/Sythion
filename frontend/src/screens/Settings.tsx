@@ -1,10 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Icon } from '../components/icons';
 import {
   Badge,
   Button,
-  DataBadge,
-  DemoTag,
   KV,
   LoadingBlock,
   Notice,
@@ -25,7 +22,6 @@ export function SettingsScreen() {
   const secrets = useSecrets();
   const assets = useVoiceAssets();
   const actions = useActions();
-  const dataMode = useAppStore((s) => s.dataMode);
   const notify = useAppStore((s) => s.notify);
   const navigate = useNavStore((s) => s.setRoute);
 
@@ -74,7 +70,7 @@ export function SettingsScreen() {
   }, [settings.data]);
 
   const installSpeechModel = async () => {
-    if (installingModel || dataMode === 'preview') return;
+    if (installingModel) return;
     setInstallingModel(true);
     setInstallError(null);
     try {
@@ -138,32 +134,18 @@ export function SettingsScreen() {
         <ScreenHead
           eyebrow="Control"
           title="Settings"
-          description="Application settings that Sythion enforces, plus the preferences of this interface."
-          actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+          description="Settings and interface preferences."
+         
         />
 
         <div className="grid grid--2">
           <Panel
             title="Runtime settings"
             icon="server"
-            actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+           
           >
             {settings.isLoading ? (
               <LoadingBlock rows={5} />
-            ) : dataMode === 'preview' ? (
-              <>
-                <KV
-                  items={[
-                    { k: 'Retention', v: `${settings.data?.retention_days ?? '—'} days` },
-                    { k: 'File roots', v: `${settings.data?.file_roots.length ?? 0} approved` },
-                    { k: 'Max actions / task', v: String(settings.data?.max_actions_per_task ?? '—') },
-                    { k: 'Voice', v: settings.data?.voice_enabled ? 'enabled' : 'disabled' },
-                  ]}
-                />
-                <Notice tone="warn" icon="lock">
-                  <span>Read-only in preview mode — there is no backend to persist to.</span>
-                </Notice>
-              </>
             ) : (
               <div className="stack">
                 <div className="field">
@@ -180,7 +162,7 @@ export function SettingsScreen() {
                     onChange={(e) => setRetention(Math.max(1, Number(e.target.value) || 90))}
                   />
                   <span className="field__hint">
-                    This window is used when a retention purge is explicitly requested. Purging is not automatic.
+                    Used by explicit purges only. Purging is never automatic.
                   </span>
                 </div>
 
@@ -195,9 +177,8 @@ export function SettingsScreen() {
                   ))}
                   <button type="button" disabled={roots === null} onClick={() => { setRoots([...(roots ?? []), '']); setConfirmFallback(null); }}>Add file grant</button>
                   <span className="field__hint">
-                    Environment roots are separate and cannot be removed here. With no configured roots, file tools
-                    use the home and working directories; otherwise they also allow the backend directory. Clearing
-                    grants can therefore change, rather than eliminate, access.
+                    Environment roots can't be removed here. With no configured roots, file tools use home and working
+                    directories (plus the backend directory when roots are set) — clearing grants can broaden access.
                   </span>
                   {!settings.data?.persisted_file_roots && <span className="field__hint">Editing roots requires a newer backend that separates persisted grants.</span>}
                   {rootsDirty && roots?.length === 0 && !fallbackKnown && <span className="field__hint">Cannot clear grants: backend does not report the fallback roots.</span>}
@@ -240,9 +221,6 @@ export function SettingsScreen() {
               <div className="row row--between">
                 <div>
                   <span className="t-title">Density</span>
-                  <p className="t-muted" style={{ marginTop: 3 }}>
-                    Compact reduces spacing to fit more rows in the same window.
-                  </p>
                 </div>
                 <div className="segmented">
                   <button
@@ -262,41 +240,14 @@ export function SettingsScreen() {
                 </div>
               </div>
 
-              <div className="row row--between">
-                <div>
-                  <span className="t-title">Data source</span>
-                  <p className="t-muted" style={{ marginTop: 3 }}>
-                    Switch to demonstration data without closing the app.
-                  </p>
-                </div>
-                <Switch
-                  checked={dataMode === 'preview'}
-                  onChange={(v) => {
-                    useAppStore.getState().setDataMode(v ? 'preview' : 'live');
-                    notify({
-                      tone: v ? 'warn' : 'ok',
-                      title: v ? 'Preview mode enabled' : 'Live mode enabled',
-                      body: v ? 'All panels now show labelled demonstration data.' : undefined,
-                    });
-                  }}
-                />
-              </div>
 
-              {dataMode === 'preview' && (
-                <Notice tone="warn" icon="alert">
-                  <span>
-                    Preview mode is on. Panels show invented data and every action that would change the backend is
-                    disabled.
-                  </span>
-                </Notice>
-              )}
             </div>
           </Panel>
 
           <Panel
             title="Voice"
             icon="microphone"
-            actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+           
           >
             <Switch label="Read new replies aloud" checked={spokenReplies} onChange={(enabled) => {
               setSpokenReplies(enabled);
@@ -323,8 +274,7 @@ export function SettingsScreen() {
                 {!assets.data?.stt_installed && (
                   <Notice tone="info" icon="info">
                     <span>
-                      Voice input needs the pinned local speech model. Sythion never downloads it on startup — it must
-                      be installed deliberately.
+                      Voice input needs the pinned local speech model — installed here deliberately, never on startup.
                     </span>
                   </Notice>
                 )}
@@ -341,7 +291,7 @@ export function SettingsScreen() {
                     variant="primary"
                     icon="download"
                     disabled={
-                      dataMode === 'preview' || installingModel || Boolean(assets.data?.stt_installed)
+                      installingModel || Boolean(assets.data?.stt_installed)
                     }
                     onClick={() => void installSpeechModel()}
                   >
@@ -362,7 +312,7 @@ export function SettingsScreen() {
           <Panel
             title="Privacy & credentials"
             icon="lock"
-            actions={dataMode === 'preview' ? <DemoTag /> : <DataBadge origin="live" />}
+           
           >
             <KV
               items={[
@@ -373,13 +323,11 @@ export function SettingsScreen() {
                     : 'none',
                 },
                 { k: 'Backend', v: sidecarVersion ? `v${sidecarVersion}` : `v${health.data?.version ?? 'unreachable'}` },
-                { k: 'Values shown', v: 'never — the API returns names only' },
               ]}
             />
             <Notice tone="accent" icon="shield">
               <span>
-                Sythion stores secrets write-only through <span className="t-mono">PUT /api/v1/secrets/&#123;name&#125;</span>.
-                This interface has no field that could display one.
+                Secrets are write-only — this interface has no field that could display one.
               </span>
             </Notice>
             <Button size="sm" variant="subtle" icon="shield" onClick={() => navigate('security')}>
@@ -403,11 +351,7 @@ export function SettingsScreen() {
               </div>
             ))}
           </div>
-          <p className="t-faint" style={{ marginTop: 10 }}>
-            <Icon name="info" size={11} style={{ verticalAlign: '-1px', marginRight: 5 }} />
-            Screens are reachable by URL fragment — for example <span className="t-mono">#/security</span> opens the
-            control surface directly.
-          </p>
+
         </Panel>
       </div>
     </div>

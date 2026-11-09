@@ -16,7 +16,6 @@ const replyToTask = vi.fn();
 vi.mock('../hooks/useBackend', () => ({
   useTaskEvents: () => ({ data: [], refetch: vi.fn(), isLoading: false }),
   useActions: () => ({ live: true, replyToTask, resumeTask: vi.fn(), cancelTask: vi.fn() }),
-  useDataMode: () => 'live',
 }));
 
 function task(overrides: Partial<Task> = {}): Task {
@@ -45,7 +44,7 @@ describe('TaskDetailDrawer answer control', () => {
 
   it('hides answer input and Send for an unclassified wait while keeping the question visible', () => {
     const view = create(
-      <TaskDetailDrawer task={task({ waiting_kind: 'unknown', pending_question: 'How many people?' })} origin="live" onClose={() => {}} />,
+      <TaskDetailDrawer task={task({ waiting_kind: 'unknown', pending_question: 'How many people?' })} onClose={() => {}} />,
     );
     expect(view.root.findAllByType('input')).toHaveLength(0);
     expect(view.root.findAllByType('button').filter((button) => button.children.join('') === 'Send')).toHaveLength(0);
@@ -56,7 +55,7 @@ describe('TaskDetailDrawer answer control', () => {
 
   it('keeps answer input and Send for an exact typed clarification', () => {
     const view = create(
-      <TaskDetailDrawer task={task({ waiting_kind: 'clarification', version: 7 })} origin="live" onClose={() => {}} />,
+      <TaskDetailDrawer task={task({ waiting_kind: 'clarification', version: 7 })} onClose={() => {}} />,
     );
     const inputs = view.root.findAllByType('input');
     const buttons = view.root.findAllByType('button').filter((button) => button.children.join('') === 'Send');
@@ -67,7 +66,7 @@ describe('TaskDetailDrawer answer control', () => {
 
   it('does not offer free text for a staged permission wait', () => {
     const view = create(
-      <TaskDetailDrawer task={task({ waiting_kind: 'permission', pending_question: 'Do you approve?' })} origin="live" onClose={() => {}} />,
+      <TaskDetailDrawer task={task({ waiting_kind: 'permission', pending_question: 'Do you approve?' })} onClose={() => {}} />,
     );
     expect(view.root.findAllByType('input')).toHaveLength(0);
     expect(view.root.findAllByType('button').filter((button) => button.children.join('') === 'Send')).toHaveLength(0);
