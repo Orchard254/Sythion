@@ -910,6 +910,26 @@ class TaskRunner:
 
         old_state = task.state
 
+        # Any path reopening paused/interrupted work must pass the same
+        # recovery admission check UNDER this runner-owned writer lock.
+        # An earlier GET/preflight can never substitute for this check.
+        if (
+            old_state in (TaskState.PAUSED.value, TaskState.INTERRUPTED.value)
+            and new_state == TaskState.RUNNING
+        ):
+            from backend.services.resume_admission import read_task_resume_admission
+
+            try:
+                admission = read_task_resume_admission(self.db, task_id)
+            except Exception:
+                self._rollback_owned_transaction()
+                raise
+            if not admission["preflight_clear"]:
+                self._rollback_owned_transaction()
+                raise RuntimeError(
+                    f"Resume preflight refused: {admission['reason']}"
+                )
+
         # Under the writer lock, a durable cancellation (or other committed
         # change) that has replaced the expected running state must not be
         # silently overwritten by a stale progress write.

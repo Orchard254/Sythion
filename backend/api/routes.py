@@ -2041,6 +2041,22 @@ async def stop_active_task(db: Session = Depends(get_db)):
     return TaskResponse.model_validate(updated_task)
 
 
+@router.get("/tasks/{task_id}/resume-preflight")
+def get_task_resume_preflight(task_id: str, db: Session = Depends(get_db)):
+    """Read-only task resume assessment; never grants execution permission.
+
+    The actual task resume transition repeats this assessment under the task
+    runner's writer lock. A clear preflight can become stale immediately.
+    """
+    from backend.services.resume_admission import read_task_resume_admission
+
+    try:
+        assessment = read_task_resume_admission(db, task_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    return {"task_id": task_id, **assessment}
+
+
 @router.post("/tasks/{task_id}/resume", response_model=TaskResponse)
 async def resume_task(task_id: str, db: Session = Depends(get_db)):
     """Resume an interrupted task.
@@ -2049,9 +2065,29 @@ async def resume_task(task_id: str, db: Session = Depends(get_db)):
     a crash or restart. The task will re-observe state before continuing
     any mutating operations.
     """
+    from backend.services.resume_admission import read_task_resume_admission
+
     runner = get_runner(db)
-    
-    # Acquire lease with task ID for tracking
+
+    # Refuse uncertain work BEFORE attempting the global lease, which can
+    # itself reconcile an expired runner. A clean read is only a hint; the
+    # actual task transition repeats admission under its writer lock.
+    task = await runner.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    if task.state not in (TaskState.INTERRUPTED.value, TaskState.PAUSED.value):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot resume task in state {task.state}. Only interrupted or paused tasks can be resumed."
+        )
+    preview = read_task_resume_admission(db, task_id)
+    if not preview["preflight_clear"]:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": preview["reason"], "review_required": True},
+        )
+
+    # This lease does not bypass per-task ownership or action-replay policy.
     if not await runner.acquire_lease(task_id=task_id):
         raise HTTPException(
             status_code=409,
@@ -2077,15 +2113,20 @@ async def resume_task(task_id: str, db: Session = Depends(get_db)):
         )
         
         # Transition back to running
-        updated_task = await runner.transition_state(
-            task_id=task_id,
-            new_state=TaskState.RUNNING,
-            event_type="task.resumed",
-            event_data={
-                "resumed_at": datetime.utcnow().isoformat(),
-                "note": note
-            }
-        )
+        try:
+            updated_task = await runner.transition_state(
+                task_id=task_id,
+                new_state=TaskState.RUNNING,
+                event_type="task.resumed",
+                event_data={
+                    "resumed_at": datetime.utcnow().isoformat(),
+                    "note": note
+                }
+            )
+        except RuntimeError as exc:
+            if str(exc).startswith("Resume preflight refused:"):
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise
         
         # Start execution in background
         from backend.tools.executor import ToolExecutor

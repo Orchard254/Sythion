@@ -260,3 +260,31 @@ orchestration or issue consequential consent. Restart admission/recovery and
 end-to-end Windows execution remain open acceptance work (S184-S185). Focused
 local tests and synthetic-schema SQLite smoke tests do not establish complete
 production integration.
+
+## 9. Guarded manual resume admission (2026-11-09 implementation slice)
+
+A new read-only `GET /api/v1/tasks/{task_id}/resume-preflight` reports whether
+an explicit resume appears clear from committed task state, ownership and
+reasoning/action receipts. It is never a permission or liveness guarantee.
+The existing `POST /api/v1/tasks/{task_id}/resume` refuses blocked tasks before
+it acquires a runner lease. More importantly, `TaskRunner.transition_state`
+rechecks the same policy **under its writer transaction** on every
+paused/interrupted→running transition, regardless of which entry path or event
+label requested it. A changed event between preflight and transition therefore
+forces refusal instead of silently restarting work.
+
+Resume preflight blocks potentially live or unreconciled owners, incomplete or
+corrupt reasoning receipts, pending actions, outstanding uncertainty and
+historical mutating tool evidence. A recorded successful mutation does **not**
+prove it is safe to repeat. Prior `action.started` and `tool.executed` entries
+without an explicit `mutating:false` marker require review, even when the
+model says they succeeded. This is intentionally more conservative than the
+former resume behavior. No UI workflow for authenticated owner review,
+uncertainty clearance, action reconciliation or re-entry currently exists;
+some interrupted tasks will remain blocked pending S184-S186. Avoid manual
+database status flips as a workaround.
+
+The local verification covers pure policy tests and temporary synthetic-schema
+SQLite tests, **not** the actual Sythion TaskRunner/API or installed Windows
+runtime. The seven new repository integration regressions are retained as
+unexecuted acceptance work. Background autonomy remains off by default.
