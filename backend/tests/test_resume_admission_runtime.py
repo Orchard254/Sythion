@@ -118,9 +118,23 @@ def test_read_only_preflight_route_is_not_execution_approval(db):
     assert info['task_id']=='resume-me'
     assert info['preflight_clear'] is True
     assert info['automatic_replay_allowed'] is False
+    assert info['review']['status'] == 'preflight_clear_not_authorized'
+    assert info['review']['authorization_issued'] is False
+    assert info['review']['execution_started'] is False
 
 
 def test_preflight_missing_task_is_404(db):
     with pytest.raises(HTTPException) as exc:
         get_task_resume_preflight('does-not-exist',db=db)
     assert exc.value.status_code == 404
+
+
+def test_blocked_recovery_review_does_not_authorize_actions(db):
+    _receipt(db)
+    info = get_task_resume_preflight('resume-me', db=db)
+    assert info['review']['status'] == 'review_required'
+    assert info['review']['blocker'] == 'unresolved_reasoning_review_required'
+    assert info['review']['verification_steps']
+    assert info['review']['automatic_replay_allowed'] is False
+    assert info['review']['uncertainty_cleared'] is False
+    assert db.get(Task, 'resume-me').state == 'interrupted'

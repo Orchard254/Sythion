@@ -2049,12 +2049,17 @@ def get_task_resume_preflight(task_id: str, db: Session = Depends(get_db)):
     runner's writer lock. A clear preflight can become stale immediately.
     """
     from backend.services.resume_admission import read_task_resume_admission
+    from backend.services.recovery_review import build_recovery_review_packet
 
     try:
         assessment = read_task_resume_admission(db, task_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
-    return {"task_id": task_id, **assessment}
+    return {
+        "task_id": task_id,
+        **assessment,
+        "review": build_recovery_review_packet(assessment),
+    }
 
 
 @router.post("/tasks/{task_id}/resume", response_model=TaskResponse)

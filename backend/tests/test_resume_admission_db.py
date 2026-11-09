@@ -142,3 +142,35 @@ def test_action_started_requires_review_even_with_otherwise_clean_task(db):
 def test_malformed_tool_receipt_never_bypasses_mutation_check(db):
     event(db,'tool.executed',data=['unexpected', 'shape'])
     assert read_task_resume_admission(db,'t')['reason']=='prior_mutating_effect_review_required'
+
+
+def test_synthetic_db_recovery_review_packet_never_clears_mutation(db):
+    from backend.services.recovery_review import build_recovery_review_packet
+
+    event(db, 'tool.executed', data={
+        'mutating': True, 'success': True, 'output': 'DO NOT EXPOSE',
+        'tool_name': 'sensitive_action',
+    })
+    before = db.query(TaskEvent).count()
+    assessment = read_task_resume_admission(db, 't')
+    packet = build_recovery_review_packet(assessment)
+    assert assessment['reason'] == 'prior_mutating_effect_review_required'
+    assert packet['blocker'] == assessment['reason']
+    assert packet['verification_steps']
+    assert packet['automatic_replay_allowed'] is False
+    assert packet['authorization_issued'] is False
+    assert 'DO NOT EXPOSE' not in repr(packet)
+    assert 'sensitive_action' not in repr(packet)
+    assert db.query(TaskEvent).count() == before
+
+
+def test_synthetic_db_recovery_review_packet_for_unresolved_model_call(db):
+    from backend.services.recovery_review import build_recovery_review_packet
+
+    event(db, 'reasoning.started')
+    assessment = read_task_resume_admission(db, 't')
+    packet = build_recovery_review_packet(assessment)
+    assert packet['blocker'] == 'unresolved_reasoning_review_required'
+    assert packet['observations']['unresolved_reasoning_calls'] == 1
+    assert packet['requires_authenticated_reconciliation'] is True
+    assert packet['approved'] is False
