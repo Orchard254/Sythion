@@ -684,3 +684,56 @@ def planner_step(db_session, plan):
 
 
 
+
+
+class TestActivePlanGoalFinalization:
+    def test_auto_completion_ignores_superseded_open_step(self, db_session):
+        manager, planner = GoalManager(db_session), Planner(db_session)
+        goal = manager.create_goal("Replanned goal")
+        old = planner.create_plan(goal.id, [CandidateStepModel(key="old", description="Old unfinished work")])
+        current = planner.create_plan(goal.id, [CandidateStepModel(key="new", description="Current completed work")])
+        assert planner.plan_steps(old.id)[0].status == "ready"
+        planner.plan_steps(current.id)[0].status = "completed"
+        db_session.commit()
+        planner.recompute_goal_after_step_terminal(goal.id)
+        assert manager.get_goal(goal.id).status == "completed"
+
+    def test_manual_completion_ignores_superseded_open_step(self, db_session):
+        manager, planner = GoalManager(db_session), Planner(db_session)
+        goal = manager.create_goal("Manual replan")
+        old = planner.create_plan(goal.id, [CandidateStepModel(key="old", description="Old unfinished work")])
+        current = planner.create_plan(goal.id, [CandidateStepModel(key="new", description="Current completed work")])
+        planner.plan_steps(current.id)[0].status = "completed"
+        db_session.commit()
+        manager.complete_goal(goal.id)
+        assert manager.get_goal(goal.id).status == "completed"
+        assert planner.plan_steps(old.id)[0].status == "ready"
+
+    def test_completed_old_plan_does_not_hide_new_open_step(self, db_session):
+        manager, planner = GoalManager(db_session), Planner(db_session)
+        goal = manager.create_goal("Incomplete current work")
+        old = planner.create_plan(goal.id, [CandidateStepModel(key="old", description="Old completed work")])
+        planner.plan_steps(old.id)[0].status = "completed"
+        db_session.commit()
+        planner.create_plan(goal.id, [CandidateStepModel(key="new", description="New unfinished work")])
+        planner.recompute_goal_after_step_terminal(goal.id)
+        assert manager.get_goal(goal.id).status == "active"
+        with pytest.raises(ValueError, match="still open"):
+            manager.complete_goal(goal.id)
+
+    @pytest.mark.parametrize("kind", ["missing", "duplicate"])
+    def test_nonunique_active_plan_cannot_complete(self, db_session, kind):
+        manager, planner = GoalManager(db_session), Planner(db_session)
+        goal = manager.create_goal("Damaged active plan")
+        old = planner.create_plan(goal.id, [CandidateStepModel(key="old", description="Old task")])
+        current = planner.create_plan(goal.id, [CandidateStepModel(key="new", description="New task")])
+        planner.plan_steps(current.id)[0].status = "completed"
+        if kind == "missing":
+            current.status = "superseded"
+        else:
+            old.status = "active"
+        db_session.commit()
+        planner.recompute_goal_after_step_terminal(goal.id)
+        assert manager.get_goal(goal.id).status == "active"
+        with pytest.raises(ValueError, match="active plan"):
+            manager.complete_goal(goal.id)

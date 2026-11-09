@@ -325,6 +325,7 @@ or implementation. Avoid duplicating work already covered by S051-S063
 - [ ] S200 — Multi-session verified progress acceptance: Execute the three-step goal across two independent SQLite connections and an actual process restart; verify persisted evidence, exactly-once step events and UI recovery blockers, then run the installed Windows app (supports S194-S199).
 - [ ] S201 — Failed-task effect-aware retry acceptance: Run real ORM/TaskRunner tests for uncertain, mutating, incomplete-reasoning and safe read-only failures; validate explicit/background retry stops and Windows process-restart behavior (supports S195-S200).
 - [ ] S202 — Unique goal outcome evidence acceptance: In real ORM/TaskRunner/Windows tests, reject foreign goal tasks, superseded plans, mismatched task links and duplicate evidence bindings before any terminal step event or next-work execution (supports S195-S201).
+- [ ] S203 — Active-plan completion and mandatory kernel verifier acceptance: Run real ORM tests for replan completion isolation, missing/duplicate active plan refusal, and optional callback unable to waive runtime action evidence. Verify full Windows goal flow (supports S195-S202).
 
 ## Current status and next moves
 
@@ -666,3 +667,5 @@ Live profile `sythion-live-dev-restart` (backend :8000, UI :3001, provider
 - 2026-11-09: **Failed-task effect-aware retry preflight (S201 partial):** new read-only retry evidence gate inspects task ownership, pending/active action, mutating/uncertain receipts and reasoning integrity before failed goal retries. Explicit/background review-required stops added. Local 24 pure tests passed and source compiled; six real ORM/TaskRunner regression cases added but not executed. No full Windows/process-kill run, policy relaxation or GitHub Actions invocation. Commit uses `[skip ci]`.
 
 - 2026-11-09: **Unique active-plan goal-task binding (S202 implementation only):** added pure goal_execution_binding check shared by Planner direct completion, TaskOrchestrator outcome application and post-worker observation. Duplicated/foreign/stale evidence is unverified, never completion. 19 standalone pure tests passed locally (43 together with existing retry tests), but four new real ORM outcome checks and full Windows/process-kill acceptance were not run in the partial checkout. `[skip ci]` avoids Actions usage.
+
+- 2026-11-09: **S203 partial**: Planner and GoalManager completion now scope to one active plan; direct Planner completion always calls kernel verifier before optional caller veto. 23 new pure tests passed (66 focused combined), source compilation succeeded. Added seven full ORM tests but not run; Windows/process-kill acceptance pending. Commit uses [skip ci].

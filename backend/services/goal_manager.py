@@ -207,11 +207,42 @@ class GoalManager:
         if goal is None:
             raise ValueError(f"Goal {goal_id} not found")
 
-        steps = (
-            self.db.query(PlanStep)
+        # Historical plan steps do not determine the current goal's status.
+        # Keep legacy no-plan behavior, but fail closed on zero/multiple
+        # active plans when plan-backed steps are present.
+        has_plan_history = (
+            self.db.query(PlanStep.id)
             .filter(PlanStep.objective_id == goal_id)
-            .all()
+            .filter(PlanStep.plan_id.isnot(None))
+            .first() is not None
         )
+        if has_plan_history:
+            active = (
+                self.db.query(GoalPlan.id)
+                .filter_by(goal_id=goal_id, status="active")
+                .limit(2).all()
+            )
+            if len(active) != 1:
+                raise ValueError(
+                    f"Cannot complete goal {goal_id}: exactly one active plan required"
+                )
+            steps = (
+                self.db.query(PlanStep)
+                .filter(PlanStep.objective_id == goal_id)
+                .filter(PlanStep.plan_id == active[0][0])
+                .all()
+            )
+            if not steps:
+                raise ValueError(
+                    f"Cannot complete goal {goal_id}: active plan has no steps"
+                )
+        else:
+            steps = (
+                self.db.query(PlanStep)
+                .filter(PlanStep.objective_id == goal_id)
+                .filter(PlanStep.plan_id.is_(None))
+                .all()
+            )
         open_steps = [s for s in steps if s.status in STEP_OPEN_STATES]
         if open_steps:
             raise ValueError(

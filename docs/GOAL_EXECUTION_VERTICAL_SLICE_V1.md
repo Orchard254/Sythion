@@ -265,3 +265,8 @@ previous 24 retry-policy tests); source compiled. **Added but NOT executed in
 this partial runtime:** 4 full-ORM terminal outcome regressions exercising
 Planner, TaskRunner, Orchestrator and the goal event ledger. Full installed
 Windows/SQLite process-kill and end-to-end suites are still required.
+
+
+## S203: Active plan completion and mandatory verification
+
+Goal auto/manual completion now ignores obsolete superseded plan steps and refuses missing or multiple active plans. Legacy unplanned completion remains supported. Planner completion unconditionally invokes the runtime CompletionVerifier; a caller-provided callback can only veto, never waive, kernel evidence. Locally verified 23 new pure tests (66 combined with prior focused checks) and Python compilation. Added seven full ORM regressions but they were not executed in the partial checkout. Full backend, process-kill, Windows and React acceptance remain pending.

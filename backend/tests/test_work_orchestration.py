@@ -863,3 +863,29 @@ class TestGoalEvidenceBinding:
         ) == "unverified"
         assert len(DbEventLedger(db_session).event_history(scope)) == before
         assert GoalManager(db_session).get_goal(goal.id).status == "active"
+
+
+@pytest.mark.parametrize("blocking_field,value", [
+    ("active_action_id", "unresolved-action"),
+    ("pending_action", '{"status":"approved"}'),
+])
+def test_runtime_verifier_cannot_be_bypassed_by_optional_callback(
+    db_session, runner, blocking_field, value,
+):
+    """A terminal task projection plus permissive callback is not evidence."""
+    goal, planner, orch = _goal_with_steps(db_session, runner, ("one", ""))
+    started = asyncio.run(orch.start_next_step(goal.id))
+    task_id = started["task"].id
+    task = db_session.query(Task).filter_by(id=task_id).one()
+    task.state = "completed"
+    setattr(task, blocking_field, value)
+    db_session.commit()
+    step_id = started["step"].id
+    before = len(planner.ledger.event_history(f"goal:{goal.id}"))
+    with pytest.raises(ValueError, match="runtime evidence unacceptable"):
+        planner.complete_step_from_evidence(
+            step_id, task_id, completion_precondition_error_fn=lambda _: None,
+        )
+    assert planner.get_step(step_id).status == "running"
+    assert len(planner.ledger.event_history(f"goal:{goal.id}")) == before
+    assert GoalManager(db_session).get_goal(goal.id).status == "active"

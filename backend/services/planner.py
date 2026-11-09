@@ -450,6 +450,18 @@ class Planner:
                 f"Cannot complete step {step.step_key}: evidence task is "
                 f"'{task.state}', not completed"
             )
+        # An optional external precondition can veto, never replace, the
+        # runtime's mandatory action and completion evidence verification.
+        from backend.services.execution_components import CompletionVerifier
+
+        kernel_error = CompletionVerifier(
+            self.db, self.ledger.event_history
+        ).precondition_error(task_id)
+        if kernel_error:
+            raise ValueError(
+                f"Cannot complete step {step.step_key}: runtime evidence "
+                f"unacceptable ({kernel_error})"
+            )
         if completion_precondition_error_fn is not None:
             error = completion_precondition_error_fn(task_id)
             if error:
@@ -519,19 +531,29 @@ class Planner:
         if goal is None or goal.status != "active":
             return progress
 
-        steps = self.goal_steps(goal_id)
-        open_states = STEP_OPEN_STATES | {"failed"}
-        if any(s.status in open_states for s in steps):
-            return progress
-        required = [s for s in steps if s.status != "cancelled"]
-        if required and all(s.status == "completed" for s in required):
-            if not (goal.completion_criteria and not goal.criteria_verified):
-                manager.transition_goal(
-                    goal_id,
-                    "completed",
-                    event_data={"progress": progress},
-                    note="All required steps completed with verified evidence.",
-                )
+        from backend.services.goal_completion_policy import may_complete_active_goal
+
+        # Only the unique current active plan counts. Previous versions are
+        # historical; multiple active plans or a missing plan fail closed.
+        active_plans = (
+            self.db.query(GoalPlan)
+            .filter_by(goal_id=goal_id, status="active")
+            .limit(2).all()
+        )
+        active_steps = self.plan_steps(active_plans[0].id) if len(active_plans) == 1 else []
+        if may_complete_active_goal(
+            goal_status=goal.status,
+            active_plan_count=len(active_plans),
+            step_statuses=[step.status for step in active_steps],
+            criteria_required=bool(goal.completion_criteria),
+            criteria_verified=bool(goal.criteria_verified),
+        ):
+            manager.transition_goal(
+                goal_id,
+                "completed",
+                event_data={"progress": progress},
+                note="All required steps completed with verified evidence.",
+            )
         return progress
 
     # --- replanning -----------------------------------------------------------------
