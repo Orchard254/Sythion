@@ -315,6 +315,60 @@ Still the running live dev setup (designed for normal-user browser testing):
 - Vite dev server on http://127.0.0.1:3001/ serving the Companion/Assistant app.
 - 2026-11-09: full rendered onboarding completed: key accepted, `beam` model tested OK, text mode selected, #/assistant shows conversation, turn sent via Enter, Synth answered live from the configured provider.
 - Dev caches/pids isolated; `.wite` none.
+- 2026-11-09 (later pass), live browser-driven (tab served from 127.0.0.1:3001,
+  backend on 127.0.0.1:8000, live provider `beam`):
+  - User-granted `C:\Sythion\sythion` as a persisted file root via the actual
+    Settings UI ("Add file grant" + "Save settings"); `GET /settings` confirmed
+    `persisted_file_roots=["C:\\Sythion\\sythion"]` and
+    `effective_file_roots` updated immediately, no restart.
+  - The parked README background task was **unclassifiable** by design:
+    the model reached `request_user_input`; `pending_action` stayed NULL;
+    the typed chat reply failed closed with TaskInstructionRevision.CHANGED
+    ("That task changed or stopped…"). The wait cannot be answered in chat
+    (test_model_questions_are_unknown_waits_and_inference_excluded).
+  - Fresh request completed end-to-end in the browser:
+    `Read C:\Sythion\sythion\README.md…` → task `4112e63f-5255-4e4e-9832-d2eabbdea661`
+    `state=completed`; answer matched the on-disk file: title
+    "Sythion (Synth) - Trusted Runtime Core for a Larger Intelligence System",
+    first paragraph "This repository is the trusted local runtime core of a
+    larger intelligence system. It is not the whole intelligence stack by itself."
+  - Stale parked task `945ef86e-cb05-4bd3-92d4-6bc5384dd961` interrupted from the
+    Operations UI (`#/overview` → task → Interrupt task); API confirms
+    `state=cancelled`, `terminal_reason=cancelled_by_user`.
+  - The Assistant UI renders background tasks as linked pairs appended to the
+    main thread (request + final result), e.g. the cancelled pair shows
+    "This message was cancelled." — noisy but truthful; not a data-pairing bug.
+  - Environment note: machine-level `SYTHION_FILE_ROOTS` in this live profile
+    points at `C:/Users/Administrator/{Documents,Downloads,Desktop}` while the
+    session user is `orcha` — stale/wrong-user inherited env values; the
+    per-profile persisted grant (`C:\Sythion\sythion`) is independent of them.
+  - System note: model hallucinated `C:\Ai\sythion\README.md` after `file_search`
+    matched that string in repo test fixtures
+    (`backend/tests/test_phase14a_action_classification.py`); observed, not fixed
+    (model-behavior issue, not a code defect), and the safe boundary held.
+
+Tool inventory (63 registered, live `GET /api/v1/tools`; proven = executed
+end-to-end by a provider turn in a live/isolated profile, unproven = registered
+but never executed by the provider):
+- Proven: system_time, system_battery, system_file_roots, file_list,
+  file_read, file_search (all verified passes, or resolved safety denials that
+  were correct), plus memory path via post-task consolidation
+  (memory entry persisted across restart; recall proven).
+- Exercised but correctly blocked by the permission/consent boundary:
+  objective_create, memory_store (parked at approval; by design).
+- Unproven live: system_disk, system_processes, system_active_window,
+  window_list, browser_tabs, browser_switch_tab, browser_open_tab,
+  browser_close_tab, browser_read_page, browser_interact, browser_screenshot,
+  system_volume, system_power, system_power_control, brightness_control,
+  network_status, system_capabilities, tool_propose, clipboard_read,
+  device_status, file_create, file_write, file_move, file_copy, file_delete,
+  file_hash, app_list, app_launch, app_focus, app_close, package_search,
+  package_list, package_install, package_uninstall, gui_observe, gui_focus,
+  gui_click, gui_type, gui_hotkey, gui_paste, gui_invoke, gui_set_value,
+  gui_screenshot, gui_batch_form, memory_store (direct), memory_recall,
+  memory_forget, memory_link, memory_recall_related, memory_export,
+  activity_recall, objective_add_step, objective_complete_step,
+  objective_get_plan, objective_update_summary, memory_stats, browser_*.
 
 Still blocked/not done:
 - A live provider round trip succeeded in the isolated `sythion-e2e-inventory`
@@ -327,8 +381,10 @@ Still blocked/not done:
   the entry and injection counters present; memory lookup still UNVERIFIED
   quality-wise but functionally present in browser-adjacent runtime.
 - Voice mic/speaker: not selected by user, remains untested.
-- Live verification of tools beyond `system_time` and the memory path (file
-  ops, browser bridge, GUI, app launch, package install) remains unproven.
+- Direct live coverage of the remaining tools above (browser bridge, GUI, app
+  launch, package install/uninstall, file mutations, objective planner tools)
+  is unproven; the only proven mutating-boundary items are the fail-closed
+  denials (memory_store, objective_create) which behaved as designed.
 - `/setup` key UI uses a browser click-through; polish/persistence to be verified on next live session.
 - Local intermittent flakiness in `test_phase95_hardening::TestAdmissionAtomicity` remains uncorrelated with this session.
 - Full default backend marker-isolated suite rerun after mirror sync: **3744 passed, 45 skipped, 10 xfailed, 0 failed**.
