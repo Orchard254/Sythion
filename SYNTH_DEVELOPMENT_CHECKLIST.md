@@ -298,9 +298,11 @@ Achieved (synthetic/focused evidence unless stated otherwise):
   release payload + canonical drift 71/1 skipped; clean build/install 15/7;
   data dir 15; conversation memory 30; scoped memory 11; assistant turns 44;
   goals 46; wake 35/3; tools 27/3 — total 294 passed, 14 skipped, 0 failed.
-- Acceptance suite 208 passed/2 skipped; release-payload sync holds.
-- Full default backend run earlier reported 3747 passed with one mirror-drift
-  failure, which is fixed; CI local 3.14 vs CI 3.11 still outstanding.
+- Full default backend run completed: 3743 passed / 45 skipped / 10 xfailed /
+  1 failed — the only failure was the generated-mirror drift for
+  `backend/core/auth.py`; after syncing the one file, the mirror test passes.
+  The narrow confirmations remain green: release-payload 60 passed, verify
+  mirror OK, and the previously-isolated marker suites are unaffected.
 - Browser→API chain verified with synthetic profile; real-provider health and
   conversation/memory recall verified (blue keyboard, synth-prototype-check
   previously; keyboard recall this run); provider turn created and parked task
