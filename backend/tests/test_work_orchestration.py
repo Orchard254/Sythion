@@ -403,6 +403,59 @@ class TestIdempotency:
 
 
 class TestRetry:
+    @pytest.mark.parametrize("event_kind,payload", [
+        ("action.uncertain", {"action_id": "previous-effect"}),
+        ("action.started", {"action_id": "maybe-applied"}),
+        ("tool.executed", {"mutating": True, "success": True}),
+        ("tool.executed", {"success": False}),
+        ("reasoning.started", {"job_id": "unfinished-reasoning", "purpose": "task_decision"}),
+    ])
+    def test_failed_task_with_uncertain_receipts_is_never_retried(
+        self, db_session, runner, event_kind, payload,
+    ):
+        goal, planner, orch = _goal_with_steps(db_session, runner, ("a", ""))
+        started = asyncio.run(orch.start_next_step(goal.id))
+        task_id = started["task"].id
+        asyncio.run(runner.transition_state(
+            task_id, TaskState.RUNNING, "task.execution_started", {},
+        ))
+        asyncio.run(runner.record_event(task_id, event_kind, payload))
+        asyncio.run(runner.transition_state(
+            task_id, TaskState.FAILED, "task.failed", {},
+            terminal_reason="execution stopped",
+        ))
+        asyncio.run(orch.apply_task_outcome(task_id))
+        step_id = started["step"].id
+        assert planner.get_step(step_id).status == "failed"
+        before = len(planner.ledger.event_history(f"goal:{goal.id}"))
+        decision = orch.schedule_retry_if_allowed(step_id)
+        assert decision["scheduled"] is False
+        assert decision["requires_review"] is True
+        assert planner.get_step(step_id).status == "failed"
+        assert db_session.query(Task).filter_by(objective_id=goal.id).count() == 1
+        assert len(planner.ledger.event_history(f"goal:{goal.id}")) == before
+
+    def test_explicit_readonly_receipt_preserves_bounded_retry_policy(
+        self, db_session, runner,
+    ):
+        goal, planner, orch = _goal_with_steps(db_session, runner, ("a", ""))
+        started = asyncio.run(orch.start_next_step(goal.id))
+        task_id = started["task"].id
+        asyncio.run(runner.transition_state(
+            task_id, TaskState.RUNNING, "task.execution_started", {},
+        ))
+        asyncio.run(runner.record_event(
+            task_id, "tool.executed", {"mutating": False, "success": True},
+        ))
+        asyncio.run(runner.transition_state(
+            task_id, TaskState.FAILED, "task.failed", {},
+            terminal_reason="transient read-only failure",
+        ))
+        asyncio.run(orch.apply_task_outcome(task_id))
+        decision = orch.schedule_retry_if_allowed(started["step"].id)
+        assert decision["scheduled"] is True
+        assert planner.get_step(started["step"].id).status == "ready"
+
     @pytest.mark.parametrize("corruption", [
         "completed_but_unverified", "missing_task", "mismatched_link", "foreign_goal",
     ])

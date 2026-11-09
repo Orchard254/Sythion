@@ -144,3 +144,19 @@ The added ORM/worker integration regressions require the complete private
 checkout and remain **unexecuted** here. The broader OS process-kill and
 Windows acceptance work above is still outstanding; do not mark S199/S200
 complete based on the isolated tests.
+
+
+## Failed-task effect-aware retry preflight (2026-11-09)
+
+Terminal FAILED is not proof of no external effects. Before a FAILED plan step
+can return to READY, the new read-only goal_retry_safety preflight inspects the
+persisted task, task ownership and action/tool/reasoning receipts. Unsafe
+evidence or an unavailable query blocks retry with no new task, no event,
+no attempt increment and a review-required stop for explicit or background
+goal execution. A clean FAILED task merely remains eligible for the existing
+bounded retry policy; tool permission and runner admission are unchanged.
+
+**Executed locally in partial checkout:** 24 pure retry-policy tests passed,
+Python module/tests compilation passed. **Not run here:** six new real
+ORM/TaskRunner regression cases, full backend, Windows installed runtime and
+actual process-kill/restart tests. S195-S201 remain open.

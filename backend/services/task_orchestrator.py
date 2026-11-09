@@ -480,6 +480,25 @@ class TaskOrchestrator:
                 "category": None, "requires_review": True,
             }
 
+        from backend.services.goal_retry_safety import read_failed_goal_retry_safety
+
+        # A failed task may have already produced an external effect. Do not
+        # schedule a fresh task without inspecting committed action evidence.
+        try:
+            safety = read_failed_goal_retry_safety(planner.db, task_id)
+        except Exception as exc:
+            logger.warning("Goal retry evidence inspection failed (%s)",
+                           type(exc).__name__)
+            safety = {"safe_to_consider_retry": False, "reason": "retry_evidence_unavailable"}
+        if not safety["safe_to_consider_retry"]:
+            return {
+                "step_id": step.id, "scheduled": False,
+                "attempt_count": step.attempt_count,
+                "max_attempts": self.retry_policy.max_attempts,
+                "category": None, "requires_review": True,
+                "review_reason": safety["reason"],
+            }
+
         error_fn = _default_completion_precondition(planner.db, task_id)
         precondition_error = (
             error_fn(task_id) if task is not None and task.state == "completed" else None
@@ -1078,7 +1097,11 @@ class TaskOrchestrator:
                 # goal — stop this session so an owner can replan.
                 retry_info = self.schedule_retry_if_allowed(started["step"].id)
                 if not (retry_info and retry_info.get("scheduled")):
-                    stop_reason = "step_retry_exhausted_or_permanent_failure"
+                    stop_reason = (
+                        "unresolved_step_review_required"
+                        if retry_info and retry_info.get("requires_review")
+                        else "step_retry_exhausted_or_permanent_failure"
+                    )
                     break
                 # Retry scheduled: the goal enters backoff-aware selection on
                 # the next iteration; if it is the only goal and now in
