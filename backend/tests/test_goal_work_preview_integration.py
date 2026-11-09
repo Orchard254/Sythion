@@ -116,11 +116,41 @@ def test_scoped_preview_excludes_other_goals_plan_data(db):
     assert "SECRET unrelated task" not in repr(p)
 
 
-def test_preview_refuses_pending_uncommitted_orm_mutations(db):
-    goal, _ = goal_and_plan(db)
-    goal.title = "Not yet committed"
+@pytest.mark.parametrize("uncommitted", [
+    "goal_dirty", "step_dirty", "new_task", "deleted_step",
+])
+def test_preview_refuses_pending_uncommitted_orm_mutations(db, uncommitted):
+    goal, plan = goal_and_plan(db)
+    # A commit expires SQLAlchemy objects. Fetching goal.id after writing an
+    # expired goal.title can issue an implicit SELECT, which autoflushes the
+    # dirty object BEFORE preview starts. Cache identifiers before mutation
+    # so this test actually exercises the preview's clean-session guard.
+    goal_id = goal.id
+    first = Planner(db).plan_steps(plan.id)[0]
+    flushes = []
+    event.listen(db, "after_flush", lambda session, context: flushes.append(True))
+
+    if uncommitted == "goal_dirty":
+        goal.title = "Not yet committed"
+        assert goal in db.dirty
+    elif uncommitted == "step_dirty":
+        first.status = "completed"
+        assert first in db.dirty
+    elif uncommitted == "new_task":
+        db.add(Task(
+            id="pending-preview-task", original_request="uncommitted work",
+            state="created", version=1, objective_id=goal_id,
+        ))
+        assert db.new
+    else:
+        db.delete(first)
+        assert db.deleted
+
     with pytest.raises(RuntimeError, match="clean ORM"):
-        read_goal_work_preview(db, goal.id)
+        read_goal_work_preview(db, goal_id)
+    assert not flushes, "read-only preview must not flush uncommitted changes"
+    # The preview neither commits nor discards caller-owned mutations.
+    assert db.new or db.dirty or db.deleted
     db.rollback()
 
 

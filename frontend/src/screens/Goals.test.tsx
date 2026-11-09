@@ -16,6 +16,11 @@ vi.mock('../hooks/useBackend', () => ({
   // preview result. Never manufacture a runnable goal in the mock.
   useGoalNextWork: () => ({ data: null, isLoading: false, isError: false }),
   useTaskEvents: () => ({ data: [] }),
+  // TaskDetailDrawer always calls the preflight hook even for created tasks.
+  // No recovery permission is supplied by this linked-task fixture.
+  useTaskResumePreflight: () => ({
+    data: null, isError: false, isFetching: false, refetch: vi.fn(),
+  }),
   useActions: () => ({}),
 }));
 

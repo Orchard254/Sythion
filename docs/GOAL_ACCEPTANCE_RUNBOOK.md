@@ -91,3 +91,38 @@ python -m pytest -q backend/tests --maxfail=1 --disable-warnings
 ```
 
 Once resolved, run the full acceptance runner with report capture. These repairs are *not yet rerun on Windows*; do not mark the full backend or frontend suite green based solely on this commit.
+
+## Windows second acceptance investigation (2026-11-10)
+
+User-reported clean checkout `3e60555` on Windows 11, Python 3.14.7:
+
+- The formerly crashing Phase 9.5 SQLite concurrency case **passed** (1 test).
+- The frontend targeted Goal screen suite improved to **1 passed / 1 failed**:
+  the remaining failure was a missing `useTaskResumePreflight` export in
+  the mocked `useBackend` module, used unconditionally by TaskDetailDrawer.
+- The full backend ran through **1,471 passed, 9 skipped, 4 xfailed** before
+  stopping at `test_preview_refuses_pending_uncommitted_orm_mutations`
+  because an expired SQLAlchemy `goal.id` argument access autoflushed the
+  staged `goal.title` change before the preview function was called.
+
+A standalone SQLAlchemy 2.0 reproduction confirmed that an expired entity's
+primary-key property may load/flush before the callee starts. The preview's
+production guard already rejects a dirty/new/deleted ORM session at entry and
+queries under `no_autoflush`. The test now caches `goal_id` *before* staging
+changes and covers dirty goal, dirty step, new task and deleted step; it asserts
+no flush occurs and the pending changes stay in the calling Session. The
+frontend fixture now supplies a non-authorizing task resume preflight mock.
+Neither change modifies runtime code or grants permission to resume work.
+
+**Do not mark full backend/frontend accepted until Windows reruns** on this new
+revision. For fast feedback, run:
+
+```powershell
+git pull --ff-only origin master
+python -m pytest -q backend/tests/test_goal_work_preview_integration.py --disable-warnings
+npm run test --prefix frontend -- src/screens/Goals.test.tsx
+python -m pytest -q backend/tests --maxfail=1 --disable-warnings
+```
+
+Once the complete backend and frontend suites pass, repeat the commit-bound
+acceptance runner with process-kill and the installed-app checks separately.
