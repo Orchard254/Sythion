@@ -317,13 +317,23 @@ Still the running live dev setup (designed for normal-user browser testing):
 - Dev caches/pids isolated; `.wite` none.
 
 Still blocked/not done:
-- Real-provider background task execution proof → pending further turns; last provider task failed with HTTP 503/rate limit earlier.
+- A live provider round trip succeeded in the isolated `sythion-e2e-inventory`
+  profile: background system_time task completed and persisted across sidecar
+  restart; memory entry `verification_word=flintstone-771` (USER scope,
+  source USER_CONVERSATION, confidence 0.9) was created by post-task
+  consolidation, persisted across restart, and recalled by a fresh provider
+  turn after a restart ("flintstone-771"); transient 503/parse failure
+  occurred on one turn then recovered on the next. `MEMORY_REPORT` showed
+  the entry and injection counters present; memory lookup still UNVERIFIED
+  quality-wise but functionally present in browser-adjacent runtime.
 - Voice mic/speaker: not selected by user, remains untested.
+- Live verification of tools beyond `system_time` and the memory path (file
+  ops, browser bridge, GUI, app launch, package install) remains unproven.
 - `/setup` key UI uses a browser click-through; polish/persistence to be verified on next live session.
 - Local intermittent flakiness in `test_phase95_hardening::TestAdmissionAtomicity` remains uncorrelated with this session.
 - Full default backend marker-isolated suite rerun after mirror sync: **3744 passed, 45 skipped, 10 xfailed, 0 failed**.
 
-Next moves (in order):
+## Next moves (in order):
 
 1. Commit current coherent batch, rerun the continuity/E2E evidence after save.
 2. Wire continuity-kernel memory access and entry adapters one at a time behind
@@ -334,8 +344,6 @@ Next moves (in order):
 
 Every future report must preserve this achieved/remaining/next sequence rather
 than restart from vague claims.
-
-## Work register
 
 No implementation is activated by creating this checklist. Populate before
 starting each bounded work unit; reference earlier investigation only with its
