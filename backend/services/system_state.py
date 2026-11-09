@@ -179,10 +179,15 @@ class CheckResult:
     name: str
     status: str
     evidence: Dict[str, Any] = field(default_factory=dict)
+    # A check that is disabled by configuration (never probed, never run) is
+    # reported honestly as UNKNOWN but is not a degradation signal: it was not
+    # supposed to run. Disabled checks are excluded from the aggregate rollup.
+    disabled: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {"name": self.name, "status": self.status,
-                "evidence": self.evidence}
+                "evidence": self.evidence,
+                "disabled": self.disabled}
 
 
 def run_health_checks(include_provider: bool = False, db_session=None) -> Dict[str, Any]:
@@ -252,7 +257,8 @@ def run_health_checks(include_provider: bool = False, db_session=None) -> Dict[s
                                       {"error": str(exc)[:200]}))
     else:
         checks.append(CheckResult("provider", UNKNOWN,
-                                  {"detail": "remote probe disabled"}))
+                                  {"detail": "remote probe disabled"},
+                                  disabled=True))
 
     # 6. Startup sequence aggregate (Phase 4.5). Partial startup must be
     # reported, never treated as fully healthy by consumers.
@@ -279,7 +285,7 @@ def run_health_checks(include_provider: bool = False, db_session=None) -> Dict[s
         _st_status = UNKNOWN
     checks.append(CheckResult("startup_sequence", _st_status, _evidence))
 
-    statuses = {c.status for c in checks}
+    statuses = {c.status for c in checks if not c.disabled}
     if UNAVAILABLE in statuses:
         overall = UNAVAILABLE
     elif DEGRADED in statuses or UNKNOWN in statuses:

@@ -40,6 +40,27 @@ const INTEGRATION_TONE: Record<string, 'ok' | 'warn' | 'danger' | 'idle' | 'info
   unavailable: 'danger',
 };
 
+function summarizeEvidenceValue(value: unknown): string {
+  if (value === null || value === undefined) return '—';
+  if (Array.isArray(value)) {
+    return value.length === 0 ? 'none' : `${value.length} ${value.length === 1 ? 'item' : 'items'}`;
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) return 'empty';
+    return entries
+      .map(([k, v]) => `${k}=${typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v)}`)
+      .join(', ');
+  }
+  return String(value);
+}
+
+function summarizeEvidence(evidence: Record<string, unknown>): string {
+  return Object.entries(evidence)
+    .map(([k, v]) => `${humanize(k)}: ${summarizeEvidenceValue(v)}`)
+    .join(' · ');
+}
+
 export function SystemScreen() {
   const [tab, setTab] = useState<Tab>('runtime');
   const health = useHealth();
@@ -95,7 +116,22 @@ export function SystemScreen() {
             label="Health"
             icon="activity"
             value={agentHealth.data ? humanize(agentHealth.data.overall) : '—'}
-            foot={`${checks.length} checks · ${checks.filter((c) => c.status !== 'HEALTHY').length} not healthy`}
+            foot={checks.length === 0
+              ? 'No checks reported'
+              : [
+                  `${checks.length} checks`,
+                  ...[
+                    ['HEALTHY', 'healthy'],
+                    ['DEGRADED', 'degraded'],
+                    ['UNAVAILABLE', 'unavailable'],
+                    ['UNKNOWN', 'unknown'],
+                  ]
+                    .map(([key, label]) => {
+                      const n = checks.filter((c) => c.status === key).length;
+                      return n > 0 ? `${n} ${label}` : null;
+                    })
+                    .filter(Boolean),
+                ].join(' · ')}
           />
           <Stat label="Tools" icon="layers" value={tools.data?.length ?? '—'} foot="Registered in the executor" />
           <Stat label="Skills" icon="automations" value={skills.data?.length ?? '—'} foot="Validated procedures" />
@@ -212,8 +248,8 @@ export function SystemScreen() {
                           {humanize(c.name)}
                         </span>
                         {Object.keys(c.evidence ?? {}).length > 0 && (
-                          <span className="t-mono t-clamp-2">
-                            {JSON.stringify(c.evidence).slice(0, 160)}
+                          <span className="t-faint t-clamp-2" title={JSON.stringify(c.evidence)}>
+                            {summarizeEvidence(c.evidence as Record<string, unknown>)}
                           </span>
                         )}
                       </div>
