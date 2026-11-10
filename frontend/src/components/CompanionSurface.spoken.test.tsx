@@ -44,7 +44,7 @@ describe('Companion spoken replies', () => {
     await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
 
     expect(mock.turn).toHaveBeenCalledWith('Hello Synth', expect.any(String));
-    expect(mock.turn.mock.lastCall?.[1]).toMatch(/\\S/);
+    expect(mock.turn.mock.lastCall?.[1]).toMatch(/\S/);
     expect(mock.speak).toHaveBeenCalledWith('Hi there');
     expect(draftSetter).toHaveBeenCalledWith('');
     view.unmount();
@@ -95,6 +95,7 @@ describe('Companion request identity and uncertainty', () => {
   it('reuses an identity on an explicit retry after a send exception', async () => {
     mock.turn.mockReset();
     mock.speak.mockReset();
+    draftSetter.mockClear();
     mock.turn.mockRejectedValueOnce(new Error('Secret backend detail'));
     mock.turn.mockResolvedValueOnce({
       exchange_id: 'conv-retry', user_text: 'Hello Synth',
