@@ -75,3 +75,29 @@ provider HTTP 429, missing tool calls, or incorrect arguments instead of a
 single opaque error. HTTP 400 can have several causes (including unsupported
 tool_choice); raw provider details and keys are deliberately not printed.
 Never retry a model request automatically or skip capability gates.
+
+### Owner evidence and 429 handling
+
+Owner Windows logs on commit 7dcb709: `--verify-key` returned AUTH PASS,
+and 30/30 targeted adapter + probe CLI tests passed. The next Gemma
+4 26B A4B free model capability probe returned provider HTTP 429. This
+**does not** prove a tool-call incompatibility or a bad API key.
+OpenRouter states free model variants are subject to 20 requests/minute
+and 50 requests/day for unfunded accounts and that failed requests count.
+Upstream endpoint capacity may separately cause 429. See:
+https://openrouter.ai/collections/free-models
+https://openrouter.ai/pricing
+Review usage in https://openrouter.ai/activity; do not loop retries.
+
+### Explicit cloud ModelClient, still not active
+
+`CompatibleCloudModelClient` now implements the existing reasoning
+`ModelClient` interface and delegates to the fixed-endpoint compatible
+adapter. It must be injected explicitly; Sythion's default factory still
+constructs Ollama Cloud. The reasoning engine no longer constructs an
+unrelated Ollama adapter merely to populate a compatibility field when a
+different client is supplied. No provider preference is persisted or
+selected from frontend yet. Before enabling in tasks, onboarding must
+bind provider ID, model ID, credentials, verified inference and tool
+capabilities to the same profile and reject stale evidence. D-002 still
+blocked on a genuine working cloud inference provider.

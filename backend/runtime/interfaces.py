@@ -105,7 +105,9 @@ class LeaseManager(Protocol):
 class ModelClient(Protocol):
     """What the reasoning layer actually needs from a model provider.
 
-    Implementations wrap concrete providers (currently Ollama Cloud only).
+    Implementations wrap concrete providers. Ollama Cloud remains the default;
+    OpenAI-compatible clouds require explicit client injection and verified
+    capability evidence. No automatic provider switching.
     The reasoning layer must not import provider modules directly.
     """
 

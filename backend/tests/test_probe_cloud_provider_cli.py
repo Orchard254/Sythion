@@ -87,3 +87,26 @@ def test_verify_key_requires_explicit_network_permission(monkeypatch, capsys):
 def test_verify_key_rejects_provider_without_documented_auth_endpoint():
     with pytest.raises(SystemExit):
         probe.main(["--provider", "groq", "--verify-key", "--allow-network"])
+
+
+@pytest.mark.asyncio
+async def test_429_adds_non_retrying_free_quota_guidance(monkeypatch, capsys):
+    requests = []
+    class Limited:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def prove_tool_capability(self):
+            requests.append("probe")
+            raise probe.CompatibleProviderError("Model capability probe failed (provider HTTP 429)")
+        async def close(self):
+            requests.append("close")
+    monkeypatch.setattr(probe, "OpenAICompatibleCloudAdapter", Limited)
+    args = argparse.Namespace(provider="openrouter", model="free", list=False,
+                              verify_key=False, prove_tools=True,
+                              free_only=False, max_models=20)
+    assert await probe.run_probe(args, "inert") == 2
+    output = capsys.readouterr().err
+    assert "Rate limited" in output
+    assert "does NOT prove" in output
+    assert "inert" not in output
+    assert requests == ["probe", "close"]

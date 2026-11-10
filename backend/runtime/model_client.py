@@ -7,7 +7,7 @@ routing, no fallback, no behavior change versus calling the adapter directly.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from backend.adapters.ollama_adapter import get_adapter
 from backend.runtime.interfaces import ModelClient
@@ -38,3 +38,45 @@ class OllamaCloudModelClient:
 def get_default_model_client() -> ModelClient:
     """Single construction point for the default provider-backed client."""
     return OllamaCloudModelClient()
+
+
+
+class CompatibleCloudModelClient:
+    """Explicitly selected OpenAI-compatible cloud decision client.
+
+    Not a default, not an automatic fallback and not a credential switch.
+    The adapter verifies actual tool-calling ability before a decision.
+    Tests may inject a synthetic adapter; normal construction reads the
+    appropriate build-scoped provider secret from the existing vault.
+    """
+
+    def __init__(
+        self, provider_id: str, model_id: str, *, adapter: Optional[Any] = None,
+    ):
+        # Delayed import preserves Ollama's existing default startup path.
+        from backend.adapters.openai_compatible_adapter import (
+            OpenAICompatibleCloudAdapter, provider_spec,
+        )
+        self._provider_id = provider_spec(provider_id).provider_id
+        self._adapter = (
+            adapter if adapter is not None else
+            OpenAICompatibleCloudAdapter(self._provider_id, model_id)
+        )
+
+    async def decide(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        max_tokens: int = 4000,
+    ) -> Dict[str, Any]:
+        return await self._adapter.decide(
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+        )
+
+    def provider_name(self) -> str:
+        return self._provider_id
+
+    async def close(self) -> None:
+        await self._adapter.close()

@@ -86,7 +86,17 @@ async def run_probe(args: argparse.Namespace, credential: str) -> int:
             print("No local tool ran. No execution permissions were granted.")
         return 0
     except CompatibleProviderError as exc:
-        print("NOT VERIFIED: " + str(exc), file=sys.stderr)
+        category = str(exc)
+        print("NOT VERIFIED: " + category, file=sys.stderr)
+        if "provider HTTP 429" in category:
+            print(
+                "Rate limited: do not repeat probes now. OpenRouter free models "
+                "have shared request caps, and upstream model capacity may "
+                "also be limited. Check https://openrouter.ai/activity and "
+                "retry only when allowance or capacity is available. "
+                "A 429 does NOT prove the model cannot call tools.",
+                file=sys.stderr,
+            )
         return 2
     except (ValueError, TypeError):
         print("NOT VERIFIED: invalid model decision response", file=sys.stderr)

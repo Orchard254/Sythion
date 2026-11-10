@@ -138,11 +138,13 @@ class ModelDecisionEngine:
     ):
         self.db = db_session
         self.tool_executor = tool_executor
-        # Model provider boundary (Phase 1): the engine depends on the narrow
-        # ModelClient interface, not the concrete Ollama adapter. No routing,
-        # no fallback — one provider-backed implementation today.
-        self.model_client: ModelClient = model_client or get_default_model_client()
-        self.adapter = get_default_model_client()._adapter  # compat: health/list use
+        # The reasoning engine sees one explicit model client. When injected,
+        # never instantiate the default Ollama client as an accidental second
+        # provider: this would consult its credentials and bind task state
+        # across provider identities. The old adapter attribute stays available
+        # for compatibility, pointing to the SAME selected client only.
+        self.model_client: ModelClient = model_client if model_client is not None else get_default_model_client()
+        self.adapter = getattr(self.model_client, "_adapter", None)
         # Phase 6: bounded evidence-based fallback state.
         from backend.core.config import settings
 
