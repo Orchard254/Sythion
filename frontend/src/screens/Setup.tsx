@@ -9,9 +9,12 @@ import { SythionMark } from '../components/icons';
 import { CloudProviderPreview } from '../components/CloudProviderPreview';
 import { setupService, modelService, voiceService, type SetupReadiness } from '../services/api';
 
-interface SetupProps { onComplete: (textFirst: boolean) => void; }
+interface SetupProps {
+  onComplete: (textFirst: boolean) => void;
+  onCloudConversationOnly?: () => void;
+}
 
-export function SetupScreen({ onComplete }: SetupProps) {
+export function SetupScreen({ onComplete, onCloudConversationOnly }: SetupProps) {
   const [step, setStep] = useState(0);
   const [showCloudPreview, setShowCloudPreview] = useState(false);
   const [apiKey, setApiKey] = useState('');
@@ -171,7 +174,7 @@ export function SetupScreen({ onComplete }: SetupProps) {
                 onClick={() => setShowCloudPreview((current) => !current)}>
                 {showCloudPreview ? 'Hide alternative cloud providers' : 'Explore alternative cloud providers (preview)'}
               </Button>
-              {showCloudPreview && <CloudProviderPreview />}
+              {showCloudPreview && <CloudProviderPreview onEnterConversationOnly={onCloudConversationOnly} />}
             </>}
             {step === 1 && <Panel title="2. Choose a model" icon="info">
               <div className="stack" style={{ gap: 12 }}>

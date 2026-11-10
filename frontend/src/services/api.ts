@@ -582,6 +582,15 @@ export interface CloudPreviewChatResult extends CloudPreviewSelection {
   task_executed: false;
 }
 
+export interface CloudConversationHistoryTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface CloudConversationOnlyResult extends CloudPreviewChatResult {
+  conversation_only: true;
+}
+
 export const cloudPreviewService = {
   status: async (): Promise<CloudPreviewStatus> => {
     const response = await apiClient.get('/inference-preview/providers');
@@ -618,6 +627,27 @@ export const cloudPreviewService = {
     const response = await apiClient.post('/inference-preview/chat', {
       ...selection,
       text: text.trim(),
+      confirm_network_request: true,
+    });
+    return response.data;
+  },
+
+  conversationTurn: async (
+    selection: CloudPreviewSelection,
+    text: string,
+    history: CloudConversationHistoryTurn[],
+  ): Promise<CloudConversationOnlyResult> => {
+    if (!text.trim() || text.trim().length > 1200 ||
+        !Array.isArray(history) || history.length > 6 ||
+        history.some((turn, i) => !turn || !turn.content.trim() ||
+          turn.content.length > 1200 || turn.role !== (i % 2 === 0 ? 'user' : 'assistant')) ||
+        history.length % 2 !== 0) {
+      throw new Error('Invalid bounded cloud conversation request.');
+    }
+    const response = await apiClient.post('/cloud-conversation/turn', {
+      ...selection,
+      text: text.trim(),
+      history,
       confirm_network_request: true,
     });
     return response.data;

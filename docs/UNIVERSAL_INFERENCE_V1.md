@@ -317,3 +317,20 @@ modify existing `assistant/turns`, Ollama onboarding or execution gates.
 
 Offline backend gate:
 `python -m pytest -q backend/tests/test_cloud_conversation_only.py backend/tests/test_cloud_text_evidence.py backend/tests/test_cloud_preview_chat.py --disable-warnings`
+
+### Experimental first-run cloud conversation-only screen
+
+After a successful text preview, the owner may explicitly choose
+`Enter conversation-only cloud mode` in setup. The UI fetches current
+`text_probe_verified` status again before entry, then the dedicated screen
+reads the same authoritative status on mount. It is separate from
+`AssistantScreen`, `WorkEntry`, tool approvals and normal app navigation.
+Each message calls `/cloud-conversation/turn`, submitting at most the last
+three in-memory message pairs. No chat is saved or replayed automatically.
+Close or reload the screen and the conversation transcript is lost.
+Any expired/changed model evidence blocks further messages. It never
+changes Ollama as the normal provider or unlocks tasks and automation.
+
+Offline frontend gate:
+`npm run test --prefix frontend -- src/screens/CloudConversationOnly.test.tsx src/components/CloudProviderPreview.test.tsx src/screens/Setup.test.tsx src/services/cloudPreview.test.ts`
+`npm run build --prefix frontend`

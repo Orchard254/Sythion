@@ -5,6 +5,7 @@ import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { Button, Notice, Panel } from './components/ui';
 import { AssistantScreen } from './screens/Assistant';
+import { CloudConversationOnlyScreen } from './screens/CloudConversationOnly';
 import { AutomationsScreen } from './screens/Automations';
 import { MemoryScreen } from './screens/Memory';
 import { CompanionSurface } from './components/CompanionSurface';
@@ -78,6 +79,9 @@ function AppContent() {
   const notify = useAppStore((s) => s.notify);
 
   const [setupNeeded, setSetupNeeded] = useState<boolean | null>(null);
+  // Owner-selected alternative lane. Not persisted across reloads and
+  // never unlocks the full Assistant/task shell.
+  const [cloudConversationOnly, setCloudConversationOnly] = useState(false);
   useEffect(() => {
     if (!isInitialized || !isConnected) return;
     setSetupNeeded(null);
@@ -231,6 +235,10 @@ function AppContent() {
     );
   }
 
+  if (isConnected && cloudConversationOnly) {
+    return <CloudConversationOnlyScreen onExit={() => setCloudConversationOnly(false)} />;
+  }
+
   if (isConnected && setupNeeded) {
     return (
       <SetupScreen
@@ -239,6 +247,7 @@ function AppContent() {
           setRoute('assistant');
           setSetupNeeded(false);
         }}
+        onCloudConversationOnly={() => setCloudConversationOnly(true)}
       />
     );
   }

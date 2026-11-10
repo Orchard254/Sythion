@@ -27,7 +27,11 @@ function previewFailure(error: unknown): string {
   return 'That action could not be completed. Check the local connection and configuration.';
 }
 
-export function CloudProviderPreview() {
+export function CloudProviderPreview({
+  onEnterConversationOnly,
+}: {
+  onEnterConversationOnly?: () => void;
+} = {}) {
   const [provider, setProvider] = useState<CloudPreviewProviderId>('openrouter');
   const [model, setModel] = useState('');
   const [key, setKey] = useState('');
@@ -140,6 +144,21 @@ export function CloudProviderPreview() {
     setNotice('Model candidate saved for testing. It is not active.');
   });
 
+  const enterConversationOnly = () => perform(async () => {
+    // Owner requests the independent answer-only lane explicitly. Re-fetch
+    // current proof instead of trusting one old in-memory UI boolean.
+    const latest = await cloudPreviewService.status();
+    const selectionCurrent = latest.staged.provider_id === selection.provider_id &&
+      latest.staged.model_id === selection.model_id;
+    const storedKey = latest.providers.some((p) =>
+      p.provider_id === selection.provider_id && p.credential_configured === true);
+    if (latest.text_probe_verified !== true || !selectionCurrent || !storedKey ||
+        latest.ready_for_execution !== false || !onEnterConversationOnly) {
+      throw new Error('Cloud conversation verification is not current');
+    }
+    onEnterConversationOnly();
+  });
+
   const probe = () => perform(async () => {
     if (!canProbe) return;
     setConsent(false);
@@ -222,8 +241,15 @@ export function CloudProviderPreview() {
           {stagedMatches && status?.text_probe_verified === true && (
             <Notice tone="info" icon="check">
               A recent plain-text response is verified for this exact staged model and key.
-              This does not enable ordinary chat, tasks, or autonomous execution.
+              This does not enable the normal assistant or autonomous execution.
             </Notice>
+          )}
+          {onEnterConversationOnly && credentialConfigured && stagedMatches &&
+              status?.text_probe_verified === true && (
+            <Button variant="primary" disabled={busy}
+              onClick={() => void enterConversationOnly()}>
+              Enter conversation-only cloud mode
+            </Button>
           )}
           <p className="t-muted">
             Send one short message directly to the staged provider. This does not need
