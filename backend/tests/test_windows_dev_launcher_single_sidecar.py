@@ -34,3 +34,19 @@ def test_tauri_uses_dynamic_port_and_per_launch_handshake():
     assert '.arg("uvicorn")' in source
     assert '.env("SYTHION_HANDSHAKE_TOKEN_FILE", &token_file)' in source
     assert '.env("SYTHION_PORT", port.to_string())' in source
+
+
+def test_rust_custom_prototype_cfg_is_registered():
+    build_script = (ROOT / "src-tauri" / "build.rs").read_text(encoding="utf-8")
+    assert 'println!("cargo:rustc-check-cfg=cfg(prototype_build)");' in build_script
+    assert 'println!("cargo:rustc-cfg=prototype_build");' in build_script
+
+
+def test_handshake_watcher_uses_selected_profile_instead_of_default():
+    watcher = (ROOT / "src-tauri" / "src" / "sidecar.rs").read_text(encoding="utf-8")
+    shell = (ROOT / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+    assert "fn read_handshake(dir: &Path)" in watcher
+    assert "let path = dir.join(HANDSHAKE_FILE_NAME);" in watcher
+    assert "read_handshake(&dir)" in watcher
+    assert "let handshake_path = dir.join(HANDSHAKE_FILE_NAME);" in watcher
+    assert "sidecar::spawn_watcher(app_handle, profile_dir.clone());" in shell

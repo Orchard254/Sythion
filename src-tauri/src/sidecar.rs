@@ -624,8 +624,10 @@ fn resolve_python(app_handle: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), S
     Err("unable to resolve a Python runtime: no development checkout and no Tauri resource directory".to_string())
 }
 
-fn read_handshake() -> Option<HandshakePayload> {
-    let path = data_dir().join(HANDSHAKE_FILE_NAME);
+fn read_handshake(dir: &Path) -> Option<HandshakePayload> {
+    // Read from the exact profile chosen by the shell, including prototype
+    // builds. The default profile may belong to a different installation.
+    let path = dir.join(HANDSHAKE_FILE_NAME);
     let content = std::fs::read_to_string(path).ok()?;
     let payload: HandshakePayload = serde_json::from_str(&content).ok()?;
     if payload.port == 0 || payload.token.is_empty() {
@@ -802,7 +804,7 @@ pub fn spawn_sidecar_for_build(
     Ok(child)
 }
 
-pub fn spawn_watcher(app_handle: tauri::AppHandle) {
+pub fn spawn_watcher(app_handle: tauri::AppHandle, dir: PathBuf) {
     std::thread::spawn(move || {
         let expected_token = app_handle
             .state::<AppState>()
@@ -813,13 +815,13 @@ pub fn spawn_watcher(app_handle: tauri::AppHandle) {
             .unwrap_or_default();
         let deadline = Instant::now() + Duration::from_secs(HANDSHAKE_TIMEOUT_SECS);
         while Instant::now() < deadline {
-            if let Some(payload) = read_handshake() {
+            if let Some(payload) = read_handshake(&dir) {
                 if payload.token != expected_token {
                     crate::shell_log("[sythion] sidecar handshake token mismatch");
                     // Remove the stale handshake file, but only after the same
                     // reparse-point safety checks used elsewhere. Never follow
                     // a reparse point or delete through an unsafe storage path.
-                    let handshake_path = data_dir().join(HANDSHAKE_FILE_NAME);
+                    let handshake_path = dir.join(HANDSHAKE_FILE_NAME);
                     if safe_storage_path(&handshake_path).is_ok() && !is_reparse_point(&handshake_path) {
                         let _ = std::fs::remove_file(&handshake_path);
                     } else {
@@ -1070,4 +1072,29 @@ mod tests {
         assert!(text.contains(DATA_DIR_ENV));
         assert!(text.contains(LEGACY_DATA_DIR_ENV));
     }
+    /// An isolated prototype must find its handshake in its own profile,
+    /// even when the production profile has no handshake at all.
+    #[test]
+    fn handshake_uses_selected_profile_directory() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let selected_dir = std::env::temp_dir().join(format!(
+            "sythion-selected-handshake-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&selected_dir).expect("test profile");
+        std::fs::write(
+            selected_dir.join("sidecar.json"),
+            r#"{"port":41357,"token":"test-profile-token"}"#,
+        )
+        .expect("test handshake");
+
+        let handshake = super::read_handshake(&selected_dir).expect("selected profile handshake");
+        assert_eq!(handshake.port, 41357);
+        assert_eq!(handshake.token, "test-profile-token");
+        std::fs::remove_dir_all(&selected_dir).expect("cleanup isolated test profile");
+    }
+
 }
