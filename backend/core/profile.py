@@ -158,7 +158,7 @@ def get_staged_cloud_selection() -> Dict[str, str]:
             not isinstance(model, str) or not 1 <= len(model) <= 180):
         return {}
     import re
-    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,179}", model) is None:
+    if "://" in model or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,179}", model) is None:
         return {}
     return {"provider_id": provider, "model_id": model}
 
@@ -174,6 +174,7 @@ def stage_cloud_selection(provider_id: str, model_id: str) -> Dict[str, str]:
     if not isinstance(provider_id, str) or provider_id not in PROVIDERS:
         raise ValueError("Unsupported inference provider")
     if (not isinstance(model_id, str) or
+            "://" in model_id or
             re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,179}", model_id) is None):
         raise ValueError("Invalid cloud model ID")
     state = {"provider_id": provider_id, "model_id": model_id}
