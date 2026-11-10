@@ -229,6 +229,9 @@ it('does not auto-retry a rate-limited text reply, and clears consent', async ()
 
 it('enters answer-only mode only after a fresh matching server verification', async () => {
   await settle(() => view.unmount());
+  // The shared beforeEach mounted a previous instance. Only count requests
+  // made by the actual candidate check on this new component instance.
+  mock.status.mockClear();
   const entered = vi.fn();
   mock.status.mockResolvedValue({
     active_provider: 'ollama-cloud', staged: candidate,
