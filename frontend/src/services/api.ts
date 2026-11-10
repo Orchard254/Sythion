@@ -246,8 +246,16 @@ export const taskService = {
     const response = await apiClient.post('/assistant/interpret', { original_request: originalRequest, ignore_pending: ignorePending });
     return response.data;
   },
-  create: async (originalRequest: string, interactionHint?: 'conversation' | 'task'): Promise<Task> => {
-    const response = await apiClient.post('/tasks', { original_request: originalRequest, interaction_hint: interactionHint });
+  create: async (
+    originalRequest: string,
+    interactionHint?: 'conversation' | 'task',
+    idempotencyKey?: string
+  ): Promise<Task> => {
+    const response = await apiClient.post('/tasks', {
+      original_request: originalRequest,
+      interaction_hint: interactionHint,
+      idempotency_key: idempotencyKey,
+    });
     return response.data;
   },
 

@@ -4,6 +4,7 @@ import { conversationService, taskService, voiceService } from '../services/api'
 import { conversationTasks, nextSpokenReply } from '../lib/firstConversation';
 import { Icon } from '../components/icons';
 import { TaskDetailDrawer } from '../components/TaskDetailDrawer';
+import { WorkEntry } from '../components/WorkEntry';
 import { AssistantStatusIndicator } from '../components/AssistantStatus';
 import { useVoiceCapture } from '../hooks/useVoiceCapture';
 import {
@@ -680,6 +681,22 @@ useLayoutEffect(() => {
                     } finally {
                       setSubmitting(false);
                     }
+                  }}
+                />
+                <WorkEntry
+                  text={transcriptDraft}
+                  disabled={submitting || captureBusy || isListening || !actions.live}
+                  createTask={actions.createTask}
+                  onCreated={(task, submittedText) => {
+                    // The task can be running already: show its actual persisted
+                    // state, never call a "start" route a second time.
+                    if (useAppStore.getState().transcriptDraft.trim() === submittedText) {
+                      setTranscriptDraft('');
+                    }
+                    setSelected(task);
+                    void tasks.refetch();
+                    void queryClient.invalidateQueries({ queryKey: ['objectives'] });
+                    void queryClient.invalidateQueries({ queryKey: ['goals'] });
                   }}
                 />
               </div>

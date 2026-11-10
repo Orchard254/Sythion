@@ -308,9 +308,9 @@ export function useActions() {
         if (!live) throw new Error('Not connected to a Sythion backend.');
         return api.assistantService.turn(text, clientRequestId);
       },
-      async createTask(request: string, interactionHint?: 'conversation' | 'task') {
+      async createTask(request: string, interactionHint?: 'conversation' | 'task', idempotencyKey?: string) {
         if (!live) throw new Error('Not connected to a Sythion backend.');
-        return api.taskService.create(request, interactionHint);
+        return api.taskService.create(request, interactionHint, idempotencyKey);
       },
       async cancelTask(taskId: string) {
         if (!live) throw new Error('Not connected to a Sythion backend.');

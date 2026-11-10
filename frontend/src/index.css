@@ -3641,3 +3641,34 @@ html[data-surface='companion'] .companion {
     animation: none !important;
   }
 }
+
+/* Explicit user-initiated task entry, separate from conversational Send. */
+.ac-work {
+  margin: 8px 4px 0;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.ac-work__entry,
+.ac-work__controls {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.ac-work__entry > span { flex: 1; min-width: 150px; line-height: 1.4; }
+.ac-work__confirm {
+  padding: 12px;
+  border-radius: var(--r-md);
+  background: var(--n-surface);
+  box-shadow: var(--sh-inset-sm);
+}
+.ac-work__confirm > strong { color: var(--text-0); font-size: 12px; }
+.ac-work__confirm > p { margin: 8px 0; line-height: 1.5; }
+.ac-work__request {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  max-height: 100px;
+  overflow-y: auto;
+  color: var(--text-1);
+}
+.ac-work__feedback { color: var(--warn); padding: 6px 2px 0; line-height: 1.5; }

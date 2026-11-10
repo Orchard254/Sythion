@@ -359,3 +359,31 @@ describe('goalService.nextWork read-only preview contract', () => {
     await expect(goalService.nextWork('g1')).rejects.toThrow('Network Error');
   });
 });
+
+
+describe('explicit executable work API identity', () => {
+  it('passes the same caller-supplied idempotency key to POST /tasks', async () => {
+    const captured: Array<{ url: string | undefined; body: Record<string, unknown> }> = [];
+    const original = apiClient.defaults.adapter;
+    try {
+      apiClient.defaults.adapter = async (config) => {
+        captured.push({ url: config.url, body: JSON.parse(String(config.data)) });
+        return {
+          data: JSON.stringify({ id: 'task-1', state: 'created', original_request: 'Check battery' }),
+          status: 200, statusText: 'OK', headers: {}, config,
+        } as AxiosResponse;
+      };
+      await taskService.create('Check battery', 'task', 'client-key-123');
+    } finally {
+      apiClient.defaults.adapter = original;
+    }
+    expect(captured).toEqual([{
+      url: '/tasks',
+      body: {
+        original_request: 'Check battery',
+        interaction_hint: 'task',
+        idempotency_key: 'client-key-123',
+      },
+    }]);
+  });
+});
