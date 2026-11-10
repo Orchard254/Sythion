@@ -65,3 +65,19 @@ Required checks on the updated commit:
 D-003 memory claim reliability, D-005 unread badge, remaining UI defects and
 safe goal creation UX remain OPEN. Do not mark D-002 fully resolved from
 unit tests or source inspection alone.
+
+## Owner Windows targeted frontend gate: PASS at c5e3874 (2026-11-10)
+
+The owner supplied Windows PowerShell logs for the fast-forward from fa53b7a to c5e3874. The author did not run the Windows commands and has not inspected an installed application.
+
+- Targeted Vitest: 107/107 PASS, 6/6 files, including TopBar (3), WorkEntry (6), Assistant (73), Goals (2), API (21), and format (2).
+- npm run build --prefix frontend PASS: TypeScript and Vite 5.4.21; 191 modules transformed without TypeScript errors.
+- The separately supplied backend memory-prompt test run at fa53b7a was 2/2 PASS.
+- The owner test report contained no failed tests or unhandled error summary. This is a unit/integration/build gate, not live UI acceptance.
+- Earlier failures at 4008bc5 and fa53b7a were addressed by test setup, Vitest 1.x mock typings and formatter cleanup, with no production permission-policy change.
+
+### Next D-002 live browser acceptance
+
+Use an isolated sandbox frontend (port 3000) and sandbox backend (8001), without touching the existing port-8000 service. Independently validate normal Send and the confirmed Create task path. Capture POST /tasks body including interaction_hint=task and idempotency_key, verify saved task ID and task evidence timeline, inspect safe permission refusal, and check duplicate creation behavior without intentionally replaying side effects. Keep original evidence/report artifacts in the owner's local untracked docs/reports/ folder.
+
+Release readiness remains BLOCKED on native installed Tauri acceptance, D-002 browser verification, D-003 synchronous verified memory writes, and other outstanding UI acceptance items.
