@@ -74,6 +74,10 @@ export function CompanionSurface() {
   const reducedMotionRef = useRef(false);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
+  // Reuse the same backend request identity for an identical retry after an
+  // unknown transport outcome. Do not automatically retry or mint a second
+  // exchange on an exception. A different draft starts a new request.
+  const pendingTurnRef = useRef<{ text: string; id: string } | null>(null);
 
   // Honour the OS reduced-motion setting. Read once here rather than adding a
   // media-query listener, because the robot's only motion is decorative and a
@@ -102,16 +106,23 @@ export function CompanionSurface() {
       setSubmitting(true);
       setSurfaceError(null);
       try {
-        // Prefer the conversational turn endpoint: it returns the assistant's
-        // reply as text in the same request, which is what allows the Companion
-        // to speak it without a second round-trip or manual intervention.
-        // Fall back to task creation for runtimes that only expose that path.
-        const turn =
-          typeof actions.assistantTurn === 'function'
-            ? await actions.assistantTurn(text)
-            : await actions.createTask(text).then((task) => ({
-                assistant_text: (task as { final_result?: string | null })?.final_result ?? '',
-              }));
+        // The backend REQUIRES client_request_id and uses it to deduplicate
+        // possible replays. A conversational send must never silently fall
+        // back to executable POST /tasks.
+        if (typeof actions.assistantTurn !== 'function') {
+          throw new Error('Conversational transport is unavailable.');
+        }
+        const reserved = pendingTurnRef.current?.text === text
+          ? pendingTurnRef.current
+          : {
+              text,
+              id: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                ? crypto.randomUUID()
+                : `companion-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+            };
+        pendingTurnRef.current = reserved;
+        const turn = await actions.assistantTurn(text, reserved.id);
+        pendingTurnRef.current = null;
         const reply = turn?.assistant_text?.trim() ?? '';
         setCaption(reply || null);
         setTranscriptDraft('');
@@ -134,9 +145,11 @@ export function CompanionSurface() {
             setSpeaking(false);
           }
         }
-      } catch (err) {
-        // Honest failure: the text was NOT submitted.
-        setSurfaceError(err instanceof Error ? err.message : 'Could not send to Sythion.');
+      } catch {
+        // A rejected request is not always proof of non-dispatch. Keep the
+        // draft and request identity for an explicit user retry, never make
+        // an optimistic "not sent" claim or display raw backend exception text.
+        setSurfaceError('Could not confirm this message. It was not retried automatically. Check the conversation before trying again.');
       } finally {
         setSubmitting(false);
       }

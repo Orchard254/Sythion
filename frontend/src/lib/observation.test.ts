@@ -286,6 +286,28 @@ describe('collectAttention', () => {
     expect(items[0].derived).toBe(true);
   });
 
+  it('does not show historical blocked steps from abandoned or completed goals', () => {
+    const step = {
+      id: 10, objective_id: 'o1', step_order: 1, description: 'Old dependency',
+      status: 'blocked' as const, linked_task_id: null,
+      result_summary: null, blocker_reason: 'old blocker',
+      created_at: '2026-10-19T10:00:00', updated_at: '2026-10-19T10:00:00',
+    };
+    const items = collectAttention({
+      tasks: [],
+      objectives: [
+        objective({ id: 'abandoned', status: 'abandoned', steps: [step] }),
+        objective({ id: 'completed', status: 'completed', steps: [step] }),
+      ],
+      now,
+    });
+    expect(items).toHaveLength(0);
+    const paused = collectAttention({
+      tasks: [], objectives: [objective({ status: 'paused', steps: [step] })], now,
+    });
+    expect(paused.map((item) => item.kind)).toEqual(['blocked_step']);
+  });
+
   it('orders approvals ahead of failures, unverified and stalls', () => {
     const items = collectAttention({
       tasks: [

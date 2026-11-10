@@ -347,8 +347,12 @@ export function collectAttention(input: {
     }
   }
 
-  // 5. Blocked plan steps. Explicitly labelled step-level per contract 2.6.
+  // 5. Blocked plan steps. Only active/paused goals are candidates for
+  // current attention; completed or abandoned goals are historical records.
+  // Keeping their old blocked steps in "Needs you" contradicts the goal
+  // lifecycle and makes abandoned work appear actionable.
   for (const objective of objectives) {
+    if (objective.status !== 'active' && objective.status !== 'paused') continue;
     for (const step of objective.steps ?? []) {
       if (step.status !== 'blocked') continue;
       items.push({

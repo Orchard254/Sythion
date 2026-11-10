@@ -43,7 +43,8 @@ describe('Companion spoken replies', () => {
     await act(async () => { send?.props.onClick(); });
     await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
 
-    expect(mock.turn).toHaveBeenCalledWith('Hello Synth');
+    expect(mock.turn).toHaveBeenCalledWith('Hello Synth', expect.any(String));
+    expect(mock.turn.mock.lastCall?.[1]).toMatch(/\\S/);
     expect(mock.speak).toHaveBeenCalledWith('Hi there');
     expect(draftSetter).toHaveBeenCalledWith('');
     view.unmount();
@@ -87,6 +88,39 @@ describe('Companion spoken replies', () => {
 
     expect(mock.speak).toHaveBeenCalled();
     expect(JSON.stringify(view.toJSON())).toContain('Speaker device lost');
+    view.unmount();
+  });
+});
+describe('Companion request identity and uncertainty', () => {
+  it('reuses an identity on an explicit retry after a send exception', async () => {
+    mock.turn.mockReset();
+    mock.speak.mockReset();
+    mock.turn.mockRejectedValueOnce(new Error('Secret backend detail'));
+    mock.turn.mockResolvedValueOnce({
+      exchange_id: 'conv-retry', user_text: 'Hello Synth',
+      assistant_text: 'Recovered', status: 'completed', background_task_ids: [],
+    });
+    mock.speak.mockResolvedValueOnce({ success: false });
+    const { CompanionSurface } = await import('./CompanionSurface');
+    const view = create(<CompanionSurface />);
+    await act(async () => {});
+    const robot = view.root.findAllByType('button').find((button) => button.props['aria-label'] === 'Show Sythion input');
+    await act(async () => { robot?.props.onClick(); });
+    const send = () => view.root.findAllByType('button').find((button) => button.props['aria-label'] === 'Send to Sythion');
+    await act(async () => { send()?.props.onClick(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(mock.turn).toHaveBeenCalledTimes(1);
+    const id = mock.turn.mock.calls[0][1];
+    expect(typeof id).toBe('string');
+    expect(id.length).toBeGreaterThan(0);
+    expect(JSON.stringify(view.toJSON())).toContain('Could not confirm this message');
+    expect(JSON.stringify(view.toJSON())).not.toContain('Secret backend detail');
+    expect(draftSetter).not.toHaveBeenCalledWith('');
+    await act(async () => { send()?.props.onClick(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(mock.turn).toHaveBeenCalledTimes(2);
+    expect(mock.turn.mock.calls[1]).toEqual(['Hello Synth', id]);
+    expect(draftSetter).toHaveBeenCalledWith('');
     view.unmount();
   });
 });
