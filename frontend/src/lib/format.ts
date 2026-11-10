@@ -29,9 +29,11 @@ export function relTime(iso: string | null | undefined): string {
   const diff = Date.now() - ts;
   const future = diff < 0;
   const s = Math.abs(diff) / 1000;
+  // "just now" and "in a moment" are already complete phrases.
+  // Never produce the misleading "just now ago" / "in a moment from now".
+  if (s < 45) return future ? 'in a moment' : 'just now';
   let out: string;
-  if (s < 45) out = future ? 'in a moment' : 'just now';
-  else if (s < 3600) out = `${Math.round(s / 60)}m`;
+  if (s < 3600) out = `${Math.round(s / 60)}m`;
   else if (s < 86400) out = `${Math.round(s / 3600)}h`;
   else if (s < 604800) out = `${Math.round(s / 86400)}d`;
   else out = new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });

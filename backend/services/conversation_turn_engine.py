@@ -2160,6 +2160,13 @@ class ConversationTurnEngine:
             "current message clearly answers that actual clarification question. "
             "A topic change is a new conversation, not an answer. "
             "Never say an action completed merely because it was queued. "
+            "Chat history and discussion recall are not proof of durable long-term "
+            "memory storage. No memory-write receipt is supplied in this path. "
+            "If the user asks you to remember something, never claim it was saved "
+            "or promise future recall without verified memory-write evidence; "
+            "explain that it can be used in the current conversation, but persistent "
+            "memory storage is not confirmed. "
+
             "For follow-ups after completed background tasks, answer directly "
             "from the available result; do not replay, repeat, or re-run the "
             "task, and use an empty commands array unless new work is requested. "
