@@ -50,6 +50,9 @@ export function useAppInit() {
   const setLoading = useAppStore((s) => s.setLoading);
 
   const [isInitialized, setIsInitialized] = useState(false);
+  // The initial health poll must not use Vite's fixed-port fallback while
+  // Tauri is still discovering its dynamically assigned sidecar port.
+  const [isBridgeReady, setIsBridgeReady] = useState(false);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
@@ -61,6 +64,7 @@ export function useAppInit() {
       try {
         await initBridge(controller.signal);
         if (controller.signal.aborted) return;
+        setIsBridgeReady(true);
 
         const health = await healthService.check();
         if (controller.signal.aborted) return;
@@ -96,9 +100,10 @@ export function useAppInit() {
   }, [attempt, setConnected, setError, setHealthStatus, setLoading, setTasks]);
 
   const retry = useCallback(() => {
+    setIsBridgeReady(false);
     setIsInitialized(false);
     setAttempt((n) => n + 1);
   }, []);
 
-  return { isInitialized, retry };
+  return { isInitialized, isBridgeReady, retry };
 }

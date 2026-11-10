@@ -83,6 +83,28 @@ afterEach(async () => {
 });
 
 describe('useAppInit race guards', () => {
+
+  it('keeps bridge readiness false until configuration, and resets it on retry', async () => {
+    const pending = deferred<{ baseUrl: string; controlToken: string }>();
+    resolveBridgeConfig.mockReturnValueOnce(pending.promise);
+    await act(async () => { view = create(<Harness />); });
+    expect(hook.isBridgeReady).toBe(false);
+    expect(healthCheck).not.toHaveBeenCalled();
+
+    pending.resolve({ baseUrl: 'http://127.0.0.1:60333/api/v1', controlToken: 'synthetic-test-token' });
+    await flush(12);
+    expect(hook.isBridgeReady).toBe(true);
+    expect(configureBridge).toHaveBeenCalledTimes(1);
+
+    // A fresh discovery attempt must not continue polling against an old bridge.
+    const next = deferred<{ baseUrl: string; controlToken: string }>();
+    resolveBridgeConfig.mockReturnValueOnce(next.promise);
+    await act(async () => { hook.retry(); });
+    expect(hook.isBridgeReady).toBe(false);
+    next.resolve({ baseUrl: 'http://127.0.0.1:62000/api/v1', controlToken: 'synthetic-next-token' });
+    await flush(12);
+    expect(hook.isBridgeReady).toBe(true);
+  });
   it('normal success configures bridge, health and tasks', async () => {
     await act(async () => {
       view = create(<Harness />);
@@ -90,6 +112,7 @@ describe('useAppInit race guards', () => {
     await flush(12);
     expect(hook.isInitialized).toBe(true);
     expect(configureBridge).toHaveBeenCalled();
+    expect(hook.isBridgeReady).toBe(true);
     expect(healthCheck).toHaveBeenCalled();
     expect(taskList).toHaveBeenCalled();
     expect(useAppStore.getState().isConnected).toBe(true);
@@ -104,6 +127,7 @@ describe('useAppInit race guards', () => {
     });
     await flush(12);
     expect(hook.isInitialized).toBe(true);
+    expect(hook.isBridgeReady).toBe(false);
     expect(useAppStore.getState().error).toBe('bridge down');
     expect(useAppStore.getState().isConnected).toBe(false);
     expect(useAppStore.getState().isLoading).toBe(false);

@@ -267,3 +267,24 @@ it('rejects cloud-mode entry when the server reports expired evidence', async ()
   expect(entered).not.toHaveBeenCalled();
   expect(text(view.root)).toContain('That action could not be completed');
 });
+
+it('shows a safe 403 explanation for a rejected credential write without echoing secret data', async () => {
+  mock.saveCredential.mockRejectedValueOnce({
+    response: { status: 403, data: { detail: 'private-provider-key-here' } },
+  });
+  await enterKey();
+  expect(text(view.root)).toContain('blocked the local request (403)');
+  expect(text(view.root)).not.toContain('private-provider-key-here');
+  expect(text(view.root)).toContain('No key is stored');
+});
+
+it('points to local logs on a failed credential-store operation without disclosing provider data', async () => {
+  mock.saveCredential.mockRejectedValueOnce({
+    response: { status: 500, data: { detail: 'private-provider-key-here' } },
+  });
+  await enterKey();
+  expect(text(view.root)).toContain('local operation (500)');
+  expect(text(view.root)).toContain('sidecar.err.log');
+  expect(text(view.root)).not.toContain('private-provider-key-here');
+  expect(text(view.root)).toContain('No key is stored');
+});

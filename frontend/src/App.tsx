@@ -92,7 +92,7 @@ function ScreenFor({
 }
 
 function AppContent() {
-  const { isInitialized, retry } = useAppInit();
+  const { isInitialized, isBridgeReady, retry } = useAppInit();
   const isConnected = useAppStore((s) => s.isConnected);
   const error = useAppStore((s) => s.error);
   const setConnectedStore = useAppStore((s) => s.setConnected);
@@ -131,7 +131,7 @@ function AppContent() {
   const route = useNavStore((s) => s.route);
   const setRoute = useNavStore((s) => s.setRoute);
 
-  const health = useHealth();
+  const health = useHealth(isBridgeReady);
 
   // Keep the sticky handshake gate honest: a failed health check means the
   // backend is no longer reachable, while a later successful one means it has
