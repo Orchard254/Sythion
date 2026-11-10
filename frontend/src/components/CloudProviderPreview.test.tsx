@@ -224,3 +224,43 @@ it('does not auto-retry a rate-limited text reply, and clears consent', async ()
   expect(button('Send one test message').props.disabled).toBe(true);
   expect(mock.chat).toHaveBeenCalledTimes(1);
 });
+
+
+
+it('enters answer-only mode only after a fresh matching server verification', async () => {
+  await settle(() => view.unmount());
+  const entered = vi.fn();
+  mock.status.mockResolvedValue({
+    active_provider: 'ollama-cloud', staged: candidate,
+    tool_probe_verified: false, text_probe_verified: true,
+    providers: [{ provider_id: 'openrouter', credential_configured: true }],
+    ready_for_execution: false,
+  });
+  await settle(() => { view = create(<CloudProviderPreview onEnterConversationOnly={entered} />); });
+  await settle(() => button('Enter conversation-only cloud mode').props.onClick());
+  expect(entered).toHaveBeenCalledTimes(1);
+  expect(mock.status).toHaveBeenCalledTimes(2); // mount, fresh proof before entry
+  expect(mock.probe).not.toHaveBeenCalled();
+  expect(mock.chat).not.toHaveBeenCalled();
+});
+
+
+it('rejects cloud-mode entry when the server reports expired evidence', async () => {
+  await settle(() => view.unmount());
+  const entered = vi.fn();
+  mock.status.mockResolvedValueOnce({
+    active_provider: 'ollama-cloud', staged: candidate,
+    tool_probe_verified: false, text_probe_verified: true,
+    providers: [{ provider_id: 'openrouter', credential_configured: true }],
+    ready_for_execution: false,
+  }).mockResolvedValueOnce({
+    active_provider: 'ollama-cloud', staged: candidate,
+    tool_probe_verified: false, text_probe_verified: false,
+    providers: [{ provider_id: 'openrouter', credential_configured: true }],
+    ready_for_execution: false,
+  });
+  await settle(() => { view = create(<CloudProviderPreview onEnterConversationOnly={entered} />); });
+  await settle(() => button('Enter conversation-only cloud mode').props.onClick());
+  expect(entered).not.toHaveBeenCalled();
+  expect(text(view.root)).toContain('That action could not be completed');
+});

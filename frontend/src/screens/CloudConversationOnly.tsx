@@ -64,7 +64,10 @@ export function CloudConversationOnlyScreen({ onExit }: { onExit: () => void }) 
     try {
       // Only three prior full pairs are sent; the user-facing transcript is
       // local to this mounted screen, and is never silently persisted.
-      const history = messages.slice(-6);
+      const history = messages.slice(-6).map((turn) => ({
+        role: turn.role,
+        content: turn.content.slice(0, 1200),
+      }));
       const response = await cloudPreviewService.conversationTurn(selection, text, history);
       if (response.provider_id !== selection.provider_id ||
           response.model_id !== selection.model_id ||

@@ -80,6 +80,27 @@ describe('cloud preview API security and wire contracts', () => {
     expect(calls).toStrictEqual([]);
   });
 
+  it('sends a validated answer-only turn outside the executable composer', async () => {
+    const candidate = { provider_id: 'openrouter' as const, model_id: 'unit/model:free' };
+    const history = [
+      { role: 'user' as const, content: 'Earlier' },
+      { role: 'assistant' as const, content: 'Reply' },
+    ];
+    await cloudPreviewService.conversationTurn(candidate, 'New question', history);
+    expect(calls).toStrictEqual([{
+      method: 'POST', path: '/cloud-conversation/turn',
+      payload: { ...candidate, text: 'New question', history, confirm_network_request: true },
+    }]);
+  });
+
+  it('rejects malformed chat history without network side effects', async () => {
+    await expect(cloudPreviewService.conversationTurn(
+      { provider_id: 'openrouter', model_id: 'unit/model:free' }, 'Hello',
+      [{ role: 'assistant', content: 'unpaired' }],
+    )).rejects.toThrow('Invalid bounded');
+    expect(calls).toStrictEqual([]);
+  });
+
   it('sends explicit network consent only on the probe endpoint', async () => {
     const selection = { provider_id: 'groq' as const, model_id: 'test/functional:free' };
     await cloudPreviewService.probe(selection);

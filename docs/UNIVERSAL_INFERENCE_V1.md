@@ -334,3 +334,16 @@ changes Ollama as the normal provider or unlocks tasks and automation.
 Offline frontend gate:
 `npm run test --prefix frontend -- src/screens/CloudConversationOnly.test.tsx src/components/CloudProviderPreview.test.tsx src/screens/Setup.test.tsx src/services/cloudPreview.test.ts`
 `npm run build --prefix frontend`
+
+### Conversation-only UI validation
+
+This screen has its own request handler and checks response flags so a cloud
+provider response cannot claim active execution. It uses only the bounded
+cloud endpoint and retains the previous 3 complete turn pairs in memory;
+longer model text is truncated only in future history sent to the model.
+A 409 means verification is no longer valid and disables further sends.
+The standard Ollama readiness still controls the main Assistant screen.
+
+Offline gate:
+`npm run test --prefix frontend -- src/screens/CloudConversationOnly.test.tsx src/components/CloudProviderPreview.test.tsx src/screens/Setup.test.tsx src/services/cloudPreview.test.ts`
+`npm run build --prefix frontend`

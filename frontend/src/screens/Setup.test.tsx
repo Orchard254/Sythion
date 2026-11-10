@@ -24,6 +24,7 @@ const originalAdapter = apiClient.defaults.adapter;
 let checks: Record<string, boolean>;
 let selected: string;
 const complete = vi.fn();
+const cloudMode = vi.fn();
 const labels = (node: { children: unknown[] }): string => node.children.map((c): string => typeof c === 'string' ? c : c && typeof c === 'object' && 'children' in c ? labels(c as {children:unknown[]}) : '').join('');
 const button = (name: string) => view.root.findAllByType('button').find((b) => labels(b) === name)!;
 const settle = async (action: () => void) => { await act(async () => { action(); for (let i=0;i<15;i++) await Promise.resolve(); }); };
@@ -48,7 +49,7 @@ beforeEach(async () => {
       { provider_id: 'groq', credential_configured: false },
     ],
   });
-  await settle(() => {view=create(<SetupScreen onComplete={complete} />);});
+  await settle(() => {view=create(<SetupScreen onComplete={complete} onCloudConversationOnly={cloudMode} />);});
 });
 afterEach(() => { act(() => view.unmount()); apiClient.defaults.adapter = originalAdapter; vi.unstubAllGlobals(); });
 
@@ -72,6 +73,23 @@ describe('setup to first conversation', () => {
     expect(button('Start conversation')).toBeUndefined();
     await settle(() => button('Hide alternative cloud providers').props.onClick());
     expect(mock.cloudProbe).not.toHaveBeenCalled();
+  });
+
+  it('permits a separately verified cloud lane without passing Ollama onboarding', async () => {
+    mock.cloudStatus.mockResolvedValue({
+      active_provider: 'ollama-cloud',
+      staged: { provider_id: 'openrouter', model_id: 'unit/model:free' },
+      tool_probe_verified: false, text_probe_verified: true,
+      providers: [{ provider_id: 'openrouter', credential_configured: true }],
+      ready_for_execution: false,
+    });
+    await settle(() => button('Explore alternative cloud providers (preview)').props.onClick());
+    await settle(() => button('Enter conversation-only cloud mode').props.onClick());
+    expect(cloudMode).toHaveBeenCalledTimes(1);
+    expect(complete).not.toHaveBeenCalled();
+    expect(mock.inference).not.toHaveBeenCalled();
+    expect(mock.cloudChat).not.toHaveBeenCalled();
+    expect(checks.ollama_health_ok).toBe(false);
   });
 
   it('guides a new user to connect a key before discovering models', async () => {
