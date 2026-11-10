@@ -1,4 +1,5 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GoalsScreen } from './Goals';
 import type { Task } from '../types';
@@ -27,12 +28,13 @@ vi.mock('../hooks/useBackend', () => ({
 const task: Task = { id: 'task-1', original_request: 'A task', normalized_goal: null, state: 'created', version: 1, active_action_id: null, pending_question: null, final_result: null, terminal_reason: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' };
 
 describe('goal linked tasks', () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   beforeEach(() => { mock.tasks = []; vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() }); });
-  afterEach(() => { vi.unstubAllGlobals(); });
+  afterEach(() => { client.clear(); vi.unstubAllGlobals(); });
 
   it('does not open a nonexistent task and describes the missing record', () => {
     let view: ReactTestRenderer;
-    act(() => { view = create(<GoalsScreen />); });
+    act(() => { view = create(<QueryClientProvider client={client}><GoalsScreen /></QueryClientProvider>); });
     act(() => { view.root.findByProps({ 'aria-label': 'Open A goal' }).props.onClick(); });
     const link = view!.root.findAllByType('button').find((button) => button.props.className === 'link-chip');
     if (link) act(() => { link.props.onClick(); });
@@ -46,12 +48,12 @@ describe('goal linked tasks', () => {
   it('handles a task disappearing after its detail is opened', () => {
     mock.tasks = [task];
     let view: ReactTestRenderer;
-    act(() => { view = create(<GoalsScreen />); });
+    act(() => { view = create(<QueryClientProvider client={client}><GoalsScreen /></QueryClientProvider>); });
     act(() => { view.root.findByProps({ 'aria-label': 'Open A goal' }).props.onClick(); });
     act(() => { view.root.findByProps({ className: 'link-chip' }).props.onClick(); });
     expect(JSON.stringify(view!.toJSON())).toContain('A task');
     mock.tasks = [];
-    act(() => { view.update(<GoalsScreen />); });
+    act(() => { view.update(<QueryClientProvider client={client}><GoalsScreen /></QueryClientProvider>); });
     expect(JSON.stringify(view!.toJSON())).toContain('Task unavailable');
     act(() => { view!.unmount(); });
   });
