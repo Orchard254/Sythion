@@ -163,6 +163,32 @@ def get_staged_cloud_selection() -> Dict[str, str]:
     return {"provider_id": provider, "model_id": model}
 
 
+def get_staged_cloud_snapshot() -> Dict[str, str]:
+    """Snapshot of the candidate and per-stage generation.
+
+    The opaque generation is *non-secret* and is only used internally to
+    invalidate evidence when the owner stages another candidate, including
+    when they later return to the same provider/model. Pre-generation staged
+    profiles must be staged again before receiving durable verification.
+    """
+    value = load_profile().get("staged_cloud_selection")
+    if not isinstance(value, dict):
+        return {}
+    from backend.adapters.openai_compatible_adapter import PROVIDERS
+    import re
+    provider = value.get("provider_id")
+    model = value.get("model_id")
+    generation = value.get("generation")
+    if (not isinstance(provider, str) or provider not in PROVIDERS or
+            not isinstance(model, str) or
+            "://" in model or
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,179}", model) is None or
+            not isinstance(generation, str) or
+            re.fullmatch(r"[0-9a-f]{32}", generation) is None):
+        return {}
+    return {"provider_id": provider, "model_id": model, "generation": generation}
+
+
 def stage_cloud_selection(provider_id: str, model_id: str) -> Dict[str, str]:
     """Persist an explicit non-executable cloud candidate, never a credential.
 
@@ -177,6 +203,9 @@ def stage_cloud_selection(provider_id: str, model_id: str) -> Dict[str, str]:
             "://" in model_id or
             re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,179}", model_id) is None):
         raise ValueError("Invalid cloud model ID")
+    import secrets as _python_secrets
     state = {"provider_id": provider_id, "model_id": model_id}
-    save_profile({"staged_cloud_selection": state})
+    save_profile({"staged_cloud_selection": {
+        **state, "generation": _python_secrets.token_hex(16),
+    }})
     return dict(state)

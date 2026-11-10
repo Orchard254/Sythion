@@ -176,3 +176,21 @@ presence and staged nonsecret metadata, not model inference.
 Frontend targeted validation:
 `npm run test --prefix frontend -- src/components/CloudProviderPreview.test.tsx src/screens/Setup.test.tsx src/services/api.test.ts`
 `npm run build --prefix frontend`
+
+### Provider-scoped tool evidence v1 (not active; owner verification pending)
+
+Staging now generates an opaque 128-bit revision on every stage operation,
+including restaging an identical model. The private backend helper
+`backend/core/cloud_probe_evidence.py` can persist a verified synthetic
+function-call observation in the existing local settings table, bound
+to the revision, exact provider and model ID, current build-scoped key
+(via HMAC-SHA256) and a 1-hour expiry. Key changes, restaging, profile
+tampering, clock rollback, database outages and expired evidence all
+fail closed. Neither a key nor a model response is persisted.
+
+This evidence is *not* proof of chat support, context quality, health,
+model availability, normal task execution, or permissions; it MUST NOT
+activate a provider or unlock setup on its own. Route integration will
+be a separate gate after these offline tests pass.
+
+`python -m pytest -q backend/tests/test_cloud_probe_evidence.py backend/tests/test_inference_provider_preview.py backend/tests/test_profile_atomic_durable_save.py --disable-warnings`
