@@ -1,6 +1,6 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WorkEntry } from './WorkEntry';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { WorkEntry, type CreateWorkTask } from './WorkEntry';
 import type { Task } from '../types';
 
 const request = 'Check battery level using a read-only tool';
@@ -12,7 +12,7 @@ const task: Task = {
 };
 
 let view: ReactTestRenderer;
-let createTask: ReturnType<typeof vi.fn>;
+let createTask: Mock<CreateWorkTask>;
 let created: ReturnType<typeof vi.fn>;
 let store: Map<string, string>;
 
@@ -32,7 +32,7 @@ beforeEach(() => {
     setItem: (key: string, value: string) => { store.set(key, value); },
     removeItem: (key: string) => { store.delete(key); },
   });
-  createTask = vi.fn().mockResolvedValue(task);
+  createTask = vi.fn<CreateWorkTask>().mockResolvedValue(task);
   created = vi.fn();
   act(() => {
     view = create(<WorkEntry text={request} disabled={false} createTask={createTask} onCreated={created} />);

@@ -52,6 +52,11 @@ describe('assistant turns', () => {
   });
 
   it('creates executable work only after a separate visible confirmation', async () => {
+    // This integration case opens the real TaskDetailDrawer. Its Escape
+    // listener needs a window, even in react-test-renderer's node environment.
+    // Stub it only in this case; afterEach unmounts before globals are restored.
+    const windowMock = { addEventListener: vi.fn(), removeEventListener: vi.fn() };
+    vi.stubGlobal('window', windowMock);
     const stored = new Map<string, string>();
     vi.stubGlobal('sessionStorage', {
       getItem: (key: string) => stored.get(key) ?? null,
@@ -70,6 +75,7 @@ describe('assistant turns', () => {
     expect(mock.turn).not.toHaveBeenCalled();
     expect(useAppStore.getState().transcriptDraft).toBe('');
     expect(text()).toContain('Cancel queued request');
+    expect(windowMock.addEventListener).toHaveBeenCalledWith('keydown', expect.any(Function));
   });
 
   it('preserves a newer draft when an earlier turn completes', async () => {
@@ -310,7 +316,12 @@ describe('assistant turns', () => {
     expect(text()).toContain('Background complete');
     expect(text()).not.toContain('exec-line__toggle');
     expect(text()).not.toContain('exec-line__open');
-    expect(text()).not.toContain('Execution');
+    // The new task-creation helper legitimately mentions "Execution".
+    // Restrict this assertion to the completed assistant reply, which must
+    // remain clean of technical execution metadata.
+    const replies = view.root.findAllByProps({ className: 'msg msg--agent' });
+    expect(replies).toHaveLength(1);
+    expect(replies[0].findByProps({ className: 'msg__bubble' }).children).toEqual(['Background complete']);
   });
 
   it('keeps a discoverable Stop control for running tasks in the conversation', async () => {
