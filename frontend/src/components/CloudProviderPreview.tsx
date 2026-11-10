@@ -66,6 +66,7 @@ export function CloudProviderPreview() {
     setKey('');
     setConsent(false);
     setProbePassed(false);
+    setStatus((old) => old ? { ...old, text_probe_verified: false } : null);
     setChatText('');
     setChatConsent(false);
     setChatAnswer(null);
@@ -79,6 +80,7 @@ export function CloudProviderPreview() {
     setProbePassed(false);
     setChatConsent(false);
     setChatAnswer(null);
+    setStatus((old) => old ? { ...old, text_probe_verified: false } : null);
     setNotice('');
     setError('');
   };
@@ -119,6 +121,7 @@ export function CloudProviderPreview() {
     setStatus((old) => old ? {
       ...old,
       tool_probe_verified: false,
+      text_probe_verified: false,
       providers: old.providers.map((p) => p.provider_id === provider
         ? { ...p, credential_configured: true } : p),
     } : null);
@@ -133,7 +136,7 @@ export function CloudProviderPreview() {
     setProbePassed(false);
     setChatConsent(false);
     setChatAnswer(null);
-    setStatus((old) => old ? { ...old, tool_probe_verified: false } : null);
+    setStatus((old) => old ? { ...old, tool_probe_verified: false, text_probe_verified: false } : null);
     setNotice('Model candidate saved for testing. It is not active.');
   });
 
@@ -165,7 +168,8 @@ export function CloudProviderPreview() {
       throw new Error('Unexpected text preview contract');
     }
     setChatAnswer(response.assistant_text);
-    setNotice('One cloud text response received. No Sythion action was executed or saved.');
+    setStatus((old) => old ? { ...old, text_probe_verified: true } : null);
+    setNotice('Cloud text response received; conversation capability is recorded for up to one hour. No Sythion action or conversation was saved.');
   });
 
   return (
@@ -215,6 +219,12 @@ export function CloudProviderPreview() {
         {error && <Notice tone="danger" icon="alert">{error}</Notice>}
         <div className="stack" style={{ gap: 8 }}>
           <label htmlFor="cloud-preview-chat">Try a text-only cloud reply</label>
+          {stagedMatches && status?.text_probe_verified === true && (
+            <Notice tone="info" icon="check">
+              A recent plain-text response is verified for this exact staged model and key.
+              This does not enable ordinary chat, tasks, or autonomous execution.
+            </Notice>
+          )}
           <p className="t-muted">
             Send one short message directly to the staged provider. This does not need
             function-calling verification. No files, memories, tools, tasks, or conversation

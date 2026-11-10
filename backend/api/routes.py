@@ -3704,11 +3704,13 @@ async def list_inference_preview_providers(db: Optional[Session] = Depends(get_h
     from backend.core.secrets import has_secret
     from backend.core.profile import get_staged_cloud_selection
     from backend.core.cloud_probe_evidence import is_probe_evidence_current
+    from backend.core.cloud_text_evidence import is_text_evidence_current
 
     return {
         "active_provider": "ollama-cloud",
         "staged": get_staged_cloud_selection(),
         "tool_probe_verified": is_probe_evidence_current(db),
+        "text_probe_verified": is_text_evidence_current(db),
         "providers": [
             {
                 "provider_id": key,
@@ -3843,7 +3845,9 @@ async def probe_inference_preview(
 
 
 @router.post("/inference-preview/chat")
-async def cloud_preview_text_chat(body: CloudPreviewChatRequest):
+async def cloud_preview_text_chat(
+    body: CloudPreviewChatRequest, db: Session = Depends(get_db),
+):
     """One isolated text-only cloud reply, NEVER a Sythion assistant turn.
 
     The caller opts into a provider request and a specific staged candidate.
@@ -3861,6 +3865,7 @@ async def cloud_preview_text_chat(body: CloudPreviewChatRequest):
         PROVIDERS, OpenAICompatibleCloudAdapter, CompatibleProviderError,
     )
     from backend.runtime.compatible_chat_provider import CompatibleCloudChatProvider
+    from backend.core.cloud_text_evidence import persist_text_evidence
 
     if body.confirm_network_request is not True:
         raise HTTPException(
@@ -3923,6 +3928,18 @@ async def cloud_preview_text_chat(body: CloudPreviewChatRequest):
             raise HTTPException(
                 status_code=422, detail="Cloud model did not produce a valid text response",
             )
+        try:
+            # No prompts or replies are saved, only a key-bound observation
+            # that one plain-text request worked for this stage generation.
+            persist_text_evidence(db, snapshot, credential)
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=503, detail="Cloud text evidence could not be recorded",
+            ) from None
         return {
             "provider_id": body.provider_id,
             "model_id": body.model_id,

@@ -281,3 +281,23 @@ Frontend gate:
 
 `npm run test --prefix frontend -- src/components/CloudProviderPreview.test.tsx src/services/cloudPreview.test.ts src/screens/Setup.test.tsx`
 `npm run build --prefix frontend`
+
+### Scoped plain-text evidence (distinct from tool capability)
+
+A successful `/inference-preview/chat` now persists only a domain-separated
+HMAC-SHA256 attestation that **one** plain-text completion succeeded for the
+exact provider, model, stage revision and credential in this build. The record
+expires after one hour, fails closed for clock rollback, DB loss, key rotation,
+or restaging (including the same model). The actual chat message and reply
+are never saved by the preview. `/inference-preview/providers` reports
+`text_probe_verified` independently of `tool_probe_verified`. Neither signal
+is active-provider readiness or grants task execution. This is preparation
+for an explicitly selected conversation-only mode.
+
+Windows offline tests:
+
+`python -m pytest -q backend/tests/test_cloud_text_evidence.py backend/tests/test_cloud_preview_chat.py backend/tests/test_cloud_probe_evidence.py backend/tests/test_inference_provider_preview.py --disable-warnings`
+
+`npm run test --prefix frontend -- src/components/CloudProviderPreview.test.tsx src/services/cloudPreview.test.ts src/screens/Setup.test.tsx`
+
+`npm run build --prefix frontend`

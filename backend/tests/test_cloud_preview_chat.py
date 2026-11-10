@@ -72,6 +72,7 @@ def test_text_preview_requires_no_tool_proof_and_never_executes_or_persists(
     test_client, test_db, text_preview, monkeypatch,
 ):
     from backend.core.cloud_probe_evidence import is_probe_evidence_current
+    from backend.core.cloud_text_evidence import is_text_evidence_current
     import backend.adapters.openai_compatible_adapter as compatible
     import backend.runtime.model_provider as default_provider
     monkeypatch.setattr(
@@ -98,6 +99,7 @@ def test_text_preview_requires_no_tool_proof_and_never_executes_or_persists(
     monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter", PlainText)
     staged()
     assert is_probe_evidence_current(test_db) is False
+    assert is_text_evidence_current(test_db) is False
     response = test_client.post("/api/v1/inference-preview/chat", json=payload())
     assert response.status_code == 200, response.text
     assert response.json() == {
@@ -110,6 +112,11 @@ def test_text_preview_requires_no_tool_proof_and_never_executes_or_persists(
     assert test_db.query(ConversationTurn).count() == 0
     assert test_db.query(MemoryEntry).count() == 0
     assert is_probe_evidence_current(test_db) is False
+    assert is_text_evidence_current(test_db) is True
+    response = test_client.get("/api/v1/inference-preview/providers")
+    assert response.json()["text_probe_verified"] is True
+    assert response.json()["tool_probe_verified"] is False
+    assert response.json()["ready_for_execution"] is False
     assert profile.get_staged_cloud_selection()["provider_id"] == "openrouter"
 
 

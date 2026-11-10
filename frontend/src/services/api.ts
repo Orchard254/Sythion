@@ -563,6 +563,7 @@ export interface CloudPreviewStatus {
   staged: Partial<CloudPreviewSelection>;
   providers: Array<{ provider_id: CloudPreviewProviderId; credential_configured: boolean }>;
   tool_probe_verified: boolean;
+  text_probe_verified: boolean;
   ready_for_execution: false;
 }
 
