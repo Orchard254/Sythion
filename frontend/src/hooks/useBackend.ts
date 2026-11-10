@@ -69,12 +69,14 @@ export function useBackendLive(): boolean {
 
 /* --- Runtime ------------------------------------------------------------- */
 
-export function useHealth() {
-  // The health check keeps running even after the handshake gate drops so that
+export function useHealth(bridgeReady = true) {
+  // Callers mounting during startup may wait for the first Tauri bridge.
+  // Once configured, health continues polling even if connection is lost, so that
   // a lost backend can be observed and a recovered one can flip the gate back.
   return useSource('health', api.healthService.check, {
     refetchInterval: 20_000,
     ignoreConnection: true,
+    enabled: bridgeReady,
   });
 }
 
