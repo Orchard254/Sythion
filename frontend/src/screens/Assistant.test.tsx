@@ -8,6 +8,7 @@ import axios from 'axios';
 
 const mock = vi.hoisted(() => ({
   turn: vi.fn(),
+  createTask: vi.fn(),
   replyToTask: vi.fn(),
   resumeTask: vi.fn(),
   cancelTask: vi.fn(),
@@ -34,8 +35,9 @@ vi.mock('../hooks/useBackend', async () => {
     useTools: () => ({ data: [] }),
     useAgent: () => ({ data: null }),
     useVoiceAssets: () => ({ data: { stt_installed: false } }),
-    useActions: () => ({ live: true, assistantTurn: mock.turn, replyToTask: mock.replyToTask, resumeTask: mock.resumeTask, cancelTask: mock.cancelTask }),
-    useTaskEvents: () => ({ data: [] }),
+    useActions: () => ({ live: true, assistantTurn: mock.turn, createTask: mock.createTask, replyToTask: mock.replyToTask, resumeTask: mock.resumeTask, cancelTask: mock.cancelTask }),
+    useTaskEvents: () => ({ data: [], refetch: vi.fn() }),
+    useTaskResumePreflight: () => ({ data: null, isError: false, isFetching: false, refetch: vi.fn() }),
   };
 });
 
@@ -47,6 +49,27 @@ describe('assistant turns', () => {
     expect(mock.turn).toHaveBeenCalledWith('Hello Synth', expect.any(String));
     expect(useAppStore.getState().transcriptDraft).toBe('');
     expect(text()).toContain('Hi there');
+  });
+
+  it('creates executable work only after a separate visible confirmation', async () => {
+    const stored = new Map<string, string>();
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => { stored.set(key, value); },
+      removeItem: (key: string) => { stored.delete(key); },
+    });
+    mock.createTask.mockResolvedValueOnce({
+      ...task, id: 'work-created', state: 'created', original_request: 'Hello Synth',
+    });
+    await draft();
+    await settle(() => view.root.findByProps({ 'aria-label': 'Create task from message' }).props.onClick());
+    expect(mock.turn).not.toHaveBeenCalled();
+    expect(mock.createTask).not.toHaveBeenCalled();
+    await settle(() => view.root.findByProps({ 'aria-label': 'Confirm create task' }).props.onClick());
+    expect(mock.createTask).toHaveBeenCalledWith('Hello Synth', 'task', expect.any(String));
+    expect(mock.turn).not.toHaveBeenCalled();
+    expect(useAppStore.getState().transcriptDraft).toBe('');
+    expect(text()).toContain('Cancel queued request');
   });
 
   it('preserves a newer draft when an earlier turn completes', async () => {
