@@ -27,8 +27,15 @@ from typing import Dict, List, Optional, Protocol, Tuple
 # ---------------------------------------------------------------------------
 
 OLLAMA_API_KEY = "ollama_api_key"
+OPENROUTER_API_KEY = "openrouter_api_key"
+NVIDIA_API_KEY = "nvidia_api_key"
+GROQ_API_KEY = "groq_api_key"
 
-KNOWN_SECRETS = frozenset({OLLAMA_API_KEY})
+# All keys use the existing write-only, build-scoped Credential Manager store.
+# There is NO generic URL/key passthrough and no environment-key fallback.
+KNOWN_SECRETS = frozenset({
+    OLLAMA_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY, GROQ_API_KEY,
+})
 
 # Credential Manager target name prefixes. Credentials are stored per-user under
 # these namespaces so unrelated generic credentials are never touched.
@@ -416,6 +423,24 @@ def resolve_ollama_api_key(env_override: str = "") -> str:
         return env_override
     return _get_store().get(OLLAMA_API_KEY)
 
+
+
+def resolve_compatible_provider_key(provider_id: str) -> str:
+    """Read a configured key only for an explicitly trusted provider ID.
+
+    This reuses the existing scoped secret store, which automatically
+    isolates prototypes and fails closed on ambiguous build identity. No
+    key may be inherited via environment variables or backend/.env.
+    """
+    key_names = {
+        "openrouter": OPENROUTER_API_KEY,
+        "nvidia": NVIDIA_API_KEY,
+        "groq": GROQ_API_KEY,
+    }
+    name = key_names.get(provider_id)
+    if name is None:
+        raise ValueError("Unsupported inference provider")
+    return _get_store().get(name)
 
 
 # Minimal introspection helpers (no aliases).
