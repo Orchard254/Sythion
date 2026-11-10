@@ -5,13 +5,18 @@ import apiClient from '../services/api';
 
 const mock = vi.hoisted(() => {
   const readiness = vi.fn();
-  return { readiness, testCredentials: vi.fn(), selectModel: vi.fn(), inference: vi.fn(), applySafeSettings: vi.fn(), update: vi.fn(), speak: vi.fn() };
+  return { readiness, testCredentials: vi.fn(), selectModel: vi.fn(), inference: vi.fn(), applySafeSettings: vi.fn(), update: vi.fn(), speak: vi.fn(),
+    cloudStatus: vi.fn(), cloudSaveCredential: vi.fn(), cloudStage: vi.fn(), cloudProbe: vi.fn() };
 });
 vi.mock('../services/api', async (importOriginal) => ({
   ...await importOriginal<typeof import('../services/api')>(),
   setupService: { readiness: mock.readiness, testCredentials: mock.testCredentials, selectModel: mock.selectModel, inference: mock.inference, applySafeSettings: mock.applySafeSettings },
   voiceService: { speak: mock.speak },
   settingsService: { update: mock.update },
+  cloudPreviewService: {
+    status: mock.cloudStatus, saveCredential: mock.cloudSaveCredential,
+    stage: mock.cloudStage, probe: mock.cloudProbe,
+  },
 }));
 vi.mock('../hooks/useVoiceCapture', () => ({ useVoiceCapture: () => ({ startCapture: vi.fn(), stopCapture: vi.fn() }) }));
 let view: ReactTestRenderer;
@@ -35,6 +40,14 @@ beforeEach(async () => {
   mock.inference.mockImplementation(async () => { checks.inference_verified_ok=true;return {success:true}; });
   mock.applySafeSettings.mockImplementation(async () => { checks.safe_settings_ok=true; return { ok: true }; });
   mock.update.mockResolvedValue({});mock.speak.mockResolvedValue({success:true});
+  mock.cloudStatus.mockResolvedValue({
+    active_provider: 'ollama-cloud', staged: {}, ready_for_execution: false,
+    providers: [
+      { provider_id: 'openrouter', credential_configured: false },
+      { provider_id: 'nvidia', credential_configured: false },
+      { provider_id: 'groq', credential_configured: false },
+    ],
+  });
   await settle(() => {view=create(<SetupScreen onComplete={complete} />);});
 });
 afterEach(() => { act(() => view.unmount()); apiClient.defaults.adapter = originalAdapter; vi.unstubAllGlobals(); });
@@ -48,6 +61,18 @@ async function connect() {
 }
 
 describe('setup to first conversation', () => {
+  it('does not contact alternative providers unless owner opens the opt-in preview', async () => {
+    expect(mock.cloudStatus).not.toHaveBeenCalled();
+    expect(mock.cloudProbe).not.toHaveBeenCalled();
+    await settle(() => button('Explore alternative cloud providers (preview)').props.onClick());
+    expect(mock.cloudStatus).toHaveBeenCalledTimes(1);
+    expect(mock.cloudProbe).not.toHaveBeenCalled();
+    expect(labels(view.root)).toContain('not yet connected');
+    expect(button('Start conversation')).toBeUndefined();
+    await settle(() => button('Hide alternative cloud providers').props.onClick());
+    expect(mock.cloudProbe).not.toHaveBeenCalled();
+  });
+
   it('guides a new user to connect a key before discovering models', async () => {
     expect(view.root.findAllByProps({id:'setup-model'})).toHaveLength(0);
     expect(view.root.findAllByType('button').some((b) => labels(b) === 'Use configured key')).toBe(false);

@@ -108,7 +108,7 @@ export function CloudProviderPreview() {
       providers: old.providers.map((p) => p.provider_id === provider
         ? { ...p, credential_configured: true } : p),
     } : null);
-    setNotice('Key stored in Sythion’s secure vault. It has not yet been verified by the provider.');
+    setNotice('Key saved to this Sythion backend’s secret store. It has not yet been verified by the provider.');
   });
 
   const stage = () => perform(async () => {

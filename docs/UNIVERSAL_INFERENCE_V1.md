@@ -159,7 +159,8 @@ Offline Windows gate:
 From the first setup screen the owner may expand 'Explore alternative cloud
 providers (preview)' to select OpenRouter, NVIDIA NIM or Groq. Credential
 writes use the existing `PUT /api/v1/secrets/{provider}_api_key` route and
-build-isolated write-only secret store; the password input is cleared after
+build-scoped write-only secret store (Windows Credential Manager for production,
+non-persistent memory in isolated testing); the password input is cleared after
 a successful write. Model IDs can be staged explicitly with the
 `/inference-preview/stage` route. A checkbox requires fresh, per-action
 consent before one real synthetic function-call probe.
