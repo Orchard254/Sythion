@@ -739,6 +739,23 @@ class CloudPreviewChatRequest(BaseModel):
     confirm_network_request: bool
 
 
+class CloudConversationHistoryTurn(BaseModel):
+    """In-memory client history, never a system role or executable command."""
+    model_config = {"extra": "forbid"}
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=1200)
+
+
+class CloudConversationOnlyRequest(BaseModel):
+    """One explicit answer-only message; never the normal assistant composer."""
+    model_config = {"extra": "forbid", "protected_namespaces": ()}
+    provider_id: str = Field(..., min_length=1, max_length=40)
+    model_id: str = Field(..., min_length=1, max_length=180)
+    text: str = Field(..., min_length=1, max_length=1200)
+    history: List[CloudConversationHistoryTurn] = Field(default_factory=list, max_length=6)
+    confirm_network_request: bool
+
+
 # Secret Schemas
 
 class SecretWriteRequest(BaseModel):

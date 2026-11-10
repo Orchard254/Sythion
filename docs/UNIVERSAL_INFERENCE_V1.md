@@ -301,3 +301,19 @@ Windows offline tests:
 `npm run test --prefix frontend -- src/components/CloudProviderPreview.test.tsx src/services/cloudPreview.test.ts src/screens/Setup.test.tsx`
 
 `npm run build --prefix frontend`
+
+### Conversation-only lane (explicitly authorized, not the Assistant composer)
+
+The backend exposes `POST /api/v1/cloud-conversation/turn` as a separate
+answer-only model path. It requires a still-current HMAC-bound successful
+text preview for the exact staged provider, model and secret. One user message
+and at most three complete preceding user/assistant pairs are accepted.
+History is caller-supplied and never persisted. No tools, command JSON
+interpreter, task scheduler, memory access, Ollama fallback or background
+jobs are reachable through this endpoint. It checks the model, key and
+text-verification again after inference; stale responses fail closed.
+The endpoint consumes cloud quota on each explicit request. It does not
+modify existing `assistant/turns`, Ollama onboarding or execution gates.
+
+Offline backend gate:
+`python -m pytest -q backend/tests/test_cloud_conversation_only.py backend/tests/test_cloud_text_evidence.py backend/tests/test_cloud_preview_chat.py --disable-warnings`
