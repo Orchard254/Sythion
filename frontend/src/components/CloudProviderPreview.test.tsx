@@ -361,3 +361,22 @@ it('shows safe upstream 402 diagnostics without displaying provider body', async
   expect(text(view.root)).not.toContain('private-provider-response');
   expect(mock.chat).toHaveBeenCalledTimes(1);
 });
+
+
+it('identifies the provider-reported agentic harness restriction without exposing raw upstream details', async () => {
+  mock.chat.mockRejectedValueOnce({ response: { status: 502, data: {
+    detail: 'Cloud model requires an eligible agentic harness (upstream HTTP 403)',
+    other: 'confidential-upstream-detail',
+  } } });
+  await enterKey();
+  await enterModel();
+  await settle(() => view.root.findByProps({ id: 'cloud-preview-chat' }).props.onChange({
+    target: { value: 'hi' },
+  }));
+  const checks = view.root.findAllByType('input').filter((n) => n.props.type === 'checkbox');
+  await settle(() => checks[1].props.onChange({ target: { checked: true } }));
+  await settle(() => button('Send one test message').props.onClick());
+  expect(text(view.root)).toContain('restricts this free model to eligible agentic harnesses');
+  expect(text(view.root)).not.toContain('confidential-upstream-detail');
+  expect(mock.chat).toHaveBeenCalledTimes(1);
+});

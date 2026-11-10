@@ -39,6 +39,7 @@ function previewFailure(error: unknown): string {
       'Stored OpenRouter key lacks access (upstream HTTP 403)': 'OpenRouter denied access to the key saved in Sythion (403). Check key permissions.',
       'Cloud provider rejected stored credential (upstream HTTP 401)': 'OpenRouter rejected the stored credential (401); verify the exact key in Sythion.',
       'Cloud provider denied access (upstream HTTP 403)': 'The cloud provider denied model access (403). Verify account and model access.',
+      'Cloud model requires an eligible agentic harness (upstream HTTP 403)': 'OpenRouter restricts this free model to eligible agentic harnesses. Sythion cannot access it here; select another model.',
       'Cloud provider rejected text request parameters (upstream HTTP 400)': 'The cloud provider rejected text request parameters (400). The request format may need adjustment.',
       'Cloud provider requires payment or credits (upstream HTTP 402)': 'The provider requires account credit or payment (402), even if the model is listed as free.',
       'Cloud model or endpoint unavailable (upstream HTTP 404)': 'The provider cannot access this model or endpoint (404). Check the model ID.',

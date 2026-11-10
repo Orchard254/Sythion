@@ -16,7 +16,15 @@ function safeCloudError(error: unknown): string {
   if (code === 429) return 'Cloud quota or capacity reached. Do not retry repeatedly.';
   if (code === 409) return 'Cloud model or verification changed. Return to setup and verify again.';
   if (code === 401) return 'Sythion connection is not authorized. Return to setup.';
-  if (code === 502) return 'Cloud provider rejected the request. Check its credentials and availability.';
+  if (code === 502) {
+    const detail = response && typeof response === 'object' && 'data' in response &&
+      response.data && typeof response.data === 'object' && 'detail' in response.data
+      ? response.data.detail : null;
+    if (detail === 'Cloud model requires an eligible agentic harness (upstream HTTP 403)') {
+      return 'This free model is restricted to eligible agentic harnesses. Choose another model.';
+    }
+    return 'Cloud provider rejected the request. Check its credentials and availability.';
+  }
   if (code === 503) return 'Request outcome is uncertain. It was not retried.';
   return 'Cloud conversation request failed. No reply or action was recorded.';
 }

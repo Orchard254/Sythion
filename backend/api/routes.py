@@ -3953,6 +3953,8 @@ async def probe_inference_preview(
         # response body is reflected in the endpoint.
         if "provider HTTP 429" in category:
             status, detail = 429, "Provider rate limit or free-tier capacity reached"
+        elif "Provider agentic harness required" in category:
+            status, detail = 502, "Cloud model requires an eligible agentic harness (upstream HTTP 403)"
         elif "provider HTTP 401" in category or "provider HTTP 403" in category:
             status, detail = 502, "Provider rejected the stored credential or access"
         elif "network outcome unknown" in category:
@@ -4079,6 +4081,8 @@ async def cloud_preview_text_chat(
             status, detail = 429, "Provider rate limit or free-tier capacity reached"
         elif reason == "Provider HTTP 401":
             status, detail = 502, "Cloud provider rejected stored credential (upstream HTTP 401)"
+        elif reason == "Provider agentic harness required":
+            status, detail = 502, "Cloud model requires an eligible agentic harness (upstream HTTP 403)"
         elif reason == "Provider HTTP 403":
             status, detail = 502, "Cloud provider denied access (upstream HTTP 403)"
         elif reason == "Provider HTTP 400":
@@ -4201,6 +4205,8 @@ async def cloud_conversation_only_turn(
         message = str(exc)
         if "Provider HTTP 429" in message:
             status, detail = 429, "Cloud rate limit or capacity reached; do not retry repeatedly"
+        elif message == "Provider agentic harness required":
+            status, detail = 502, "Cloud model requires an eligible agentic harness (upstream HTTP 403)"
         elif "Provider HTTP 401" in message or "Provider HTTP 403" in message:
             status, detail = 502, "Cloud provider rejected stored credential or access"
         elif "Provider transport outcome unknown" in message:

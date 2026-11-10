@@ -380,3 +380,23 @@ def test_text_rejection_preserves_only_safe_upstream_http_category(
     assert response.status_code == 502
     assert response.json()["detail"] == "Cloud provider requires payment or credits (upstream HTTP 402)"
     assert "inert-unit-key" not in response.text
+
+
+def test_agentic_harness_restriction_is_explained_without_elevating_permissions(
+    test_client, test_db, text_preview, monkeypatch,
+):
+    from backend.core.cloud_text_evidence import is_text_evidence_current
+    import backend.adapters.openai_compatible_adapter as compatible
+    class Restricted:
+        def __init__(self, *args, **kwargs): pass
+        async def chat(self, **kwargs):
+            raise compatible.CompatibleProviderError("Provider agentic harness required")
+        async def close(self): pass
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter", Restricted)
+    staged()
+    response = test_client.post("/api/v1/inference-preview/chat", json=payload())
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Cloud model requires an eligible agentic harness (upstream HTTP 403)"
+    assert not is_text_evidence_current(test_db)
+    assert test_db.query(Task).count() == 0
+    assert "inert-unit-key" not in response.text

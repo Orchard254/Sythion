@@ -158,6 +158,26 @@ class OpenAICompatibleCloudAdapter:
                 raise CompatibleProviderError("Invalid provider response")
             return body
         except httpx.HTTPStatusError as exc:
+            # OpenRouter has a documented free-model eligibility gate that
+            # explicitly identifies disallowed non-agentic harness requests.
+            # Recognize the *exact* routing-step code only. Never relay the
+            # upstream error message, account metadata, or response body.
+            if self.spec.provider_id == "openrouter" and exc.response.status_code == 403:
+                if len(exc.response.content) <= 4096:
+                    try:
+                        payload = exc.response.json()
+                    except (ValueError, TypeError):
+                        payload = None
+                    if isinstance(payload, dict):
+                        error = payload.get("error")
+                        metadata = error.get("metadata") if isinstance(error, dict) else None
+                        if isinstance(metadata, dict) and (
+                            metadata.get("failed_routing_step") ==
+                            "Gate Free Endpoints by Agentic Harness"
+                        ):
+                            raise CompatibleProviderError(
+                                "Provider agentic harness required"
+                            ) from None
             raise CompatibleProviderError(
                 "Provider HTTP " + str(exc.response.status_code)
             ) from None

@@ -158,3 +158,16 @@ describe('isolated cloud conversation-only screen', () => {
     expect(mock.conversationTurn).not.toHaveBeenCalled();
   });
 });
+
+
+it('reports the specific eligible-agentic-harness restriction without exposing provider data', async () => {
+  mock.conversationTurn.mockRejectedValueOnce({ response: { status: 502, data: {
+    detail: 'Cloud model requires an eligible agentic harness (upstream HTTP 403)',
+    private: 'DO-NOT-PRINT-THIS',
+  } } });
+  await typeText('Hello');
+  await settle(() => button('Send text-only message').props.onClick());
+  expect(text(view.root)).toContain('restricted to eligible agentic harnesses');
+  expect(text(view.root)).not.toContain('DO-NOT-PRINT-THIS');
+  expect(mock.conversationTurn).toHaveBeenCalledTimes(1);
+});
