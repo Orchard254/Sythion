@@ -365,3 +365,25 @@ duplicate provider requests while React state updates are batched.
 Offline verification:
 `npm run test --prefix frontend -- src/screens/CloudConversationOnly.test.tsx src/components/CloudProviderPreview.test.tsx src/screens/Setup.test.tsx`
 `npm run build --prefix frontend`
+
+### Windows development launcher: one managed backend
+
+`start_sythion.cmd` now launches only `npx --prefix frontend tauri dev`
+from the repository root. Tauri starts its own authenticated Python
+sidecar on a dynamically selected loopback port and supervises its
+lifecycle. Do not also start a manual `uvicorn` on fixed port 8000,
+or leave a previous `Sythion Backend` terminal open.
+
+Before the fix, the command file started a separate Uvicorn server
+and then Tauri started another, competing for the same profile lock.
+One observed Windows run reported socket WinError 10013 and the
+Tauri-managed sidecar exited before writing its handshake.
+The error's exact operating-system port cause was not independently
+confirmed; removing the duplicate sidecar is nevertheless required.
+
+If using browser development separately, close Tauri before starting
+one manual backend. No blanket process termination, profile deletion,
+or Windows firewall bypass is needed to apply this launcher fix.
+
+Offline test:
+`python -m pytest -q backend/tests/test_windows_dev_launcher_single_sidecar.py --disable-warnings`
