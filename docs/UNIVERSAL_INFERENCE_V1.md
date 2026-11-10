@@ -215,3 +215,27 @@ python -m pytest -q backend/tests/test_cloud_probe_evidence.py backend/tests/tes
 npm run test --prefix frontend -- src/components/CloudProviderPreview.test.tsx src/screens/Setup.test.tsx src/services/cloudPreview.test.ts
 npm run build --prefix frontend
 ```
+
+### Explicit compatible cloud conversation bridge (not activated)
+
+`backend/runtime/compatible_chat_provider.py` normalizes a single OpenAI
+chat-completion choice to the existing `message.content` shape. An
+explicit `ConversationRuntime.ModelClient(provider=CompatibleCloudChatProvider(...))`
+then exposes the text string required by `ConversationTurnEngine`. The same
+provider wrapper can supply `message.content` to memory consolidation.
+Task decisions continue using `CompatibleCloudModelClient` separately.
+
+Both wrappers can use an explicitly shared cloud adapter to keep one
+provider/model/key snapshot throughout an operation. No global default
+is changed, and callers must explicitly inject the bridge. It rejects
+truncated/nontext/tool-bearing responses, caps output, enforces caller
+timeouts, never retries or auto-switches, and never runs tools.
+
+Connection of real chat/task/memory entrypoints remains blocked until
+provider-scoped conversational, structured-decision, and execution tests
+and a unified guarded admission policy exist. Current Ollama inference
+readiness remains authoritative for existing onboarding and tasks.
+
+Offline verification:
+
+`python -m pytest -q backend/tests/test_cloud_conversation_bridge.py backend/tests/test_cloud_model_client.py backend/tests/test_assistant_turn_json_mode.py backend/tests/test_openai_compatible_provider.py --disable-warnings`
