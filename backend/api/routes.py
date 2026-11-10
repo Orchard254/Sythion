@@ -3953,7 +3953,7 @@ async def probe_inference_preview(
         # response body is reflected in the endpoint.
         if "provider HTTP 429" in category:
             status, detail = 429, "Provider rate limit or free-tier capacity reached"
-        elif "Provider agentic harness required" in category:
+        elif "agentic harness required" in category:
             status, detail = 502, "Cloud model requires an eligible agentic harness (upstream HTTP 403)"
         elif "provider HTTP 401" in category or "provider HTTP 403" in category:
             status, detail = 502, "Provider rejected the stored credential or access"

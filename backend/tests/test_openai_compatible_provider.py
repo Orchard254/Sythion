@@ -250,3 +250,18 @@ async def test_generic_openrouter_403_without_exact_gate_remains_generic():
         a = OpenAICompatibleCloudAdapter("openrouter", "model:free", client=client, api_key="synthetic-key")
         with pytest.raises(CompatibleProviderError, match="^Provider HTTP 403$"):
             await a.chat([{"role": "user", "content": "hi"}])
+
+
+@pytest.mark.asyncio
+async def test_agentic_harness_denial_during_tool_probe_stays_specific_and_redacted():
+    async def handler(req):
+        return httpx.Response(403, json={"error": {
+            "message": "PRIVATE RESTRICTED DETAILS",
+            "metadata": {"failed_routing_step": "Gate Free Endpoints by Agentic Harness"},
+        }})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://openrouter.ai/api/v1/") as client:
+        a = OpenAICompatibleCloudAdapter("openrouter", "model:free", client=client, api_key="test-secret")
+        with pytest.raises(CompatibleProviderError, match="^Model capability probe failed \\(agentic harness required\\)$") as exc:
+            await a.prove_tool_capability()
+    assert "PRIVATE RESTRICTED DETAILS" not in str(exc.value)
+    assert "test-secret" not in str(exc.value)

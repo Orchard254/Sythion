@@ -293,6 +293,8 @@ class OpenAICompatibleCloudAdapter:
                     category = "network outcome unknown"
                 elif reason == "Provider redirect rejected":
                     category = "redirect rejected"
+                elif reason == "Provider agentic harness required":
+                    category = "agentic harness required"
                 elif reason == "Model did not return a tool call":
                     category = "model returned no tool call"
                 elif reason == "Invalid model tool arguments":
