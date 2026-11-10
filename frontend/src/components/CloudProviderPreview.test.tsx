@@ -1,7 +1,6 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CloudProviderPreview } from './CloudProviderPreview';
-import { cloudPreviewService } from '../services/api';
 
 const mock = vi.hoisted(() => ({
   status: vi.fn(), saveCredential: vi.fn(), stage: vi.fn(), probe: vi.fn(),
