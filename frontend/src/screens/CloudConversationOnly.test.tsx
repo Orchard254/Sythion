@@ -142,7 +142,8 @@ describe('isolated cloud conversation-only screen', () => {
       click();
     });
     expect(mock.conversationTurn).toHaveBeenCalledTimes(1);
-    expect(button('Send text-only message').props.disabled).toBe(true);
+    // During an in-flight request, the button changes its visible label.
+    expect(button('Sending one cloud request…').props.disabled).toBe(true);
     await settle(() => resolveTurn({
       ...candidate, assistant_text: 'Once only.',
       conversation_only: true, active: false, ready_for_execution: false,
