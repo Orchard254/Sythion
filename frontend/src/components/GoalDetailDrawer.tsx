@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Icon } from './icons';
 import { Badge, Button, EmptyState, LoadingBlock, Panel, Rail } from './ui';
 import { useGoalDetail, useGoalPlans, useGoalNextWork, useTasks } from '../hooks/useBackend';
@@ -57,6 +58,7 @@ export function GoalDetailDrawer({
   const nextWork = useGoalNextWork(goalId);
   const tasks = useTasks();
   const notify = useAppStore((s) => s.notify);
+  const queryClient = useQueryClient();
 
   const goal = detail.data?.goal ?? null;
   const plan = detail.data?.active_plan ?? null;
@@ -391,7 +393,13 @@ export function GoalDetailDrawer({
       plans.refetch();
       nextWork.refetch();
       tasks.refetch();
-      notify({ tone: 'ok', title: `Goal ${action}d` });
+      // These list caches also power Operations attention and Goals in focus.
+      // A confirmed lifecycle mutation should refresh them immediately rather
+      // than leaving an abandoned goal visible for the 15s stale window.
+      void queryClient.invalidateQueries({ queryKey: ['objectives'] });
+      void queryClient.invalidateQueries({ queryKey: ['goals'] });
+      const labels = { pause: 'paused', resume: 'resumed', abandon: 'abandoned' } as const;
+      notify({ tone: 'ok', title: 'Goal ' + labels[action] });
     } catch (err) {
       notify({
         tone: 'danger',
