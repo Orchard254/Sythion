@@ -69,6 +69,7 @@ beforeEach(() => {
     error: null,
     healthStatus: null,
     isConnected: false,
+    bridgeReady: false,
   });
   isTauri.mockReturnValue(false);
   resolveBridgeConfig.mockResolvedValue({ baseUrl: '/api/v1', controlToken: '' });
@@ -89,11 +90,13 @@ describe('useAppInit race guards', () => {
     resolveBridgeConfig.mockReturnValueOnce(pending.promise);
     await act(async () => { view = create(<Harness />); });
     expect(hook.isBridgeReady).toBe(false);
+    expect(useAppStore.getState().bridgeReady).toBe(false);
     expect(healthCheck).not.toHaveBeenCalled();
 
     pending.resolve({ baseUrl: 'http://127.0.0.1:60333/api/v1', controlToken: 'synthetic-test-token' });
     await flush(12);
     expect(hook.isBridgeReady).toBe(true);
+    expect(useAppStore.getState().bridgeReady).toBe(true);
     expect(configureBridge).toHaveBeenCalledTimes(1);
 
     // A fresh discovery attempt must not continue polling against an old bridge.
@@ -101,9 +104,11 @@ describe('useAppInit race guards', () => {
     resolveBridgeConfig.mockReturnValueOnce(next.promise);
     await act(async () => { hook.retry(); });
     expect(hook.isBridgeReady).toBe(false);
+    expect(useAppStore.getState().bridgeReady).toBe(false);
     next.resolve({ baseUrl: 'http://127.0.0.1:62000/api/v1', controlToken: 'synthetic-next-token' });
     await flush(12);
     expect(hook.isBridgeReady).toBe(true);
+    expect(useAppStore.getState().bridgeReady).toBe(true);
   });
   it('normal success configures bridge, health and tasks', async () => {
     await act(async () => {
