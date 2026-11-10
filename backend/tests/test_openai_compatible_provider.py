@@ -261,7 +261,7 @@ async def test_agentic_harness_denial_during_tool_probe_stays_specific_and_redac
         }})
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://openrouter.ai/api/v1/") as client:
         a = OpenAICompatibleCloudAdapter("openrouter", "model:free", client=client, api_key="test-secret")
-        with pytest.raises(CompatibleProviderError, match=r"^Model capability probe failed \\(agentic harness required\\)$") as exc:
+        with pytest.raises(CompatibleProviderError, match=r"^Model capability probe failed \(agentic harness required\)$") as exc:
             await a.prove_tool_capability()
     assert "PRIVATE RESTRICTED DETAILS" not in str(exc.value)
     assert "test-secret" not in str(exc.value)
