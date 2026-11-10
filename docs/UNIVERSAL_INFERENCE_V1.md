@@ -32,3 +32,26 @@ Provider-specific official references:
 https://openrouter.ai/docs/api/api-reference/chat/send-chat-completion-request
 https://docs.api.nvidia.com/nim/reference/llm-apis
 https://console.groq.com/docs/api-reference
+
+### Owner-invoked compatibility probe (does not enable the provider)
+
+From repo root, list published free OpenRouter model IDs without storing a key:
+
+```powershell
+python -m scripts.probe_cloud_provider --provider openrouter --list --free-only --allow-network
+```
+
+Then try a specific model ID from the catalog:
+
+```powershell
+python -m scripts.probe_cloud_provider --provider openrouter --model AUTHOR/MODEL:free --prove-tools --allow-network
+```
+
+The command asks for a hidden API key (never passes it as a CLI argument).
+It sends two harmless model-only requests for a named function call and a
+synthetic completion decision. **No real Sythion tool or task executes.**
+Unverified or incompatible models fail closed. Cloud requests consume actual
+provider quota. To use an already-provisioned build-scoped vault key, add
+`--use-vault` instead; the vault belongs to this process/build identity.
+Never add provider keys to `.env` or git. Model admission to live task
+execution still requires a separate, end-to-end verified integration.
