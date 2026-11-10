@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAppStore } from '../store/appStore';
 import { useVoiceCapture } from '../hooks/useVoiceCapture';
 import { canStartChat, canUseModel } from '../lib/setupReadiness';
+import { modelTestFailureMessage } from '../lib/modelTestFailure';
 import { singleScreenContentStyle, singleScreenShellStyle } from '../lib/shellLayout';
 import { Button, Notice, Panel } from '../components/ui';
 import { SythionMark } from '../components/icons';
@@ -70,12 +71,19 @@ export function SetupScreen({ onComplete }: SetupProps) {
   }, 'Could not find models. Check your key and internet connection, then try again.');
 
   const testModel = () => run(async () => {
-    await setupService.selectModel(selectedModel);
-    const result = await setupService.inference(selectedModel);
-    if (!result.success) throw new Error('The model did not respond. Try again or choose another model.');
-    await refresh();
-    setMessage('Synth answered the connection test. You can continue.');
-  }, 'The model test did not finish. Check your API key and internet connection, then try again or choose another model.');
+    try {
+      await setupService.selectModel(selectedModel);
+      const result = await setupService.inference(selectedModel);
+      if (!result.success) throw new Error('The model did not respond.');
+      await refresh();
+      setMessage('Synth answered the connection test. You can continue.');
+    } catch (error) {
+      // A backend 502 may encapsulate a provider HTTP 402. Preserve a
+      // truthful, actionable message but never expose provider exception text.
+      // This changes diagnosis only: the readiness gate remains fail-closed.
+      throw new Error(modelTestFailureMessage(error));
+    }
+  });
 
   const testMicrophone = () => run(async () => {
     setVoiceVerified(false);

@@ -81,3 +81,19 @@ The owner supplied Windows PowerShell logs for the fast-forward from fa53b7a to 
 Use an isolated sandbox frontend (port 3000) and sandbox backend (8001), without touching the existing port-8000 service. Independently validate normal Send and the confirmed Create task path. Capture POST /tasks body including interaction_hint=task and idempotency_key, verify saved task ID and task evidence timeline, inspect safe permission refusal, and check duplicate creation behavior without intentionally replaying side effects. Keep original evidence/report artifacts in the owner's local untracked docs/reports/ folder.
 
 Release readiness remains BLOCKED on native installed Tauri acceptance, D-002 browser verification, D-003 synchronous verified memory writes, and other outstanding UI acceptance items.
+
+## D-002 owner OpenCode browser gate: BLOCKED by provider HTTP 402
+
+Owner-supplied OpenCode summary (2026-11-10; code tested c5e3874):
+
+- Real Chromium frontend on localhost:3000 and isolated uvicorn backend on :8001; pre-existing :8000 service PID 12704 left untouched. No mocks, no code changes. Report at local docs/reports/SYTHION_D002_LIVE_ACCEPTANCE.md (~21.7KB) with evidence d002-01 through d002-06. These local artifacts are **not** committed or independently opened by this author.
+- POST /tasks with interaction_hint=task admitted durable task fdcc6444-addc-4a01-90c2-f6682679e0a6; nonempty idempotency key persisted. Replayed key returned HTTP 200, identical task ID, and no extra effects (1 task and 8 events before/after).
+- Task ultimately failed honestly at CLOUD_ERROR from provider HTTP 402; no tool execution or battery read occurred. Assistant turns and conversation-classified creation failed closed without creating tasks.
+- Three observed onboarding inference attempts (beam twice; gpt-oss:20b once) resulted in upstream HTTP 402 wrapped in 502. Provider health UNAVAILABLE, readiness ollama_health_ok=false and inference_verified_ok=false despite ollama_api_key_ok=true.
+- Setup correctly blocked Continue and kept the main Assistant UI inaccessible; D-002 visible Create task confirmation, drawer, result/evidence, and other UI checks remain **BLOCKED/NOT TESTED**, not failed and not passed.
+- A unit test summary of 113 focused passes was reported in browser evidence; this does not replace execution evidence.
+- Native installed Tauri acceptance remains NOT TESTED.
+
+### Next unblock
+
+Verify the Ollama Cloud account's billing/credit or usage allowance, or supply an authorized operational cloud credential. Once genuine inference succeeds, rerun only the D-002 acceptance checklist against a fresh isolated sandbox. **Do not** bypass setup, fake readiness, replay consequential tasks, or call task execution 'passed' on deduplication evidence alone. The repository has a cloud-only provider implementation today; a local inference backend would require a separate design and test effort.

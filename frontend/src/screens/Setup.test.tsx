@@ -81,6 +81,19 @@ describe('setup to first conversation', () => {
     expect(mock.testCredentials).not.toHaveBeenCalled();
     expect(view.root.findAllByProps({id:'setup-key'})).toHaveLength(0);
   });
+  it('explains a verified provider 402 without bypassing model readiness', async () => {
+    await settle(() => view.root.findByProps({id:'setup-key'}).props.onChange({target:{value:'test-key'}}));
+    await settle(() => button('Connect and save key').props.onClick());
+    await settle(() => view.root.findByProps({id:'setup-model'}).props.onChange({target:{value:'cloud-model'}}));
+    mock.inference.mockRejectedValueOnce(new Error('Inference failed: HTTP error 402 (hidden-provider-detail)'));
+    await settle(() => button('Test selected model').props.onClick());
+    expect(labels(view.root)).toContain('Ollama Cloud returned HTTP 402');
+    expect(labels(view.root)).toContain('Check your account credit');
+    expect(labels(view.root)).not.toContain('hidden-provider-detail');
+    expect(button('Continue').props.disabled).toBe(true);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
   it('requires a real model check, applies safe settings, and allows text without microphone', async () => {
     expect(button('Connect and save key').props.disabled).toBe(true);
     await connect();
