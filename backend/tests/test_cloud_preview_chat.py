@@ -213,3 +213,71 @@ def test_credential_rotated_midcall_refuses_stale_response(
     response = test_client.post("/api/v1/inference-preview/chat", json=payload())
     assert response.status_code == 409
     assert "stale" not in response.text
+
+
+
+def test_successful_text_without_available_database_fails_closed(
+    test_client, test_db, text_preview, monkeypatch,
+):
+    from backend.core.cloud_text_evidence import is_text_evidence_current
+    import backend.core.cloud_text_evidence as evidence
+    import backend.adapters.openai_compatible_adapter as compatible
+
+    class ValidText:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def chat(self, **kwargs):
+            return {"choices": [{"finish_reason": "stop", "message": {
+                "role": "assistant", "content": "Never return without evidence",
+            }}]}
+        async def close(self):
+            pass
+
+    def fail_write(*args, **kwargs):
+        raise RuntimeError("SECRET-IN-DB-ERROR")
+
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter", ValidText)
+    monkeypatch.setattr(evidence, "set_setting", fail_write)
+    staged()
+    response = test_client.post("/api/v1/inference-preview/chat", json=payload())
+    assert response.status_code == 503
+    assert "SECRET-IN-DB-ERROR" not in response.text
+    assert "Never return without evidence" not in response.text
+    assert not is_text_evidence_current(test_db)
+    assert test_db.query(ConversationTurn).count() == 0
+    assert test_db.query(Task).count() == 0
+
+
+def test_failing_provider_cannot_create_text_evidence(test_client, test_db, text_preview, monkeypatch):
+    from backend.core.cloud_text_evidence import is_text_evidence_current
+    import backend.adapters.openai_compatible_adapter as compatible
+
+    class Rejected:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def chat(self, **kwargs):
+            raise compatible.CompatibleProviderError("Provider HTTP 429")
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter", Rejected)
+    staged()
+    response = test_client.post("/api/v1/inference-preview/chat", json=payload())
+    assert response.status_code == 429
+    assert not is_text_evidence_current(test_db)
+    assert test_client.get("/api/v1/inference-preview/providers").json()["text_probe_verified"] is False
+
+
+def test_text_evidence_removed_by_restaging_even_same_model(test_client, test_db, text_preview, monkeypatch):
+    from backend.core.cloud_text_evidence import is_text_evidence_current
+    from backend.core.cloud_text_evidence import persist_text_evidence
+
+    staged()
+    persist_text_evidence(test_db, profile.get_staged_cloud_snapshot(), "inert-unit-key")
+    assert is_text_evidence_current(test_db)
+    response = test_client.post("/api/v1/inference-preview/stage", json={
+        "provider_id": "openrouter", "model_id": "unit/test:free",
+    })
+    assert response.status_code == 200
+    assert not is_text_evidence_current(test_db)
+    assert test_client.get("/api/v1/inference-preview/providers").json()["text_probe_verified"] is False
