@@ -156,3 +156,60 @@ async def test_discovery_is_not_capability_evidence():
         assert len(models) == 2
         assert models[0]["name"] == "free-model"
         assert not a._capability_ok
+
+
+@pytest.mark.asyncio
+async def test_openrouter_key_verification_is_authenticated_and_never_prints_details(capsys):
+    calls = []
+    async def handler(req):
+        calls.append(req)
+        assert req.url.host == "openrouter.ai"
+        assert req.url.path == "/api/v1/key"
+        assert req.headers["authorization"] == "Bearer inert-secret"
+        return httpx.Response(200, json={"data": {"label": "secret-prefix-123", "is_free_tier": True}})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://openrouter.ai/api/v1/") as client:
+        adapter = OpenAICompatibleCloudAdapter("openrouter", "discovery", client=client, api_key="inert-secret")
+        assert await adapter.verify_key() is None
+    assert len(calls) == 1
+    assert "secret-prefix-123" not in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_key_verification_401_is_sanitized_and_separate_from_tool_probe():
+    calls = []
+    async def handler(req):
+        calls.append(req)
+        return httpx.Response(401, json={"error": {"message": "private-token-and-account"}})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://openrouter.ai/api/v1/") as client:
+        adapter = OpenAICompatibleCloudAdapter("openrouter", "unit-model", client=client, api_key="inert-secret")
+        with pytest.raises(CompatibleProviderError, match="Provider HTTP 401") as error:
+            await adapter.verify_key()
+    assert "private-token-and-account" not in str(error.value)
+    assert len(calls) == 1
+    assert calls[0].url.path == "/api/v1/key"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 401, 402, 403, 404, 429])
+async def test_capability_probe_reports_only_sanitized_http_status(status):
+    calls = []
+    async def handler(req):
+        calls.append(req)
+        return httpx.Response(status, json={"error": {"message": "PRIVATE-ACCOUNT-DATA"}})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://openrouter.ai/api/v1/") as client:
+        adapter = OpenAICompatibleCloudAdapter("openrouter", "unit-model", client=client, api_key="secret")
+        with pytest.raises(CompatibleProviderError, match="capability probe failed") as error:
+            await adapter.prove_tool_capability()
+    assert "provider HTTP " + str(status) in str(error.value)
+    assert "PRIVATE-ACCOUNT-DATA" not in str(error.value)
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_probe_reports_missing_tool_as_safe_category():
+    async def handler(req):
+        return httpx.Response(200, json=_response())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://openrouter.ai/api/v1/") as client:
+        adapter = OpenAICompatibleCloudAdapter("openrouter", "unit-model", client=client, api_key="secret")
+        with pytest.raises(CompatibleProviderError, match="model returned no tool call"):
+            await adapter.prove_tool_capability()

@@ -55,3 +55,23 @@ provider quota. To use an already-provisioned build-scoped vault key, add
 `--use-vault` instead; the vault belongs to this process/build identity.
 Never add provider keys to `.env` or git. Model admission to live task
 execution still requires a separate, end-to-end verified integration.
+
+### Distinguishing Windows hidden input from model incompatibility
+
+getpass never echoes pasted or typed characters. The probe now prints
+'Nonempty API key input received' only after it has read a nonempty value.
+OpenRouter publishes an authenticated GET /api/v1/key. Verify the supplied
+credential separately **without model inference**:
+
+```powershell
+python -m scripts.probe_cloud_provider --provider openrouter --verify-key --allow-network
+```
+
+AUTH PASS means the key is accepted by OpenRouter. It does NOT mean a free
+model has available quota, supports tool forcing, or meets our task-control
+contract. HTTP 401 means the key is rejected; HTTP 429 indicates a rate limit.
+Now --prove-tools reports sanitized categories such as provider HTTP 400,
+provider HTTP 429, missing tool calls, or incorrect arguments instead of a
+single opaque error. HTTP 400 can have several causes (including unsupported
+tool_choice); raw provider details and keys are deliberately not printed.
+Never retry a model request automatically or skip capability gates.

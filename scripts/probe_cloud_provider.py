@@ -40,6 +40,9 @@ async def run_probe(args: argparse.Namespace, credential: str) -> int:
         args.provider, args.model or "__discovery_only__", api_key=credential
     )
     try:
+        if getattr(args, "verify_key", False):
+            await adapter.verify_key()
+            print("AUTH PASS: OpenRouter accepted this API key. No inference was requested.")
         if args.list:
             models = await adapter.list_models()
             selected = visible_models(models, free_only=args.free_only, limit=args.max_models)
@@ -98,14 +101,18 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--model", default="")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--prove-tools", action="store_true")
+    parser.add_argument("--verify-key", action="store_true",
+                        help="Authenticate key without inference (OpenRouter only)")
     parser.add_argument("--allow-network", action="store_true")
     parser.add_argument("--use-vault", action="store_true")
     parser.add_argument("--free-only", action="store_true")
     parser.add_argument("--max-models", type=int, default=20)
     args = parser.parse_args(argv)
 
-    if not (args.list or args.prove_tools):
-        parser.error("Select --list or --prove-tools")
+    if not (args.list or args.prove_tools or args.verify_key):
+        parser.error("Select --list, --verify-key, or --prove-tools")
+    if args.verify_key and args.provider != "openrouter":
+        parser.error("--verify-key is currently implemented only for OpenRouter")
     if args.prove_tools and not args.model:
         parser.error("--model is mandatory for --prove-tools")
     if not args.allow_network:
@@ -122,6 +129,7 @@ def main(argv: List[str] | None = None) -> int:
         if not credential:
             print("No API key supplied.", file=sys.stderr)
             return 2
+        print("Nonempty API key input received (the key will not be displayed).")
     return asyncio.run(run_probe(args, credential))
 
 

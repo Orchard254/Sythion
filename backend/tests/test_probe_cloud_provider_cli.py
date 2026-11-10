@@ -49,3 +49,41 @@ async def test_probe_emits_no_task_or_tool_when_capability_fails(monkeypatch):
     args = argparse.Namespace(provider="openrouter", model="unit-free", list=False, prove_tools=True, free_only=False, max_models=10)
     assert await probe.run_probe(args, "inert") == 2
     assert attempted == ["capability"]
+
+
+@pytest.mark.asyncio
+async def test_verify_key_mode_performs_only_authentication(monkeypatch, capsys):
+    requests = []
+    class KeyOnly:
+        def __init__(self, provider, model, api_key):
+            assert provider == "openrouter"
+            assert api_key == "synthetic-key"
+        async def verify_key(self):
+            requests.append("key")
+        async def list_models(self):
+            requests.append("models")
+        async def prove_tool_capability(self):
+            requests.append("probe")
+        async def close(self):
+            pass
+    monkeypatch.setattr(probe, "OpenAICompatibleCloudAdapter", KeyOnly)
+    args = argparse.Namespace(provider="openrouter", model="", list=False,
+                              verify_key=True, prove_tools=False,
+                              free_only=False, max_models=20)
+    assert await probe.run_probe(args, "synthetic-key") == 0
+    assert requests == ["key"]
+    output = capsys.readouterr().out
+    assert "AUTH PASS" in output
+    assert "synthetic-key" not in output
+
+
+def test_verify_key_requires_explicit_network_permission(monkeypatch, capsys):
+    monkeypatch.setattr(probe.getpass, "getpass",
+                        lambda *args: (_ for _ in ()).throw(AssertionError("asked for key")))
+    assert probe.main(["--provider", "openrouter", "--verify-key"]) == 2
+    assert "No provider call made" in capsys.readouterr().out
+
+
+def test_verify_key_rejects_provider_without_documented_auth_endpoint():
+    with pytest.raises(SystemExit):
+        probe.main(["--provider", "groq", "--verify-key", "--allow-network"])

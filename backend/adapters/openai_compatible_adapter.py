@@ -130,10 +130,15 @@ class OpenAICompatibleCloudAdapter:
 
     async def _request(self, method: str, endpoint: str, *, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         # A caller cannot supply an endpoint: only these internal paths exist.
-        if (method, endpoint) not in {
+        supported = {
             ("GET", "models"),
             ("POST", "chat/completions"),
-        }:
+        }
+        # OpenRouter publishes an authenticated current-key endpoint. Never
+        # send other providers' bearer tokens to an arbitrary verification URL.
+        if self.spec.provider_id == "openrouter":
+            supported.add(("GET", "key"))
+        if (method, endpoint) not in supported:
             raise CompatibleProviderError("Unsupported inference operation")
         if data is not None:
             size = len(json.dumps(data, ensure_ascii=False).encode("utf-8"))
@@ -160,6 +165,20 @@ class OpenAICompatibleCloudAdapter:
             raise CompatibleProviderError("Provider transport outcome unknown") from None
         except (ValueError, TypeError):
             raise CompatibleProviderError("Invalid provider response") from None
+
+    async def verify_key(self) -> None:
+        """Verify an OpenRouter credential through its authenticated key API.
+
+        Model listing may be publicly accessible, so successful catalog
+        discovery is *not* evidence that the supplied key is valid. Do not
+        display the returned account metadata, key label or usage details.
+        This is a GET; no model inference or tool execution is performed.
+        """
+        if self.spec.provider_id != "openrouter":
+            raise CompatibleProviderError("Key verification unavailable for provider")
+        body = await self._request("GET", "key")
+        if not isinstance(body.get("data"), dict):
+            raise CompatibleProviderError("Invalid key verification response")
 
     async def list_models(self) -> List[Dict[str, Any]]:
         """Actual provider model discovery, not evidence of tool capability."""
@@ -243,9 +262,32 @@ class OpenAICompatibleCloudAdapter:
                     raise CompatibleProviderError("Model capability probe gave the wrong arguments")
                 self._capability_ok = True
                 self._probe_failed_at = None
-            except (CompatibleProviderError, ValueError, TypeError):
+            except (CompatibleProviderError, ValueError, TypeError) as exc:
                 self._probe_failed_at = time.monotonic()
-                raise CompatibleProviderError("Model capability probe failed") from None
+                # Report only locally defined error categories. Never expose
+                # provider response bodies, request headers, or model outputs.
+                reason = str(exc)
+                if reason.startswith("Provider HTTP ") and reason[14:].isdigit():
+                    category = "provider HTTP " + reason[14:]
+                elif reason == "Provider transport outcome unknown":
+                    category = "network outcome unknown"
+                elif reason == "Provider redirect rejected":
+                    category = "redirect rejected"
+                elif reason == "Model did not return a tool call":
+                    category = "model returned no tool call"
+                elif reason == "Invalid model tool arguments":
+                    category = "invalid tool-call arguments"
+                elif reason == "Model capability probe returned the wrong tool":
+                    category = "incorrect function name or call count"
+                elif reason == "Model capability probe gave the wrong arguments":
+                    category = "incorrect function arguments"
+                elif reason == "Invalid provider message" or reason == "Invalid provider response":
+                    category = "invalid provider message"
+                else:
+                    category = "invalid probe response"
+                raise CompatibleProviderError(
+                    "Model capability probe failed (" + category + ")"
+                ) from None
 
     async def decide(
         self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]],
