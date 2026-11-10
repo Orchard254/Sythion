@@ -153,3 +153,25 @@ active provider only after passing real model capability checks.
 
 Offline Windows gate:
 `python -m pytest -q backend/tests/test_inference_provider_preview.py backend/tests/test_openai_compatible_provider.py backend/tests/test_setup_readiness.py --disable-warnings`
+
+### Frontend first-run cloud preview
+
+From the first setup screen the owner may expand 'Explore alternative cloud
+providers (preview)' to select OpenRouter, NVIDIA NIM or Groq. Credential
+writes use the existing `PUT /api/v1/secrets/{provider}_api_key` route and
+build-isolated write-only secret store; the password input is cleared after
+a successful write. Model IDs can be staged explicitly with the
+`/inference-preview/stage` route. A checkbox requires fresh, per-action
+consent before one real synthetic function-call probe.
+
+The preview's success text means only one tool-call probe passed; it never
+claims that any provider is active, ready for task execution, or suitable
+for all task types. It does not change the existing setup/readiness gate.
+HTTP status messages are bounded and never reflect upstream bodies or
+typed key values. Changing provider or model clears the consent and
+prior local probe result. Initial disclosure only fetches credential
+presence and staged nonsecret metadata, not model inference.
+
+Frontend targeted validation:
+`npm run test --prefix frontend -- src/components/CloudProviderPreview.test.tsx src/screens/Setup.test.tsx src/services/api.test.ts`
+`npm run build --prefix frontend`

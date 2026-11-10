@@ -543,6 +543,62 @@ export const setupService = {
   },
 };
 
+/* --- Inert, provider-aware onboarding preview (NOT active inference) ---- */
+
+export type CloudPreviewProviderId = 'openrouter' | 'nvidia' | 'groq';
+
+const CLOUD_SECRET_NAMES: Record<CloudPreviewProviderId, string> = {
+  openrouter: 'openrouter_api_key',
+  nvidia: 'nvidia_api_key',
+  groq: 'groq_api_key',
+};
+
+export interface CloudPreviewSelection {
+  provider_id: CloudPreviewProviderId;
+  model_id: string;
+}
+
+export interface CloudPreviewStatus {
+  active_provider: string;
+  staged: Partial<CloudPreviewSelection>;
+  providers: Array<{ provider_id: CloudPreviewProviderId; credential_configured: boolean }>;
+  ready_for_execution: false;
+}
+
+export interface CloudPreviewProbeResult extends CloudPreviewSelection {
+  tool_probe_verified: boolean;
+  active: false;
+  ready_for_execution: false;
+  evidence_persisted: false;
+}
+
+export const cloudPreviewService = {
+  status: async (): Promise<CloudPreviewStatus> => {
+    const response = await apiClient.get('/inference-preview/providers');
+    return response.data;
+  },
+
+  saveCredential: async (providerId: CloudPreviewProviderId, value: string): Promise<void> => {
+    const secretName = CLOUD_SECRET_NAMES[providerId];
+    if (!secretName || !value.trim()) throw new Error('Choose a provider and enter a key.');
+    await apiClient.put('/secrets/' + secretName, { value: value.trim() });
+    // A vault write is not validation of provider credentials.
+  },
+
+  stage: async (selection: CloudPreviewSelection): Promise<void> => {
+    await apiClient.post('/inference-preview/stage', selection);
+  },
+
+  probe: async (selection: CloudPreviewSelection): Promise<CloudPreviewProbeResult> => {
+    // Called only from the explicit, confirmed UI action. Never auto-probe.
+    const response = await apiClient.post('/inference-preview/probe', {
+      ...selection,
+      confirm_network_request: true,
+    });
+    return response.data;
+  },
+};
+
 /* --- Voice --------------------------------------------------------------- */
 
 export interface VoiceSegment {

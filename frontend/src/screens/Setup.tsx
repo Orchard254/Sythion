@@ -6,12 +6,14 @@ import { modelTestFailureMessage } from '../lib/modelTestFailure';
 import { singleScreenContentStyle, singleScreenShellStyle } from '../lib/shellLayout';
 import { Button, Notice, Panel } from '../components/ui';
 import { SythionMark } from '../components/icons';
+import { CloudProviderPreview } from '../components/CloudProviderPreview';
 import { setupService, modelService, voiceService, type SetupReadiness } from '../services/api';
 
 interface SetupProps { onComplete: (textFirst: boolean) => void; }
 
 export function SetupScreen({ onComplete }: SetupProps) {
   const [step, setStep] = useState(0);
+  const [showCloudPreview, setShowCloudPreview] = useState(false);
   const [apiKey, setApiKey] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
   const [models, setModels] = useState<string[]>([]);
@@ -164,6 +166,13 @@ export function SetupScreen({ onComplete }: SetupProps) {
                 </div>
               </div>
             </Panel>}
+            {step === 0 && <>
+              <Button variant="subtle" disabled={busy}
+                onClick={() => setShowCloudPreview((current) => !current)}>
+                {showCloudPreview ? 'Hide alternative cloud providers' : 'Explore alternative cloud providers (preview)'}
+              </Button>
+              {showCloudPreview && <CloudProviderPreview />}
+            </>}
             {step === 1 && <Panel title="2. Choose a model" icon="info">
               <div className="stack" style={{ gap: 12 }}>
                 {(models.length > 0 || selectedModel) && <>
