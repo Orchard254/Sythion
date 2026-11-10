@@ -3757,6 +3757,7 @@ async def list_inference_preview_model_catalog(
                 continue
             model_id = item.get("model")
             if (not isinstance(model_id, str) or
+                    "://" in model_id or
                     re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,179}", model_id) is None):
                 continue
             params = item.get("supported_parameters")
