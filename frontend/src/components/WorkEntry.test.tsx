@@ -12,7 +12,8 @@ const task: Task = {
 };
 
 let view: ReactTestRenderer;
-let createTask: Mock<CreateWorkTask>;
+// Vitest 1.x Mock takes the argument tuple and return type separately.
+let createTask: Mock<Parameters<CreateWorkTask>, ReturnType<CreateWorkTask>>;
 let created: ReturnType<typeof vi.fn>;
 let store: Map<string, string>;
 
@@ -32,7 +33,7 @@ beforeEach(() => {
     setItem: (key: string, value: string) => { store.set(key, value); },
     removeItem: (key: string) => { store.delete(key); },
   });
-  createTask = vi.fn<CreateWorkTask>().mockResolvedValue(task);
+  createTask = vi.fn<Parameters<CreateWorkTask>, ReturnType<CreateWorkTask>>().mockResolvedValue(task);
   created = vi.fn();
   act(() => {
     view = create(<WorkEntry text={request} disabled={false} createTask={createTask} onCreated={created} />);

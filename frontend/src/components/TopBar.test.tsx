@@ -26,19 +26,30 @@ describe('Control Center tray reveal action', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useAppStore.setState({ notifications: [], unreadNotifications: 0 });
-    view = create(
-      <TopBar
-        route={route}
-        connected={true}
-        runtimeState="healthy"
-        attentionCount={0}
-        onNavigate={vi.fn()}
-      />,
-    );
+    // The Popover is a real component. It registers document listeners while
+    // open; this file intentionally runs in Vitest's Node environment.
+    vi.stubGlobal('document', {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    // Initial mount must be inside act so Zustand subscriptions and effects
+    // are established before the test publishes notifications.
+    act(() => {
+      view = create(
+        <TopBar
+          route={route}
+          connected={true}
+          runtimeState="healthy"
+          attentionCount={0}
+          onNavigate={vi.fn()}
+        />,
+      );
+    });
   });
 
   afterEach(() => {
     act(() => view.unmount());
+    vi.unstubAllGlobals();
   });
 
   it('marks viewed notifications read but retains notification history', async () => {
