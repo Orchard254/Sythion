@@ -63,6 +63,7 @@ from backend.api.schemas import (
     VoiceSegmentResponse,
     SecretWriteRequest, SecretStatusResponse, SecretsListResponse,
     ModelSelectRequest, ModelSelectResponse, OnboardingStatusResponse,
+    CloudSelectionStageRequest,
     SkillSubmitRequest, SkillStateRequest,
     PurgeRequest, PurgeReceiptResponse, RetentionRunResponse,
     GoalCreateRequest, GoalReplanRequest,
@@ -3688,6 +3689,53 @@ async def update_settings(request: Request, db: Session = Depends(get_db)):
     return {
         "message": "Settings updated",
         "settings": updated,
+    }
+
+
+
+# --- Inert alternative-provider candidate (Universal Inference V1) ---------
+# These endpoints DO NOT select the live model or request inference. Never
+# re-use Ollama's readiness flag to authorize a different model/provider.
+
+@router.get("/inference-preview/providers")
+async def list_inference_preview_providers():
+    """Credential-presence only; no provider network request or model claims."""
+    from backend.adapters.openai_compatible_adapter import PROVIDERS
+    from backend.core.secrets import has_secret
+    from backend.core.profile import get_staged_cloud_selection
+
+    return {
+        "active_provider": "ollama-cloud",
+        "staged": get_staged_cloud_selection(),
+        "providers": [
+            {
+                "provider_id": key,
+                "credential_configured": has_secret(spec.key_name),
+            }
+            for key, spec in sorted(PROVIDERS.items())
+        ],
+        "ready_for_execution": False,
+    }
+
+
+@router.post("/inference-preview/stage")
+async def stage_inference_preview(body: CloudSelectionStageRequest):
+    """Save an inert candidate; does not test the key, call a model, or switch."""
+    from backend.core.profile import stage_cloud_selection
+    try:
+        state = stage_cloud_selection(body.provider_id, body.model_id)
+    except ValueError as exc:
+        if str(exc) == "Unsupported inference provider":
+            raise HTTPException(status_code=400, detail="Unsupported inference provider") from None
+        raise HTTPException(status_code=400, detail="Invalid cloud model ID") from None
+    except (OSError, UnicodeError):
+        raise HTTPException(status_code=503, detail="Profile storage unavailable") from None
+    return {
+        "staged": True,
+        "active": False,
+        **state,
+        "ready_for_execution": False,
+        "model_verified": False,
     }
 
 

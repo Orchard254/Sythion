@@ -101,3 +101,30 @@ selected from frontend yet. Before enabling in tasks, onboarding must
 bind provider ID, model ID, credentials, verified inference and tool
 capabilities to the same profile and reject stale evidence. D-002 still
 blocked on a genuine working cloud inference provider.
+
+### Provider staging (inactive, offline-only)
+
+The authenticated backend now exposes inert preview routes:
+
+- `GET /api/v1/inference-preview/providers`: fixed provider list with
+  build-scoped credential-presence booleans, current active provider
+  reported as Ollama Cloud, and staged candidate metadata.
+- `POST /api/v1/inference-preview/stage`: exactly one `provider_id` from
+  openrouter, nvidia, groq and exact model ID; rejects unknown fields,
+  unsafe IDs, and unknown providers. Writes `staged_cloud_selection` to
+  the existing build-isolated profile only. Never stores API credentials.
+
+A staged model is explicitly **NOT active or verified**. Both endpoint
+responses fail closed with `ready_for_execution=false`; no provider
+network requests are made by these preview routes. The active Ollama
+selected model, inference marker, onboarding, and task/client execution
+remain untouched. Staging deliberately does not imply model-tool capability.
+
+Windows regression gate:
+
+`python -m pytest -q backend/tests/test_inference_provider_preview.py backend/tests/test_config_selected_model_isolation.py backend/tests/test_setup_readiness.py backend/tests/test_cloud_model_client.py --disable-warnings`
+
+The next phase should bind provider + model + credential + successful
+real capability probe to an execution-ready evidence marker scoped to
+the current build/profile. Until all chat, task and memory calls can
+follow the selected provider safely, keep task admission on Ollama only.

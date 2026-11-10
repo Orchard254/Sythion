@@ -1,8 +1,8 @@
 """
 Non-secret Sythion (Synth) profile metadata.
 
-Only non-secret configuration (currently the selected Cloud model ID) is
-persisted here, under the user-only LocalAppData directory. Secrets live in
+Only non-secret configuration (the selected Ollama Cloud model ID and optional
+staged provider/model preview) is persisted here under LocalAppData. Secrets live in
 Windows Credential Manager (backend/core/secrets.py) and never enter this
 file, the database, logs, or model context.
 """
@@ -138,3 +138,44 @@ def get_selected_model() -> str:
 def set_selected_model(model_id: str) -> None:
     """Persist the selected Cloud model ID (non-secret metadata only)."""
     save_profile({"selected_model": model_id})
+
+
+
+def get_staged_cloud_selection() -> Dict[str, str]:
+    """Return validated, inert preview metadata or {}.
+
+    This is NOT an active provider selector. The default Ollama provider and
+    existing setup readiness evidence are never inferred from these fields.
+    Damaged or attacker-modified profile content fails closed.
+    """
+    from backend.adapters.openai_compatible_adapter import PROVIDERS
+    value = load_profile().get("staged_cloud_selection")
+    if not isinstance(value, dict):
+        return {}
+    provider = value.get("provider_id")
+    model = value.get("model_id")
+    if (not isinstance(provider, str) or provider not in PROVIDERS or
+            not isinstance(model, str) or not 1 <= len(model) <= 180):
+        return {}
+    import re
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,179}", model) is None:
+        return {}
+    return {"provider_id": provider, "model_id": model}
+
+
+def stage_cloud_selection(provider_id: str, model_id: str) -> Dict[str, str]:
+    """Persist an explicit non-executable cloud candidate, never a credential.
+
+    No capability or readiness claim is written. This operation never calls
+    a model and never changes the legacy selected_model field.
+    """
+    from backend.adapters.openai_compatible_adapter import PROVIDERS
+    import re
+    if not isinstance(provider_id, str) or provider_id not in PROVIDERS:
+        raise ValueError("Unsupported inference provider")
+    if (not isinstance(model_id, str) or
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,179}", model_id) is None):
+        raise ValueError("Invalid cloud model ID")
+    state = {"provider_id": provider_id, "model_id": model_id}
+    save_profile({"staged_cloud_selection": state})
+    return dict(state)

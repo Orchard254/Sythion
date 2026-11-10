@@ -715,6 +715,13 @@ class OnboardingStatusResponse(BaseModel):
     onboarded: bool
 
 
+class CloudSelectionStageRequest(BaseModel):
+    """Explicitly stage a candidate. This does not activate inference."""
+    model_config = {"extra": "forbid", "protected_namespaces": ()}
+    provider_id: str = Field(..., min_length=1, max_length=40)
+    model_id: str = Field(..., min_length=1, max_length=180)
+
+
 # Secret Schemas
 
 class SecretWriteRequest(BaseModel):
