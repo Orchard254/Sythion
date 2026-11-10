@@ -36,7 +36,8 @@ def _record(db, provider="openrouter", model="test/tool:free", credential="inert
 def test_real_synthetic_proof_is_valid_only_for_current_stage_and_vault(test_db, isolated_cloud_evidence):
     selected = _record(test_db)
     assert is_probe_evidence_current(test_db)
-    assert is_probe_evidence_current(test_db, now=int(__import__("time").time()) + MAX_AGE_SECONDS + 3) is False
+    import time
+    assert is_probe_evidence_current(test_db, now=int(time.time()) + MAX_AGE_SECONDS + 3) is False
     assert selected == profile.get_staged_cloud_snapshot()
 
 
@@ -84,7 +85,8 @@ def test_proof_is_not_tamperable_through_profile_or_db(test_db, isolated_cloud_e
 def test_clock_bounds_fail_closed(test_db, isolated_cloud_evidence, offset):
     _record(test_db)
     import time
-    recorded = json.loads(__import__("backend.core.settings_store", fromlist=["get_setting"]).get_setting(test_db, SETTING_KEY))
+    from backend.core.settings_store import get_setting
+    recorded = json.loads(get_setting(test_db, SETTING_KEY))
     now = recorded["issued_at"] + offset
     assert is_probe_evidence_current(test_db, now=now) is (0 <= offset <= MAX_AGE_SECONDS)
 

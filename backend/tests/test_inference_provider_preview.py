@@ -174,7 +174,8 @@ def test_probe_success_persists_only_scoped_tool_evidence_without_execution(test
     attempts = []
 
     class SafeProbe:
-        def __init__(self, provider, model):
+        def __init__(self, provider, model, **kwargs):
+            assert kwargs["api_key"] == "synthetic-key"
             attempts.append(("init", provider, model))
         async def prove_tool_capability(self):
             attempts.append(("probe",))
@@ -222,7 +223,7 @@ def test_probe_maps_errors_without_leaking_provider_details(
     attempts = []
 
     class FailingProbe:
-        def __init__(self, *args):
+        def __init__(self, *args, **kwargs):
             attempts.append("init")
         async def prove_tool_capability(self):
             attempts.append("probe")
@@ -264,7 +265,7 @@ def test_probe_rejects_missing_auth_before_constructing_provider(test_client, pr
 def test_inflight_candidate_change_invalidates_probe_result(test_client, preview_profile, monkeypatch):
     import backend.adapters.openai_compatible_adapter as compatible
     class ChangedProbe:
-        def __init__(self, *args):
+        def __init__(self, *args, **kwargs):
             pass
         async def prove_tool_capability(self):
             profile.stage_cloud_selection("groq", "different-model")
