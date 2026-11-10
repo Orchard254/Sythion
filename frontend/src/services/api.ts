@@ -562,6 +562,7 @@ export interface CloudPreviewStatus {
   active_provider: string;
   staged: Partial<CloudPreviewSelection>;
   providers: Array<{ provider_id: CloudPreviewProviderId; credential_configured: boolean }>;
+  tool_probe_verified: boolean;
   ready_for_execution: false;
 }
 
@@ -569,7 +570,7 @@ export interface CloudPreviewProbeResult extends CloudPreviewSelection {
   tool_probe_verified: boolean;
   active: false;
   ready_for_execution: false;
-  evidence_persisted: false;
+  evidence_persisted: true;
 }
 
 export const cloudPreviewService = {

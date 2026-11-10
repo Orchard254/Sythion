@@ -194,3 +194,24 @@ activate a provider or unlock setup on its own. Route integration will
 be a separate gate after these offline tests pass.
 
 `python -m pytest -q backend/tests/test_cloud_probe_evidence.py backend/tests/test_inference_provider_preview.py backend/tests/test_profile_atomic_durable_save.py --disable-warnings`
+
+### Evidence persistence in the probe endpoint
+
+`GET /inference-preview/providers` now reports `tool_probe_verified` only
+when the 1-hour scoped evidence matches the exact staged generation and
+current key, from local DB status (not a provider network request).
+Successful `POST /inference-preview/probe` writes a MAC-bound record and
+returns `evidence_persisted:true`; it checks the candidate and key again
+after the request. If a DB write fails, the endpoint returns 503 without
+claiming success. The frontend displays recently recorded evidence,
+but never advertises it as task authorization. It continues to require
+explicit consent for each new network probe. The existing Ollama readiness
+and Start Conversation gate are NOT modified.
+
+Offline verification:
+
+```powershell
+python -m pytest -q backend/tests/test_cloud_probe_evidence.py backend/tests/test_inference_provider_preview.py backend/tests/test_setup_readiness.py --disable-warnings
+npm run test --prefix frontend -- src/components/CloudProviderPreview.test.tsx src/screens/Setup.test.tsx src/services/cloudPreview.test.ts
+npm run build --prefix frontend
+```

@@ -3698,15 +3698,17 @@ async def update_settings(request: Request, db: Session = Depends(get_db)):
 # re-use Ollama's readiness flag to authorize a different model/provider.
 
 @router.get("/inference-preview/providers")
-async def list_inference_preview_providers():
-    """Credential-presence only; no provider network request or model claims."""
+async def list_inference_preview_providers(db: Optional[Session] = Depends(get_health_db)):
+    """Read scoped staged tool evidence only; never model health or execution readiness."""
     from backend.adapters.openai_compatible_adapter import PROVIDERS
     from backend.core.secrets import has_secret
     from backend.core.profile import get_staged_cloud_selection
+    from backend.core.cloud_probe_evidence import is_probe_evidence_current
 
     return {
         "active_provider": "ollama-cloud",
         "staged": get_staged_cloud_selection(),
+        "tool_probe_verified": is_probe_evidence_current(db),
         "providers": [
             {
                 "provider_id": key,
@@ -3740,18 +3742,19 @@ async def stage_inference_preview(body: CloudSelectionStageRequest):
 
 
 @router.post("/inference-preview/probe")
-async def probe_inference_preview(body: CloudCapabilityProbeRequest):
-    """Verify the exact staged model using one harmless function-call prompt.
+async def probe_inference_preview(
+    body: CloudCapabilityProbeRequest, db: Session = Depends(get_db),
+):
+    """Store short-lived scoped evidence after one verified synthetic tool call.
 
-    This endpoint is explicitly opt-in, uses only the build-scoped provider
-    credential, never executes the named model function, never persists a
-    capability/readiness claim, and NEVER switches the active model.
-
-    Provider HTTP status is mapped to fixed messages. The upstream exception,
-    response body, key, or raw model output is not returned to the client.
+    This endpoint is explicitly opt-in. It never executes the named model
+    function, activates a provider or grants task permissions. The database
+    stores only MAC-bound evidence, never credentials or provider content.
     """
-    from backend.core.profile import get_staged_cloud_selection
-    from backend.core.secrets import has_secret
+    import hmac
+    from backend.core.profile import get_staged_cloud_snapshot
+    from backend.core.secrets import resolve_compatible_provider_key
+    from backend.core.cloud_probe_evidence import persist_probe_evidence
     from backend.adapters.openai_compatible_adapter import (
         PROVIDERS, OpenAICompatibleCloudAdapter, CompatibleProviderError,
     )
@@ -3761,16 +3764,18 @@ async def probe_inference_preview(body: CloudCapabilityProbeRequest):
             status_code=409,
             detail="Explicit confirmation of one provider inference request is required",
         )
-    candidate = get_staged_cloud_selection()
-    if candidate != {"provider_id": body.provider_id, "model_id": body.model_id}:
+    candidate = get_staged_cloud_snapshot()
+    if (not candidate or
+            candidate["provider_id"] != body.provider_id or
+            candidate["model_id"] != body.model_id):
         raise HTTPException(
             status_code=409,
             detail="Cloud candidate changed or is not staged; stage it again",
         )
-    spec = PROVIDERS.get(body.provider_id)
-    if spec is None:
+    if body.provider_id not in PROVIDERS:
         raise HTTPException(status_code=400, detail="Unsupported inference provider")
-    if not has_secret(spec.key_name):
+    credential = resolve_compatible_provider_key(body.provider_id)
+    if not credential:
         raise HTTPException(
             status_code=409,
             detail="No key configured in this build's secure provider store",
@@ -3778,24 +3783,43 @@ async def probe_inference_preview(body: CloudCapabilityProbeRequest):
 
     adapter = None
     try:
-        adapter = OpenAICompatibleCloudAdapter(body.provider_id, body.model_id)
-        # Exactly one test completion with a harmless synthetic function. No
-        # Sythion tool handler or task executor is called.
+        # Snapshot the key for the model request and MAC proof; never
+        # attest a different key that was rotated during the request.
+        adapter = OpenAICompatibleCloudAdapter(
+            body.provider_id, body.model_id, api_key=credential,
+        )
         await adapter.prove_tool_capability()
-        # The profile may have changed while the network request was in flight;
-        # never imply a success for a subsequently staged different candidate.
-        if get_staged_cloud_selection() != candidate:
+        if get_staged_cloud_snapshot() != candidate:
             raise HTTPException(
                 status_code=409,
                 detail="Cloud candidate changed during verification",
             )
+        current_key = resolve_compatible_provider_key(body.provider_id)
+        if not current_key or not hmac.compare_digest(credential, current_key):
+            raise HTTPException(
+                status_code=409,
+                detail="Cloud credential changed during verification",
+            )
+        try:
+            persist_probe_evidence(db, candidate, credential)
+        except Exception:
+            # No false durable evidence if SQLite is unavailable, the
+            # stage changed during the write or the transaction failed.
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=503,
+                detail="Capability proof could not be saved; no execution permission granted",
+            ) from None
         return {
             "provider_id": body.provider_id,
             "model_id": body.model_id,
             "tool_probe_verified": True,
             "ready_for_execution": False,
             "active": False,
-            "evidence_persisted": False,
+            "evidence_persisted": True,
         }
     except CompatibleProviderError as exc:
         category = str(exc)

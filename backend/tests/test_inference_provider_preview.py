@@ -168,8 +168,9 @@ def test_probe_fails_closed_without_build_scoped_key(test_client, preview_profil
     assert "secure provider store" in response.json()["detail"]
 
 
-def test_probe_success_remains_inert_and_never_persists_readiness(test_client, preview_profile, monkeypatch):
+def test_probe_success_persists_only_scoped_tool_evidence_without_execution(test_client, test_db, preview_profile, monkeypatch):
     import backend.adapters.openai_compatible_adapter as compatible
+    from backend.core.cloud_probe_evidence import is_probe_evidence_current
     attempts = []
 
     class SafeProbe:
@@ -192,13 +193,19 @@ def test_probe_success_remains_inert_and_never_persists_readiness(test_client, p
     assert response.json() == {
         "provider_id": "openrouter", "model_id": "test/tool:free",
         "tool_probe_verified": True, "ready_for_execution": False,
-        "active": False, "evidence_persisted": False,
+        "active": False, "evidence_persisted": True,
     }
+    assert is_probe_evidence_current(test_db) is True
+    assert test_client.get("/api/v1/inference-preview/providers").json()["tool_probe_verified"] is True
     assert attempts == [
         ("init", "openrouter", "test/tool:free"), ("probe",), ("close",)
     ]
     assert profile.get_selected_model() == "ollama-original"
     assert "tool_probe_verified" not in (preview_profile / "profile.json").read_text()
+    assert "synthetic-key" not in (preview_profile / "profile.json").read_text()
+    profile.stage_cloud_selection("openrouter", "test/tool:free")
+    assert is_probe_evidence_current(test_db) is False
+    assert test_client.get("/api/v1/inference-preview/providers").json()["tool_probe_verified"] is False
 
 
 @pytest.mark.parametrize("error,expected_status,detail", [
@@ -272,3 +279,78 @@ def test_inflight_candidate_change_invalidates_probe_result(test_client, preview
     })
     assert response.status_code == 409
     assert "changed during verification" in response.json()["detail"]
+
+
+
+def test_probe_key_rotation_during_request_never_persists_success(test_client, test_db, preview_profile, monkeypatch):
+    from backend.core.cloud_probe_evidence import is_probe_evidence_current
+    import backend.adapters.openai_compatible_adapter as compatible
+
+    class KeyChangingProbe:
+        def __init__(self, *args, **kwargs):
+            assert kwargs["api_key"] == "synthetic-v1"
+        async def prove_tool_capability(self):
+            secrets.set_secret(secrets.OPENROUTER_API_KEY, "synthetic-v2")
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter", KeyChangingProbe)
+    profile.stage_cloud_selection("openrouter", "test/tool:free")
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "synthetic-v1")
+    response = test_client.post("/api/v1/inference-preview/probe", json={
+        "provider_id": "openrouter", "model_id": "test/tool:free",
+        "confirm_network_request": True,
+    })
+    assert response.status_code == 409
+    assert is_probe_evidence_current(test_db) is False
+
+
+def test_probe_database_write_failure_fails_closed(test_client, test_db, preview_profile, monkeypatch):
+    import backend.adapters.openai_compatible_adapter as compatible
+    import backend.core.cloud_probe_evidence as evidence
+
+    class PassingProbe:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def prove_tool_capability(self):
+            pass
+        async def close(self):
+            pass
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("PRIVATE DB ERROR WITH NO PROOF")
+
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter", PassingProbe)
+    monkeypatch.setattr(evidence, "set_setting", fail)
+    profile.stage_cloud_selection("openrouter", "test/tool:free")
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "synthetic")
+    response = test_client.post("/api/v1/inference-preview/probe", json={
+        "provider_id": "openrouter", "model_id": "test/tool:free",
+        "confirm_network_request": True,
+    })
+    assert response.status_code == 503
+    assert "PRIVATE DB ERROR" not in response.text
+    assert evidence.is_probe_evidence_current(test_db) is False
+
+
+def test_preview_readiness_remains_ollama_only_after_scoped_evidence(
+    test_client, test_db, preview_profile, monkeypatch
+):
+    from backend.core.cloud_probe_evidence import persist_probe_evidence
+    from backend.runtime.model_provider import ModelHealth
+    import backend.runtime.model_provider as mp
+
+    class BadOllama:
+        def health(self):
+            return ModelHealth("ollama-cloud", ModelHealth.UNAVAILABLE)
+
+    monkeypatch.setattr(mp, "get_default_provider", lambda: BadOllama())
+    snapshot = profile.stage_cloud_selection("openrouter", "test/tool:free")
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "inert")
+    persist_probe_evidence(test_db, profile.get_staged_cloud_snapshot(), "inert")
+    status = test_client.get("/api/v1/inference-preview/providers").json()
+    assert status["tool_probe_verified"] is True
+    assert status["ready_for_execution"] is False
+    readiness = test_client.get("/api/v1/setup/readiness").json()
+    assert readiness["checks"]["ollama_health_ok"] is False
+    assert readiness["checks"]["inference_verified_ok"] is False

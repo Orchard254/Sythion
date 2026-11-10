@@ -105,6 +105,7 @@ export function CloudProviderPreview() {
     setProbePassed(false);
     setStatus((old) => old ? {
       ...old,
+      tool_probe_verified: false,
       providers: old.providers.map((p) => p.provider_id === provider
         ? { ...p, credential_configured: true } : p),
     } : null);
@@ -117,6 +118,7 @@ export function CloudProviderPreview() {
     setStaged(selection);
     setConsent(false);
     setProbePassed(false);
+    setStatus((old) => old ? { ...old, tool_probe_verified: false } : null);
     setNotice('Model candidate saved for testing. It is not active.');
   });
 
@@ -126,12 +128,13 @@ export function CloudProviderPreview() {
     setProbePassed(false);
     const response = await cloudPreviewService.probe(selection);
     if (response.tool_probe_verified !== true || response.active !== false ||
-        response.ready_for_execution !== false || response.evidence_persisted !== false ||
+        response.ready_for_execution !== false || response.evidence_persisted !== true ||
         response.model_id !== selection.model_id || response.provider_id !== selection.provider_id) {
       throw new Error('Unexpected capability evidence');
     }
     setProbePassed(true);
-    setNotice('One function-call test passed. This does not activate the model or enable task execution.');
+    setStatus((old) => old ? { ...old, tool_probe_verified: true } : null);
+    setNotice('One function-call test passed. The evidence is recorded for up to one hour, but the provider remains inactive.');
   });
 
   return (
@@ -172,11 +175,16 @@ export function CloudProviderPreview() {
         {probePassed && <Notice tone="info" icon="check">
           This model responded correctly to one synthetic function-call probe, but is not authorized for tasks.
         </Notice>}
+        {!probePassed && stagedMatches && status?.tool_probe_verified === true && (
+          <Notice tone="info" icon="check">
+            A recent staged tool-call test is recorded for this exact model and key. It does not enable tasks.
+          </Notice>
+        )}
         {notice && <Notice tone="info" icon="info">{notice}</Notice>}
         {error && <Notice tone="danger" icon="alert">{error}</Notice>}
         <p className="t-muted">
-          This is a development preview. Model checks are not saved as execution approval.
-          Ollama's existing onboarding requirements still apply to Start conversation.
+          This is a development preview. Recent model capability evidence expires automatically,
+          and it is never execution approval. Ollama's existing onboarding requirements still apply to Start conversation.
         </p>
       </div>
     </Panel>

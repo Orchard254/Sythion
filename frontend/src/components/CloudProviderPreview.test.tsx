@@ -36,7 +36,7 @@ beforeEach(async () => {
   mock.stage.mockResolvedValue(undefined);
   mock.probe.mockResolvedValue({
     ...candidate, tool_probe_verified: true, active: false,
-    ready_for_execution: false, evidence_persisted: false,
+    ready_for_execution: false, evidence_persisted: true,
   });
   await settle(() => { view = create(<CloudProviderPreview />); });
 });
@@ -126,7 +126,7 @@ describe('alternative provider first-run preview', () => {
   it('rejects a response that asserts active execution or mismatched identity', async () => {
     mock.probe.mockResolvedValueOnce({
       ...candidate, tool_probe_verified: true, active: true,
-      ready_for_execution: true, evidence_persisted: false,
+      ready_for_execution: true, evidence_persisted: true,
     });
     await enterKey();
     await enterModel();
@@ -137,4 +137,23 @@ describe('alternative provider first-run preview', () => {
     expect(text(view.root)).not.toContain('one synthetic function-call probe');
     expect(text(view.root)).toContain('That action could not be completed');
   });
+});
+
+
+
+it('shows previously verified capability evidence as non-executable on reopening', async () => {
+  // We intentionally read status again instead of assuming an in-memory
+  // success constitutes durable provider readiness.
+  await settle(() => view.unmount());
+  mock.status.mockResolvedValueOnce({
+    active_provider: 'ollama-cloud',
+    staged: candidate,
+    providers: [{ provider_id: 'openrouter', credential_configured: true }],
+    tool_probe_verified: true,
+    ready_for_execution: false,
+  });
+  await settle(() => { view = create(<CloudProviderPreview />); });
+  expect(text(view.root)).toContain('recent staged tool-call test is recorded');
+  expect(text(view.root)).toContain('does not enable tasks');
+  expect(mock.probe).not.toHaveBeenCalled();
 });
