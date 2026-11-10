@@ -239,3 +239,26 @@ readiness remains authoritative for existing onboarding and tasks.
 Offline verification:
 
 `python -m pytest -q backend/tests/test_cloud_conversation_bridge.py backend/tests/test_cloud_model_client.py backend/tests/test_assistant_turn_json_mode.py backend/tests/test_openai_compatible_provider.py --disable-warnings`
+
+### Text-only preview chat (owner-authorized, stateless, NOT normal chat)
+
+`POST /api/v1/inference-preview/chat` is an isolated one-message cloud
+text preview. Requires explicit per-request consent, the exact staged
+provider/model and its current build-scoped credential. It sends only
+a bounded system prompt plus one user text message, no tools, memory,
+history, task context, background work or agent permissions. The response
+must be a single valid plain-text assistant completion; truncated and
+tool-bearing responses are rejected. Any in-flight provider or key change
+discards the result. Errors are sanitized and no request is automatically
+retried. A successful preview result reports active=false,
+ready_for_execution=false, persisted=false and task_executed=false.
+
+Unlike real task execution, a text-only preview does *not* require a
+prior function-call probe. A basic text model need not support tools.
+This route never changes setup readiness, Ollama default provider,
+memory or persisted conversation. It provides one-way provider evidence
+only that a text request worked for that particular invocation, not
+durable chat activation or agent competence.
+
+Offline backend gate:
+`python -m pytest -q backend/tests/test_cloud_preview_chat.py backend/tests/test_cloud_conversation_bridge.py backend/tests/test_inference_provider_preview.py --disable-warnings`

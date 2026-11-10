@@ -730,6 +730,15 @@ class CloudCapabilityProbeRequest(BaseModel):
     confirm_network_request: bool
 
 
+class CloudPreviewChatRequest(BaseModel):
+    """One explicit, stateless text-only request; never a normal assistant turn."""
+    model_config = {"extra": "forbid", "protected_namespaces": ()}
+    provider_id: str = Field(..., min_length=1, max_length=40)
+    model_id: str = Field(..., min_length=1, max_length=180)
+    text: str = Field(..., min_length=1, max_length=1200)
+    confirm_network_request: bool
+
+
 # Secret Schemas
 
 class SecretWriteRequest(BaseModel):

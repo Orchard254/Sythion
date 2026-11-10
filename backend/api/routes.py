@@ -63,7 +63,7 @@ from backend.api.schemas import (
     VoiceSegmentResponse,
     SecretWriteRequest, SecretStatusResponse, SecretsListResponse,
     ModelSelectRequest, ModelSelectResponse, OnboardingStatusResponse,
-    CloudSelectionStageRequest, CloudCapabilityProbeRequest,
+    CloudSelectionStageRequest, CloudCapabilityProbeRequest, CloudPreviewChatRequest,
     SkillSubmitRequest, SkillStateRequest,
     PurgeRequest, PurgeReceiptResponse, RetentionRunResponse,
     GoalCreateRequest, GoalReplanRequest,
@@ -3836,6 +3836,122 @@ async def probe_inference_preview(
         else:
             status, detail = 422, "Model did not demonstrate required tool calling"
         raise HTTPException(status_code=status, detail=detail) from None
+    finally:
+        if adapter is not None:
+            await adapter.close()
+
+
+
+@router.post("/inference-preview/chat")
+async def cloud_preview_text_chat(body: CloudPreviewChatRequest):
+    """One isolated text-only cloud reply, NEVER a Sythion assistant turn.
+
+    The caller opts into a provider request and a specific staged candidate.
+    It sends no tools and has no task executor, stateful conversation history,
+    memory access, background work, or model switching. A successful *text*
+    response does not imply tool capability, onboarding readiness, or any
+    execution permission. This preview deliberately does NOT require tool
+    proof: an ordinary conversational model need not support functions.
+    """
+    import hmac
+
+    from backend.core.profile import get_staged_cloud_snapshot
+    from backend.core.secrets import resolve_compatible_provider_key
+    from backend.adapters.openai_compatible_adapter import (
+        PROVIDERS, OpenAICompatibleCloudAdapter, CompatibleProviderError,
+    )
+    from backend.runtime.compatible_chat_provider import CompatibleCloudChatProvider
+
+    if body.confirm_network_request is not True:
+        raise HTTPException(
+            status_code=409, detail="Explicit confirmation of one cloud text request is required",
+        )
+    if not body.text.strip():
+        raise HTTPException(status_code=422, detail="A nonempty message is required")
+    snapshot = get_staged_cloud_snapshot()
+    if (not snapshot or snapshot["provider_id"] != body.provider_id or
+            snapshot["model_id"] != body.model_id or body.provider_id not in PROVIDERS):
+        raise HTTPException(
+            status_code=409, detail="Cloud candidate changed or is not staged; stage it again",
+        )
+    credential = resolve_compatible_provider_key(body.provider_id)
+    if not credential:
+        raise HTTPException(
+            status_code=409, detail="No key configured in this build's secure provider store",
+        )
+
+    adapter = None
+    try:
+        adapter = OpenAICompatibleCloudAdapter(
+            body.provider_id, body.model_id, api_key=credential,
+        )
+        provider = CompatibleCloudChatProvider(
+            body.provider_id, body.model_id, adapter=adapter,
+        )
+        # A stateless text-only preview; do NOT pass any tools, context,
+        # memories, permissions or conversation history to this endpoint.
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "This is a text-only test of Sythion's cloud conversation "
+                    "connection. Reply to the user's message using plain text. "
+                    "You have no tools or access to the user's files, devices, "
+                    "tasks, or memory. Do not claim that any action was performed, "
+                    "saved, scheduled or verified. Do not pretend this is an "
+                    "active Sythion conversation."
+                ),
+            },
+            {"role": "user", "content": body.text.strip()},
+        ]
+        reply = await provider.chat(
+            messages, max_tokens=400, timeout=45.0, temperature=0.2,
+        )
+
+        # Deny stale results if key or candidate changed during inference.
+        if get_staged_cloud_snapshot() != snapshot:
+            raise HTTPException(
+                status_code=409, detail="Cloud candidate changed during text request",
+            )
+        current = resolve_compatible_provider_key(body.provider_id)
+        if not current or not hmac.compare_digest(current, credential):
+            raise HTTPException(
+                status_code=409, detail="Cloud credential changed during text request",
+            )
+        content = reply.get("message", {}).get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise HTTPException(
+                status_code=422, detail="Cloud model did not produce a valid text response",
+            )
+        return {
+            "provider_id": body.provider_id,
+            "model_id": body.model_id,
+            "assistant_text": content,
+            "active": False,
+            "ready_for_execution": False,
+            "persisted": False,
+            "task_executed": False,
+        }
+    except CompatibleProviderError as exc:
+        reason = str(exc)
+        if "Provider HTTP 429" in reason:
+            status, detail = 429, "Provider rate limit or free-tier capacity reached"
+        elif "Provider HTTP 401" in reason or "Provider HTTP 403" in reason:
+            status, detail = 502, "Provider rejected stored credential or access"
+        elif "Provider transport outcome unknown" in reason:
+            status, detail = 503, "Cloud response unknown; do not automatically retry"
+        elif reason.startswith("Provider HTTP "):
+            status, detail = 502, "Cloud provider rejected the text request"
+        else:
+            status, detail = 422, "Cloud provider did not return valid plain text"
+        raise HTTPException(status_code=status, detail=detail) from None
+    except asyncio.CancelledError:
+        raise
+    except HTTPException:
+        raise
+    except Exception:
+        # No upstream exception, key, prompt or provider response in errors.
+        raise HTTPException(status_code=503, detail="Cloud text preview unavailable") from None
     finally:
         if adapter is not None:
             await adapter.close()
