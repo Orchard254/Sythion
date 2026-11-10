@@ -355,3 +355,90 @@ def test_preview_readiness_remains_ollama_only_after_scoped_evidence(
     readiness = test_client.get("/api/v1/setup/readiness").json()
     assert readiness["checks"]["ollama_health_ok"] is False
     assert readiness["checks"]["inference_verified_ok"] is False
+
+
+def test_model_catalog_requires_stored_key_and_never_calls_provider(
+    test_client, preview_profile, monkeypatch,
+):
+    import backend.adapters.openai_compatible_adapter as compatible
+    def fail(*a, **kw):
+        raise AssertionError("No provider call without a stored key")
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter", fail)
+    response = test_client.get("/api/v1/inference-preview/model-catalog",
+                               params={"provider_id": "openrouter"})
+    assert response.status_code == 409
+    assert profile.get_staged_cloud_selection() == {}
+
+
+def test_model_catalog_returns_safe_metadata_and_does_not_stage(
+    test_client, preview_profile, monkeypatch,
+):
+    import backend.adapters.openai_compatible_adapter as compatible
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "synthetic-sensitive-token")
+    calls = []
+    class Catalog:
+        def __init__(self, provider_id, model_id, *, api_key):
+            calls.append(("init", provider_id, model_id, api_key))
+        async def list_models(self):
+            calls.append(("list",))
+            return [
+                {"model": "b/model:free", "supported_parameters": ["tools"]},
+                {"model": "a/model", "supported_parameters": []},
+                {"model": "https://evil.invalid", "supported_parameters": ["tools"]},
+                {"model": "bad id"},
+                {"model": "b/model:free", "supported_parameters": ["tools"]},
+            ]
+        async def close(self):
+            calls.append(("close",))
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter", Catalog)
+    response = test_client.get("/api/v1/inference-preview/model-catalog",
+                               params={"provider_id": "openrouter"})
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "provider_id": "openrouter",
+        "models": [
+            {"id": "a/model", "free_variant": False, "tools_listed": False},
+            {"id": "b/model:free", "free_variant": True, "tools_listed": True},
+        ],
+        "truncated": False,
+        "ready_for_execution": False,
+    }
+    assert "synthetic-sensitive-token" not in response.text
+    assert profile.get_staged_cloud_selection() == {}
+    assert calls == [
+        ("init", "openrouter", "__catalog_discovery__", "synthetic-sensitive-token"),
+        ("list",), ("close",),
+    ]
+
+
+def test_model_catalog_rejects_untrusted_provider_and_missing_control_token(
+    test_client, preview_profile,
+):
+    response = test_client.get("/api/v1/inference-preview/model-catalog",
+                               params={"provider_id": "evil"})
+    assert response.status_code == 400
+    token = test_client.headers.pop("X-Control-Token", None)
+    try:
+        response = test_client.get("/api/v1/inference-preview/model-catalog",
+                                   params={"provider_id": "openrouter"})
+        assert response.status_code == 401
+    finally:
+        if token:
+            test_client.headers["X-Control-Token"] = token
+
+
+def test_model_catalog_sanitizes_rejected_key(test_client, preview_profile, monkeypatch):
+    import backend.adapters.openai_compatible_adapter as compatible
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "synthetic-sensitive-token")
+    class FailingCatalog:
+        async def list_models(self):
+            raise compatible.CompatibleProviderError("Provider HTTP 401")
+        async def close(self):
+            pass
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter",
+                        lambda *a, **kw: FailingCatalog())
+    response = test_client.get("/api/v1/inference-preview/model-catalog",
+                               params={"provider_id": "openrouter"})
+    assert response.status_code == 502
+    assert "stored credential" in response.json()["detail"]
+    assert "synthetic-sensitive-token" not in response.text

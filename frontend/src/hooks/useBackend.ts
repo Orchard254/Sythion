@@ -69,14 +69,16 @@ export function useBackendLive(): boolean {
 
 /* --- Runtime ------------------------------------------------------------- */
 
-export function useHealth(bridgeReady = true) {
-  // Callers mounting during startup may wait for the first Tauri bridge.
-  // Once configured, health continues polling even if connection is lost, so that
-  // a lost backend can be observed and a recovered one can flip the gate back.
+export function useHealth(bridgeReady?: boolean) {
+  // The companion overlay mounts before its bridge bootstrap effect, while
+  // the main window already passes explicit readiness. Both must wait until
+  // configureBridge has replaced Vite's fixed-port fallback API base URL.
+  const configured = useAppStore((s) => s.bridgeReady);
   return useSource('health', api.healthService.check, {
     refetchInterval: 20_000,
     ignoreConnection: true,
-    enabled: bridgeReady,
+    // Keep polling after later disconnects; only gate bridge discovery/retry.
+    enabled: bridgeReady ?? configured,
   });
 }
 

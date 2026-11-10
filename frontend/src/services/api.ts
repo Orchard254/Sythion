@@ -567,6 +567,18 @@ export interface CloudPreviewStatus {
   ready_for_execution: false;
 }
 
+export interface CloudCatalogModel {
+  id: string;
+  free_variant: boolean;
+  tools_listed: boolean;
+}
+export interface CloudModelCatalog {
+  provider_id: CloudPreviewProviderId;
+  models: CloudCatalogModel[];
+  truncated: boolean;
+  ready_for_execution: false;
+}
+
 export interface CloudPreviewProbeResult extends CloudPreviewSelection {
   tool_probe_verified: boolean;
   active: false;
@@ -594,6 +606,13 @@ export interface CloudConversationOnlyResult extends CloudPreviewChatResult {
 export const cloudPreviewService = {
   status: async (): Promise<CloudPreviewStatus> => {
     const response = await apiClient.get('/inference-preview/providers');
+    return response.data;
+  },
+
+  modelCatalog: async (providerId: CloudPreviewProviderId): Promise<CloudModelCatalog> => {
+    const response = await apiClient.get('/inference-preview/model-catalog', {
+      params: { provider_id: providerId }, timeout: 20000,
+    });
     return response.data;
   },
 

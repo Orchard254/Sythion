@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CloudProviderPreview } from './CloudProviderPreview';
 
 const mock = vi.hoisted(() => ({
-  status: vi.fn(), saveCredential: vi.fn(), stage: vi.fn(), probe: vi.fn(), chat: vi.fn(),
+  status: vi.fn(), modelCatalog: vi.fn(), saveCredential: vi.fn(), stage: vi.fn(), probe: vi.fn(), chat: vi.fn(),
 }));
 vi.mock('../services/api', async (importOriginal) => ({
   ...await importOriginal<typeof import('../services/api')>(),
@@ -31,6 +31,13 @@ beforeEach(async () => {
       { provider_id: 'groq', credential_configured: false },
     ],
     ready_for_execution: false,
+  });
+  mock.modelCatalog.mockResolvedValue({
+    provider_id: 'openrouter', truncated: false, ready_for_execution: false,
+    models: [
+      { id: 'a/paid-model', free_variant: false, tools_listed: true },
+      { id: 'b/free-model:free', free_variant: true, tools_listed: false },
+    ],
   });
   mock.saveCredential.mockResolvedValue(undefined);
   mock.stage.mockResolvedValue(undefined);
@@ -287,4 +294,33 @@ it('points to local logs on a failed credential-store operation without disclosi
   expect(text(view.root)).toContain('sidecar.err.log');
   expect(text(view.root)).not.toContain('private-provider-key-here');
   expect(text(view.root)).toContain('No key is stored');
+});
+
+
+it('does not fetch model IDs automatically or before a key is stored', async () => {
+  expect(mock.modelCatalog).not.toHaveBeenCalled();
+  expect(button('Fetch model IDs').props.disabled).toBe(true);
+  await enterKey();
+  expect(button('Fetch model IDs').props.disabled).toBe(false);
+  expect(mock.modelCatalog).not.toHaveBeenCalled();
+});
+
+it('retrieves, filters and selects a model ID without triggering inference', async () => {
+  await enterKey();
+  await settle(() => button('Fetch model IDs').props.onClick());
+  expect(mock.modelCatalog).toHaveBeenCalledWith('openrouter');
+  expect(text(view.root)).toContain('a/paid-model');
+  expect(text(view.root)).toContain('b/free-model:free');
+  await settle(() => view.root.findAllByType('input')
+    .filter((n) => n.props.type === 'checkbox')[0].props.onChange({ target: { checked: true } }));
+  expect(view.root.findAllByType('option').some((n) => n.props.value === 'a/paid-model')).toBe(false);
+  await settle(() => view.root.findByProps({ id: 'cloud-preview-catalog-model' }).props.onChange({
+    target: { value: 'b/free-model:free' },
+  }));
+  expect(view.root.findByProps({ id: 'cloud-preview-model' }).props.value).toBe('b/free-model:free');
+  expect(mock.stage).not.toHaveBeenCalled();
+  await settle(() => button('Stage model candidate').props.onClick());
+  expect(mock.stage).toHaveBeenCalledWith({ provider_id: 'openrouter', model_id: 'b/free-model:free' });
+  expect(mock.probe).not.toHaveBeenCalled();
+  expect(mock.chat).not.toHaveBeenCalled();
 });

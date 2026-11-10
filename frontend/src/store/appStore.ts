@@ -20,6 +20,8 @@ interface AppState {
   // Health
   healthStatus: HealthStatus | null;
   isConnected: boolean;
+  // Set only after the per-window Tauri bridge has configured the API client.
+  bridgeReady: boolean;
 
   // Voice
   isVoiceEnabled: boolean;
@@ -50,6 +52,7 @@ interface AppState {
   setError: (error: string | null) => void;
   setHealthStatus: (status: HealthStatus | null) => void;
   setConnected: (connected: boolean) => void;
+  setBridgeReady: (ready: boolean) => void;
   setVoiceEnabled: (enabled: boolean) => void;
   setRecording: (recording: boolean) => void;
   setListening: (listening: boolean) => void;
@@ -77,6 +80,7 @@ export const useAppStore = create<AppState>((set) => ({
   error: null,
   healthStatus: null,
   isConnected: false,
+  bridgeReady: false,
   isVoiceEnabled: false,
   isRecording: false,
   isListening: false,
@@ -98,6 +102,7 @@ export const useAppStore = create<AppState>((set) => ({
   setError: (error) => set({ error }),
   setHealthStatus: (status) => set({ healthStatus: status }),
   setConnected: (connected) => set({ isConnected: connected }),
+  setBridgeReady: (ready) => set({ bridgeReady: ready }),
   setVoiceEnabled: (enabled) => set({ isVoiceEnabled: enabled }),
   setRecording: (recording) => set({ isRecording: recording }),
   setListening: (listening) => set({ isListening: listening }),

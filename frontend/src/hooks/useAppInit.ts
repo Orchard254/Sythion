@@ -45,6 +45,7 @@ async function initBridge(signal?: AbortSignal): Promise<void> {
 export function useAppInit() {
   const setHealthStatus = useAppStore((s) => s.setHealthStatus);
   const setConnected = useAppStore((s) => s.setConnected);
+  const setBridgeReady = useAppStore((s) => s.setBridgeReady);
   const setError = useAppStore((s) => s.setError);
   const setTasks = useAppStore((s) => s.setTasks);
   const setLoading = useAppStore((s) => s.setLoading);
@@ -65,6 +66,9 @@ export function useAppInit() {
         await initBridge(controller.signal);
         if (controller.signal.aborted) return;
         setIsBridgeReady(true);
+        // Companion and main windows run their own React trees. The shared
+        // store gate protects health hooks that mount before this effect.
+        setBridgeReady(true);
 
         const health = await healthService.check();
         if (controller.signal.aborted) return;
@@ -97,13 +101,14 @@ export function useAppInit() {
     return () => {
       controller.abort();
     };
-  }, [attempt, setConnected, setError, setHealthStatus, setLoading, setTasks]);
+  }, [attempt, setBridgeReady, setConnected, setError, setHealthStatus, setLoading, setTasks]);
 
   const retry = useCallback(() => {
+    setBridgeReady(false);
     setIsBridgeReady(false);
     setIsInitialized(false);
     setAttempt((n) => n + 1);
-  }, []);
+  }, [setBridgeReady]);
 
   return { isInitialized, isBridgeReady, retry };
 }

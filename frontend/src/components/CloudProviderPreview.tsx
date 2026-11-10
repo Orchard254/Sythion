@@ -4,6 +4,7 @@ import {
   type CloudPreviewProviderId,
   type CloudPreviewSelection,
   type CloudPreviewStatus,
+  type CloudCatalogModel,
 } from '../services/api';
 import { Button, Notice, Panel } from '../components/ui';
 
@@ -39,6 +40,11 @@ export function CloudProviderPreview({
   const [provider, setProvider] = useState<CloudPreviewProviderId>('openrouter');
   const [model, setModel] = useState('');
   const [key, setKey] = useState('');
+  const [catalogProvider, setCatalogProvider] = useState<CloudPreviewProviderId | null>(null);
+  const [catalogModels, setCatalogModels] = useState<CloudCatalogModel[]>([]);
+  const [catalogTruncated, setCatalogTruncated] = useState(false);
+  const [catalogSearch, setCatalogSearch] = useState('');
+  const [catalogFreeOnly, setCatalogFreeOnly] = useState(false);
   const [status, setStatus] = useState<CloudPreviewStatus | null>(null);
   const [staged, setStaged] = useState<CloudPreviewSelection | null>(null);
   const [consent, setConsent] = useState(false);
@@ -72,6 +78,11 @@ export function CloudProviderPreview({
     setProvider(value);
     setModel('');
     setKey('');
+    setCatalogProvider(null);
+    setCatalogModels([]);
+    setCatalogTruncated(false);
+    setCatalogSearch('');
+    setCatalogFreeOnly(false);
     setConsent(false);
     setProbePassed(false);
     setStatus((old) => old ? { ...old, text_probe_verified: false } : null);
@@ -116,6 +127,24 @@ export function CloudProviderPreview({
   const canChat = credentialConfigured && stagedMatches &&
     chatConsent && chatText.trim().length > 0 &&
     chatText.trim().length <= 1200 && !busy;
+
+  const loadModelCatalog = () => perform(async () => {
+    const listing = await cloudPreviewService.modelCatalog(provider);
+    if (listing.provider_id !== provider || listing.ready_for_execution !== false ||
+        !Array.isArray(listing.models) || listing.models.length > 1000) {
+      throw new Error('Unexpected catalog response');
+    }
+    setCatalogProvider(provider);
+    setCatalogModels(listing.models);
+    setCatalogTruncated(listing.truncated === true);
+    setNotice('Model IDs retrieved. Listing does not prove provider access, free quota, or tool capability.');
+  });
+
+  const catalogCurrent = catalogProvider === provider;
+  const filteredCatalog = catalogCurrent ? catalogModels.filter((entry) =>
+    (!catalogFreeOnly || entry.free_variant) &&
+    entry.id.toLowerCase().includes(catalogSearch.trim().toLowerCase())
+  ) : [];
 
   const saveKey = () => perform(async () => {
     const value = key.trim();
@@ -216,6 +245,35 @@ export function CloudProviderPreview({
           {' '}Saving a key does not prove authentication or provide free-model quota.
         </p>
         <Button disabled={busy || !key.trim()} onClick={() => void saveKey()}>Save provider key</Button>
+        <Button disabled={busy || !credentialConfigured}
+          onClick={() => void loadModelCatalog()}>Fetch model IDs</Button>
+        {catalogCurrent && (
+          <div className="stack" style={{ gap: 8 }}>
+            <label htmlFor="cloud-preview-model-search">Search model IDs</label>
+            <input id="cloud-preview-model-search" className="input" type="search"
+              value={catalogSearch} disabled={busy} placeholder="Search provider models"
+              onChange={(e) => setCatalogSearch(e.target.value)} />
+            <label className="row" style={{ gap: 8 }}>
+              <input type="checkbox" checked={catalogFreeOnly} disabled={busy}
+                onChange={(e) => setCatalogFreeOnly(e.target.checked)} />
+              Show :free variants only (quota and access not guaranteed)
+            </label>
+            <label htmlFor="cloud-preview-catalog-model">
+              Model IDs ({filteredCatalog.length} matching; showing first 80)
+            </label>
+            <select id="cloud-preview-catalog-model" className="input" disabled={busy}
+              value="" onChange={(e) => { if (e.target.value) setModelChoice(e.target.value); }}>
+              <option value="">Choose a model ID to fill the field below</option>
+              {filteredCatalog.slice(0, 80).map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.id}{entry.tools_listed ? ' (tools listed)' : ''}
+                </option>
+              ))}
+            </select>
+            {catalogTruncated && <p className="t-muted">Catalog capped at 1000 IDs; manual entry remains available.</p>}
+            <p className="t-muted">Model discovery is read-only; capability and billing require separate verification.</p>
+          </div>
+        )}
         <label htmlFor="cloud-preview-model">Exact model ID</label>
         <input id="cloud-preview-model" className="input" type="text" autoComplete="off"
           value={model} disabled={busy} placeholder="Provider/model-name:free"

@@ -3723,6 +3723,72 @@ async def list_inference_preview_providers(db: Optional[Session] = Depends(get_h
     }
 
 
+
+@router.get("/inference-preview/model-catalog")
+async def list_inference_preview_model_catalog(
+    provider_id: str = Query(..., min_length=1, max_length=32),
+):
+    """Explicit read-only catalog query through the existing fixed-host adapter.
+
+    Listing neither tests tool capability nor alters the Ollama task engine.
+    """
+    import re
+    from backend.adapters.openai_compatible_adapter import (
+        PROVIDERS, CompatibleProviderError, OpenAICompatibleCloudAdapter,
+    )
+    from backend.core.secrets import resolve_compatible_provider_key
+
+    if provider_id not in PROVIDERS:
+        raise HTTPException(status_code=400, detail="Unsupported inference provider")
+    credential = resolve_compatible_provider_key(provider_id)
+    if not credential:
+        raise HTTPException(status_code=409, detail="Save the provider API key first")
+
+    adapter = None
+    try:
+        adapter = OpenAICompatibleCloudAdapter(
+            provider_id, "__catalog_discovery__", api_key=credential,
+        )
+        listing = await asyncio.wait_for(adapter.list_models(), timeout=15.0)
+        # Discard malformed IDs. Only send fields that the stage endpoint accepts.
+        seen = {}
+        for item in listing[:3000]:
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("model")
+            if (not isinstance(model_id, str) or
+                    "://" in model_id or
+                    re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,179}", model_id) is None):
+                continue
+            params = item.get("supported_parameters")
+            seen[model_id] = {
+                "id": model_id,
+                "free_variant": model_id.endswith(":free"),
+                "tools_listed": isinstance(params, list) and "tools" in params,
+            }
+        ordered = [seen[k] for k in sorted(seen, key=str.casefold)]
+        return {
+            "provider_id": provider_id,
+            "models": ordered[:1000],
+            "truncated": len(ordered) > 1000 or len(listing) > 3000,
+            "ready_for_execution": False,
+        }
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail="Provider model catalog timed out") from None
+    except CompatibleProviderError as exc:
+        reason = str(exc)
+        if reason == "Provider HTTP 429":
+            raise HTTPException(status_code=429, detail="Provider catalog rate limited") from None
+        if reason in ("Provider HTTP 401", "Provider HTTP 403"):
+            raise HTTPException(status_code=502, detail="Provider rejected stored credential") from None
+        if reason == "Provider transport outcome unknown":
+            raise HTTPException(status_code=503, detail="Provider catalog network unavailable") from None
+        raise HTTPException(status_code=502, detail="Provider model catalog unavailable") from None
+    finally:
+        if adapter is not None:
+            await adapter.close()
+
+
 @router.post("/inference-preview/stage")
 async def stage_inference_preview(body: CloudSelectionStageRequest):
     """Save an inert candidate; does not test the key, call a model, or switch."""
