@@ -1,4 +1,7 @@
 fn main() {
+    // Register our custom build identity with rustc's check-cfg diagnostics.
+    // Both production (unset) and prototype (set) builds are valid.
+    println!("cargo:rustc-check-cfg=cfg(prototype_build)");
     tauri_build::build();
 
     // Build-specific prototype identity. The Tauri CLI communicates an alternate

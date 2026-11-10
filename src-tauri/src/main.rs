@@ -657,7 +657,7 @@ fn main() {
                     format!("the local runtime could not be started: {e}")
                 })?;
                 *app.state::<AppState>().child.lock().unwrap() = Some(child);
-                sidecar::spawn_watcher(app_handle);
+                sidecar::spawn_watcher(app_handle, profile_dir.clone());
                 create_main_window(app)
                     .map_err(|e| format!("the main window could not be created: {e}"))?;
                 // The Companion overlay is created hidden. It is an always-on-top
