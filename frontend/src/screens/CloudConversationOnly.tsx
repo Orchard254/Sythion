@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   cloudPreviewService,
   type CloudPreviewSelection,
@@ -29,6 +29,9 @@ export function CloudConversationOnlyScreen({ onExit }: { onExit: () => void }) 
   const [messages, setMessages] = useState<CloudConversationHistoryTurn[]>([]);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
+  // React state updates can batch two rapid submit events. This ref is a
+  // synchronous one-request gate, preventing duplicate provider charges.
+  const requestInFlight = useRef(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -58,7 +61,9 @@ export function CloudConversationOnlyScreen({ onExit }: { onExit: () => void }) 
 
   const send = async () => {
     const text = draft.trim();
-    if (!verified || !selection || busy || !text || text.length > 1200) return;
+    if (!verified || !selection || busy || requestInFlight.current ||
+        !text || text.length > 1200) return;
+    requestInFlight.current = true;
     setBusy(true);
     setError('');
     try {
@@ -90,6 +95,7 @@ export function CloudConversationOnlyScreen({ onExit }: { onExit: () => void }) 
           'status' in response && response.status === 409) setVerified(false);
       setError(safeCloudError(e));
     } finally {
+      requestInFlight.current = false;
       setBusy(false);
     }
   };

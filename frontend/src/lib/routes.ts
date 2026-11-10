@@ -6,6 +6,7 @@ import type { IconName } from '../components/icons';
 export type RouteId =
   | 'overview'
   | 'assistant'
+  | 'cloud'
   | 'missions'
   | 'memory'
   | 'automations'
@@ -49,6 +50,13 @@ export const ROUTES: RouteDef[] = [
     // The screen hosts conversations and task execution against the real
     // backend; the wording stays neutral about the mode.
     blurb: 'Conversations, voice input and task execution',
+  },
+  {
+    id: 'cloud',
+    label: 'Cloud Text Chat',
+    icon: 'assistant',
+    group: 'operate',
+    blurb: 'Experimental answer-only chat; no tools, tasks or memory writes',
   },
   {
     id: 'missions',

@@ -18,6 +18,7 @@ import { OperationsScreen } from './screens/Operations';
 import { SecurityScreen } from './screens/Security';
 import { SettingsScreen } from './screens/Settings';
 import { SetupScreen } from './screens/Setup';
+import { CloudProviderPreview } from './components/CloudProviderPreview';
 import { SystemScreen } from './screens/SystemIntegrations';
 import { useAppInit } from './hooks/useAppInit';
 import { useAppStore } from './store/appStore';
@@ -45,10 +46,30 @@ const queryClient = new QueryClient({
   },
 });
 
-function ScreenFor({ route }: { route: RouteId }) {
+function ScreenFor({
+  route, onEnterCloudMode,
+}: {
+  route: RouteId;
+  onEnterCloudMode: () => void;
+}) {
   switch (route) {
     case 'assistant':
       return <AssistantScreen />;
+    case 'cloud':
+      return (
+        <div className="stack" style={{
+          maxWidth: 800, margin: '0 auto', padding: '24px 20px',
+          overflowY: 'auto', height: '100%', gap: 16,
+        }}>
+          <h1 className="screen-head__title">Cloud Text Chat</h1>
+          <p className="t-muted">
+            Configure and test an alternative model, then enter answer-only
+            conversation. This mode is independent of Ollama, but cannot
+            execute tasks, write memory or use tools.
+          </p>
+          <CloudProviderPreview onEnterConversationOnly={onEnterCloudMode} />
+        </div>
+      );
     case 'missions':
       // Canonical user-facing term is Goals. `missions` is retained as the route
       // id so existing deep links keep resolving (see ROUTE_ALIASES).
@@ -320,7 +341,7 @@ function AppContent() {
       />
 
       <main className="shell__main">
-        <ScreenFor route={route} />
+        <ScreenFor route={route} onEnterCloudMode={() => setCloudConversationOnly(true)} />
       </main>
     </div>
   );

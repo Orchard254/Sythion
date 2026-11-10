@@ -128,6 +128,29 @@ describe('isolated cloud conversation-only screen', () => {
     expect(mock.conversationTurn).toHaveBeenCalledTimes(1);
   });
 
+
+
+  it('never submits twice when the owner double-clicks before React rerenders', async () => {
+    let resolveTurn: (value: unknown) => void = () => {};
+    mock.conversationTurn.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveTurn = resolve;
+    }));
+    await typeText('One billable request');
+    await settle(() => {
+      const click = button('Send text-only message').props.onClick;
+      click();
+      click();
+    });
+    expect(mock.conversationTurn).toHaveBeenCalledTimes(1);
+    expect(button('Send text-only message').props.disabled).toBe(true);
+    await settle(() => resolveTurn({
+      ...candidate, assistant_text: 'Once only.',
+      conversation_only: true, active: false, ready_for_execution: false,
+      persisted: false, task_executed: false,
+    }));
+    expect(text(view.root)).toContain('Once only.');
+    expect(mock.conversationTurn).toHaveBeenCalledTimes(1);
+  });
   it('exiting returns to setup without saving or submitting any new message', async () => {
     await settle(() => button('Return to setup').props.onClick());
     expect(exit).toHaveBeenCalledOnce();

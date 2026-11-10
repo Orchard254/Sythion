@@ -347,3 +347,21 @@ The standard Ollama readiness still controls the main Assistant screen.
 Offline gate:
 `npm run test --prefix frontend -- src/screens/CloudConversationOnly.test.tsx src/components/CloudProviderPreview.test.tsx src/screens/Setup.test.tsx src/services/cloudPreview.test.ts`
 `npm run build --prefix frontend`
+
+### Cloud Text Chat navigation after full Ollama onboarding
+
+The full application sidebar now has a separate `Cloud Text Chat`
+destination. It embeds the same staged cloud provider preview and lets
+the owner enter the isolated conversation-only screen after a fresh
+text-evidence check, even when Ollama onboarding has already succeeded.
+Returning from cloud chat goes back to the cloud provider screen.
+
+This route deliberately does not replace the normal `AI Assistant`
+composer, task runner or Ollama readiness; there is no automatic fallback
+or background inference. The conversation-only send handler also uses
+a synchronous in-flight guard to prevent double clicks from issuing
+duplicate provider requests while React state updates are batched.
+
+Offline verification:
+`npm run test --prefix frontend -- src/screens/CloudConversationOnly.test.tsx src/components/CloudProviderPreview.test.tsx src/screens/Setup.test.tsx`
+`npm run build --prefix frontend`
