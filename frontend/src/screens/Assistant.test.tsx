@@ -51,6 +51,27 @@ describe('assistant turns', () => {
     expect(text()).toContain('Hi there');
   });
 
+  it('does not create a Sent alert for ordinary completed chat', async () => {
+    await draft();
+    await send();
+    expect(mock.turn).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().notifications).toHaveLength(0);
+    expect(useAppStore.getState().unreadNotifications).toBe(0);
+  });
+
+  it('still notifies when the assistant queued associated background work', async () => {
+    mock.turn.mockResolvedValueOnce({
+      exchange_id: 'queued-1', user_text: 'Hello Synth', assistant_text: 'Work queued',
+      status: 'queued', background_task_ids: ['task-b'],
+      scheduling_established: true,
+    });
+    await draft();
+    await send();
+    expect(useAppStore.getState().notifications).toHaveLength(1);
+    expect(useAppStore.getState().notifications[0].title).toBe('Work queued');
+    expect(useAppStore.getState().unreadNotifications).toBe(1);
+  });
+
   it('creates executable work only after a separate visible confirmation', async () => {
     // This integration case opens the real TaskDetailDrawer. Its Escape
     // listener needs a window, even in react-test-renderer's node environment.
@@ -1076,7 +1097,7 @@ beforeEach(async () => {
   let mode = 'text';
   vi.stubGlobal('localStorage', { getItem: () => mode, setItem: (_key: string, value: string) => { mode = value; } });
   vi.stubGlobal('document', { visibilityState: 'visible' });
-  useAppStore.setState({ isConnected: true, isListening: false, isVoiceSpeaking: false, transcriptDraft: '' });
+  useAppStore.setState({ isConnected: true, isListening: false, isVoiceSpeaking: false, transcriptDraft: '', notifications: [], unreadNotifications: 0 });
   mock.taskList = [];
   mock.conversations.mockResolvedValue({ conversations: [], next_cursor: null });
   mock.turn.mockResolvedValue({ exchange_id: 'turn-1', user_text: 'Hello Synth', assistant_text: 'Saved reply', status: 'completed', background_task_ids: [] });

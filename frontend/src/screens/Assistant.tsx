@@ -589,12 +589,16 @@ useLayoutEffect(() => {
                         setComposerStorageCompromised(true);
                       }
                       void tasks.refetch();
-                      notify({
-                        tone: turnResult.status === 'queued' ? 'accent' : 'accent',
-                        title: turnResult.status === 'queued' ? 'Queued' : 'Sent',
-                        body: text.slice(0, 120),
-                        route: 'assistant',
-                      });
+                      // Ordinary conversation already renders in the thread;
+                      // only associated queued work merits a tray alert.
+                      if (turnResult.status === 'queued' && backgroundTaskIds.length) {
+                        notify({
+                          tone: 'accent',
+                          title: 'Work queued',
+                          body: text.slice(0, 120),
+                          route: 'assistant',
+                        });
+                      }
                     } catch (err) {
                       const message = err instanceof Error ? err.message : 'Failed to send the message';
                        // Only an explicit no-dispatch verdict is proven to have

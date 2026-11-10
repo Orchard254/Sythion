@@ -33,8 +33,14 @@ export function TopBar({
   const notifications = useAppStore((s) => s.notifications);
   const unread = useAppStore((s) => s.unreadNotifications);
   const dismiss = useAppStore((s) => s.dismissNotification);
+  const markRead = useAppStore((s) => s.markNotificationsRead);
   const clearAll = useAppStore((s) => s.clearNotifications);
   const [trayOpen, setTrayOpen] = useState(false);
+  // Reading the tray acknowledges current items; while it remains visible,
+  // incoming alerts are also observable and must not create a phantom badge.
+  useEffect(() => {
+    if (trayOpen && unread > 0) markRead();
+  }, [trayOpen, unread, markRead]);
 
   const time = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   const date = now.toLocaleDateString(undefined, {
@@ -104,7 +110,10 @@ export function TopBar({
                 icon="bell"
                 label={unread > 0 ? `Notifications (${unread} unread)` : 'Notifications'}
                 tone="ghost"
-                onClick={() => setTrayOpen((v) => !v)}
+                onClick={() => {
+                  if (!trayOpen) markRead();
+                  setTrayOpen((v) => !v);
+                }}
               />
               {unread > 0 && (
                 <span

@@ -65,6 +65,7 @@ interface AppState {
   resetVoice: () => void;
   notify: (n: Omit<AppNotification, 'id' | 'createdAt'> & { id?: string; createdAt?: number }) => void;
   dismissNotification: (id: string) => void;
+  markNotificationsRead: () => void;
   clearNotifications: () => void;
 }
 
@@ -146,5 +147,6 @@ export const useAppStore = create<AppState>((set) => ({
       };
     }),
 
+  markNotificationsRead: () => set({ unreadNotifications: 0 }),
   clearNotifications: () => set({ notifications: [], unreadNotifications: 0 }),
 }));
