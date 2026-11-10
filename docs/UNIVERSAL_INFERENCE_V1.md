@@ -128,3 +128,28 @@ The next phase should bind provider + model + credential + successful
 real capability probe to an execution-ready evidence marker scoped to
 the current build/profile. Until all chat, task and memory calls can
 follow the selected provider safely, keep task admission on Ollama only.
+
+### Explicit one-shot staged capability probe (not active inference)
+
+`POST /api/v1/inference-preview/probe` accepts the exact staged provider_id
+and model_id with `confirm_network_request: true`. The provider key must
+already be configured in this build's write-only secret store (use
+`PUT /api/v1/secrets/{provider}_api_key` through the authenticated API).
+The probe sends one harmless synthetic function-call request. Every call
+consumes provider quota and is made only on explicit request.
+
+Success returns `tool_probe_verified: true` for that request only,
+plus `active: false`, `ready_for_execution: false` and
+`evidence_persisted: false`. No task, system tool, or model decision
+is executed; no readiness flag, credential or active provider changes.
+403/401, 429, network-unknown, and malformed tool responses are mapped
+to fixed categories without reflecting provider text. The staged identity
+is checked before and after the call to reject an in-flight change.
+
+To unblock task execution, subsequent work must create a durable
+provider-scoped verified state (binding credential version + model +
+capability evidence) and wire all inference entry points to that
+active provider only after passing real model capability checks.
+
+Offline Windows gate:
+`python -m pytest -q backend/tests/test_inference_provider_preview.py backend/tests/test_openai_compatible_provider.py backend/tests/test_setup_readiness.py --disable-warnings`

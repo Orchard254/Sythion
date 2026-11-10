@@ -722,6 +722,14 @@ class CloudSelectionStageRequest(BaseModel):
     model_id: str = Field(..., min_length=1, max_length=180)
 
 
+class CloudCapabilityProbeRequest(BaseModel):
+    """Opt in to exactly one harmless cloud tool-call test; never task work."""
+    model_config = {"extra": "forbid", "protected_namespaces": ()}
+    provider_id: str = Field(..., min_length=1, max_length=40)
+    model_id: str = Field(..., min_length=1, max_length=180)
+    confirm_network_request: bool
+
+
 # Secret Schemas
 
 class SecretWriteRequest(BaseModel):

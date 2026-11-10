@@ -126,3 +126,149 @@ def test_explicit_candidate_change_does_not_claim_capabilities(test_client, prev
         assert response.json()["model_verified"] is False
         assert response.json()["ready_for_execution"] is False
         assert profile.get_staged_cloud_selection()["provider_id"] == provider
+
+
+
+def test_probe_requires_exact_staging_and_explicit_consent(test_client, preview_profile, monkeypatch):
+    import backend.adapters.openai_compatible_adapter as compatible
+    attempts = []
+    def never_construct(*args, **kwargs):
+        attempts.append(1)
+        raise AssertionError("No model request should occur")
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter", never_construct)
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "synthetic-key")
+    request = {
+        "provider_id": "openrouter", "model_id": "test/tool:free",
+        "confirm_network_request": True,
+    }
+    assert test_client.post("/api/v1/inference-preview/probe", json=request).status_code == 409
+    profile.stage_cloud_selection("openrouter", "test/tool:free")
+    assert test_client.post("/api/v1/inference-preview/probe", json={
+        **request, "confirm_network_request": False,
+    }).status_code == 409
+    assert test_client.post("/api/v1/inference-preview/probe", json={
+        **request, "model_id": "different/tool:free",
+    }).status_code == 409
+    assert test_client.post("/api/v1/inference-preview/probe", json={
+        **request, "extra_secret": "must-not-accept",
+    }).status_code == 422
+    assert attempts == []
+
+
+def test_probe_fails_closed_without_build_scoped_key(test_client, preview_profile, monkeypatch):
+    import backend.adapters.openai_compatible_adapter as compatible
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected network")))
+    profile.stage_cloud_selection("openrouter", "test/tool:free")
+    response = test_client.post("/api/v1/inference-preview/probe", json={
+        "provider_id": "openrouter", "model_id": "test/tool:free",
+        "confirm_network_request": True,
+    })
+    assert response.status_code == 409
+    assert "secure provider store" in response.json()["detail"]
+
+
+def test_probe_success_remains_inert_and_never_persists_readiness(test_client, preview_profile, monkeypatch):
+    import backend.adapters.openai_compatible_adapter as compatible
+    attempts = []
+
+    class SafeProbe:
+        def __init__(self, provider, model):
+            attempts.append(("init", provider, model))
+        async def prove_tool_capability(self):
+            attempts.append(("probe",))
+        async def close(self):
+            attempts.append(("close",))
+
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter", SafeProbe)
+    profile.set_selected_model("ollama-original")
+    profile.stage_cloud_selection("openrouter", "test/tool:free")
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "synthetic-key")
+    response = test_client.post("/api/v1/inference-preview/probe", json={
+        "provider_id": "openrouter", "model_id": "test/tool:free",
+        "confirm_network_request": True,
+    })
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "provider_id": "openrouter", "model_id": "test/tool:free",
+        "tool_probe_verified": True, "ready_for_execution": False,
+        "active": False, "evidence_persisted": False,
+    }
+    assert attempts == [
+        ("init", "openrouter", "test/tool:free"), ("probe",), ("close",)
+    ]
+    assert profile.get_selected_model() == "ollama-original"
+    assert "tool_probe_verified" not in (preview_profile / "profile.json").read_text()
+
+
+@pytest.mark.parametrize("error,expected_status,detail", [
+    ("Model capability probe failed (provider HTTP 429)", 429, "rate limit"),
+    ("Model capability probe failed (provider HTTP 401)", 502, "stored credential"),
+    ("Model capability probe failed (provider HTTP 400)", 502, "capability request"),
+    ("Model capability probe failed (network outcome unknown)", 503, "outcome unknown"),
+    ("Model capability probe failed (model returned no tool call)", 422, "tool calling"),
+])
+def test_probe_maps_errors_without_leaking_provider_details(
+    test_client, preview_profile, monkeypatch, error, expected_status, detail
+):
+    import backend.adapters.openai_compatible_adapter as compatible
+    attempts = []
+
+    class FailingProbe:
+        def __init__(self, *args):
+            attempts.append("init")
+        async def prove_tool_capability(self):
+            attempts.append("probe")
+            raise compatible.CompatibleProviderError(error)
+        async def close(self):
+            attempts.append("close")
+
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter", FailingProbe)
+    profile.stage_cloud_selection("openrouter", "test/tool:free")
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "synthetic-sensitive-token")
+    response = test_client.post("/api/v1/inference-preview/probe", json={
+        "provider_id": "openrouter", "model_id": "test/tool:free",
+        "confirm_network_request": True,
+    })
+    assert response.status_code == expected_status
+    assert detail in response.json()["detail"]
+    assert "synthetic-sensitive-token" not in response.text
+    assert attempts == ["init", "probe", "close"]
+
+
+def test_probe_rejects_missing_auth_before_constructing_provider(test_client, preview_profile, monkeypatch):
+    import backend.adapters.openai_compatible_adapter as compatible
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected")))
+    profile.stage_cloud_selection("openrouter", "test/tool:free")
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "synthetic-key")
+    original = test_client.headers.pop("X-Control-Token", None)
+    try:
+        response = test_client.post("/api/v1/inference-preview/probe", json={
+            "provider_id": "openrouter", "model_id": "test/tool:free",
+            "confirm_network_request": True,
+        })
+        assert response.status_code == 401
+    finally:
+        if original:
+            test_client.headers["X-Control-Token"] = original
+
+
+def test_inflight_candidate_change_invalidates_probe_result(test_client, preview_profile, monkeypatch):
+    import backend.adapters.openai_compatible_adapter as compatible
+    class ChangedProbe:
+        def __init__(self, *args):
+            pass
+        async def prove_tool_capability(self):
+            profile.stage_cloud_selection("groq", "different-model")
+        async def close(self):
+            pass
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter", ChangedProbe)
+    profile.stage_cloud_selection("openrouter", "test/tool:free")
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "synthetic-key")
+    response = test_client.post("/api/v1/inference-preview/probe", json={
+        "provider_id": "openrouter", "model_id": "test/tool:free",
+        "confirm_network_request": True,
+    })
+    assert response.status_code == 409
+    assert "changed during verification" in response.json()["detail"]

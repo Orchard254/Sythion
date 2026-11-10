@@ -63,7 +63,7 @@ from backend.api.schemas import (
     VoiceSegmentResponse,
     SecretWriteRequest, SecretStatusResponse, SecretsListResponse,
     ModelSelectRequest, ModelSelectResponse, OnboardingStatusResponse,
-    CloudSelectionStageRequest,
+    CloudSelectionStageRequest, CloudCapabilityProbeRequest,
     SkillSubmitRequest, SkillStateRequest,
     PurgeRequest, PurgeReceiptResponse, RetentionRunResponse,
     GoalCreateRequest, GoalReplanRequest,
@@ -3737,6 +3737,84 @@ async def stage_inference_preview(body: CloudSelectionStageRequest):
         "ready_for_execution": False,
         "model_verified": False,
     }
+
+
+@router.post("/inference-preview/probe")
+async def probe_inference_preview(body: CloudCapabilityProbeRequest):
+    """Verify the exact staged model using one harmless function-call prompt.
+
+    This endpoint is explicitly opt-in, uses only the build-scoped provider
+    credential, never executes the named model function, never persists a
+    capability/readiness claim, and NEVER switches the active model.
+
+    Provider HTTP status is mapped to fixed messages. The upstream exception,
+    response body, key, or raw model output is not returned to the client.
+    """
+    from backend.core.profile import get_staged_cloud_selection
+    from backend.core.secrets import has_secret
+    from backend.adapters.openai_compatible_adapter import (
+        PROVIDERS, OpenAICompatibleCloudAdapter, CompatibleProviderError,
+    )
+
+    if body.confirm_network_request is not True:
+        raise HTTPException(
+            status_code=409,
+            detail="Explicit confirmation of one provider inference request is required",
+        )
+    candidate = get_staged_cloud_selection()
+    if candidate != {"provider_id": body.provider_id, "model_id": body.model_id}:
+        raise HTTPException(
+            status_code=409,
+            detail="Cloud candidate changed or is not staged; stage it again",
+        )
+    spec = PROVIDERS.get(body.provider_id)
+    if spec is None:
+        raise HTTPException(status_code=400, detail="Unsupported inference provider")
+    if not has_secret(spec.key_name):
+        raise HTTPException(
+            status_code=409,
+            detail="No key configured in this build's secure provider store",
+        )
+
+    adapter = None
+    try:
+        adapter = OpenAICompatibleCloudAdapter(body.provider_id, body.model_id)
+        # Exactly one test completion with a harmless synthetic function. No
+        # Sythion tool handler or task executor is called.
+        await adapter.prove_tool_capability()
+        # The profile may have changed while the network request was in flight;
+        # never imply a success for a subsequently staged different candidate.
+        if get_staged_cloud_selection() != candidate:
+            raise HTTPException(
+                status_code=409,
+                detail="Cloud candidate changed during verification",
+            )
+        return {
+            "provider_id": body.provider_id,
+            "model_id": body.model_id,
+            "tool_probe_verified": True,
+            "ready_for_execution": False,
+            "active": False,
+            "evidence_persisted": False,
+        }
+    except CompatibleProviderError as exc:
+        category = str(exc)
+        # Every message is a fixed category; no user-supplied or third-party
+        # response body is reflected in the endpoint.
+        if "provider HTTP 429" in category:
+            status, detail = 429, "Provider rate limit or free-tier capacity reached"
+        elif "provider HTTP 401" in category or "provider HTTP 403" in category:
+            status, detail = 502, "Provider rejected the stored credential or access"
+        elif "network outcome unknown" in category:
+            status, detail = 503, "Cloud network outcome unknown; do not auto-retry"
+        elif "provider HTTP " in category:
+            status, detail = 502, "Cloud provider rejected the capability request"
+        else:
+            status, detail = 422, "Model did not demonstrate required tool calling"
+        raise HTTPException(status_code=status, detail=detail) from None
+    finally:
+        if adapter is not None:
+            await adapter.close()
 
 
 # --- Models, onboarding & chat --------------------------------------------
