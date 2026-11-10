@@ -722,6 +722,13 @@ class CloudSelectionStageRequest(BaseModel):
     model_id: str = Field(..., min_length=1, max_length=180)
 
 
+class CloudKeyCheckRequest(BaseModel):
+    """Explicit verification of the desktop-stored OpenRouter key; no inference."""
+    model_config = {"extra": "forbid", "protected_namespaces": ()}
+    provider_id: str = Field(..., min_length=1, max_length=40)
+    confirm_network_request: bool
+
+
 class CloudCapabilityProbeRequest(BaseModel):
     """Opt in to exactly one harmless cloud tool-call test; never task work."""
     model_config = {"extra": "forbid", "protected_namespaces": ()}

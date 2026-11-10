@@ -579,6 +579,13 @@ export interface CloudModelCatalog {
   ready_for_execution: false;
 }
 
+export interface CloudKeyCheckResult {
+  provider_id: 'openrouter';
+  credential_verified: true;
+  active: false;
+  ready_for_execution: false;
+}
+
 export interface CloudPreviewProbeResult extends CloudPreviewSelection {
   tool_probe_verified: boolean;
   active: false;
@@ -606,6 +613,16 @@ export interface CloudConversationOnlyResult extends CloudPreviewChatResult {
 export const cloudPreviewService = {
   status: async (): Promise<CloudPreviewStatus> => {
     const response = await apiClient.get('/inference-preview/providers');
+    return response.data;
+  },
+
+  verifyStoredKey: async (): Promise<CloudKeyCheckResult> => {
+    // Explicit POST; only the desktop's current vault key is used server-side.
+    // Never receive or transmit the credential through the UI.
+    const response = await apiClient.post('/inference-preview/verify-stored-key', {
+      provider_id: 'openrouter',
+      confirm_network_request: true,
+    }, { timeout: 20000 });
     return response.data;
   },
 

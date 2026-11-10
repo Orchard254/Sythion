@@ -64,6 +64,7 @@ from backend.api.schemas import (
     SecretWriteRequest, SecretStatusResponse, SecretsListResponse,
     ModelSelectRequest, ModelSelectResponse, OnboardingStatusResponse,
     CloudSelectionStageRequest, CloudCapabilityProbeRequest, CloudPreviewChatRequest,
+    CloudKeyCheckRequest,
     CloudConversationOnlyRequest,
     SkillSubmitRequest, SkillStateRequest,
     PurgeRequest, PurgeReceiptResponse, RetentionRunResponse,
@@ -3789,6 +3790,62 @@ async def list_inference_preview_model_catalog(
             await adapter.close()
 
 
+
+@router.post("/inference-preview/verify-stored-key")
+async def verify_inference_preview_stored_key(body: CloudKeyCheckRequest):
+    """Verify exactly the credential that this desktop sidecar will use.
+
+    Explicit owner action sends one authenticated HTTPS GET to OpenRouter's
+    fixed /key endpoint. No model inference, account metadata, credentials,
+    prompts, tasks, profile writes, or provider selection are exposed.
+    """
+    import hmac
+    from backend.core.secrets import resolve_compatible_provider_key
+    from backend.adapters.openai_compatible_adapter import (
+        CompatibleProviderError, OpenAICompatibleCloudAdapter,
+    )
+
+    if body.provider_id != "openrouter":
+        raise HTTPException(status_code=400, detail="Key verification supports OpenRouter only")
+    if body.confirm_network_request is not True:
+        raise HTTPException(status_code=409, detail="Explicit key verification consent required")
+    credential = resolve_compatible_provider_key("openrouter")
+    if not credential:
+        raise HTTPException(status_code=409, detail="No OpenRouter key saved in this desktop credential store")
+
+    adapter = None
+    try:
+        adapter = OpenAICompatibleCloudAdapter(
+            "openrouter", "__credential_verification__", api_key=credential,
+        )
+        await asyncio.wait_for(adapter.verify_key(), timeout=15.0)
+        latest = resolve_compatible_provider_key("openrouter")
+        if not latest or not hmac.compare_digest(latest, credential):
+            raise HTTPException(status_code=409, detail="Stored key changed during verification")
+        return {
+            "provider_id": "openrouter",
+            "credential_verified": True,
+            "ready_for_execution": False,
+            "active": False,
+        }
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail="OpenRouter key verification timed out") from None
+    except CompatibleProviderError as exc:
+        reason = str(exc)
+        if reason == "Provider HTTP 401":
+            raise HTTPException(status_code=502, detail="Stored OpenRouter key rejected (upstream HTTP 401)") from None
+        if reason == "Provider HTTP 403":
+            raise HTTPException(status_code=502, detail="Stored OpenRouter key lacks access (upstream HTTP 403)") from None
+        if reason == "Provider HTTP 429":
+            raise HTTPException(status_code=429, detail="OpenRouter key verification rate limited") from None
+        if reason == "Provider transport outcome unknown":
+            raise HTTPException(status_code=503, detail="OpenRouter key verification connection failed") from None
+        raise HTTPException(status_code=502, detail="OpenRouter key verification unavailable") from None
+    finally:
+        if adapter is not None:
+            await adapter.close()
+
+
 @router.post("/inference-preview/stage")
 async def stage_inference_preview(body: CloudSelectionStageRequest):
     """Save an inert candidate; does not test the key, call a model, or switch."""
@@ -3896,6 +3953,8 @@ async def probe_inference_preview(
         # response body is reflected in the endpoint.
         if "provider HTTP 429" in category:
             status, detail = 429, "Provider rate limit or free-tier capacity reached"
+        elif "agentic harness required" in category:
+            status, detail = 502, "Cloud model requires an eligible agentic harness (upstream HTTP 403)"
         elif "provider HTTP 401" in category or "provider HTTP 403" in category:
             status, detail = 502, "Provider rejected the stored credential or access"
         elif "network outcome unknown" in category:
@@ -4020,8 +4079,20 @@ async def cloud_preview_text_chat(
         reason = str(exc)
         if "Provider HTTP 429" in reason:
             status, detail = 429, "Provider rate limit or free-tier capacity reached"
-        elif "Provider HTTP 401" in reason or "Provider HTTP 403" in reason:
-            status, detail = 502, "Provider rejected stored credential or access"
+        elif reason == "Provider HTTP 401":
+            status, detail = 502, "Cloud provider rejected stored credential (upstream HTTP 401)"
+        elif reason == "Provider agentic harness required":
+            status, detail = 502, "Cloud model requires an eligible agentic harness (upstream HTTP 403)"
+        elif reason == "Provider HTTP 403":
+            status, detail = 502, "Cloud provider denied access (upstream HTTP 403)"
+        elif reason == "Provider HTTP 400":
+            status, detail = 502, "Cloud provider rejected text request parameters (upstream HTTP 400)"
+        elif reason == "Provider HTTP 402":
+            status, detail = 502, "Cloud provider requires payment or credits (upstream HTTP 402)"
+        elif reason == "Provider HTTP 404":
+            status, detail = 502, "Cloud model or endpoint unavailable (upstream HTTP 404)"
+        elif reason == "Provider HTTP 422":
+            status, detail = 502, "Cloud provider rejected text request format (upstream HTTP 422)"
         elif "Provider transport outcome unknown" in reason:
             status, detail = 503, "Cloud response unknown; do not automatically retry"
         elif reason.startswith("Provider HTTP "):
@@ -4134,6 +4205,8 @@ async def cloud_conversation_only_turn(
         message = str(exc)
         if "Provider HTTP 429" in message:
             status, detail = 429, "Cloud rate limit or capacity reached; do not retry repeatedly"
+        elif message == "Provider agentic harness required":
+            status, detail = 502, "Cloud model requires an eligible agentic harness (upstream HTTP 403)"
         elif "Provider HTTP 401" in message or "Provider HTTP 403" in message:
             status, detail = 502, "Cloud provider rejected stored credential or access"
         elif "Provider transport outcome unknown" in message:
