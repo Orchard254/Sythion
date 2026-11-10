@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CloudProviderPreview } from './CloudProviderPreview';
 
 const mock = vi.hoisted(() => ({
-  status: vi.fn(), modelCatalog: vi.fn(), saveCredential: vi.fn(), stage: vi.fn(), probe: vi.fn(), chat: vi.fn(),
+  status: vi.fn(), modelCatalog: vi.fn(), verifyStoredKey: vi.fn(), saveCredential: vi.fn(), stage: vi.fn(), probe: vi.fn(), chat: vi.fn(),
 }));
 vi.mock('../services/api', async (importOriginal) => ({
   ...await importOriginal<typeof import('../services/api')>(),
@@ -38,6 +38,10 @@ beforeEach(async () => {
       { id: 'a/paid-model', free_variant: false, tools_listed: true },
       { id: 'b/free-model:free', free_variant: true, tools_listed: false },
     ],
+  });
+  mock.verifyStoredKey.mockResolvedValue({
+    provider_id: 'openrouter', credential_verified: true,
+    active: false, ready_for_execution: false,
   });
   mock.saveCredential.mockResolvedValue(undefined);
   mock.stage.mockResolvedValue(undefined);
@@ -323,4 +327,37 @@ it('retrieves, filters and selects a model ID without triggering inference', asy
   expect(mock.stage).toHaveBeenCalledWith({ provider_id: 'openrouter', model_id: 'b/free-model:free' });
   expect(mock.probe).not.toHaveBeenCalled();
   expect(mock.chat).not.toHaveBeenCalled();
+});
+
+
+it('verifies the exact key in desktop storage only after a deliberate click', async () => {
+  expect(mock.verifyStoredKey).not.toHaveBeenCalled();
+  expect(button('Verify stored OpenRouter key (one network request)').props.disabled).toBe(true);
+  await enterKey();
+  expect(button('Verify stored OpenRouter key (one network request)').props.disabled).toBe(false);
+  await settle(() => button('Verify stored OpenRouter key (one network request)').props.onClick());
+  expect(mock.verifyStoredKey).toHaveBeenCalledTimes(1);
+  expect(text(view.root)).toContain('authenticated the key saved in this desktop');
+  expect(mock.chat).not.toHaveBeenCalled();
+  expect(mock.probe).not.toHaveBeenCalled();
+});
+
+it('shows safe upstream 402 diagnostics without displaying provider body', async () => {
+  mock.chat.mockRejectedValueOnce({
+    response: { status: 502, data: {
+      detail: 'Cloud provider requires payment or credits (upstream HTTP 402)',
+      confidential: 'private-provider-response',
+    }},
+  });
+  await enterKey();
+  await enterModel();
+  await settle(() => view.root.findByProps({ id: 'cloud-preview-chat' }).props.onChange({
+    target: { value: 'Hello' },
+  }));
+  const checks = view.root.findAllByType('input').filter((n) => n.props.type === 'checkbox');
+  await settle(() => checks[1].props.onChange({ target: { checked: true } }));
+  await settle(() => button('Send one test message').props.onClick());
+  expect(text(view.root)).toContain('account credit or payment (402)');
+  expect(text(view.root)).not.toContain('private-provider-response');
+  expect(mock.chat).toHaveBeenCalledTimes(1);
 });

@@ -123,7 +123,11 @@ def test_text_preview_requires_no_tool_proof_and_never_executes_or_persists(
 @pytest.mark.parametrize("problem,status", [
     ("Provider HTTP 429", 429),
     ("Provider HTTP 401", 502),
+    ("Provider HTTP 403", 502),
     ("Provider HTTP 400", 502),
+    ("Provider HTTP 402", 502),
+    ("Provider HTTP 404", 502),
+    ("Provider HTTP 422", 502),
     ("Provider transport outcome unknown", 503),
 ])
 def test_cloud_errors_sanitized_no_retry(
@@ -281,3 +285,98 @@ def test_text_evidence_removed_by_restaging_even_same_model(test_client, test_db
     assert response.status_code == 200
     assert not is_text_evidence_current(test_db)
     assert test_client.get("/api/v1/inference-preview/providers").json()["text_probe_verified"] is False
+
+
+def test_stored_key_verification_requires_owner_consent_and_real_saved_key(
+    test_client, text_preview, monkeypatch,
+):
+    import backend.adapters.openai_compatible_adapter as compatible
+    calls = []
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter",
+                        lambda *a, **kw: calls.append("forbidden"))
+    path = "/api/v1/inference-preview/verify-stored-key"
+    body = {"provider_id": "openrouter", "confirm_network_request": True}
+    assert test_client.post(path, json=body).status_code == 409
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "inert-unit-key")
+    assert test_client.post(path, json={**body, "confirm_network_request": False}).status_code == 409
+    assert test_client.post(path, json={**body, "provider_id": "nvidia"}).status_code == 400
+    assert test_client.post(path, json={**body, "api_key": "private-extra"}).status_code == 422
+    assert calls == []
+
+
+def test_stored_key_verification_uses_scoped_vault_without_exposing_account(
+    test_client, text_preview, monkeypatch,
+):
+    import backend.adapters.openai_compatible_adapter as compatible
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "private-synthetic-key")
+    calls = []
+    class Verify:
+        def __init__(self, provider, model, *, api_key):
+            assert (provider, api_key) == ("openrouter", "private-synthetic-key")
+            calls.append("init")
+        async def verify_key(self):
+            calls.append("key")
+        async def close(self):
+            calls.append("close")
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter", Verify)
+    response = test_client.post("/api/v1/inference-preview/verify-stored-key",
+                                json={"provider_id": "openrouter", "confirm_network_request": True})
+    assert response.status_code == 200
+    assert response.json() == {
+        "provider_id": "openrouter", "credential_verified": True,
+        "active": False, "ready_for_execution": False,
+    }
+    assert calls == ["init", "key", "close"]
+    assert "private-synthetic-key" not in response.text
+
+
+def test_stored_key_verification_redacts_auth_failure(
+    test_client, text_preview, monkeypatch,
+):
+    import backend.adapters.openai_compatible_adapter as compatible
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "private-synthetic-key")
+    class Reject:
+        def __init__(self, *a, **kw): pass
+        async def verify_key(self):
+            raise compatible.CompatibleProviderError("Provider HTTP 401")
+        async def close(self): pass
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter", Reject)
+    response = test_client.post("/api/v1/inference-preview/verify-stored-key",
+                                json={"provider_id": "openrouter", "confirm_network_request": True})
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Stored OpenRouter key rejected (upstream HTTP 401)"
+    assert "private-synthetic-key" not in response.text
+
+
+def test_stored_key_verification_requires_local_authentication(
+    test_client, text_preview, monkeypatch,
+):
+    import backend.adapters.openai_compatible_adapter as compatible
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter",
+                        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("No network expected")))
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "private-synthetic-key")
+    token = test_client.headers.pop("X-Control-Token", None)
+    try:
+        response = test_client.post("/api/v1/inference-preview/verify-stored-key",
+                                    json={"provider_id": "openrouter", "confirm_network_request": True})
+        assert response.status_code == 401
+    finally:
+        if token:
+            test_client.headers["X-Control-Token"] = token
+
+
+def test_text_rejection_preserves_only_safe_upstream_http_category(
+    test_client, text_preview, monkeypatch,
+):
+    import backend.adapters.openai_compatible_adapter as compatible
+    class Fake:
+        def __init__(self, *a, **kw): pass
+        async def chat(self, **kw):
+            raise compatible.CompatibleProviderError("Provider HTTP 402")
+        async def close(self): pass
+    monkeypatch.setattr(compatible, "OpenAICompatibleCloudAdapter", Fake)
+    staged()
+    response = test_client.post("/api/v1/inference-preview/chat", json=payload())
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Cloud provider requires payment or credits (upstream HTTP 402)"
+    assert "inert-unit-key" not in response.text

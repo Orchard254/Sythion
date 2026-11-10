@@ -27,7 +27,25 @@ function previewFailure(error: unknown): string {
   if (status === 401) return 'Sythion rejected this request. Recheck the local app connection.';
   if (status === 409) return 'The candidate or credential is not ready. Save the key, stage this exact model and try again.';
   if (status === 422) return 'The model did not demonstrate the required function call. It remains inactive.';
-  if (status === 502) return 'The provider rejected the request. Check key access, model capabilities and provider status.';
+  const safeDetail = error && typeof error === 'object' &&
+    'response' in error && error.response && typeof error.response === 'object' &&
+    'data' in error.response && error.response.data &&
+    typeof error.response.data === 'object' &&
+    'detail' in error.response.data && typeof error.response.data.detail === 'string'
+      ? error.response.data.detail : '';
+  if (status === 502) {
+    const mapped: Record<string, string> = {
+      'Stored OpenRouter key rejected (upstream HTTP 401)': 'The key saved in Sythion was rejected by OpenRouter (401). Replace it with a valid key.',
+      'Stored OpenRouter key lacks access (upstream HTTP 403)': 'OpenRouter denied access to the key saved in Sythion (403). Check key permissions.',
+      'Cloud provider rejected stored credential (upstream HTTP 401)': 'OpenRouter rejected the stored credential (401); verify the exact key in Sythion.',
+      'Cloud provider denied access (upstream HTTP 403)': 'The cloud provider denied model access (403). Verify account and model access.',
+      'Cloud provider rejected text request parameters (upstream HTTP 400)': 'The cloud provider rejected text request parameters (400). The request format may need adjustment.',
+      'Cloud provider requires payment or credits (upstream HTTP 402)': 'The provider requires account credit or payment (402), even if the model is listed as free.',
+      'Cloud model or endpoint unavailable (upstream HTTP 404)': 'The provider cannot access this model or endpoint (404). Check the model ID.',
+      'Cloud provider rejected text request format (upstream HTTP 422)': 'The provider rejected the text request format (422).',
+    };
+    return mapped[safeDetail] ?? 'The provider rejected the request. Check key access, model capabilities and provider status.';
+  }
   if (status === 503) return 'The network or provider outcome is uncertain. Check status before requesting another probe.';
   return 'That action could not be completed. Check the local connection and configuration.';
 }
@@ -146,6 +164,15 @@ export function CloudProviderPreview({
     entry.id.toLowerCase().includes(catalogSearch.trim().toLowerCase())
   ) : [];
 
+  const verifyStoredKey = () => perform(async () => {
+    const result = await cloudPreviewService.verifyStoredKey();
+    if (result.provider_id !== 'openrouter' || result.credential_verified !== true ||
+        result.ready_for_execution !== false || result.active !== false) {
+      throw new Error('Unexpected key verification response');
+    }
+    setNotice('OpenRouter authenticated the key saved in this desktop. Model access and inference are not yet verified.');
+  });
+
   const saveKey = () => perform(async () => {
     const value = key.trim();
     if (!value) return;
@@ -245,6 +272,12 @@ export function CloudProviderPreview({
           {' '}Saving a key does not prove authentication or provide free-model quota.
         </p>
         <Button disabled={busy || !key.trim()} onClick={() => void saveKey()}>Save provider key</Button>
+        {provider === 'openrouter' && (
+          <Button disabled={busy || !credentialConfigured}
+            onClick={() => void verifyStoredKey()}>
+            Verify stored OpenRouter key (one network request)
+          </Button>
+        )}
         <Button disabled={busy || !credentialConfigured}
           onClick={() => void loadModelCatalog()}>Fetch model IDs</Button>
         {catalogCurrent && (
