@@ -573,6 +573,14 @@ export interface CloudPreviewProbeResult extends CloudPreviewSelection {
   evidence_persisted: true;
 }
 
+export interface CloudPreviewChatResult extends CloudPreviewSelection {
+  assistant_text: string;
+  active: false;
+  ready_for_execution: false;
+  persisted: false;
+  task_executed: false;
+}
+
 export const cloudPreviewService = {
   status: async (): Promise<CloudPreviewStatus> => {
     const response = await apiClient.get('/inference-preview/providers');
@@ -594,6 +602,21 @@ export const cloudPreviewService = {
     // Called only from the explicit, confirmed UI action. Never auto-probe.
     const response = await apiClient.post('/inference-preview/probe', {
       ...selection,
+      confirm_network_request: true,
+    });
+    return response.data;
+  },
+
+  chat: async (
+    selection: CloudPreviewSelection, text: string
+  ): Promise<CloudPreviewChatResult> => {
+    if (!text.trim() || text.trim().length > 1200) {
+      throw new Error('Choose a short, nonempty test message.');
+    }
+    // One stateless, explicitly user-authorized model request, no tools.
+    const response = await apiClient.post('/inference-preview/chat', {
+      ...selection,
+      text: text.trim(),
       confirm_network_request: true,
     });
     return response.data;

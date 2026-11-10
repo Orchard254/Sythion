@@ -64,6 +64,22 @@ describe('cloud preview API security and wire contracts', () => {
     ]);
   });
 
+  it('routes one short text message only to the isolated preview endpoint', async () => {
+    const selection = { provider_id: 'openrouter' as const, model_id: 'unit/model:free' };
+    await cloudPreviewService.chat(selection, '  Hello there  ');
+    expect(calls).toStrictEqual([{
+      method: 'POST', path: '/inference-preview/chat',
+      payload: { ...selection, text: 'Hello there', confirm_network_request: true },
+    }]);
+  });
+
+  it('rejects an empty preview message before making any request', async () => {
+    await expect(cloudPreviewService.chat({
+      provider_id: 'groq', model_id: 'unit'
+    }, '    ')).rejects.toThrow('Choose a short');
+    expect(calls).toStrictEqual([]);
+  });
+
   it('sends explicit network consent only on the probe endpoint', async () => {
     const selection = { provider_id: 'groq' as const, model_id: 'test/functional:free' };
     await cloudPreviewService.probe(selection);

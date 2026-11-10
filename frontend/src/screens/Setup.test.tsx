@@ -6,7 +6,7 @@ import apiClient from '../services/api';
 const mock = vi.hoisted(() => {
   const readiness = vi.fn();
   return { readiness, testCredentials: vi.fn(), selectModel: vi.fn(), inference: vi.fn(), applySafeSettings: vi.fn(), update: vi.fn(), speak: vi.fn(),
-    cloudStatus: vi.fn(), cloudSaveCredential: vi.fn(), cloudStage: vi.fn(), cloudProbe: vi.fn() };
+    cloudStatus: vi.fn(), cloudSaveCredential: vi.fn(), cloudStage: vi.fn(), cloudProbe: vi.fn(), cloudChat: vi.fn() };
 });
 vi.mock('../services/api', async (importOriginal) => ({
   ...await importOriginal<typeof import('../services/api')>(),
@@ -15,7 +15,7 @@ vi.mock('../services/api', async (importOriginal) => ({
   settingsService: { update: mock.update },
   cloudPreviewService: {
     status: mock.cloudStatus, saveCredential: mock.cloudSaveCredential,
-    stage: mock.cloudStage, probe: mock.cloudProbe,
+    stage: mock.cloudStage, probe: mock.cloudProbe, chat: mock.cloudChat,
   },
 }));
 vi.mock('../hooks/useVoiceCapture', () => ({ useVoiceCapture: () => ({ startCapture: vi.fn(), stopCapture: vi.fn() }) }));
@@ -64,6 +64,7 @@ describe('setup to first conversation', () => {
   it('does not contact alternative providers unless owner opens the opt-in preview', async () => {
     expect(mock.cloudStatus).not.toHaveBeenCalled();
     expect(mock.cloudProbe).not.toHaveBeenCalled();
+    expect(mock.cloudChat).not.toHaveBeenCalled();
     await settle(() => button('Explore alternative cloud providers (preview)').props.onClick());
     expect(mock.cloudStatus).toHaveBeenCalledTimes(1);
     expect(mock.cloudProbe).not.toHaveBeenCalled();

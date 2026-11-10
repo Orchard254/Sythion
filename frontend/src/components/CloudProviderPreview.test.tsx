@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CloudProviderPreview } from './CloudProviderPreview';
 
 const mock = vi.hoisted(() => ({
-  status: vi.fn(), saveCredential: vi.fn(), stage: vi.fn(), probe: vi.fn(),
+  status: vi.fn(), saveCredential: vi.fn(), stage: vi.fn(), probe: vi.fn(), chat: vi.fn(),
 }));
 vi.mock('../services/api', async (importOriginal) => ({
   ...await importOriginal<typeof import('../services/api')>(),
@@ -37,6 +37,10 @@ beforeEach(async () => {
   mock.probe.mockResolvedValue({
     ...candidate, tool_probe_verified: true, active: false,
     ready_for_execution: false, evidence_persisted: true,
+  });
+  mock.chat.mockResolvedValue({
+    ...candidate, assistant_text: 'Hello from a text-only model!',
+    active: false, ready_for_execution: false, persisted: false, task_executed: false,
   });
   await settle(() => { view = create(<CloudProviderPreview />); });
 });
@@ -156,4 +160,67 @@ it('shows previously verified capability evidence as non-executable on reopening
   expect(text(view.root)).toContain('recent staged tool-call test is recorded');
   expect(text(view.root)).toContain('does not enable tasks');
   expect(mock.probe).not.toHaveBeenCalled();
+});
+
+
+
+it('allows one text-only preview without the tool-call probe after staging and consent', async () => {
+  await enterKey();
+  await enterModel();
+  expect(mock.probe).not.toHaveBeenCalled();
+  expect(button('Send one test message').props.disabled).toBe(true);
+  await settle(() => view.root.findByProps({ id: 'cloud-preview-chat' }).props.onChange({
+    target: { value: 'Hello' },
+  }));
+  expect(button('Send one test message').props.disabled).toBe(true);
+  const checks = view.root.findAllByType('input').filter((n) => n.props.type === 'checkbox');
+  expect(checks).toHaveLength(2);
+  await settle(() => checks[1].props.onChange({ target: { checked: true } }));
+  expect(button('Send one test message').props.disabled).toBe(false);
+  await settle(() => button('Send one test message').props.onClick());
+  expect(mock.chat).toHaveBeenCalledTimes(1);
+  expect(mock.chat).toHaveBeenCalledWith(candidate, 'Hello');
+  expect(mock.probe).not.toHaveBeenCalled();
+  expect(text(view.root)).toContain('Hello from a text-only model!');
+  expect(text(view.root)).toContain('Sythion did not execute or save any actions');
+  expect(button('Send one test message').props.disabled).toBe(true);
+});
+
+
+it('rejects model chat response claiming task execution and consumes consent', async () => {
+  mock.chat.mockResolvedValueOnce({
+    ...candidate, assistant_text: 'I ran your task.',
+    active: true, ready_for_execution: true, persisted: true, task_executed: true,
+  });
+  await enterKey();
+  await enterModel();
+  await settle(() => view.root.findByProps({ id: 'cloud-preview-chat' }).props.onChange({
+    target: { value: 'Hi' },
+  }));
+  const checks = view.root.findAllByType('input').filter((n) => n.props.type === 'checkbox');
+  await settle(() => checks[1].props.onChange({ target: { checked: true } }));
+  await settle(() => button('Send one test message').props.onClick());
+  expect(mock.chat).toHaveBeenCalledTimes(1);
+  expect(text(view.root)).not.toContain('I ran your task.');
+  expect(text(view.root)).toContain('That action could not be completed');
+  expect(button('Send one test message').props.disabled).toBe(true);
+});
+
+
+it('does not auto-retry a rate-limited text reply, and clears consent', async () => {
+  mock.chat.mockRejectedValueOnce({
+    response: { status: 429, data: { detail: 'provider-secret-error' } },
+  });
+  await enterKey();
+  await enterModel();
+  await settle(() => view.root.findByProps({ id: 'cloud-preview-chat' }).props.onChange({
+    target: { value: 'How are you?' },
+  }));
+  const checks = view.root.findAllByType('input').filter((n) => n.props.type === 'checkbox');
+  await settle(() => checks[1].props.onChange({ target: { checked: true } }));
+  await settle(() => button('Send one test message').props.onClick());
+  expect(text(view.root)).toContain('Cloud rate limit or capacity reached');
+  expect(text(view.root)).not.toContain('provider-secret-error');
+  expect(button('Send one test message').props.disabled).toBe(true);
+  expect(mock.chat).toHaveBeenCalledTimes(1);
 });

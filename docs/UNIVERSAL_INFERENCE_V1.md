@@ -262,3 +262,22 @@ durable chat activation or agent competence.
 
 Offline backend gate:
 `python -m pytest -q backend/tests/test_cloud_preview_chat.py backend/tests/test_cloud_conversation_bridge.py backend/tests/test_inference_provider_preview.py --disable-warnings`
+
+### First-run text preview UI
+
+The Cloud Provider Preview screen now accepts one bounded text message and
+requires a fresh per-request consent checkbox. It calls only
+`/inference-preview/chat`, never normal `assistant/turns`, and displays
+the response as plain, explicitly unverified model text. It does not
+require a tool-call proof for text-only testing. Changing the provider,
+model, or stored key clears any prior preview result and consent. A cloud
+HTTP 429 is displayed as a quota/capacity failure, without retries.
+
+React/transport tests use synthetic credentials and responses. The
+feature cannot perform tasks or persist history; normal onboarding
+and Start Conversation remain on the unchanged Ollama readiness path.
+
+Frontend gate:
+
+`npm run test --prefix frontend -- src/components/CloudProviderPreview.test.tsx src/services/cloudPreview.test.ts src/screens/Setup.test.tsx`
+`npm run build --prefix frontend`

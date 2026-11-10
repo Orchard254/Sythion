@@ -35,6 +35,9 @@ export function CloudProviderPreview() {
   const [staged, setStaged] = useState<CloudPreviewSelection | null>(null);
   const [consent, setConsent] = useState(false);
   const [probePassed, setProbePassed] = useState(false);
+  const [chatText, setChatText] = useState('');
+  const [chatConsent, setChatConsent] = useState(false);
+  const [chatAnswer, setChatAnswer] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -63,6 +66,9 @@ export function CloudProviderPreview() {
     setKey('');
     setConsent(false);
     setProbePassed(false);
+    setChatText('');
+    setChatConsent(false);
+    setChatAnswer(null);
     setNotice('');
     setError('');
   };
@@ -71,6 +77,8 @@ export function CloudProviderPreview() {
     setModel(value);
     setConsent(false);
     setProbePassed(false);
+    setChatConsent(false);
+    setChatAnswer(null);
     setNotice('');
     setError('');
   };
@@ -95,6 +103,9 @@ export function CloudProviderPreview() {
   const stagedMatches = staged?.provider_id === selection.provider_id &&
     staged?.model_id === selection.model_id;
   const canProbe = credentialConfigured && stagedMatches && consent && !busy;
+  const canChat = credentialConfigured && stagedMatches &&
+    chatConsent && chatText.trim().length > 0 &&
+    chatText.trim().length <= 1200 && !busy;
 
   const saveKey = () => perform(async () => {
     const value = key.trim();
@@ -103,6 +114,8 @@ export function CloudProviderPreview() {
     setKey('');
     setConsent(false);
     setProbePassed(false);
+    setChatConsent(false);
+    setChatAnswer(null);
     setStatus((old) => old ? {
       ...old,
       tool_probe_verified: false,
@@ -118,6 +131,8 @@ export function CloudProviderPreview() {
     setStaged(selection);
     setConsent(false);
     setProbePassed(false);
+    setChatConsent(false);
+    setChatAnswer(null);
     setStatus((old) => old ? { ...old, tool_probe_verified: false } : null);
     setNotice('Model candidate saved for testing. It is not active.');
   });
@@ -135,6 +150,22 @@ export function CloudProviderPreview() {
     setProbePassed(true);
     setStatus((old) => old ? { ...old, tool_probe_verified: true } : null);
     setNotice('One function-call test passed. The evidence is recorded for up to one hour, but the provider remains inactive.');
+  });
+
+  const sendPreviewMessage = () => perform(async () => {
+    if (!canChat) return;
+    const text = chatText.trim();
+    setChatConsent(false); // Explicit authorization is one-use, even on error.
+    setChatAnswer(null);
+    const response = await cloudPreviewService.chat(selection, text);
+    if (response.active !== false || response.ready_for_execution !== false ||
+        response.persisted !== false || response.task_executed !== false ||
+        response.provider_id !== selection.provider_id || response.model_id !== selection.model_id ||
+        typeof response.assistant_text !== 'string' || !response.assistant_text.trim()) {
+      throw new Error('Unexpected text preview contract');
+    }
+    setChatAnswer(response.assistant_text);
+    setNotice('One cloud text response received. No Sythion action was executed or saved.');
   });
 
   return (
@@ -182,6 +213,35 @@ export function CloudProviderPreview() {
         )}
         {notice && <Notice tone="info" icon="info">{notice}</Notice>}
         {error && <Notice tone="danger" icon="alert">{error}</Notice>}
+        <div className="stack" style={{ gap: 8 }}>
+          <label htmlFor="cloud-preview-chat">Try a text-only cloud reply</label>
+          <p className="t-muted">
+            Send one short message directly to the staged provider. This does not need
+            function-calling verification. No files, memories, tools, tasks, or conversation
+            history are sent or saved.
+          </p>
+          <textarea id="cloud-preview-chat" className="input" rows={3} maxLength={1200}
+            value={chatText} disabled={busy} placeholder="Hello! What can you help me understand?"
+            onChange={(e) => { setChatText(e.target.value); setChatConsent(false); setChatAnswer(null); }} />
+          <label className="row" style={{ gap: 8 }}>
+            <input type="checkbox" checked={chatConsent}
+              disabled={busy || !credentialConfigured || !stagedMatches || !chatText.trim()}
+              onChange={(e) => setChatConsent(e.target.checked)} />
+            I authorize one text-only cloud request; it may use my provider quota.
+          </label>
+          <Button disabled={!canChat} onClick={() => void sendPreviewMessage()}>
+            Send one test message
+          </Button>
+          {chatAnswer !== null && <div className="stack" style={{ gap: 4 }}>
+            <strong>Unverified model reply (preview only)</strong>
+            <p aria-label="Cloud preview reply" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+              {chatAnswer}
+            </p>
+            <p className="t-muted">
+              This text was generated by a model. Sythion did not execute or save any actions.
+            </p>
+          </div>}
+        </div>
         <p className="t-muted">
           This is a development preview. Recent model capability evidence expires automatically,
           and it is never execution approval. Ollama's existing onboarding requirements still apply to Start conversation.
