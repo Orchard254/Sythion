@@ -97,3 +97,36 @@ Owner-supplied OpenCode summary (2026-11-10; code tested c5e3874):
 ### Next unblock
 
 Verify the Ollama Cloud account's billing/credit or usage allowance, or supply an authorized operational cloud credential. Once genuine inference succeeds, rerun only the D-002 acceptance checklist against a fresh isolated sandbox. **Do not** bypass setup, fake readiness, replay consequential tasks, or call task execution 'passed' on deduplication evidence alone. The repository has a cloud-only provider implementation today; a local inference backend would require a separate design and test effort.
+
+## D-002 Cloud billing-policy explanation and follow-up Windows gate
+
+On 2026-11-10, the owner supplied screenshots of an Ollama email entitled
+'Reminder: free cloud usage ends today at 5:40 PM PT', sent 2026-11-09.
+The email states Free-plan accounts switched to pay-as-you-go on Nov 9,
+with credit required for several Cloud models including gpt-oss:20b,
+nemotron-3-super and nemotron-3-ultra. Existing credits, when present,
+continue to apply. Local Ollama runs remain free. This is owner-supplied
+account communication, NOT an independent reading of account balance.
+
+Public official pricing corroborates the pay-as-you-go credit model:
+https://ollama.com/pricing (verified 2026-11-10). It lists a credit-based
+Cloud pricing model, while locally hosted inference remains available
+without cloud usage charges. Official pricing alone does not establish
+whether the owner's specific Cloud credit balance is zero or the exact
+billing condition for the observed upstream 402.
+
+Observed HTTP 402 in the isolated sandbox is consistent with this policy
+transition, and not evidence of a Task or onboarding bypass defect. Task
+execution, the real D-002 UI interaction, and native Tauri acceptance remain
+blocked/not tested until authorized real inference is available.
+
+Owner Windows log (source commit 39bddf4):
+- `npm run test --prefix frontend -- src/lib/modelTestFailure.test.ts src/screens/Setup.test.tsx`: **14/14 PASS** across 2 Vitest files.
+- `npm run build --prefix frontend`: **PASS**, `tsc && vite build`, Vite 5.4.21, 192 transformed modules.
+
+Next action: review Ollama account credits/billing or choose an authorized
+working Cloud provider. No subscription/billing/account changes were made.
+A separate local-inference provider requires product and safety design,
+resource validation, new provider adapter and onboarding acceptance. Do not
+manipulate `canStartChat`, fake inference verification, or reclassify
+credential validity as evidence of execution readiness.
