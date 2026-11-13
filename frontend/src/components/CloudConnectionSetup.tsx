@@ -7,10 +7,13 @@ import {
 } from '../services/api';
 import { Button, Notice, Panel } from './ui';
 
-/** Shared, owner-driven cloud model configuration for onboarding and Settings.
- * A read-only local status lookup is the only automatic request.
- * Browsing is explicit. Verifying is one explicitly consented model request.
- * The result authorizes answer-only conversation, never tasks or tools.
+/**
+ * One provider/model picker reused by onboarding and Settings.
+ * Discover model names automatically when an existing key is configured.
+ * A user's explicit model selection is the sole trigger for inference:
+ * one text-capability check at most, never a hidden model scan/retry.
+ *
+ * Text proof does not enable the task/tool/memory runtime.
  */
 const LABELS: Record<CloudPreviewProviderId, string> = {
   openrouter: 'OpenRouter',
@@ -28,13 +31,43 @@ function safeError(error: unknown): string {
   const data = response && typeof response === 'object' && 'data' in response
     ? response.data : null;
   const detail = data && typeof data === 'object' && 'detail' in data ? data.detail : null;
-  if (status === 429) return 'Provider capacity or free quota reached. No automatic retry was made.';
-  if (status === 409) return 'The selected model or key changed. Review the setup before continuing.';
+  if (status === 429) return 'Provider quota or capacity reached. No automatic retry was made.';
+  if (status === 409) return 'The selected model or key changed. Select the model again after checking setup.';
   if (status === 502 && detail === 'Cloud model requires an eligible agentic harness (upstream HTTP 403)')
     return 'This free model is restricted to eligible agentic harnesses. Choose a different model.';
-  if (status === 502) return 'The cloud provider rejected this model request. Choose another model or review account access.';
+  if (status === 502) return 'The provider rejected this model request. Try another model or check account access.';
   if (status === 503) return 'Cloud response is uncertain. No automatic retry was made.';
-  return 'Cloud model setup did not complete. Review the provider, key and model.';
+  return 'The model could not be verified. Review provider access or choose another model.';
+}
+
+function validCatalog(result: unknown, provider: CloudPreviewProviderId): result is {
+  provider_id: CloudPreviewProviderId;
+  models: CloudCatalogModel[];
+  truncated: boolean;
+  ready_for_execution: false;
+} {
+  if (!result || typeof result !== 'object') return false;
+  const data = result as {
+    provider_id?: unknown; models?: unknown; ready_for_execution?: unknown;
+  };
+  return data.provider_id === provider && data.ready_for_execution === false &&
+    Array.isArray(data.models) && data.models.length <= 1000 &&
+    data.models.every((m: unknown) => m && typeof m === 'object' &&
+      typeof (m as CloudCatalogModel).id === 'string' &&
+      (m as CloudCatalogModel).id.length > 0 &&
+      typeof (m as CloudCatalogModel).free_variant === 'boolean');
+}
+
+function isVerified(
+  status: CloudPreviewStatus,
+  provider: CloudPreviewProviderId,
+  modelId: string,
+): boolean {
+  return status.staged.provider_id === provider &&
+    status.staged.model_id === modelId &&
+    status.text_probe_verified === true &&
+    status.ready_for_execution === false &&
+    status.providers.some((p) => p.provider_id === provider && p.credential_configured === true);
 }
 
 export function CloudConnectionSetup({
@@ -49,180 +82,218 @@ export function CloudConnectionSetup({
   const [key, setKey] = useState('');
   const [model, setModel] = useState('');
   const [catalog, setCatalog] = useState<CloudCatalogModel[]>([]);
-  const [search, setSearch] = useState('');
-  const [freeOnly, setFreeOnly] = useState(false);
-  const [consent, setConsent] = useState(false);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogTruncated, setCatalogTruncated] = useState(false);
+  const [freeOnly, setFreeOnly] = useState(true);
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
+  const mounted = useRef(true);
+  const catalogGeneration = useRef(0);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
   useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; catalogGeneration.current++; };
+  }, []);
+
+  useEffect(() => {
     let active = true;
-    void cloudPreviewService.status().then((value) => {
-      if (!active) return;
+    const generation = ++catalogGeneration.current;
+    setCatalog([]);
+    setModel('');
+    setStatus(null);
+    setCatalogLoading(true);
+    setError('');
+    void cloudPreviewService.status().then(async (value) => {
+      if (!active || !mounted.current || generation !== catalogGeneration.current) return;
       setStatus(value);
-      const staged = value.staged;
-      if (staged.provider_id === initialProvider && typeof staged.model_id === 'string') {
-        setModel(staged.model_id);
+      const configured = value.providers.some(
+        (p) => p.provider_id === provider && p.credential_configured === true);
+      if (!configured) return;
+      const listing = await cloudPreviewService.modelCatalog(provider);
+      if (!active || !mounted.current || generation !== catalogGeneration.current) return;
+      if (!validCatalog(listing, provider)) throw new Error('Unexpected model listing');
+      setCatalog(listing.models);
+      setCatalogTruncated(listing.truncated === true);
+    }).catch((err: unknown) => {
+      if (active && mounted.current && generation === catalogGeneration.current) {
+        setError(safeError(err));
       }
-    }).catch(() => {
-      if (active) setError('Could not read saved cloud model configuration.');
+    }).finally(() => {
+      if (active && mounted.current && generation === catalogGeneration.current) {
+        setCatalogLoading(false);
+      }
     });
     return () => { active = false; };
-  }, [initialProvider]);
+  }, [provider]);
 
   const configured = status?.providers.some(
-    (p) => p.provider_id === provider && p.credential_configured === true
-  ) === true;
-  const match = status?.staged.provider_id === provider &&
-    status.staged.model_id === model.trim();
-  const verified = configured && !key.trim() && match && status?.text_probe_verified === true &&
-    status.ready_for_execution === false;
-  const selection = { provider_id: provider, model_id: model.trim() };
-  const filtered = catalog.filter((item) =>
-    (!freeOnly || item.free_variant) && item.id.toLowerCase().includes(search.toLowerCase()));
+    (p) => p.provider_id === provider && p.credential_configured === true) === true;
+  const verified = !!status && model.length > 0 && !key.trim() && isVerified(status, provider, model);
+  const visibleModels = catalog.filter((item) => !freeOnly || item.free_variant);
+  const canChoose = configured && !key.trim() && !busy && !catalogLoading;
+  const showRetry = !!error && !!model && canChoose &&
+    catalog.some((entry) => entry.id === model);
 
   const chooseProvider = (next: CloudPreviewProviderId) => {
+    if (inFlight.current || next === provider) return;
+    catalogGeneration.current++;
     setProvider(next);
-    setModel(status?.staged.provider_id === next ? status.staged.model_id ?? '' : '');
     setKey('');
+    setModel('');
     setCatalog([]);
-    setSearch('');
-    setConsent(false);
-    setNotice('');
+    setCatalogTruncated(false);
     setError('');
+    setNotice('');
   };
 
-  const browse = async () => {
-    if (inFlight.current || (!configured && !key.trim())) return;
-    inFlight.current = true; setBusy(true); setError(''); setNotice('');
+  // Save a user-entered key, then discover models without a second Browse click.
+  const connect = async () => {
+    const value = key.trim();
+    if (inFlight.current || !value || catalogLoading) return;
+    inFlight.current = true;
+    ++catalogGeneration.current;
+    setBusy(true); setError(''); setNotice('');
+    setCatalog([]); setModel(''); setCatalogTruncated(false);
     try {
-      if (key.trim()) {
-        await cloudPreviewService.saveCredential(provider, key.trim());
-        setKey('');
-        setConsent(false);
-        setStatus((previous) => previous ? {
-          ...previous,
-          text_probe_verified: false,
-          tool_probe_verified: false,
-          providers: previous.providers.map((p) => p.provider_id === provider
-            ? { ...p, credential_configured: true } : p),
-        } : null);
-      }
-      const result = await cloudPreviewService.modelCatalog(provider);
-      if (result.provider_id !== provider || result.ready_for_execution !== false ||
-          !Array.isArray(result.models) || result.models.length > 1000) {
-        throw new Error('Invalid catalog response');
-      }
-      setCatalog(result.models);
-      setNotice('Choose a model below. A listed model is not guaranteed to be free or available.');
-    } catch (e) {
-      setError(safeError(e));
-    } finally { inFlight.current = false; setBusy(false); }
-  };
-
-  const continueWithModel = async () => {
-    if (inFlight.current || !configured || !model.trim() || model.trim().length > 180 ||
-        (!consent && !verified) || key.trim()) return;
-    inFlight.current = true; setBusy(true); setError(''); setNotice('');
-    setConsent(false);
-    try {
-      // Re-read the local backend's current identity; never trust stale UI proof.
+      await cloudPreviewService.saveCredential(provider, value);
+      if (!mounted.current) return;
+      setKey('');
       const current = await cloudPreviewService.status();
-      const valid = current.staged.provider_id === provider &&
-        current.staged.model_id === selection.model_id &&
-        current.text_probe_verified === true &&
-        current.ready_for_execution === false &&
-        current.providers.some((p) => p.provider_id === provider && p.credential_configured);
-      if (!valid && !consent) {
-        setStatus(current);
-        setError('Cloud verification expired. Authorize one connection check before continuing.');
-        return;
+      if (!mounted.current) return;
+      setStatus(current);
+      if (!current.providers.some((p) => p.provider_id === provider && p.credential_configured)) {
+        throw new Error('Key was not saved');
       }
-      if (!valid) {
+      const listing = await cloudPreviewService.modelCatalog(provider);
+      if (!mounted.current) return;
+      if (!validCatalog(listing, provider)) throw new Error('Unexpected model listing');
+      setCatalog(listing.models);
+      setCatalogTruncated(listing.truncated === true);
+    } catch (err) {
+      if (mounted.current) setError(safeError(err));
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) setBusy(false);
+    }
+  };
+
+  // Called ONLY on an explicit selection, or the visible manual Retry button.
+  // Changing the Free/All filter, mounting the page or fetching the catalog
+  // must never trigger a model inference request.
+  const checkSelected = async (modelId: string) => {
+    if (inFlight.current || !configured || !modelId || key.trim() ||
+        !catalog.some((entry) => entry.id === modelId)) return;
+    inFlight.current = true;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const current = await cloudPreviewService.status();
+      if (!mounted.current) return;
+      if (!current.providers.some((p) => p.provider_id === provider && p.credential_configured)) {
+        setStatus(current);
+        throw new Error('Credential no longer available');
+      }
+      if (!isVerified(current, provider, modelId)) {
+        const selection = { provider_id: provider, model_id: modelId };
         await cloudPreviewService.stage(selection);
+        if (!mounted.current) return;
         const result = await cloudPreviewService.chat(selection, TEST_PROMPT);
-        if (result.provider_id !== provider || result.model_id !== selection.model_id ||
+        if (!mounted.current) return;
+        if (result.provider_id !== provider || result.model_id !== modelId ||
             result.active !== false || result.ready_for_execution !== false ||
             result.persisted !== false || result.task_executed !== false ||
             typeof result.assistant_text !== 'string' || !result.assistant_text.trim()) {
-          throw new Error('Unexpected model response');
+          throw new Error('Unexpected cloud text result');
         }
       }
       const latest = await cloudPreviewService.status();
-      if (latest.staged.provider_id !== provider || latest.staged.model_id !== selection.model_id ||
-          latest.text_probe_verified !== true || latest.ready_for_execution !== false ||
-          !latest.providers.some((p) => p.provider_id === provider && p.credential_configured)) {
-        throw new Error('Cloud verification changed');
+      if (!mounted.current) return;
+      if (!isVerified(latest, provider, modelId)) {
+        setStatus(latest);
+        throw new Error('Model verification changed');
       }
       setStatus(latest);
       if (onReady) onReady();
-      else setNotice('Model verified for answer-only cloud conversation. It is not authorized for tasks or tools.');
-    } catch (e) {
-      setError(safeError(e));
-    } finally { inFlight.current = false; setBusy(false); }
+      else setNotice('Model checked. Ready for answer-only conversations; tools and tasks remain disabled.');
+    } catch (err) {
+      if (mounted.current) setError(safeError(err));
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) setBusy(false);
+    }
+  };
+
+  const selectModel = (value: string) => {
+    if (!canChoose || !visibleModels.some((entry) => entry.id === value)) return;
+    setModel(value);
+    void checkSelected(value);
   };
 
   return (
     <Panel title={`Configure ${LABELS[provider]}`} icon="assistant">
       <div className="stack" style={{ gap: 12 }}>
-        {!hideProviderPicker && (
-          <>
-            <label htmlFor="cloud-config-provider">Cloud provider</label>
-            <select id="cloud-config-provider" className="input" value={provider} disabled={busy}
-              onChange={(e) => chooseProvider(e.target.value as CloudPreviewProviderId)}>
-              {PROVIDERS.map((id) => <option key={id} value={id}>{LABELS[id]}</option>)}
-            </select>
-          </>
-        )}
-        <label htmlFor="cloud-config-key">API key</label>
-        <input id="cloud-config-key" className="input" type="password" autoComplete="off"
-          value={key} disabled={busy} onChange={(e) => {
-            setKey(e.target.value); setConsent(false);
-          }}
-          placeholder={configured ? 'Saved key available — leave empty to keep it' : 'Paste provider API key'} />
-        <p className="t-muted">Credentials stay in Sythion's secure key store. Keys are never shown again.</p>
-        <Button disabled={busy || (!configured && !key.trim())}
-          onClick={() => void browse()}>
-          {key.trim() ? 'Save key and browse models' : 'Browse available models'}
-        </Button>
-        {catalog.length > 0 && <>
-          <label htmlFor="cloud-config-search">Find a model</label>
-          <input id="cloud-config-search" className="input" type="search" value={search}
-            disabled={busy} onChange={(e) => setSearch(e.target.value)} />
-          <label className="row" style={{ gap: 8 }}>
-            <input type="checkbox" checked={freeOnly} disabled={busy}
-              onChange={(e) => setFreeOnly(e.target.checked)} />
-            Show :free models only (availability and quota not guaranteed)
-          </label>
-          <select id="cloud-config-catalog" className="input" value="" disabled={busy}
-            onChange={(e) => { setModel(e.target.value); setConsent(false); }}>
-            <option value="">Select a model</option>
-            {filtered.slice(0, 80).map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}
+        {!hideProviderPicker && <>
+          <label htmlFor="cloud-config-provider">Cloud provider</label>
+          <select id="cloud-config-provider" className="input" value={provider} disabled={busy}
+            onChange={(e) => chooseProvider(e.target.value as CloudPreviewProviderId)}>
+            {PROVIDERS.map((id) => <option key={id} value={id}>{LABELS[id]}</option>)}
           </select>
         </>}
-        <label htmlFor="cloud-config-model">Selected model</label>
-        <input id="cloud-config-model" className="input" value={model} disabled={busy}
-          onChange={(e) => { setModel(e.target.value); setConsent(false); }}
-          placeholder="Select above or enter exact model ID" />
-        {verified && <Notice tone="info" icon="check">
-          This exact model and key have current text-only verification.
-        </Notice>}
-        {!verified && <label className="row" style={{ gap: 8 }}>
-          <input type="checkbox" checked={consent} disabled={busy || !configured || !model.trim() || !!key.trim()}
-            onChange={(e) => setConsent(e.target.checked)} />
-          I authorize one model connection check. It sends one cloud request that may use my quota.
-        </label>}
-        <Button variant="primary" disabled={busy || !configured || !model.trim() ||
-            model.trim().length > 180 || (!consent && !verified) || !!key.trim()}
-          onClick={() => void continueWithModel()}>
-          {onReady ? (verified ? 'Start cloud conversation' : 'Verify and start cloud conversation') :
-            (verified ? 'Keep verified model' : 'Verify and save model')}
-        </Button>
+
+        <label htmlFor="cloud-config-key">API key</label>
+        <input id="cloud-config-key" className="input" type="password" autoComplete="off"
+          value={key} disabled={busy} onChange={(e) => setKey(e.target.value)}
+          placeholder={configured ? 'Saved key available — leave empty to keep it' : 'Paste provider API key'} />
+        {!configured && <p className="t-muted">Enter a key to connect. Sythion stores it securely and does not show it again.</p>}
+        {key.trim() && <Button disabled={busy || catalogLoading} onClick={() => void connect()}>
+          Connect and load models
+        </Button>}
+
+        {configured && !key.trim() && <>
+          <label htmlFor="cloud-model-filter">Available models</label>
+          <select id="cloud-model-filter" className="input" disabled={busy || catalogLoading}
+            value={freeOnly ? 'free' : 'all'}
+            onChange={(e) => {
+              setFreeOnly(e.target.value === 'free');
+              setModel('');
+              setNotice('');
+              setError('');
+            }}>
+            <option value="free">Free models</option>
+            <option value="all">All models</option>
+          </select>
+
+          <label htmlFor="cloud-config-catalog">Choose an AI model</label>
+          <select id="cloud-config-catalog" className="input" value={model} disabled={!canChoose}
+            onChange={(e) => selectModel(e.target.value)}>
+            <option value="">Select a model</option>
+            {visibleModels.map((entry) =>
+              <option key={entry.id} value={entry.id}>{entry.id}</option>)}
+          </select>
+          {catalogLoading && <p role="status" className="t-muted">Loading available models…</p>}
+          {!catalogLoading && visibleModels.length === 0 && <p className="t-muted">
+            {catalog.length > 0 ? 'No free models listed. Choose All models to see other options.' :
+              'No models found. Review your key or provider availability.'}
+          </p>}
+          {catalogTruncated && <p className="t-muted">
+            The provider returned more models than Sythion can display. This list may be incomplete.
+          </p>}
+          <p className="t-muted">
+            Selecting a model checks its text connection automatically with one cloud request if
+            not already verified. This may use your quota; it never retries automatically.
+          </p>
+          {busy && <p role="status">Checking the selected model…</p>}
+          {verified && !busy && <Notice tone="info" icon="check">
+            This model has current text-only verification.
+          </Notice>}
+          {showRetry && <Button disabled={busy} onClick={() => void checkSelected(model)}>
+            Retry selected model
+          </Button>}
+        </>}
+
         <p className="t-muted">
-          Cloud models currently support answer-only conversations. Task execution, file tools and
-          memory access remain disabled until separate runtime permission work is completed.
+          Text chat does not enable tools, tasks, file access or memory writes.
         </p>
         {notice && <Notice tone="info" icon="info">{notice}</Notice>}
         {error && <Notice tone="danger" icon="alert">{error}</Notice>}
