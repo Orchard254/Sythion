@@ -188,7 +188,7 @@ export function SetupScreen({ onComplete, onCloudConversationOnly }: SetupProps)
             </Panel>}
             {step === 0 && aiProvider !== 'ollama-cloud' && (
               <CloudConnectionSetup key={aiProvider} provider={aiProvider}
-                onReady={onCloudConversationOnly} />
+                hideProviderPicker onReady={onCloudConversationOnly} />
             )}
             {step === 1 && <Panel title="2. Choose a model" icon="info">
               <div className="stack" style={{ gap: 12 }}>

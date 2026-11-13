@@ -124,7 +124,7 @@ export function CloudConnectionSetup({
 
   const continueWithModel = async () => {
     if (inFlight.current || !configured || !model.trim() || model.trim().length > 180 ||
-        !consent || key.trim()) return;
+        (!consent && !verified) || key.trim()) return;
     inFlight.current = true; setBusy(true); setError(''); setNotice('');
     setConsent(false);
     try {
@@ -135,6 +135,11 @@ export function CloudConnectionSetup({
         current.text_probe_verified === true &&
         current.ready_for_execution === false &&
         current.providers.some((p) => p.provider_id === provider && p.credential_configured);
+      if (!valid && !consent) {
+        setStatus(current);
+        setError('Cloud verification expired. Authorize one connection check before continuing.');
+        return;
+      }
       if (!valid) {
         await cloudPreviewService.stage(selection);
         const result = await cloudPreviewService.chat(selection, TEST_PROMPT);
@@ -204,13 +209,13 @@ export function CloudConnectionSetup({
         {verified && <Notice tone="info" icon="check">
           This exact model and key have current text-only verification.
         </Notice>}
-        <label className="row" style={{ gap: 8 }}>
+        {!verified && <label className="row" style={{ gap: 8 }}>
           <input type="checkbox" checked={consent} disabled={busy || !configured || !model.trim() || !!key.trim()}
             onChange={(e) => setConsent(e.target.checked)} />
-          I authorize this model connection check. If unverified, it sends one cloud request that may use my quota.
-        </label>
+          I authorize one model connection check. It sends one cloud request that may use my quota.
+        </label>}
         <Button variant="primary" disabled={busy || !configured || !model.trim() ||
-            model.trim().length > 180 || !consent || !!key.trim()}
+            model.trim().length > 180 || (!consent && !verified) || !!key.trim()}
           onClick={() => void continueWithModel()}>
           {onReady ? (verified ? 'Start cloud conversation' : 'Verify and start cloud conversation') :
             (verified ? 'Keep verified model' : 'Verify and save model')}

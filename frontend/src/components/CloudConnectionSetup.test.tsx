@@ -108,8 +108,8 @@ it('reuses current proof without staging or spending inference quota', async () 
   const ready = vi.fn();
   mock.status.mockReset().mockResolvedValue(verified);
   await settle(() => { view.unmount(); view = create(<CloudConnectionSetup onReady={ready} />); });
-  await settle(() => view.root.findAllByType('input').find((node) => node.props.type === 'checkbox')!
-    .props.onChange({ target: { checked: true } }));
+  // Current proof skips a redundant consent prompt and sends no inference.
+  expect(view.root.findAllByType('input').filter((node) => node.props.type === 'checkbox')).toHaveLength(0);
   await settle(() => button('Start cloud conversation').props.onClick());
   expect(ready).toHaveBeenCalledTimes(1);
   expect(mock.stage).not.toHaveBeenCalled();
