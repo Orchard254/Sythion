@@ -6,7 +6,7 @@ import { useAppStore } from '../store/appStore';
 const mock = vi.hoisted(() => ({
   data: {} as Record<string, unknown>, update: vi.fn(), refetch: vi.fn(),
   cloudStatus: vi.fn(), cloudSave: vi.fn(), cloudCatalog: vi.fn(),
-  cloudStage: vi.fn(), cloudChat: vi.fn(),
+  cloudStage: vi.fn(), cloudChat: vi.fn(), cloudProbe: vi.fn(),
   ollamaReadiness: vi.fn(), ollamaCredentials: vi.fn(), ollamaModels: vi.fn(),
   ollamaSelect: vi.fn(), ollamaInference: vi.fn(),
 }));
@@ -20,7 +20,7 @@ vi.mock('../services/api', () => ({
   healthService: { version: async () => ({ version: 'test' }) }, voiceService: {},
   cloudPreviewService: {
     status: mock.cloudStatus, saveCredential: mock.cloudSave, modelCatalog: mock.cloudCatalog,
-    stage: mock.cloudStage, chat: mock.cloudChat,
+    stage: mock.cloudStage, chat: mock.cloudChat, probe: mock.cloudProbe,
   },
   setupService: {
     readiness: mock.ollamaReadiness, testCredentials: mock.ollamaCredentials,
@@ -134,6 +134,7 @@ describe('AI Models configuration in Settings', () => {
     });
     expect(JSON.stringify(view.toJSON())).toContain('Configure OpenRouter');
     expect(mock.cloudChat).not.toHaveBeenCalled();
+    expect(mock.cloudProbe).not.toHaveBeenCalled();
     expect(mock.cloudStage).not.toHaveBeenCalled();
     expect(mock.cloudSave).not.toHaveBeenCalled();
     expect(mock.cloudCatalog).not.toHaveBeenCalled();
