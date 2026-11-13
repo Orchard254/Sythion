@@ -94,7 +94,9 @@ export function CloudConnectionSetup({
 
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; catalogGeneration.current++; };
+    // Each catalog effect cancels itself on cleanup; mounted also guards
+    // asynchronous selection requests. No generation ref mutation is needed here.
+    return () => { mounted.current = false; };
   }, []);
 
   useEffect(() => {
