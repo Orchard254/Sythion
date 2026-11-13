@@ -7,6 +7,8 @@ const mock = vi.hoisted(() => ({
   data: {} as Record<string, unknown>, update: vi.fn(), refetch: vi.fn(),
   cloudStatus: vi.fn(), cloudSave: vi.fn(), cloudCatalog: vi.fn(),
   cloudStage: vi.fn(), cloudChat: vi.fn(),
+  ollamaReadiness: vi.fn(), ollamaCredentials: vi.fn(), ollamaModels: vi.fn(),
+  ollamaSelect: vi.fn(), ollamaInference: vi.fn(),
 }));
 vi.mock('../hooks/useBackend', () => ({
   useAppSettings: () => ({ data: mock.data, refetch: mock.refetch }),
@@ -20,6 +22,11 @@ vi.mock('../services/api', () => ({
     status: mock.cloudStatus, saveCredential: mock.cloudSave, modelCatalog: mock.cloudCatalog,
     stage: mock.cloudStage, chat: mock.cloudChat,
   },
+  setupService: {
+    readiness: mock.ollamaReadiness, testCredentials: mock.ollamaCredentials,
+    selectModel: mock.ollamaSelect, inference: mock.ollamaInference,
+  },
+  modelService: { available: mock.ollamaModels },
 }));
 
 let view: ReactTestRenderer;
@@ -33,6 +40,13 @@ beforeEach(async () => {
   vi.stubGlobal('document', { documentElement: { style: { setProperty: vi.fn() } } });
   mock.data = { retention_days: 90, file_roots: ['C:\\env'], persisted_file_roots: ['C:\\one,two'], environment_file_roots: [], effective_file_roots: ['C:\\one,two', 'C:\\backend'], fallback_file_roots: ['C:\\home', 'C:\\cwd'] };
   mock.update.mockResolvedValue({});
+  mock.ollamaReadiness.mockResolvedValue({
+    checks: { ollama_api_key_ok: true, inference_verified_ok: true },
+    selected_model: 'ollama/default',
+  });
+  mock.ollamaModels.mockResolvedValue(['ollama/default', 'ollama/other']);
+  mock.ollamaSelect.mockResolvedValue({ selected_model: 'ollama/other', persisted: true });
+  mock.ollamaInference.mockResolvedValue({ success: true, model: 'ollama/other', response_preview: 'Hello' });
   mock.cloudStatus.mockResolvedValue({
     staged: {}, ready_for_execution: false, text_probe_verified: false, tool_probe_verified: false,
     providers: [{ provider_id: 'openrouter', credential_configured: false },
@@ -113,10 +127,21 @@ describe('file root settings', () => {
 describe('AI Models configuration in Settings', () => {
   it('offers cloud configuration in Settings without automatic inference or secret writes', () => {
     expect(JSON.stringify(view.toJSON())).toContain('AI Models');
+    await act(async () => {
+      view.root.findByProps({ id: 'settings-ai-provider' }).props.onChange({
+        target: { value: 'openrouter' },
+      });
+    });
     expect(JSON.stringify(view.toJSON())).toContain('Configure OpenRouter');
     expect(mock.cloudChat).not.toHaveBeenCalled();
     expect(mock.cloudStage).not.toHaveBeenCalled();
     expect(mock.cloudSave).not.toHaveBeenCalled();
     expect(mock.cloudCatalog).not.toHaveBeenCalled();
   });
+});
+
+it('keeps Ollama model management in Settings rather than a main chat control', async () => {
+  expect(view.root.findByProps({ id: 'settings-ai-provider' }).props.value).toBe('ollama-cloud');
+  expect(view.root.findByProps({ id: 'ollama-settings-model' }).props.value).toBe('ollama/default');
+  expect(mock.ollamaInference).not.toHaveBeenCalled();
 });

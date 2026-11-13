@@ -38,10 +38,11 @@ function safeError(error: unknown): string {
 }
 
 export function CloudConnectionSetup({
-  provider: initialProvider = 'openrouter', onReady,
+  provider: initialProvider = 'openrouter', onReady, hideProviderPicker = false,
 }: {
   provider?: CloudPreviewProviderId;
   onReady?: () => void;
+  hideProviderPicker?: boolean;
 }) {
   const [provider, setProvider] = useState<CloudPreviewProviderId>(initialProvider);
   const [status, setStatus] = useState<CloudPreviewStatus | null>(null);
@@ -161,11 +162,15 @@ export function CloudConnectionSetup({
   return (
     <Panel title={`Configure ${LABELS[provider]}`} icon="assistant">
       <div className="stack" style={{ gap: 12 }}>
-        <label htmlFor="cloud-config-provider">Cloud provider</label>
-        <select id="cloud-config-provider" className="input" value={provider} disabled={busy}
-          onChange={(e) => chooseProvider(e.target.value as CloudPreviewProviderId)}>
-          {PROVIDERS.map((id) => <option key={id} value={id}>{LABELS[id]}</option>)}
-        </select>
+        {!hideProviderPicker && (
+          <>
+            <label htmlFor="cloud-config-provider">Cloud provider</label>
+            <select id="cloud-config-provider" className="input" value={provider} disabled={busy}
+              onChange={(e) => chooseProvider(e.target.value as CloudPreviewProviderId)}>
+              {PROVIDERS.map((id) => <option key={id} value={id}>{LABELS[id]}</option>)}
+            </select>
+          </>
+        )}
         <label htmlFor="cloud-config-key">API key</label>
         <input id="cloud-config-key" className="input" type="password" autoComplete="off"
           value={key} disabled={busy} onChange={(e) => {

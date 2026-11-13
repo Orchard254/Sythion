@@ -14,6 +14,8 @@ import { useAppStore } from '../store/appStore';
 import * as api from '../services/api';
 import { useNavStore } from '../store/navStore';
 import { CloudConnectionSetup } from '../components/CloudConnectionSetup';
+import { OllamaModelSettings } from '../components/OllamaModelSettings';
+import type { CloudPreviewProviderId } from '../services/api';
 
 type Density = 'comfortable' | 'compact';
 
@@ -35,6 +37,7 @@ export function SettingsScreen() {
     const stored = localStorage.getItem('sythion.density');
     return stored === 'compact' ? 'compact' : 'comfortable';
   });
+  const [aiProvider, setAiProvider] = useState<'ollama-cloud' | CloudPreviewProviderId>('ollama-cloud');
   const [installingModel, setInstallingModel] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
   const [sidecarVersion, setSidecarVersion] = useState<string | null>(null);
@@ -140,11 +143,20 @@ export function SettingsScreen() {
         />
 
         <Panel title="AI Models" icon="assistant">
-          <p className="t-muted">
-            Manage cloud provider credentials and models here, not in the chat composer.
-            Ollama Cloud model setup remains in the original onboarding flow.
-          </p>
-          <CloudConnectionSetup />
+          <div className="stack" style={{ gap: 10 }}>
+            <p className="t-muted">Choose your provider and model here. Provider setup never creates a task.</p>
+            <label htmlFor="settings-ai-provider">AI provider</label>
+            <select id="settings-ai-provider" className="input" value={aiProvider}
+              onChange={(e) => setAiProvider(e.target.value as 'ollama-cloud' | CloudPreviewProviderId)}>
+              <option value="ollama-cloud">Ollama Cloud</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="nvidia">NVIDIA NIM</option>
+              <option value="groq">Groq</option>
+            </select>
+            {aiProvider === 'ollama-cloud'
+              ? <OllamaModelSettings />
+              : <CloudConnectionSetup key={aiProvider} provider={aiProvider} hideProviderPicker />}
+          </div>
         </Panel>
 
         <div className="grid grid--2">
