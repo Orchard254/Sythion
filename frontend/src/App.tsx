@@ -47,14 +47,18 @@ const queryClient = new QueryClient({
 });
 
 function ScreenFor({
-  route, onEnterCloudMode,
+  route, onEnterCloudMode, onOpenCloudSetup,
 }: {
   route: RouteId;
   onEnterCloudMode: () => void;
+  onOpenCloudSetup: () => void;
 }) {
   switch (route) {
     case 'assistant':
-      return <AssistantScreen />;
+      return <AssistantScreen
+        onEnterCloudMode={onEnterCloudMode}
+        onOpenCloudSetup={onOpenCloudSetup}
+      />;
     case 'cloud':
       return (
         <div className="stack" style={{
@@ -341,7 +345,10 @@ function AppContent() {
       />
 
       <main className="shell__main">
-        <ScreenFor route={route} onEnterCloudMode={() => setCloudConversationOnly(true)} />
+        <ScreenFor route={route}
+          onEnterCloudMode={() => setCloudConversationOnly(true)}
+          onOpenCloudSetup={() => setRoute('cloud')}
+        />
       </main>
     </div>
   );

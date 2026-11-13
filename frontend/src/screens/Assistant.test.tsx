@@ -1107,3 +1107,109 @@ beforeEach(async () => {
 });
 
 afterEach(() => { act(() => view.unmount()); client.clear(); vi.unstubAllGlobals(); });
+
+
+describe('explicit cloud entry from the main assistant', () => {
+  async function mountEntry(onEnterCloudMode: () => void, onOpenCloudSetup: () => void) {
+    await settle(() => {
+      view.unmount();
+      view = create(
+        <QueryClientProvider client={client}>
+          <AssistantScreen onEnterCloudMode={onEnterCloudMode} onOpenCloudSetup={onOpenCloudSetup} />
+        </QueryClientProvider>,
+      );
+    });
+  }
+  function entryButton() {
+    const button = view.root.findAllByType('button').find((b) => b.children.includes('Cloud answer-only'));
+    if (!button) throw new Error('Cloud answer-only button missing');
+    return button;
+  }
+
+  it('requires an explicit click and opens isolated cloud mode only for current verified text', async () => {
+    const enter = vi.fn();
+    const setup = vi.fn();
+    mock.cloudStatus.mockResolvedValue({
+      staged: { provider_id: 'openrouter', model_id: 'dots-studio/dots-3-note-preview:free' },
+      providers: [{ provider_id: 'openrouter', credential_configured: true }],
+      text_probe_verified: true,
+      ready_for_execution: false,
+    });
+    await mountEntry(enter, setup);
+    expect(mock.cloudStatus).not.toHaveBeenCalled();
+    await settle(() => entryButton().props.onClick());
+    expect(mock.cloudStatus).toHaveBeenCalledTimes(1);
+    expect(enter).toHaveBeenCalledTimes(1);
+    expect(setup).not.toHaveBeenCalled();
+    expect(mock.turn).not.toHaveBeenCalled();
+    expect(mock.createTask).not.toHaveBeenCalled();
+  });
+
+  it('routes to existing cloud setup when proof is absent or stale', async () => {
+    const enter = vi.fn();
+    const setup = vi.fn();
+    mock.cloudStatus.mockResolvedValue({
+      staged: { provider_id: 'openrouter', model_id: 'dots-studio/dots-3-note-preview:free' },
+      providers: [{ provider_id: 'openrouter', credential_configured: true }],
+      text_probe_verified: false,
+      ready_for_execution: false,
+    });
+    await mountEntry(enter, setup);
+    await settle(() => entryButton().props.onClick());
+    expect(setup).toHaveBeenCalledTimes(1);
+    expect(enter).not.toHaveBeenCalled();
+    expect(mock.turn).not.toHaveBeenCalled();
+  });
+
+  it('refuses entry if the current key is absent or execution is asserted', async () => {
+    const enter = vi.fn();
+    const setup = vi.fn();
+    mock.cloudStatus.mockResolvedValue({
+      staged: { provider_id: 'openrouter', model_id: 'dots-studio/dots-3-note-preview:free' },
+      providers: [{ provider_id: 'openrouter', credential_configured: false }],
+      text_probe_verified: true,
+      ready_for_execution: true,
+    });
+    await mountEntry(enter, setup);
+    await settle(() => entryButton().props.onClick());
+    expect(setup).toHaveBeenCalledTimes(1);
+    expect(enter).not.toHaveBeenCalled();
+    expect(mock.turn).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on status errors without echoing details or sending anything', async () => {
+    const enter = vi.fn();
+    const setup = vi.fn();
+    mock.cloudStatus.mockRejectedValue(new Error('SECRET-DETAILS-FROM-UPSTREAM'));
+    await mountEntry(enter, setup);
+    await settle(() => entryButton().props.onClick());
+    expect(enter).not.toHaveBeenCalled();
+    expect(setup).not.toHaveBeenCalled();
+    expect(text()).toContain('Cloud verification could not be checked');
+    expect(text()).not.toContain('SECRET-DETAILS-FROM-UPSTREAM');
+    expect(mock.turn).not.toHaveBeenCalled();
+    expect(mock.createTask).not.toHaveBeenCalled();
+  });
+
+  it('does not admit a second click while the read-only check is in flight', async () => {
+    const enter = vi.fn();
+    const setup = vi.fn();
+    let finish!: (v: unknown) => void;
+    mock.cloudStatus.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    await mountEntry(enter, setup);
+    await settle(() => {
+      entryButton().props.onClick();
+      entryButton().props.onClick();
+    });
+    expect(mock.cloudStatus).toHaveBeenCalledTimes(1);
+    await settle(() => finish({
+      staged: { provider_id: 'openrouter', model_id: 'dots-studio/dots-3-note-preview:free' },
+      providers: [{ provider_id: 'openrouter', credential_configured: true }],
+      text_probe_verified: true,
+      ready_for_execution: false,
+    }));
+    expect(enter).toHaveBeenCalledTimes(1);
+    expect(setup).not.toHaveBeenCalled();
+  });
+});
+

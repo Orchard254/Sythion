@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
-import { conversationService, taskService, voiceService } from '../services/api';
+import { cloudPreviewService, conversationService, taskService, voiceService } from '../services/api';
 import { conversationTasks, nextSpokenReply } from '../lib/firstConversation';
 import { Icon } from '../components/icons';
 import { TaskDetailDrawer } from '../components/TaskDetailDrawer';
@@ -40,7 +40,15 @@ function createClientRequestId(): string {
   return `composer-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
-export function AssistantScreen() {
+export function AssistantScreen({
+  onEnterCloudMode, onOpenCloudSetup,
+}: {
+  onEnterCloudMode?: () => void;
+  onOpenCloudSetup?: () => void;
+} = {}) {
+  const [cloudEntryBusy, setCloudEntryBusy] = useState(false);
+  const [cloudEntryError, setCloudEntryError] = useState('');
+  const cloudEntryInFlight = useRef(false);
   const [selected, setSelected] = useState<Task | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [speechHelpOpen, setSpeechHelpOpen] = useState(false);
@@ -350,6 +358,39 @@ useLayoutEffect(() => {
         'or assumed to be running.'
       : null;
 
+  // The local Assistant is task-capable; cloud answer-only mode is not.
+  // This explicit navigation never routes a message through the task engine.
+  // A local read-only status check determines whether to open the isolated
+  // screen or the existing cloud setup. The destination re-verifies again.
+  const openCloudAnswerOnly = async () => {
+    if (!onEnterCloudMode || !onOpenCloudSetup || cloudEntryInFlight.current) return;
+    cloudEntryInFlight.current = true;
+    setCloudEntryBusy(true);
+    setCloudEntryError('');
+    try {
+      const result = await cloudPreviewService.status();
+      const staged = result.staged;
+      const credentialPresent = Array.isArray(result.providers) &&
+        result.providers.some((p) =>
+          p.provider_id === staged?.provider_id && p.credential_configured === true);
+      if (result.text_probe_verified === true && result.ready_for_execution === false &&
+          typeof staged?.provider_id === 'string' && staged.provider_id.length > 0 &&
+          typeof staged?.model_id === 'string' && staged.model_id.length > 0 &&
+          credentialPresent) {
+        onEnterCloudMode();
+      } else {
+        onOpenCloudSetup();
+      }
+    } catch {
+      // No upstream response body, credential or local exception is shown.
+      // Never fall through to the task-capable Assistant on failed admission.
+      setCloudEntryError('Cloud verification could not be checked. No cloud message was sent.');
+    } finally {
+      cloudEntryInFlight.current = false;
+      setCloudEntryBusy(false);
+    }
+  };
+
   return (
     <div className="screen screen--assistant">
       <div className="assistant">
@@ -359,7 +400,17 @@ useLayoutEffect(() => {
           <h1 className="sr-only">Talk to Sythion</h1>
           <AssistantStatusIndicator status={status} />
           <span className="spacer" />
-                  </div>
+          {onEnterCloudMode && onOpenCloudSetup && (
+            <Button size="sm" variant="ghost" disabled={cloudEntryBusy}
+              title="Explicitly open isolated cloud answer-only chat. No tools, tasks or memory writes."
+              onClick={() => void openCloudAnswerOnly()}>
+              Cloud answer-only
+            </Button>
+          )}
+        </div>
+        {cloudEntryError && <div className="ac__scheduling-warning" role="status">
+          {cloudEntryError}
+        </div>}
 
         {/* Essential safety information, pinned and always visible. */}
         {visibleAwaiting.length > 0 && (
