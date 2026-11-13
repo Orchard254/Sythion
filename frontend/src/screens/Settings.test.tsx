@@ -3,14 +3,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsScreen } from './Settings';
 import { useAppStore } from '../store/appStore';
 
-const mock = vi.hoisted(() => ({ data: {} as Record<string, unknown>, update: vi.fn(), refetch: vi.fn() }));
+const mock = vi.hoisted(() => ({
+  data: {} as Record<string, unknown>, update: vi.fn(), refetch: vi.fn(),
+  cloudStatus: vi.fn(), cloudSave: vi.fn(), cloudCatalog: vi.fn(),
+  cloudStage: vi.fn(), cloudChat: vi.fn(),
+}));
 vi.mock('../hooks/useBackend', () => ({
   useAppSettings: () => ({ data: mock.data, refetch: mock.refetch }),
   useHealth: () => ({ data: {} }), useSecrets: () => ({ data: { configured: [] } }),
   useVoiceAssets: () => ({ data: { stt_installed: true } }),
   useActions: () => ({ updateSettings: mock.update }),
 }));
-vi.mock('../services/api', () => ({ healthService: { version: async () => ({ version: 'test' }) }, voiceService: {} }));
+vi.mock('../services/api', () => ({
+  healthService: { version: async () => ({ version: 'test' }) }, voiceService: {},
+  cloudPreviewService: {
+    status: mock.cloudStatus, saveCredential: mock.cloudSave, modelCatalog: mock.cloudCatalog,
+    stage: mock.cloudStage, chat: mock.cloudChat,
+  },
+}));
 
 let view: ReactTestRenderer;
 const text = (n: { children: unknown[] }): string => n.children.map(c => typeof c === 'string' ? c : c && typeof c === 'object' && 'children' in c ? text(c as { children: unknown[] }) : '').join('');
@@ -23,6 +33,12 @@ beforeEach(async () => {
   vi.stubGlobal('document', { documentElement: { style: { setProperty: vi.fn() } } });
   mock.data = { retention_days: 90, file_roots: ['C:\\env'], persisted_file_roots: ['C:\\one,two'], environment_file_roots: [], effective_file_roots: ['C:\\one,two', 'C:\\backend'], fallback_file_roots: ['C:\\home', 'C:\\cwd'] };
   mock.update.mockResolvedValue({});
+  mock.cloudStatus.mockResolvedValue({
+    staged: {}, ready_for_execution: false, text_probe_verified: false, tool_probe_verified: false,
+    providers: [{ provider_id: 'openrouter', credential_configured: false },
+      { provider_id: 'nvidia', credential_configured: false },
+      { provider_id: 'groq', credential_configured: false }],
+  });
   useAppStore.setState({ isConnected: true });
   await act(async () => { view = create(<SettingsScreen />); });
 });
@@ -91,5 +107,16 @@ describe('file root settings', () => {
     await click('Remove grant 1');
     expect(button('Save settings').props.disabled).toBe(true);
     expect(mock.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('AI Models configuration in Settings', () => {
+  it('offers cloud configuration in Settings without automatic inference or secret writes', () => {
+    expect(JSON.stringify(view.toJSON())).toContain('AI Models');
+    expect(JSON.stringify(view.toJSON())).toContain('Configure OpenRouter');
+    expect(mock.cloudChat).not.toHaveBeenCalled();
+    expect(mock.cloudStage).not.toHaveBeenCalled();
+    expect(mock.cloudSave).not.toHaveBeenCalled();
+    expect(mock.cloudCatalog).not.toHaveBeenCalled();
   });
 });
