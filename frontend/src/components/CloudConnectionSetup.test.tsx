@@ -4,7 +4,7 @@ import { CloudConnectionSetup } from './CloudConnectionSetup';
 
 const mock = vi.hoisted(() => ({
   status: vi.fn(), modelCatalog: vi.fn(), saveCredential: vi.fn(),
-  stage: vi.fn(), chat: vi.fn(),
+  stage: vi.fn(), chat: vi.fn(), probe: vi.fn(),
 }));
 vi.mock('../services/api', async (original) => ({
   ...await original<typeof import('../services/api')>(),
@@ -36,10 +36,14 @@ const configured = {
   ...empty,
   providers: [{ provider_id: 'openrouter', credential_configured: true }],
 };
-const verified = {
+const textVerified = {
   ...configured,
   staged: { provider_id: 'openrouter', model_id: 'unit/cloud:free' },
   text_probe_verified: true,
+};
+const verified = {
+  ...textVerified,
+  tool_probe_verified: true,
 };
 const selection = { provider_id: 'openrouter', model_id: 'unit/cloud:free' };
 const list = {
@@ -72,6 +76,10 @@ beforeEach(async () => {
   mock.saveCredential.mockResolvedValue(undefined);
   mock.stage.mockResolvedValue(undefined);
   mock.chat.mockResolvedValue(response);
+  mock.probe.mockResolvedValue({
+    ...selection, tool_probe_verified: true, active: false,
+    ready_for_execution: false, evidence_persisted: true,
+  });
   await settle(() => { view = create(<CloudConnectionSetup />); });
 });
 afterEach(() => { act(() => view.unmount()); });
@@ -82,6 +90,7 @@ it('loads only local state when no credential exists and never probes automatica
   expect(mock.saveCredential).not.toHaveBeenCalled();
   expect(mock.stage).not.toHaveBeenCalled();
   expect(mock.chat).not.toHaveBeenCalled();
+  expect(mock.probe).not.toHaveBeenCalled();
   expect(view.root.findAllByProps({ id: 'cloud-config-catalog' })).toHaveLength(0);
 });
 
@@ -92,6 +101,7 @@ it('loads the model catalog automatically for a saved credential, without infere
   expect(mock.saveCredential).not.toHaveBeenCalled();
   expect(mock.stage).not.toHaveBeenCalled();
   expect(mock.chat).not.toHaveBeenCalled();
+  expect(mock.probe).not.toHaveBeenCalled();
   expect(view.root.findAllByProps({ id: 'cloud-config-search' })).toHaveLength(0);
   expect(view.root.findAllByProps({ id: 'cloud-config-model' })).toHaveLength(0);
   expect(view.root.findAllByType('input').filter((x) => x.props.type === 'checkbox')).toHaveLength(0);
@@ -112,6 +122,7 @@ it('switches between Free and All without running inference', async () => {
   expect(text()).not.toContain('unit/paid');
   expect(mock.stage).not.toHaveBeenCalled();
   expect(mock.chat).not.toHaveBeenCalled();
+  expect(mock.probe).not.toHaveBeenCalled();
   expect(mock.modelCatalog).toHaveBeenCalledTimes(1);
 });
 
@@ -129,6 +140,7 @@ it('saves a new key and loads models with one click, without needing Browse', as
   expect(text()).not.toContain('synthetic-test-key');
   expect(view.root.findAllByProps({ id: 'cloud-config-catalog' })).toHaveLength(1);
   expect(mock.chat).not.toHaveBeenCalled();
+  expect(mock.probe).not.toHaveBeenCalled();
 });
 
 it('automatically checks the chosen model once and enters answer-only chat', async () => {
@@ -141,6 +153,8 @@ it('automatically checks the chosen model once and enters answer-only chat', asy
   expect(mock.stage).toHaveBeenCalledWith(selection);
   expect(mock.chat).toHaveBeenCalledTimes(1);
   expect(mock.chat).toHaveBeenCalledWith(selection, 'Say hello in one short plain-text sentence.');
+  expect(mock.probe).toHaveBeenCalledTimes(1);
+  expect(mock.probe).toHaveBeenCalledWith(selection);
   expect(enter).toHaveBeenCalledTimes(1);
   expect(text()).not.toContain('synthetic-test-key');
 });
@@ -154,6 +168,7 @@ it('reuses verified proof on selection without spending another inference reques
   await choose();
   expect(enter).toHaveBeenCalledTimes(1);
   expect(mock.chat).not.toHaveBeenCalled();
+  expect(mock.probe).not.toHaveBeenCalled();
   expect(mock.stage).not.toHaveBeenCalled();
 });
 
@@ -163,6 +178,7 @@ it('does not silently test the previously staged model when reopening setup', as
   await remount(enter);
   expect(view.root.findByProps({ id: 'cloud-config-catalog' }).props.value).toBe('');
   expect(mock.chat).not.toHaveBeenCalled();
+  expect(mock.probe).not.toHaveBeenCalled();
   expect(enter).not.toHaveBeenCalled();
 });
 
@@ -175,6 +191,7 @@ it('reports provider restrictions without leaking provider response bodies or re
   await remount();
   await choose();
   expect(mock.chat).toHaveBeenCalledTimes(1);
+  expect(mock.probe).not.toHaveBeenCalled();
   expect(text()).toContain('restricted to eligible agentic harnesses');
   expect(text()).not.toContain('PRIVATE-UPSTREAM-BODY');
   expect(button('Retry selected model')).toBeTruthy();
@@ -214,3 +231,100 @@ it('blocks two rapid selections from sending duplicate inference requests', asyn
   await settle(() => release(response));
   expect(mock.chat).toHaveBeenCalledTimes(1);
 });
+
+
+it('validates actual function calling even when catalog does not advertise tools', async () => {
+  const enter = vi.fn();
+  mock.status.mockReset().mockResolvedValueOnce(configured)
+    .mockResolvedValueOnce(configured).mockResolvedValueOnce(verified);
+  // tools_listed is false in the catalog; real evidence is still required.
+  await remount(enter);
+  await choose();
+  expect(mock.chat).toHaveBeenCalledTimes(1);
+  expect(mock.probe).toHaveBeenCalledTimes(1);
+  expect(enter).toHaveBeenCalledTimes(1);
+});
+
+it('does not treat a text-only success as qualifying for full assistant behavior', async () => {
+  const enter = vi.fn();
+  mock.status.mockReset().mockResolvedValueOnce(textVerified)
+    .mockResolvedValueOnce(textVerified).mockResolvedValueOnce(textVerified);
+  await remount(enter);
+  await choose();
+  expect(mock.stage).not.toHaveBeenCalled();
+  expect(mock.chat).not.toHaveBeenCalled();
+  expect(mock.probe).toHaveBeenCalledTimes(1);
+  expect(enter).not.toHaveBeenCalled();
+  expect(text()).toContain('The model could not be verified');
+});
+
+it('reuses valid text proof, testing function calling once without another chat request', async () => {
+  const enter = vi.fn();
+  mock.status.mockReset().mockResolvedValueOnce(textVerified)
+    .mockResolvedValueOnce(textVerified).mockResolvedValueOnce(verified);
+  await remount(enter);
+  await choose();
+  expect(mock.chat).not.toHaveBeenCalled();
+  expect(mock.stage).not.toHaveBeenCalled();
+  expect(mock.probe).toHaveBeenCalledTimes(1);
+  expect(enter).toHaveBeenCalledTimes(1);
+});
+
+it('explains when text works but tool calling is unsupported and recommends another model', async () => {
+  const enter = vi.fn();
+  mock.status.mockReset().mockResolvedValue(configured);
+  mock.probe.mockRejectedValueOnce({ response: { status: 422, data: {
+    detail: 'Model did not demonstrate required tool calling',
+    raw: 'PRIVATE-UPSTREAM-CONTENT',
+  } } });
+  await remount(enter);
+  await choose();
+  expect(mock.chat).toHaveBeenCalledTimes(1);
+  expect(mock.probe).toHaveBeenCalledTimes(1);
+  expect(enter).not.toHaveBeenCalled();
+  expect(text()).toContain('failed Sythion');
+  expect(text()).toContain('Choose another model');
+  expect(text()).not.toContain('PRIVATE-UPSTREAM-CONTENT');
+});
+
+it('does not misclassify capacity failures as unsupported models', async () => {
+  const enter = vi.fn();
+  mock.status.mockReset().mockResolvedValue(configured);
+  mock.probe.mockRejectedValueOnce({ response: { status: 429, data: {
+    detail: 'quota exceeded', token: 'SHOULD-NOT-BE-SHOWN',
+  } } });
+  await remount(enter);
+  await choose();
+  expect(mock.probe).toHaveBeenCalledTimes(1);
+  expect(enter).not.toHaveBeenCalled();
+  expect(text()).toContain('This is not proof the model is incompatible');
+  expect(text()).not.toContain('SHOULD-NOT-BE-SHOWN');
+});
+
+it('never calls the tool probe after a failed text qualification', async () => {
+  const enter = vi.fn();
+  mock.status.mockReset().mockResolvedValue(configured);
+  mock.chat.mockRejectedValueOnce(new Error('No text reply'));
+  await remount(enter);
+  await choose();
+  expect(mock.chat).toHaveBeenCalledTimes(1);
+  expect(mock.probe).not.toHaveBeenCalled();
+  expect(enter).not.toHaveBeenCalled();
+});
+
+it('does not automatically retry a failed function-call check', async () => {
+  const enter = vi.fn();
+  mock.status.mockReset().mockResolvedValue(configured);
+  mock.probe.mockRejectedValueOnce({ response: { status: 422, data: {
+    detail: 'Model did not demonstrate required tool calling',
+  } } });
+  await remount(enter);
+  await choose();
+  expect(mock.probe).toHaveBeenCalledTimes(1);
+  await settle(() => view.root.findByProps({ id: 'cloud-model-filter' }).props.onChange({
+    target: { value: 'all' },
+  }));
+  expect(mock.probe).toHaveBeenCalledTimes(1);
+  expect(enter).not.toHaveBeenCalled();
+});
+
