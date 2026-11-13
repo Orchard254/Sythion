@@ -125,7 +125,7 @@ describe('file root settings', () => {
 });
 
 describe('AI Models configuration in Settings', () => {
-  it('offers cloud configuration in Settings without automatic inference or secret writes', () => {
+  it('offers cloud configuration in Settings without automatic inference or secret writes', async () => {
     expect(JSON.stringify(view.toJSON())).toContain('AI Models');
     await act(async () => {
       view.root.findByProps({ id: 'settings-ai-provider' }).props.onChange({
