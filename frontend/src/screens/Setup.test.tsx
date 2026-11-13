@@ -6,7 +6,8 @@ import apiClient from '../services/api';
 const mock = vi.hoisted(() => {
   const readiness = vi.fn();
   return { readiness, testCredentials: vi.fn(), selectModel: vi.fn(), inference: vi.fn(), applySafeSettings: vi.fn(), update: vi.fn(), speak: vi.fn(),
-    cloudStatus: vi.fn(), cloudSaveCredential: vi.fn(), cloudStage: vi.fn(), cloudProbe: vi.fn(), cloudChat: vi.fn() };
+    cloudStatus: vi.fn(), cloudSaveCredential: vi.fn(), cloudStage: vi.fn(), cloudProbe: vi.fn(), cloudChat: vi.fn(),
+    cloudCatalog: vi.fn() };
 });
 vi.mock('../services/api', async (importOriginal) => ({
   ...await importOriginal<typeof import('../services/api')>(),
@@ -16,6 +17,7 @@ vi.mock('../services/api', async (importOriginal) => ({
   cloudPreviewService: {
     status: mock.cloudStatus, saveCredential: mock.cloudSaveCredential,
     stage: mock.cloudStage, probe: mock.cloudProbe, chat: mock.cloudChat,
+    modelCatalog: mock.cloudCatalog,
   },
 }));
 vi.mock('../hooks/useVoiceCapture', () => ({ useVoiceCapture: () => ({ startCapture: vi.fn(), stopCapture: vi.fn() }) }));
@@ -62,34 +64,28 @@ async function connect() {
 }
 
 describe('setup to first conversation', () => {
-  it('does not contact alternative providers unless owner opens the opt-in preview', async () => {
-    expect(mock.cloudStatus).not.toHaveBeenCalled();
+
+  it('offers all providers directly in onboarding without a hidden alternative preview', async () => {
+    expect(view.root.findByProps({ id: 'setup-ai-provider' }).props.value).toBe('ollama-cloud');
+    expect(mock.cloudChat).not.toHaveBeenCalled();
+    await settle(() => view.root.findByProps({ id: 'setup-ai-provider' }).props.onChange({
+      target: { value: 'openrouter' },
+    }));
+    expect(labels(view.root)).toContain('Configure OpenRouter');
+    expect(view.root.findAllByProps({ id: 'setup-key' })).toHaveLength(0);
     expect(mock.cloudProbe).not.toHaveBeenCalled();
     expect(mock.cloudChat).not.toHaveBeenCalled();
-    await settle(() => button('Explore alternative cloud providers (preview)').props.onClick());
-    expect(mock.cloudStatus).toHaveBeenCalledTimes(1);
-    expect(mock.cloudProbe).not.toHaveBeenCalled();
-    expect(labels(view.root)).toContain('not yet connected');
-    expect(button('Start conversation')).toBeUndefined();
-    await settle(() => button('Hide alternative cloud providers').props.onClick());
-    expect(mock.cloudProbe).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
   });
 
-  it('permits a separately verified cloud lane without passing Ollama onboarding', async () => {
-    mock.cloudStatus.mockResolvedValue({
-      active_provider: 'ollama-cloud',
-      staged: { provider_id: 'openrouter', model_id: 'unit/model:free' },
-      tool_probe_verified: false, text_probe_verified: true,
-      providers: [{ provider_id: 'openrouter', credential_configured: true }],
-      ready_for_execution: false,
-    });
-    await settle(() => button('Explore alternative cloud providers (preview)').props.onClick());
-    await settle(() => button('Enter conversation-only cloud mode').props.onClick());
-    expect(cloudMode).toHaveBeenCalledTimes(1);
-    expect(complete).not.toHaveBeenCalled();
-    expect(mock.inference).not.toHaveBeenCalled();
-    expect(mock.cloudChat).not.toHaveBeenCalled();
+  it('does not require Ollama readiness to show supported cloud model setup', async () => {
+    await settle(() => view.root.findByProps({ id: 'setup-ai-provider' }).props.onChange({
+      target: { value: 'nvidia' },
+    }));
+    expect(labels(view.root)).toContain('Configure NVIDIA NIM');
     expect(checks.ollama_health_ok).toBe(false);
+    expect(mock.inference).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
   });
 
   it('guides a new user to connect a key before discovering models', async () => {

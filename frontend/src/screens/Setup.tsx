@@ -6,7 +6,8 @@ import { modelTestFailureMessage } from '../lib/modelTestFailure';
 import { singleScreenContentStyle, singleScreenShellStyle } from '../lib/shellLayout';
 import { Button, Notice, Panel } from '../components/ui';
 import { SythionMark } from '../components/icons';
-import { CloudProviderPreview } from '../components/CloudProviderPreview';
+import { CloudConnectionSetup } from '../components/CloudConnectionSetup';
+import type { CloudPreviewProviderId } from '../services/api';
 import { setupService, modelService, voiceService, type SetupReadiness } from '../services/api';
 
 interface SetupProps {
@@ -16,7 +17,7 @@ interface SetupProps {
 
 export function SetupScreen({ onComplete, onCloudConversationOnly }: SetupProps) {
   const [step, setStep] = useState(0);
-  const [showCloudPreview, setShowCloudPreview] = useState(false);
+  const [aiProvider, setAiProvider] = useState<'ollama-cloud' | CloudPreviewProviderId>('ollama-cloud');
   const [apiKey, setApiKey] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
   const [models, setModels] = useState<string[]>([]);
@@ -142,13 +143,29 @@ export function SetupScreen({ onComplete, onCloudConversationOnly }: SetupProps)
             <SythionMark size={40} />
             <div><h1 className="screen-head__title">Welcome to Sythion</h1><p className="t-muted">Let’s get Synth ready for your first conversation.</p></div>
           </div>
-          <ol className="row" aria-label="Setup progress" style={{ padding: 0, listStyle: 'none', gap: 16, flexWrap: 'wrap' }}>
+          {aiProvider === 'ollama-cloud' && <ol className="row" aria-label="Setup progress" style={{ padding: 0, listStyle: 'none', gap: 16, flexWrap: 'wrap' }}>
             {steps.map((label, i) => <li key={label} aria-current={step === i ? 'step' : undefined} style={{ opacity: i === step ? 1 : 0.55 }}>{i + 1}. {label}</li>)}
-          </ol>
+          </ol>}
           <div role="alert">{error && <Notice tone="danger" icon="alert"><span>{error}</span></Notice>}</div>
           <div role="status" aria-live="polite">{message && <Notice tone="info" icon="info"><span>{message}</span></Notice>}</div>
           {loading ? <p role="status">Checking your setup…</p> : <>
-            {step === 0 && <Panel title="1. Connect Synth" icon="key">
+            {step === 0 && <Panel title="Choose your AI provider" icon="info">
+              <div className="stack" style={{ gap: 8 }}>
+                <label htmlFor="setup-ai-provider">Where should Sythion get its AI responses?</label>
+                <select id="setup-ai-provider" className="input" disabled={busy} value={aiProvider}
+                  onChange={(e) => {
+                    setAiProvider(e.target.value as 'ollama-cloud' | CloudPreviewProviderId);
+                    setError(null); setMessage(null);
+                  }}>
+                  <option value="ollama-cloud">Ollama Cloud</option>
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="nvidia">NVIDIA NIM</option>
+                  <option value="groq">Groq</option>
+                </select>
+                <p className="t-muted">Configure once here. Later changes belong in Settings → AI Models.</p>
+              </div>
+            </Panel>}
+            {step === 0 && aiProvider === 'ollama-cloud' && <Panel title="Connect Ollama Cloud" icon="key">
               <div className="stack" style={{ gap: 12 }}>
                 <p className="t-muted">Synth answers through your Ollama Cloud account. Your key is saved in this computer's secure credential store.</p>
                 {!readiness?.checks.ollama_api_key_ok && <div>
@@ -169,13 +186,10 @@ export function SetupScreen({ onComplete, onCloudConversationOnly }: SetupProps)
                 </div>
               </div>
             </Panel>}
-            {step === 0 && <>
-              <Button variant="subtle" disabled={busy}
-                onClick={() => setShowCloudPreview((current) => !current)}>
-                {showCloudPreview ? 'Hide alternative cloud providers' : 'Explore alternative cloud providers (preview)'}
-              </Button>
-              {showCloudPreview && <CloudProviderPreview onEnterConversationOnly={onCloudConversationOnly} />}
-            </>}
+            {step === 0 && aiProvider !== 'ollama-cloud' && (
+              <CloudConnectionSetup key={aiProvider} provider={aiProvider}
+                onReady={onCloudConversationOnly} />
+            )}
             {step === 1 && <Panel title="2. Choose a model" icon="info">
               <div className="stack" style={{ gap: 12 }}>
                 {(models.length > 0 || selectedModel) && <>

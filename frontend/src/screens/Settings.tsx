@@ -13,6 +13,7 @@ import { useActions, useAppSettings, useHealth, useSecrets, useVoiceAssets } fro
 import { useAppStore } from '../store/appStore';
 import * as api from '../services/api';
 import { useNavStore } from '../store/navStore';
+import { CloudConnectionSetup } from '../components/CloudConnectionSetup';
 
 type Density = 'comfortable' | 'compact';
 
@@ -137,6 +138,14 @@ export function SettingsScreen() {
           description="Settings and interface preferences."
          
         />
+
+        <Panel title="AI Models" icon="assistant">
+          <p className="t-muted">
+            Manage cloud provider credentials and models here, not in the chat composer.
+            Ollama Cloud model setup remains in the original onboarding flow.
+          </p>
+          <CloudConnectionSetup />
+        </Panel>
 
         <div className="grid grid--2">
           <Panel
