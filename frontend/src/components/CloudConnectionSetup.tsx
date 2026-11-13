@@ -11,9 +11,10 @@ import { Button, Notice, Panel } from './ui';
  * One provider/model picker reused by onboarding and Settings.
  * Discover model names automatically when an existing key is configured.
  * A user's explicit model selection is the sole trigger for inference:
- * one text-capability check at most, never a hidden model scan/retry.
+ * one text check and one harmless function-call check at most when new.
+ * No hidden model scans or retries.
  *
- * Text proof does not enable the task/tool/memory runtime.
+ * Neither proof activates task/tool/memory execution.
  */
 const LABELS: Record<CloudPreviewProviderId, string> = {
   openrouter: 'OpenRouter',
@@ -31,10 +32,16 @@ function safeError(error: unknown): string {
   const data = response && typeof response === 'object' && 'data' in response
     ? response.data : null;
   const detail = data && typeof data === 'object' && 'detail' in data ? data.detail : null;
-  if (status === 429) return 'Provider quota or capacity reached. No automatic retry was made.';
+  if (status === 429) return 'Provider quota or capacity reached. This is not proof the model is incompatible. No automatic retry was made.';
   if (status === 409) return 'The selected model or key changed. Select the model again after checking setup.';
+  if (status === 422 && detail === 'Model did not demonstrate required tool calling')
+    return 'This model can chat, but failed Sythion\'s function-call requirement. Choose another model for full assistant compatibility.';
+  if (status === 422)
+    return 'This model did not meet Sythion\'s compatibility checks. Choose another model.';
   if (status === 502 && detail === 'Cloud model requires an eligible agentic harness (upstream HTTP 403)')
     return 'This free model is restricted to eligible agentic harnesses. Choose a different model.';
+  if (status === 502 && detail === 'Cloud provider rejected the capability request')
+    return 'The provider rejected the function-call check. This model is not verified for Sythion tools; try another model or check access.';
   if (status === 502) return 'The provider rejected this model request. Try another model or check account access.';
   if (status === 503) return 'Cloud response is uncertain. No automatic retry was made.';
   return 'The model could not be verified. Review provider access or choose another model.';
@@ -58,7 +65,7 @@ function validCatalog(result: unknown, provider: CloudPreviewProviderId): result
       typeof (m as CloudCatalogModel).free_variant === 'boolean');
 }
 
-function isVerified(
+function isTextVerified(
   status: CloudPreviewStatus,
   provider: CloudPreviewProviderId,
   modelId: string,
@@ -68,6 +75,15 @@ function isVerified(
     status.text_probe_verified === true &&
     status.ready_for_execution === false &&
     status.providers.some((p) => p.provider_id === provider && p.credential_configured === true);
+}
+
+function isQualified(
+  status: CloudPreviewStatus,
+  provider: CloudPreviewProviderId,
+  modelId: string,
+): boolean {
+  return isTextVerified(status, provider, modelId) &&
+    status.tool_probe_verified === true;
 }
 
 export function CloudConnectionSetup({
@@ -132,7 +148,7 @@ export function CloudConnectionSetup({
 
   const configured = status?.providers.some(
     (p) => p.provider_id === provider && p.credential_configured === true) === true;
-  const verified = !!status && model.length > 0 && !key.trim() && isVerified(status, provider, model);
+  const verified = !!status && model.length > 0 && !key.trim() && isQualified(status, provider, model);
   const visibleModels = catalog.filter((item) => !freeOnly || item.free_variant);
   const canChoose = configured && !key.trim() && !busy && !catalogLoading;
   const showRetry = !!error && !!model && canChoose &&
@@ -181,9 +197,10 @@ export function CloudConnectionSetup({
     }
   };
 
-  // Called ONLY on an explicit selection, or the visible manual Retry button.
-  // Changing the Free/All filter, mounting the page or fetching the catalog
-  // must never trigger a model inference request.
+  // Called ONLY on explicit model selection, or the visible manual Retry.
+  // Free/All changes, mounting and catalog refresh never trigger inference.
+  // At most two isolated requests: one text check, one harmless tool-call
+  // probe. Tool proof does NOT grant runtime execution permission.
   const checkSelected = async (modelId: string) => {
     if (inFlight.current || !configured || !modelId || key.trim() ||
         !catalog.some((entry) => entry.id === modelId)) return;
@@ -196,8 +213,10 @@ export function CloudConnectionSetup({
         setStatus(current);
         throw new Error('Credential no longer available');
       }
-      if (!isVerified(current, provider, modelId)) {
-        const selection = { provider_id: provider, model_id: modelId };
+
+      const textAlreadyVerified = isTextVerified(current, provider, modelId);
+      const selection = { provider_id: provider, model_id: modelId };
+      if (!textAlreadyVerified) {
         await cloudPreviewService.stage(selection);
         if (!mounted.current) return;
         const result = await cloudPreviewService.chat(selection, TEST_PROMPT);
@@ -209,15 +228,28 @@ export function CloudConnectionSetup({
           throw new Error('Unexpected cloud text result');
         }
       }
+
+      // Stage invalidates both previous proofs. If text is still current,
+      // a current real tool-call proof can be reused without any new charge.
+      if (!textAlreadyVerified || current.tool_probe_verified !== true) {
+        const proof = await cloudPreviewService.probe(selection);
+        if (!mounted.current) return;
+        if (proof.provider_id !== provider || proof.model_id !== modelId ||
+            proof.tool_probe_verified !== true || proof.evidence_persisted !== true ||
+            proof.active !== false || proof.ready_for_execution !== false) {
+          throw new Error('Unexpected function-call proof');
+        }
+      }
+
       const latest = await cloudPreviewService.status();
       if (!mounted.current) return;
-      if (!isVerified(latest, provider, modelId)) {
+      if (!isQualified(latest, provider, modelId)) {
         setStatus(latest);
-        throw new Error('Model verification changed');
+        throw new Error('Model qualification changed');
       }
       setStatus(latest);
       if (onReady) onReady();
-      else setNotice('Model checked. Ready for answer-only conversations; tools and tasks remain disabled.');
+      else setNotice('Text and basic function-call checks passed. The cloud assistant remains answer-only until runtime integration is verified.');
     } catch (err) {
       if (mounted.current) setError(safeError(err));
     } finally {
@@ -282,12 +314,13 @@ export function CloudConnectionSetup({
             The provider returned more models than Sythion can display. This list may be incomplete.
           </p>}
           <p className="t-muted">
-            Selecting a model checks its text connection automatically with one cloud request if
-            not already verified. This may use your quota; it never retries automatically.
+            Selecting a model checks text conversation and basic function calling automatically
+            (up to two provider requests if not yet verified). This may use your quota;
+            no real tools run and failed checks are never retried automatically.
           </p>
-          {busy && <p role="status">Checking the selected model…</p>}
+          {busy && <p role="status">Checking conversation and function-call compatibility…</p>}
           {verified && !busy && <Notice tone="info" icon="check">
-            This model has current text-only verification.
+            Basic text and function-call checks passed. Task execution is not enabled.
           </Notice>}
           {showRetry && <Button disabled={busy} onClick={() => void checkSelected(model)}>
             Retry selected model
@@ -295,7 +328,8 @@ export function CloudConnectionSetup({
         </>}
 
         <p className="t-muted">
-          Text chat does not enable tools, tasks, file access or memory writes.
+          Sythion requires both text and function-call compatibility for an assistant model.
+          These checks do not enable tasks, file access or memory writes.
         </p>
         {notice && <Notice tone="info" icon="info">{notice}</Notice>}
         {error && <Notice tone="danger" icon="alert">{error}</Notice>}
