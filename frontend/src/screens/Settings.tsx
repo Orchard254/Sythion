@@ -13,6 +13,7 @@ import { useActions, useAppSettings, useHealth, useSecrets, useVoiceAssets } fro
 import { useAppStore } from '../store/appStore';
 import * as api from '../services/api';
 import { useNavStore } from '../store/navStore';
+import { AIModelsSettings } from '../components/AIModelsSettings';
 
 type Density = 'comfortable' | 'compact';
 
@@ -135,8 +136,9 @@ export function SettingsScreen() {
           eyebrow="Control"
           title="Settings"
           description="Settings and interface preferences."
-         
         />
+
+        <AIModelsSettings />
 
         <div className="grid grid--2">
           <Panel

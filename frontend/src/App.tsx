@@ -5,7 +5,6 @@ import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { Button, Notice, Panel } from './components/ui';
 import { AssistantScreen } from './screens/Assistant';
-import { CloudConversationOnlyScreen } from './screens/CloudConversationOnly';
 import { AutomationsScreen } from './screens/Automations';
 import { MemoryScreen } from './screens/Memory';
 import { CompanionSurface } from './components/CompanionSurface';
@@ -18,7 +17,6 @@ import { OperationsScreen } from './screens/Operations';
 import { SecurityScreen } from './screens/Security';
 import { SettingsScreen } from './screens/Settings';
 import { SetupScreen } from './screens/Setup';
-import { CloudProviderPreview } from './components/CloudProviderPreview';
 import { SystemScreen } from './screens/SystemIntegrations';
 import { useAppInit } from './hooks/useAppInit';
 import { useAppStore } from './store/appStore';
@@ -46,30 +44,13 @@ const queryClient = new QueryClient({
   },
 });
 
-function ScreenFor({
-  route, onEnterCloudMode,
-}: {
-  route: RouteId;
-  onEnterCloudMode: () => void;
-}) {
+function ScreenFor({ route }: { route: RouteId }) {
   switch (route) {
     case 'assistant':
       return <AssistantScreen />;
     case 'cloud':
-      return (
-        <div className="stack" style={{
-          maxWidth: 800, margin: '0 auto', padding: '24px 20px',
-          overflowY: 'auto', height: '100%', gap: 16,
-        }}>
-          <h1 className="screen-head__title">Cloud Text Chat</h1>
-          <p className="t-muted">
-            Configure and test an alternative model, then enter answer-only
-            conversation. This mode is independent of Ollama, but cannot
-            execute tasks, write memory or use tools.
-          </p>
-          <CloudProviderPreview onEnterConversationOnly={onEnterCloudMode} />
-        </div>
-      );
+      // Legacy bookmarked preview routes open the real AI model settings.
+      return <SettingsScreen />;
     case 'missions':
       // Canonical user-facing term is Goals. `missions` is retained as the route
       // id so existing deep links keep resolving (see ROUTE_ALIASES).
@@ -100,9 +81,6 @@ function AppContent() {
   const notify = useAppStore((s) => s.notify);
 
   const [setupNeeded, setSetupNeeded] = useState<boolean | null>(null);
-  // Owner-selected alternative lane. Not persisted across reloads and
-  // never unlocks the full Assistant/task shell.
-  const [cloudConversationOnly, setCloudConversationOnly] = useState(false);
   useEffect(() => {
     if (!isInitialized || !isConnected) return;
     setSetupNeeded(null);
@@ -256,10 +234,6 @@ function AppContent() {
     );
   }
 
-  if (isConnected && cloudConversationOnly) {
-    return <CloudConversationOnlyScreen onExit={() => setCloudConversationOnly(false)} />;
-  }
-
   if (isConnected && setupNeeded) {
     return (
       <SetupScreen
@@ -268,7 +242,6 @@ function AppContent() {
           setRoute('assistant');
           setSetupNeeded(false);
         }}
-        onCloudConversationOnly={() => setCloudConversationOnly(true)}
       />
     );
   }
@@ -341,7 +314,7 @@ function AppContent() {
       />
 
       <main className="shell__main">
-        <ScreenFor route={route} onEnterCloudMode={() => setCloudConversationOnly(true)} />
+        <ScreenFor route={route} />
       </main>
     </div>
   );

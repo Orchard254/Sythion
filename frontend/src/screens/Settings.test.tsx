@@ -11,6 +11,7 @@ vi.mock('../hooks/useBackend', () => ({
   useActions: () => ({ updateSettings: mock.update }),
 }));
 vi.mock('../services/api', () => ({ healthService: { version: async () => ({ version: 'test' }) }, voiceService: {} }));
+vi.mock('../components/AIModelsSettings', () => ({ AIModelsSettings: () => 'AI Models' }));
 
 let view: ReactTestRenderer;
 const text = (n: { children: unknown[] }): string => n.children.map(c => typeof c === 'string' ? c : c && typeof c === 'object' && 'children' in c ? text(c as { children: unknown[] }) : '').join('');

@@ -52,13 +52,6 @@ export const ROUTES: RouteDef[] = [
     blurb: 'Conversations, voice input and task execution',
   },
   {
-    id: 'cloud',
-    label: 'Cloud Text Chat',
-    icon: 'assistant',
-    group: 'operate',
-    blurb: 'Experimental answer-only chat; no tools, tasks or memory writes',
-  },
-  {
     id: 'missions',
     // "Goals" is the canonical user-facing term. The route id stays `missions`
     // for compatibility and `#/goals` redirects here — see ROUTE_ALIASES.
@@ -120,7 +113,8 @@ export const ROUTE_ALIASES: Record<string, RouteId> = {
 };
 
 export function routeById(id: RouteId): RouteDef {
-  return ROUTES.find((r) => r.id === id) ?? ROUTES[0];
+  // Preserve older 'cloud' links, but never advertise a second assistant.
+  return ROUTES.find((r) => r.id === (id === 'cloud' ? 'settings' : id)) ?? ROUTES[0];
 }
 
 export function isRouteId(value: string): value is RouteId {
@@ -129,6 +123,7 @@ export function isRouteId(value: string): value is RouteId {
 
 /** Resolve a raw hash segment to a real route, following aliases. */
 export function resolveRoute(raw: string): RouteId {
+  if (raw === 'cloud') return 'settings';
   if (isRouteId(raw)) return raw;
   return ROUTE_ALIASES[raw] ?? DEFAULT_ROUTE;
 }

@@ -1,23 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_ROUTE, ROUTES, resolveRoute, routeById } from './routes';
 
-describe('cloud answer-only route registration', () => {
-  it('exposes a distinct cloud chat destination outside the task-executing assistant', () => {
-    const cloud = routeById('cloud');
-    const assistant = routeById('assistant');
-    expect(cloud.id).toBe('cloud');
-    expect(cloud.group).toBe('operate');
-    expect(cloud.label).toBe('Cloud Text Chat');
-    expect(cloud.blurb.toLowerCase()).toContain('no tools');
-    expect(assistant.id).toBe('assistant');
-    expect(assistant.blurb).toContain('task execution');
-    expect(ROUTES.filter((route) => route.id === 'cloud')).toHaveLength(1);
+describe('AI model configuration belongs in Settings', () => {
+  it('keeps the original Assistant and Settings, without a duplicate cloud route', () => {
+    expect(routeById('assistant').label).toBe('AI Assistant');
+    expect(routeById('assistant').blurb).toContain('task execution');
+    expect(routeById('settings').label).toBe('Settings');
+    expect(ROUTES.some((route) => route.id === 'cloud')).toBe(false);
   });
 
-  it('resolves explicit cloud navigation without becoming the default route', () => {
-    expect(resolveRoute('cloud')).toBe('cloud');
+  it('redirects old cloud deep links to Settings, not an experimental chat screen', () => {
+    expect(resolveRoute('cloud')).toBe('settings');
+    expect(routeById('cloud').id).toBe('settings');
     expect(resolveRoute('assistant')).toBe('assistant');
     expect(resolveRoute('missing-route')).toBe(DEFAULT_ROUTE);
-    expect(DEFAULT_ROUTE).not.toBe('cloud');
   });
 });

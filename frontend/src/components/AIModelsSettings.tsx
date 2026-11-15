@@ -80,7 +80,7 @@ export function AIModelsSettings() {
   }, []);
 
   useEffect(() => {
-    if (loading || provider !== 'ollama-cloud') return;
+    if (loading || provider !== 'ollama-cloud' || !ollamaKeyReady) return;
     let cancelled = false;
     const current = ++generation.current;
     setLoadingModels(true);
@@ -97,7 +97,7 @@ export function AIModelsSettings() {
     });
     return () => { cancelled = true; };
     // Fetch on provider change, not on every active model update.
-  }, [provider, loading]);
+  }, [provider, loading, ollamaKeyReady]);
 
   const chooseProvider = (next: AIProvider) => {
     if (inFlight.current || busy || loading) return;
@@ -175,8 +175,9 @@ export function AIModelsSettings() {
   const onCloudVerified = (modelId: string) => {
     if (!provider || provider === 'ollama-cloud') return;
     const expected = provider;
+    const currentGeneration = generation.current;
     void activeInferenceService.status().then((current) => {
-      if (!mounted.current) return;
+      if (!mounted.current || currentGeneration !== generation.current) return;
       if (current.provider_id !== expected || current.model_id !== modelId ||
           current.permissions_unchanged !== true) {
         setError('The active model changed. Refresh Settings to verify its identity.');
@@ -185,7 +186,9 @@ export function AIModelsSettings() {
       setActive(current);
       setMessage('Active AI model updated. Sythion keeps its existing assistant and permissions.');
     }).catch(() => {
-      if (mounted.current) setError('Could not confirm the active model. Reopen AI Models to review.');
+      if (mounted.current && currentGeneration === generation.current) {
+        setError('Could not confirm the active model. Reopen AI Models to review.');
+      }
     });
   };
 

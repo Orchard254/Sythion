@@ -4391,8 +4391,10 @@ async def select_model(body: ModelSelectRequest, db=Depends(get_db)):
     from backend.core.profile import set_selected_model
     from backend.runtime.model_provider import get_default_provider
 
-    from backend.runtime.model_provider import get_default_provider
-
+    # Changing Ollama's selected model affects the production reasoning
+    # client even when an alternative provider is active. Enforce the same
+    # unfinished-task check as cloud provider switches.
+    _require_idle_provider_switch(db)
     provider = get_default_provider()
     # Offload the provider's synchronous discovery facade so it cannot block
     # the event loop (see /models).
