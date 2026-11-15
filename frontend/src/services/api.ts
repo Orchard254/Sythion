@@ -679,6 +679,16 @@ export const cloudPreviewService = {
     await apiClient.post('/inference-preview/stage', selection);
   },
 
+  assistantContract: async (selection: CloudPreviewSelection): Promise<CloudPreviewSelection & {
+    assistant_contract_verified: true; evidence_persisted: true;
+    active: false; task_executed: false;
+  }> => {
+    const response = await apiClient.post('/inference-preview/assistant-contract', {
+      ...selection, confirm_network_request: true,
+    }, { timeout: 75000 });
+    return response.data;
+  },
+
   probe: async (selection: CloudPreviewSelection): Promise<CloudPreviewProbeResult> => {
     // Called only from the explicit, confirmed UI action. Never auto-probe.
     const response = await apiClient.post('/inference-preview/probe', {

@@ -4045,6 +4045,93 @@ async def restore_ollama_inference_provider(db: Session = Depends(get_db)):
     }
 
 
+
+@router.post("/inference-preview/assistant-contract")
+async def verify_inference_assistant_contract(
+    body: CloudCapabilityProbeRequest, db: Session = Depends(get_db),
+):
+    """Verify one exact candidate using the REAL Sythion Assistant JSON format.
+
+    One provider request. No model command is executed, no task/conversation
+    is created, and no raw provider content or secret is recorded.
+    """
+    import hmac
+    from backend.core.profile import get_staged_cloud_snapshot
+    from backend.core.secrets import resolve_compatible_provider_key
+    from backend.core.cloud_assistant_evidence import persist_assistant_contract_evidence
+    from backend.services.conversation_turn_engine import (
+        ConversationTurnEngine, ConversationTurnValidationError,
+        MAX_ASSISTANT_TEXT,
+    )
+    from backend.services.conversation_runtime import ModelClient
+    from backend.runtime.compatible_chat_provider import CompatibleCloudChatProvider
+    from backend.adapters.openai_compatible_adapter import (
+        PROVIDERS, OpenAICompatibleCloudAdapter, CompatibleProviderError,
+    )
+
+    if body.confirm_network_request is not True:
+        raise HTTPException(status_code=409, detail="Explicit model verification required")
+    stage = get_staged_cloud_snapshot()
+    if (not stage or stage.get("provider_id") != body.provider_id or
+        stage.get("model_id") != body.model_id or body.provider_id not in PROVIDERS):
+        raise HTTPException(status_code=409, detail="Select the exact candidate again")
+    secret = resolve_compatible_provider_key(body.provider_id)
+    if not secret:
+        raise HTTPException(status_code=409, detail="Provider credential unavailable")
+    adapter = None
+    try:
+        adapter = OpenAICompatibleCloudAdapter(
+            body.provider_id, body.model_id, api_key=secret,
+        )
+        provider = CompatibleCloudChatProvider(
+            body.provider_id, body.model_id, adapter=adapter,
+        )
+        model = ModelClient(provider=provider)
+        engine = ConversationTurnEngine(model)
+        # Reuse the actual production prompt and strict output validator,
+        # but DO NOT call the dispatching /assistant/turns HTTP handler.
+        messages = engine._build_messages("Hello Sythion.", [], [])
+        raw = await model.chat(
+            messages=messages, temperature=0.2,
+            max_tokens=MAX_ASSISTANT_TEXT, timeout=60.0,
+        )
+        result = engine._validate_output(raw, [])
+        if not result.assistant_text or result.commands:
+            raise ConversationTurnValidationError(
+                "Assistant contract must answer without commands",
+                reason_code="shape",
+            )
+        if get_staged_cloud_snapshot() != stage:
+            raise HTTPException(status_code=409, detail="Candidate changed during verification")
+        current_secret = resolve_compatible_provider_key(body.provider_id)
+        if not current_secret or not hmac.compare_digest(current_secret, secret):
+            raise HTTPException(status_code=409, detail="Credential changed during verification")
+        try:
+            persist_assistant_contract_evidence(db, stage, secret)
+        except Exception:
+            db.rollback()
+            raise HTTPException(status_code=503, detail="Assistant proof not saved") from None
+        return {
+            "provider_id": body.provider_id, "model_id": body.model_id,
+            "assistant_contract_verified": True, "evidence_persisted": True,
+            "active": False, "task_executed": False,
+        }
+    except HTTPException:
+        raise
+    except (ConversationTurnValidationError, CompatibleProviderError):
+        raise HTTPException(
+            status_code=422,
+            detail="Model could not satisfy Sythion's structured Assistant response contract",
+        ) from None
+    except Exception:
+        raise HTTPException(
+            status_code=502, detail="Assistant contract verification unavailable",
+        ) from None
+    finally:
+        if adapter is not None:
+            await adapter.close()
+
+
 @router.post("/inference-preview/probe")
 async def probe_inference_preview(
     body: CloudCapabilityProbeRequest, db: Session = Depends(get_db),

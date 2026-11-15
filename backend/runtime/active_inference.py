@@ -101,6 +101,7 @@ def activate_verified_cloud_selection(db: Any, provider_id: str, model_id: str) 
     _validate_cloud(provider_id, model_id)
     from backend.core.cloud_text_evidence import is_text_evidence_current
     from backend.core.cloud_probe_evidence import is_probe_evidence_current
+    from backend.core.cloud_assistant_evidence import is_assistant_contract_evidence_current
     from backend.core.secrets import resolve_compatible_provider_key
 
     snapshot = profile.get_staged_cloud_snapshot()
@@ -110,6 +111,8 @@ def activate_verified_cloud_selection(db: Any, provider_id: str, model_id: str) 
         raise ActiveInferenceUnavailable("Choose and verify this exact model first")
     if not is_text_evidence_current(db) or not is_probe_evidence_current(db):
         raise ActiveInferenceUnavailable("Text and function-call qualification required")
+    if not is_assistant_contract_evidence_current(db):
+        raise ActiveInferenceUnavailable("Structured Assistant qualification required")
     credential = resolve_compatible_provider_key(provider_id)
     if not credential:
         raise ActiveInferenceUnavailable("Provider credential unavailable")

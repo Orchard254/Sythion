@@ -122,8 +122,18 @@ export function ActiveCloudSetup({
           throw new Error('Invalid function-call qualification');
         }
       }
-      // This is the ACTUAL Sythion reasoning-selector endpoint, not a preview.
+      // The ordinary text + synthetic tool tests are not enough: normal
+      // Assistant turns require an exact structured JSON contract.
+      // Verify its real prompt/validator BEFORE changing the active model.
+      const contract = await cloudPreviewService.assistantContract(selection);
       if (!mounted.current || generation.current !== current) return;
+      if (contract.provider_id !== provider || contract.model_id !== id ||
+          contract.assistant_contract_verified !== true ||
+          contract.evidence_persisted !== true ||
+          contract.task_executed !== false || contract.active !== false) {
+        throw new Error('Invalid Assistant contract evidence');
+      }
+      // Activation is now backed by THREE exact credential-bound proofs.
       const activated = await activeInferenceService.activate(selection);
       if (!mounted.current || generation.current !== current) return;
       if (activated.provider_id !== provider || activated.model_id !== id ||
@@ -148,7 +158,7 @@ export function ActiveCloudSetup({
                  detail === 'Cloud model requires an eligible agentic harness (upstream HTTP 403)') {
         setError('This model requires an eligible agentic application. Choose a different model.');
       } else if (status === 422) {
-        setError('This model did not demonstrate the function calling Sythion requires. Choose another model.');
+        setError('This model did not demonstrate the structured Assistant format or function calling Sythion requires. Choose another model.');
       } else if (status === 409) {
         setError('Model verification changed or Sythion has unfinished tasks. Review your setup.');
       } else {
@@ -202,8 +212,8 @@ export function ActiveCloudSetup({
       </select>
       {!loading && visibleModels.length === 0 &&
         <p>No matching models listed. Try All models or change provider.</p>}
-      <p className="t-muted">Selection verifies text and a harmless function call
-        (up to two provider requests, which may consume quota).
+      <p className="t-muted">Selection verifies text, a harmless function call
+        and Sythion's actual Assistant format (up to three provider requests, which may consume quota).
         It does not grant tools or permissions and never retries automatically.</p>
       {busy && <p role="status">Checking the selected model…</p>}
       {verified && <Notice tone="info" icon="check">{notice}</Notice>}
