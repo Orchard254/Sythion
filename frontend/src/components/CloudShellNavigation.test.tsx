@@ -1,4 +1,5 @@
-import { act, create, type ReactElement, type ReactTestRenderer } from 'react-test-renderer';
+import type { ReactElement } from 'react';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
