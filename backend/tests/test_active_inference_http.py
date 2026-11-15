@@ -4,6 +4,7 @@ import pytest
 from backend.core import profile, secrets
 from backend.core.cloud_text_evidence import persist_text_evidence
 from backend.core.cloud_probe_evidence import persist_probe_evidence
+from backend.core.cloud_assistant_evidence import persist_assistant_contract_evidence
 from backend.core.settings_store import set_setting
 from backend.models.database import Task
 
@@ -25,6 +26,7 @@ def prepare(db):
     snap = profile.get_staged_cloud_snapshot()
     persist_text_evidence(db, snap, "synthetic-key-not-real")
     persist_probe_evidence(db, snap, "synthetic-key-not-real")
+    persist_assistant_contract_evidence(db, snap, "synthetic-key-not-real")
 
 
 def test_default_active_selection_does_not_use_staged_preview(test_client, isolated):

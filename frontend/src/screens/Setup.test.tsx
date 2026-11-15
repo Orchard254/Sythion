@@ -8,6 +8,7 @@ const mock = vi.hoisted(() => {
   return { readiness, testCredentials: vi.fn(), selectModel: vi.fn(), inference: vi.fn(), applySafeSettings: vi.fn(), update: vi.fn(), speak: vi.fn(),
     cloudStatus: vi.fn(), cloudSaveCredential: vi.fn(), cloudStage: vi.fn(),
     cloudProbe: vi.fn(), cloudChat: vi.fn(), cloudCatalog: vi.fn(),
+    cloudContract: vi.fn(),
     cloudActivate: vi.fn(), cloudRestore: vi.fn() };
 });
 vi.mock('../services/api', async (importOriginal) => ({
@@ -18,7 +19,7 @@ vi.mock('../services/api', async (importOriginal) => ({
   cloudPreviewService: {
     status: mock.cloudStatus, saveCredential: mock.cloudSaveCredential,
     stage: mock.cloudStage, probe: mock.cloudProbe, chat: mock.cloudChat,
-    modelCatalog: mock.cloudCatalog,
+    assistantContract: mock.cloudContract, modelCatalog: mock.cloudCatalog,
   },
   activeInferenceService: {
     activate: mock.cloudActivate, restoreOllama: mock.cloudRestore,
@@ -80,6 +81,11 @@ beforeEach(async () => {
     provider_id: 'openrouter', model_id: 'unit/model:free',
     tool_probe_verified: true, active: false, evidence_persisted: true,
   });
+  mock.cloudContract.mockResolvedValue({
+    provider_id: 'openrouter', model_id: 'unit/model:free',
+    assistant_contract_verified: true, active: false, task_executed: false,
+    evidence_persisted: true,
+  });
   mock.cloudActivate.mockImplementation(async (request: { provider_id: string; model_id: string }) => {
     activeProvider = request.provider_id;
     selected = request.model_id;
@@ -135,6 +141,7 @@ describe('setup to first conversation', () => {
     expect(mock.cloudStage).toHaveBeenCalledTimes(1);
     expect(mock.cloudChat).toHaveBeenCalledTimes(1);
     expect(mock.cloudProbe).toHaveBeenCalledTimes(1);
+    expect(mock.cloudContract).toHaveBeenCalledTimes(1);
     expect(mock.cloudActivate).toHaveBeenCalledTimes(1);
     expect(mock.cloudActivate).toHaveBeenCalledWith({
       provider_id: 'openrouter', model_id: 'unit/model:free',

@@ -4,6 +4,7 @@ import pytest
 from backend.core import profile, secrets
 from backend.core.cloud_text_evidence import persist_text_evidence
 from backend.core.cloud_probe_evidence import persist_probe_evidence
+from backend.core.cloud_assistant_evidence import persist_assistant_contract_evidence
 from backend.runtime import active_inference as active
 from backend.runtime import model_client
 from backend.services.conversation_runtime import ModelClient
@@ -23,6 +24,7 @@ def verified(db):
     snapshot = profile.get_staged_cloud_snapshot()
     persist_text_evidence(db, snapshot, "synthetic-not-real")
     persist_probe_evidence(db, snapshot, "synthetic-not-real")
+    persist_assistant_contract_evidence(db, snapshot, "synthetic-not-real")
 
 
 def test_ollama_remains_default_and_staging_is_inert(isolated, monkeypatch):
