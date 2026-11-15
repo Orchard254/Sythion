@@ -87,8 +87,8 @@ class ModelClient:
         provider: Optional[Any] = None,
     ):
         if provider is None:
-            from backend.runtime.model_provider import get_default_provider
-            self.provider = get_default_provider()
+            from backend.runtime.active_inference import get_active_chat_provider
+            self.provider = get_active_chat_provider()
         else:
             self.provider = provider
         from backend.core.config import settings

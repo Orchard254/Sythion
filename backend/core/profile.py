@@ -130,6 +130,11 @@ def save_profile(patch: Dict[str, Any]) -> Dict[str, Any]:
         return profile
 
 
+def load_profile_strict() -> Dict[str, Any]:
+    """Read profile for an authorization decision; corruption must NOT look like default."""
+    return _read_profile_for_save()
+
+
 def get_selected_model() -> str:
     """Return the persisted selected Cloud model ID, if any."""
     return load_profile().get("selected_model", "") or ""

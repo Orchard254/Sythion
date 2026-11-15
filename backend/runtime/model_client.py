@@ -36,8 +36,13 @@ class OllamaCloudModelClient:
 
 
 def get_default_model_client() -> ModelClient:
-    """Single construction point for the default provider-backed client."""
-    return OllamaCloudModelClient()
+    """Resolve the active reasoning provider; unchanged Ollama behavior by default.
+
+    Provider selection is authenticated, credential-bound backend state. An
+    invalid active cloud binding raises: NEVER silently fall back to Ollama.
+    """
+    from backend.runtime.active_inference import get_active_decision_client
+    return get_active_decision_client()
 
 
 
