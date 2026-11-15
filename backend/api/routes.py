@@ -3867,6 +3867,119 @@ async def stage_inference_preview(body: CloudSelectionStageRequest):
     }
 
 
+# This is the *production* reasoning selector, not an inference preview.
+# Provider changes are backend-owned and cannot run while an unfinished task
+# might be using the previous provider. No cloud request occurs here.
+_ACTIVE_PROVIDER_BLOCKING_TASK_STATES = (
+    TaskState.CREATED.value,
+    TaskState.RUNNING.value,
+    TaskState.WAITING_FOR_USER.value,
+    TaskState.INTERRUPTED.value,
+    TaskState.PAUSED.value,
+)
+
+
+def _require_idle_provider_switch(db: Session) -> None:
+    from backend.models.database import Task
+    try:
+        unfinished = (db.query(Task.id)
+                      .filter(Task.state.in_(_ACTIVE_PROVIDER_BLOCKING_TASK_STATES))
+                      .first())
+    except Exception:
+        raise HTTPException(
+            status_code=503, detail="Task state unavailable; provider was not changed"
+        ) from None
+    if unfinished is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Finish or cancel unfinished tasks before changing the active model",
+        )
+
+
+@router.get("/inference/active")
+async def get_active_inference_selection():
+    """Report actual reasoning provider; never expose credentials or signatures."""
+    from backend.runtime.active_inference import (
+        get_active_inference_selection, ActiveInferenceUnavailable,
+    )
+    try:
+        selected = get_active_inference_selection()
+    except ActiveInferenceUnavailable:
+        raise HTTPException(
+            status_code=409, detail="Active model configuration needs attention"
+        ) from None
+    return {
+        "provider_id": selected.provider_id,
+        "model_id": selected.model_id,
+        "permissions_unchanged": True,
+    }
+
+
+@router.post("/inference/active")
+async def activate_inference_provider(
+    body: CloudSelectionStageRequest, db: Session = Depends(get_db),
+):
+    """Explicitly activate exact text+tool verified model in normal Sythion runtime.
+
+    Unlike preview staging, this changes the reasoning provider. It does not
+    grant task/tool/OS permissions, create a task, or make a cloud model call.
+    """
+    from backend.runtime.active_inference import (
+        activate_verified_cloud_selection, ActiveInferenceUnavailable,
+    )
+    _require_idle_provider_switch(db)
+    try:
+        selected = activate_verified_cloud_selection(
+            db, body.provider_id, body.model_id,
+        )
+    except ActiveInferenceUnavailable:
+        raise HTTPException(
+            status_code=409,
+            detail="Model selection failed: select this model and verify text and function calling",
+        ) from None
+    return {
+        "provider_id": selected.provider_id,
+        "model_id": selected.model_id,
+        "permissions_unchanged": True,
+    }
+
+
+@router.delete("/inference/active")
+async def restore_ollama_inference_provider(db: Session = Depends(get_db)):
+    """Return to Ollama only when its existing verified setup is valid."""
+    from backend.core import profile
+    from backend.core.config import resolve_selected_model, settings
+    from backend.core.secrets import has_secret, OLLAMA_API_KEY
+    from backend.core.settings_store import get_setting
+    _require_idle_provider_switch(db)
+    model = resolve_selected_model()
+    try:
+        eligible = (
+            bool(model)
+            and (has_secret(OLLAMA_API_KEY) or bool(settings.ollama_api_key))
+            and get_setting(db, "ollama_inference_verified_model") == model
+        )
+    except Exception:
+        eligible = False
+    if not eligible:
+        raise HTTPException(
+            status_code=409,
+            detail="Verify an Ollama model in Settings before switching back",
+        )
+    try:
+        profile.save_profile({"active_inference_selection": {
+            "version": 1, "provider_id": "ollama-cloud",
+        }})
+    except Exception:
+        raise HTTPException(
+            status_code=503, detail="Could not save provider selection"
+        ) from None
+    return {
+        "provider_id": "ollama-cloud", "model_id": model,
+        "permissions_unchanged": True,
+    }
+
+
 @router.post("/inference-preview/probe")
 async def probe_inference_preview(
     body: CloudCapabilityProbeRequest, db: Session = Depends(get_db),
