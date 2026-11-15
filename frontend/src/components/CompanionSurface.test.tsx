@@ -26,7 +26,11 @@ vi.mock('./Companion', () => ({
 }));
 
 describe('Companion window lifecycle', () => {
-  it('hides on dismissal and can subsequently be revealed', async () => {
+  it('hides on dismissal and can subsequently be revealed when the owner enabled it', async () => {
+    // A Companion reveal is now an explicit Settings preference. Simulate an
+    // owner-enabled overlay; the default-off preference must not auto-reveal.
+    vi.stubGlobal('localStorage', { getItem: (key: string) =>
+      key === 'sythion.companionEnabled' ? '1' : null, setItem: vi.fn() });
     const view = create(<CompanionSurface />);
     await act(async () => {
       view.root.findByType('button').props.onClick();
@@ -39,6 +43,7 @@ describe('Companion window lifecycle', () => {
     expect(shell.invoke).toHaveBeenCalledWith('set_companion_visible', { visible: true });
     expect(shell.visible).toBe(true);
     view.unmount();
+    vi.unstubAllGlobals();
   });
 });
 
