@@ -91,3 +91,35 @@ class CompatibleCloudModelClient:
 
     async def close(self) -> None:
         await self._adapter.close()
+
+
+
+class DeferredActiveModelClient:
+    """Resolve the selected reasoning provider only for an actual decision.
+
+    Tasks may be inspected, cancelled or recovered without contacting the
+    reasoning provider. When a decision is requested, the existing strict
+    selection/credential checks still run and fail closed; there is no
+    alternate-provider fallback or hidden model probe.
+    """
+
+    def __init__(self):
+        self._selected: Optional[ModelClient] = None
+
+    def _resolve(self) -> ModelClient:
+        if self._selected is None:
+            self._selected = get_default_model_client()
+        return self._selected
+
+    async def decide(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        max_tokens: int = 4000,
+    ) -> Dict[str, Any]:
+        return await self._resolve().decide(
+            messages=messages, tools=tools, max_tokens=max_tokens,
+        )
+
+    def provider_name(self) -> str:
+        return self._resolve().provider_name()

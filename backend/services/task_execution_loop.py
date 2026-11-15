@@ -16,6 +16,7 @@ from backend.services.task_runner import TaskRunner
 from backend.services.task_instruction_revision import TaskInstructionRevision
 from backend.runtime.action_guard import OSActionGuard
 from backend.services.model_engine import ModelDecisionEngine, ModelDecisionError, DecisionType
+from backend.runtime.model_client import DeferredActiveModelClient
 from backend.services.reasoning_journal import ReasoningJournal
 from backend.services.execution_components import (
     BudgetGuard,
@@ -84,7 +85,12 @@ class TaskExecutionLoop:
         self.db = db_session
         self.runner = task_runner
         self.tool_executor = tool_executor
-        self.model_engine = ModelDecisionEngine(db_session, tool_executor)
+        # Do not read model credentials/active profile just to create or
+        # inspect a task executor. The first actual decision resolves a
+        # single provider and retains that identity for this loop instance.
+        self.model_engine = ModelDecisionEngine(
+            db_session, tool_executor, model_client=DeferredActiveModelClient(),
+        )
         # Ownership-checked receipts: provider-call lifecycle is durable task
         # evidence, not a tool authorization or verified completion result.
         self.model_engine.reasoning_journal = ReasoningJournal(
