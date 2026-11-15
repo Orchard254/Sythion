@@ -25,10 +25,12 @@ export function TaskDetailDrawer({
   task,
   onClose,
   onChanged,
+  onDismissFailed,
 }: {
   task: Task;
   onClose: () => void;
   onChanged?: () => void;
+  onDismissFailed?: () => void;
 }) {
   const events = useTaskEvents(task.id);
   const actions = useActions();
@@ -106,6 +108,13 @@ export function TaskDetailDrawer({
           {busy ? 'Resuming…' : 'Resume task'}
         </Button>
       </div>
+    ) : task.state === 'failed' ? (
+      <Button variant="subtle" disabled={busy} onClick={() => {
+        if (onDismissFailed) onDismissFailed();
+        else void run(async () => { await taskService.acknowledgeFailure(task.id); onClose(); });
+      }}>
+        Dismiss failed task
+      </Button>
     ) : undefined;
 
   return (

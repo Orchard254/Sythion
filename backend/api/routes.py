@@ -1905,6 +1905,63 @@ async def create_task(
         await runner.release_lease()
 
 
+
+# Failed-task acknowledgement is UI queue state, NEVER deletion or cancellation.
+# Keep the task, its terminal reason and immutable execution events intact.
+_failed_attention_lock = __import__("threading").RLock()
+_FAILED_ATTENTION_KEY = "acknowledged_failed_task_ids_v1"
+
+
+def _acknowledged_failed_task_ids(db: Session) -> list[str]:
+    from backend.core.settings_store import get_setting
+    raw = get_setting(db, _FAILED_ATTENTION_KEY)
+    if raw is None:
+        return []
+    try:
+        entries = json.loads(raw)
+        if (not isinstance(entries, list) or len(entries) > 2048 or
+            any(not isinstance(entry, str) or len(entry) > 128 for entry in entries)):
+            raise ValueError()
+        return entries
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=503, detail="Task acknowledgement data unavailable"
+        ) from None
+
+
+@router.get("/tasks/acknowledged-failures")
+def list_acknowledged_failed_tasks(db: Session = Depends(get_db)):
+    """Return only which terminal failures the owner dismissed from Operations."""
+    return {"task_ids": _acknowledged_failed_task_ids(db)}
+
+
+@router.post("/tasks/{task_id}/acknowledge-failure")
+def acknowledge_failed_task(task_id: str, db: Session = Depends(get_db)):
+    """Dismiss a failed task from attention without destroying its audit trail."""
+    if not task_id or len(task_id) > 128:
+        raise HTTPException(status_code=400, detail="Invalid task ID")
+    from backend.core.settings_store import set_setting
+    with _failed_attention_lock:
+        task = db.query(Task).filter_by(id=task_id).first()
+        if task is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        if task.state != TaskState.FAILED.value:
+            raise HTTPException(
+                status_code=409, detail="Only failed tasks can be dismissed"
+            )
+        known = _acknowledged_failed_task_ids(db)
+        if task_id not in known:
+            if len(known) >= 2048:
+                raise HTTPException(
+                    status_code=409, detail="Task acknowledgement capacity reached"
+                )
+            set_setting(db, _FAILED_ATTENTION_KEY, json.dumps([*known, task_id]))
+            db.commit()
+    return {
+        "task_id": task_id, "acknowledged": True, "audit_preserved": True,
+    }
+
+
 @router.get("/tasks", response_model=TaskListResponse)
 async def list_tasks(
     limit: int = 50,

@@ -242,6 +242,23 @@ export const taskService = {
     return response.data;
   },
 
+  acknowledgedFailures: async (): Promise<string[]> => {
+    const response = await apiClient.get('/tasks/acknowledged-failures');
+    const ids: unknown = response.data?.task_ids;
+    if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) {
+      throw new Error('Invalid task acknowledgement response');
+    }
+    return ids as string[];
+  },
+  acknowledgeFailure: async (taskId: string): Promise<void> => {
+    const response = await apiClient.post(`/tasks/${encodeURIComponent(taskId)}/acknowledge-failure`);
+    if (response.data?.task_id !== taskId ||
+        response.data?.acknowledged !== true ||
+        response.data?.audit_preserved !== true) {
+      throw new Error('Task acknowledgement was not confirmed');
+    }
+  },
+
   interpret: async (originalRequest: string, ignorePending = false): Promise<{kind: 'conversation' | 'task' | 'reply' | 'ambiguous'; task_id: string | null}> => {
     const response = await apiClient.post('/assistant/interpret', { original_request: originalRequest, ignore_pending: ignorePending });
     return response.data;

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Icon } from '../components/icons';
 import { GoalDetailDrawer } from '../components/GoalDetailDrawer';
 import { TaskDetailDrawer } from '../components/TaskDetailDrawer';
@@ -20,6 +20,7 @@ import {
   type AttentionItem,
 } from '../lib/observation';
 import type { Objective } from '../types';
+import { taskService } from '../services/api';
 
 /* Operations — the Control Center landing view.
  *
@@ -55,13 +56,43 @@ export function OperationsScreen() {
 
   const [openGoal, setOpenGoal] = useState<string | null>(null);
   const [openTask, setOpenTask] = useState<string | null>(null);
+  const [acknowledgedFailures, setAcknowledgedFailures] = useState<Set<string>>(new Set());
+  const [dismissBusy, setDismissBusy] = useState<string | null>(null);
+  const [dismissError, setDismissError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void taskService.acknowledgedFailures().then((ids) => {
+      if (active) setAcknowledgedFailures(new Set(ids));
+    }).catch(() => {
+      if (active) setDismissError('Could not load dismissed failures. Task history is unchanged.');
+    });
+    return () => { active = false; };
+  }, []);
+
+  const dismissFailure = async (taskId: string) => {
+    if (dismissBusy) return;
+    setDismissBusy(taskId);
+    setDismissError(null);
+    try {
+      await taskService.acknowledgeFailure(taskId);
+      setAcknowledgedFailures((current) => new Set([...current, taskId]));
+      setOpenTask((current) => current === taskId ? null : current);
+    } catch {
+      setDismissError('Could not dismiss this failed task. Its record has been preserved.');
+    } finally {
+      setDismissBusy(null);
+    }
+  };
 
   const allTasks = useMemo(() => tasks.data ?? [], [tasks.data]);
   const allObjectives = useMemo(() => objectives.data ?? [], [objectives.data]);
 
   const attention = useMemo(
-    () => collectAttention({ tasks: allTasks, objectives: allObjectives, now: Date.now() }),
-    [allTasks, allObjectives]
+    () => collectAttention({ tasks: allTasks, objectives: allObjectives, now: Date.now() })
+      .filter((item) => item.kind !== 'failure' ||
+        !item.taskId || !acknowledgedFailures.has(item.taskId)),
+    [allTasks, allObjectives, acknowledgedFailures]
   );
 
   const attentionTaskIds = useMemo(
@@ -158,6 +189,7 @@ export function OperationsScreen() {
           description={summary}
         />
 
+        {dismissError && <div role="alert" className="t-warn">{dismissError}</div>}
         {/* 1. NEEDS YOU --------------------------------------------------- */}
         <section aria-label="Needs you" className="operations-needs">
           {attention.length > 0 ? (
@@ -173,6 +205,8 @@ export function OperationsScreen() {
                     item={item}
                     onOpenTask={setOpenTask}
                     onOpenGoal={setOpenGoal}
+                    onDismissTask={(id) => { void dismissFailure(id); }}
+                    dismissBusy={dismissBusy !== null}
                   />
                 ))}
                 {attention.length > 2 && (
@@ -367,6 +401,7 @@ export function OperationsScreen() {
           task={taskById.get(openTask)!}
           onClose={() => setOpenTask(null)}
           onChanged={tasks.refetch}
+          onDismissFailed={() => { void dismissFailure(openTask); }}
         />
       )}
     </div>
@@ -422,10 +457,14 @@ function AttentionCard({
   item,
   onOpenTask,
   onOpenGoal,
+  onDismissTask,
+  dismissBusy,
 }: {
   item: AttentionItem;
   onOpenTask: (id: string) => void;
   onOpenGoal: (id: string) => void;
+  onDismissTask: (id: string) => void;
+  dismissBusy: boolean;
 }) {
   const KIND_LABEL: Record<string, string> = {
     approval: 'Approval',
@@ -464,6 +503,12 @@ function AttentionCard({
         </div>
         <p className="attn__detail">{item.detail}</p>
       </div>
+      {item.kind === 'failure' && item.taskId && (
+        <Button size="sm" variant="subtle" disabled={dismissBusy}
+          onClick={() => onDismissTask(item.taskId!)}>
+          Dismiss failure
+        </Button>
+      )}
       {item.target && (
         <Button
           size="sm"

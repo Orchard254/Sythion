@@ -14,6 +14,7 @@ if (typeof (globalThis as { window?: unknown }).window === 'undefined') {
 const replyToTask = vi.fn();
 const resumeTask = vi.fn();
 const resumePreflight = vi.hoisted(() => vi.fn());
+const acknowledgeFailure = vi.hoisted(() => vi.fn());
 const recoveryMock = vi.hoisted(() => ({
   data: undefined as import('../types').TaskResumePreflight | undefined,
   isLoading: false,
@@ -23,7 +24,7 @@ const recoveryMock = vi.hoisted(() => ({
 }));
 
 vi.mock('../services/api', () => ({
-  taskService: { resumePreflight },
+  taskService: { resumePreflight, acknowledgeFailure },
 }));
 
 vi.mock('../hooks/useBackend', () => ({
@@ -232,5 +233,19 @@ describe('TaskDetailDrawer recovery snapshot revision', () => {
     expect(rendered).toContain('Event #');
     expect(rendered).toContain('not an approval');
     recoveryMock.data = undefined;
+  });
+});
+
+describe('failed task dismissal', () => {
+  it('acknowledges a failed task without cancelling or deleting audit history', async () => {
+    acknowledgeFailure.mockResolvedValue(undefined);
+    const close = vi.fn();
+    const view = create(<TaskDetailDrawer task={task({ state: 'failed' })} onClose={close} />);
+    const action = view.root.findAllByType('button').find((b) =>
+      b.children.includes('Dismiss failed task'));
+    expect(action).toBeDefined();
+    await act(async () => { action?.props.onClick(); await Promise.resolve(); });
+    expect(acknowledgeFailure).toHaveBeenCalledWith('t1');
+    expect(close).toHaveBeenCalled();
   });
 });
