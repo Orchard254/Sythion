@@ -120,3 +120,42 @@ def test_control_token_is_required_for_provider_switch(test_client, test_db, iso
         if old:
             test_client.headers["X-Control-Token"] = old
     assert test_client.get(ENDPOINT).json()["provider_id"] == "ollama-cloud"
+
+
+def test_cloud_onboarding_readiness_uses_active_provider_not_ollama_key(
+    test_client, test_db, isolated, monkeypatch,
+):
+    # Old onboarding required the Ollama subscription even when a cloud model
+    # had been selected. The real active model now determines chat readiness.
+    from backend.core import config
+    monkeypatch.setattr(config.settings, "ollama_api_key", "")
+    prepare(test_db)
+    assert test_client.post(ENDPOINT, json=BODY).status_code == 200
+    safe = test_client.post("/api/v1/setup/safe-settings")
+    assert safe.status_code == 200, safe.text
+    r = test_client.get("/api/v1/setup/readiness")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["active_provider_id"] == "openrouter"
+    assert body["active_provider_ready_ok"] is True
+    assert body["checks"]["selected_model_ok"] is True
+    assert body["checks"]["inference_verified_ok"] is True
+    assert body["checks"]["safe_settings_ok"] is True
+    assert body["checks"]["ollama_api_key_ok"] is False
+    assert body["selected_model"] == "unit/model:free"
+    assert body["inference_verified_model"] == "unit/model:free"
+
+
+def test_rotated_cloud_key_is_not_reinterpreted_as_ollama_readiness(
+    test_client, test_db, isolated,
+):
+    prepare(test_db)
+    assert test_client.post(ENDPOINT, json=BODY).status_code == 200
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "invalidated-key")
+    r = test_client.get("/api/v1/setup/readiness")
+    assert r.status_code == 200, r.text
+    assert r.json()["active_provider_id"] == "unavailable"
+    assert r.json()["active_provider_ready_ok"] is False
+    assert r.json()["checks"]["selected_model_ok"] is False
+    assert r.json()["checks"]["inference_verified_ok"] is False
+    assert r.json()["full_ready"] is False
