@@ -173,7 +173,7 @@ describe('setup to first conversation', () => {
       target: { value: 'unit/model:free' },
     }));
     expect(mock.cloudActivate).not.toHaveBeenCalled();
-    expect(labels(view.root)).toContain('did not demonstrate the function calling');
+    expect(labels(view.root)).toContain('structured Assistant format or function calling');
     expect(button('Continue').props.disabled).toBe(true);
   });
 
