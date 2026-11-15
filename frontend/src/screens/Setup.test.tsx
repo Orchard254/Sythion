@@ -230,7 +230,7 @@ describe('setup to first conversation', () => {
     await settle(() => view.root.findByProps({id:'setup-model'}).props.onChange({target:{value:'another-model'}}));
     expect(button('Continue').props.disabled).toBe(true);
     expect(labels(view.root)).not.toContain('Your connection is ready.');
-    expect(labels(view.root)).toContain('The test sends a short request');
+    expect(labels(view.root)).toContain('Select and verify a model to continue.');
   });
 
   it('explains key setup and offers a useful recovery when connection fails', async () => {
