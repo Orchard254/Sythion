@@ -969,3 +969,65 @@ def test_offline_no_bootstrap_path_remains_functional(tmp_path):
     )
     assert rc == 0, [f.describe() for f in findings]
     assert out == output.resolve()
+
+def test_embedded_srt_build_bootstraps_only_hash_pinned_wheels(tmp_path, monkeypatch):
+    # An embedded _pth ignores pip's isolated-build PYTHONPATH. The fix installs
+    # exactly the pinned build wheels, then uses --no-build-isolation; no live PyPI.
+    (tmp_path / "python313._pth").write_text("python313.zip\nimport site\n", encoding="utf-8")
+    lock = tmp_path / "requirements.lock.txt"
+    lock.write_text("srt==3.5.3\nsetuptools==80.9.0\nwheel==0.45.1\n", encoding="utf-8")
+    calls = []
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    S.install_requirements(
+        tmp_path / "python.exe", lock, allow_network=True, verify_inventory=False,
+    )
+    assert len(calls) == 2
+    assert "--only-binary=:all:" in calls[0]
+    assert "--require-hashes" in calls[0]
+    assert calls[0][-1].endswith("embedded-build-requirements.txt")
+    assert "--no-build-isolation" in calls[1]
+    assert calls[1][-1] == str(lock)
+
+
+def test_embedded_srt_build_rejects_unpinned_build_tools_before_network(tmp_path, monkeypatch):
+    (tmp_path / "python313._pth").write_text("python313.zip\n", encoding="utf-8")
+    lock = tmp_path / "requirements.lock.txt"
+    lock.write_text("srt==3.5.3\n", encoding="utf-8")
+    called = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: called.append(a))
+    with pytest.raises(SystemExit, match="build dependencies must be pinned"):
+        S.install_requirements(
+            tmp_path / "python.exe", lock, allow_network=True, verify_inventory=False,
+        )
+    assert not called
+
+
+def test_non_embedded_pip_retains_isolated_builds(tmp_path, monkeypatch):
+    lock = tmp_path / "requirements.lock.txt"
+    lock.write_text("srt==3.5.3\n", encoding="utf-8")
+    calls = []
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    S.install_requirements(tmp_path / "python.exe", lock, allow_network=True, verify_inventory=False)
+    assert len(calls) == 1
+    assert "--no-build-isolation" not in calls[0]
+    assert "--require-hashes" not in calls[0]
+
+
+def test_release_embedded_srt_still_requires_hashed_runtime_lock(tmp_path, monkeypatch):
+    (tmp_path / "python313._pth").write_text("python313.zip\n", encoding="utf-8")
+    lock = tmp_path / "requirements.lock.txt"
+    lock.write_text("srt==3.5.3\nsetuptools==80.9.0\nwheel==0.45.1\n", encoding="utf-8")
+    called = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: called.append(a))
+    with pytest.raises(SystemExit, match="hash"):
+        S.install_requirements(
+            tmp_path / "python.exe", lock, allow_network=True,
+            verify_inventory=False, release=True,
+        )
+    assert not called

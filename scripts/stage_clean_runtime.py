@@ -818,6 +818,29 @@ def install_requirements(python_exe, lock_path, *, allow_network=False, verify_i
         or any(re.search(r"--hash(?:=|\s+)", ln) is not None for ln in read_lock_lines(lock_path))
     )
     cmd=[str(python_exe),"-m","pip","install","--no-user"]
+
+    # The Windows embeddable runtime uses python313._pth. That file ignores
+    # PYTHONPATH, which pip's isolated PEP 517 build environments depend on.
+    # srt==3.5.3 ships as a source distribution and needs setuptools.build_meta.
+    # In this narrow case, install the build tooling from hash-locked *wheels*
+    # into the disposable embedded runtime, then build with no isolation.
+    # This does not skip the dependency lock or the release provenance gate.
+    locked_lines = read_lock_lines(lock_path)
+    source_build = "srt==3.5.3" in locked_lines
+    is_embedded = bool(list(python_exe.parent.glob("python*._pth")))
+    if is_embedded and source_build:
+        build_pins = ("setuptools==80.9.0", "wheel==0.45.1")
+        if any(pin not in locked_lines for pin in build_pins):
+            raise SystemExit("[stage-runtime] embedded build dependencies must be pinned in the runtime lock")
+        build_lock = SCRIPTS_DIR / "embedded-build-requirements.txt"
+        if is_rp(build_lock) or not build_lock.is_file():
+            raise SystemExit("[stage-runtime] pinned embedded build requirements are unavailable")
+        print("[stage-runtime] preparing hash-pinned embedded build wheels")
+        run([str(python_exe), "-m", "pip", "install", "--no-user",
+             "--only-binary=:all:", "--require-hashes", "-r", str(build_lock)])
+        # Reuse the verified local build backend rather than pip's isolated
+        # environment (which cannot be imported under an embeddable _pth).
+        cmd.append("--no-build-isolation")
     if _rel or _req:
         cmd.append("--require-hashes")
     elif has_hashes:
