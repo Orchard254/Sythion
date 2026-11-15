@@ -84,12 +84,11 @@ export function SetupScreen({ onComplete }: SetupProps) {
   const testModel = (modelId = selectedModel) => run(async () => {
     try {
       if (!modelId) throw new Error('Select a model first');
-      await setupService.selectModel(modelId);
-      const result = await setupService.inference(modelId);
-      if (!result.success) throw new Error('The model did not respond.');
-      if (readiness?.active_provider_id &&
-          readiness.active_provider_id !== 'ollama-cloud') {
-        await activeInferenceService.restoreOllama();
+      const result = await activeInferenceService.activateOllama(modelId);
+      if (result.provider_id !== 'ollama-cloud' ||
+          result.model_id !== modelId || result.verified !== true ||
+          result.permissions_unchanged !== true) {
+        throw new Error('The model did not pass verification.');
       }
       await refresh();
       setMessage('Synth answered the connection test. You can continue.');

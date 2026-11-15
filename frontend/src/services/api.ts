@@ -629,6 +629,15 @@ export interface CloudConversationOnlyResult extends CloudPreviewChatResult {
 
 /** Actual Sythion reasoning processor; unlike inert preview staging. */
 export const activeInferenceService = {
+  activateOllama: async (modelId: string): Promise<{
+    provider_id: 'ollama-cloud'; model_id: string;
+    verified: true; permissions_unchanged: true;
+  }> => {
+    const response = await apiClient.post('/inference/ollama/activate', { model_id: modelId }, {
+      timeout: 85000,
+    });
+    return response.data;
+  },
   status: async (): Promise<{ provider_id: string; model_id: string; permissions_unchanged: true }> => {
     const response = await apiClient.get('/inference/active');
     return response.data;

@@ -4,11 +4,14 @@ import { AIModelsSettings } from './AIModelsSettings';
 import { ActiveCloudSetup } from './ActiveCloudSetup';
 
 const mock = vi.hoisted(() => ({
-  active: vi.fn(), restore: vi.fn(), cloud: vi.fn(), readiness: vi.fn(),
+  active: vi.fn(), restore: vi.fn(), activateOllama: vi.fn(),
+  cloud: vi.fn(), readiness: vi.fn(),
   models: vi.fn(), credentials: vi.fn(), select: vi.fn(), inference: vi.fn(),
 }));
 vi.mock('../services/api', () => ({
-  activeInferenceService: { status: mock.active, restoreOllama: mock.restore },
+  activeInferenceService: {
+    status: mock.active, restoreOllama: mock.restore, activateOllama: mock.activateOllama,
+  },
   cloudPreviewService: { status: mock.cloud },
   setupService: {
     readiness: mock.readiness, testCredentials: mock.credentials,
@@ -53,6 +56,10 @@ beforeEach(async () => {
     success: true, model, response_preview: 'OK',
   }));
   mock.restore.mockResolvedValue(active('ollama-cloud', 'ollama/test'));
+  mock.activateOllama.mockImplementation(async (modelId: string) => ({
+    provider_id: 'ollama-cloud', model_id: modelId,
+    verified: true, permissions_unchanged: true,
+  }));
   mock.credentials.mockResolvedValue({ valid: true, models: ['ollama/test'] });
   await settle(() => { view = create(<AIModelsSettings />); });
 });
@@ -96,26 +103,28 @@ it('confirms a changed cloud model from the actual active backend status', async
   expect(mock.restore).not.toHaveBeenCalled();
 });
 
-it('selects an Ollama model through the original model API then guarded restore', async () => {
+it('activates Ollama through one guarded verification without mutating the active model first', async () => {
   await changeProvider('ollama-cloud');
   const selector = view.root.findByProps({ id: 'settings-ollama-model' });
   expect(selector.props.disabled).toBe(false);
-  mock.active.mockResolvedValueOnce(active());
   mock.active.mockResolvedValueOnce(active('ollama-cloud', 'ollama/test'));
   await settle(() => selector.props.onChange({ target: { value: 'ollama/test' } }));
-  expect(mock.select).toHaveBeenCalledWith('ollama/test');
-  expect(mock.inference).toHaveBeenCalledWith('ollama/test');
-  expect(mock.restore).toHaveBeenCalledOnce();
+  expect(mock.activateOllama).toHaveBeenCalledWith('ollama/test');
+  expect(mock.select).not.toHaveBeenCalled();
+  expect(mock.inference).not.toHaveBeenCalled();
+  expect(mock.restore).not.toHaveBeenCalled();
   expect(text()).toContain('Ollama model verified and selected');
 });
 
 it('does not claim a successful switch if the Ollama verification fails', async () => {
   await changeProvider('ollama-cloud');
-  mock.inference.mockRejectedValueOnce(new Error('synthetic provider failure'));
+  mock.activateOllama.mockRejectedValueOnce(new Error('synthetic provider failure'));
   await settle(() => view.root.findByProps({ id: 'settings-ollama-model' }).props.onChange({
     target: { value: 'ollama/test' },
   }));
   expect(mock.restore).not.toHaveBeenCalled();
+  expect(mock.select).not.toHaveBeenCalled();
+  expect(mock.inference).not.toHaveBeenCalled();
   expect(text()).toContain('could not activate this Ollama model');
   expect(text()).not.toContain('Ollama model verified and selected');
 });

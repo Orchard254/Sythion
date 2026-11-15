@@ -137,19 +137,14 @@ export function AIModelsSettings() {
     const current = generation.current;
     setSelectedOllama(modelId);
     try {
-      // Model selection is guarded by the backend against unfinished tasks.
-      // Do not change active provider until Ollama responds successfully.
-      await setupService.selectModel(modelId);
+      // Test candidate without changing the current model. Backend commits
+      // selection only after its exact provider request succeeds.
+      const verified = await activeInferenceService.activateOllama(modelId);
       if (!mounted.current || current !== generation.current) return;
-      const verified = await setupService.inference(modelId);
-      if (!mounted.current || current !== generation.current) return;
-      if (!verified.success || verified.model !== modelId) throw new Error('Unverified model');
-      const before = await activeInferenceService.status();
-      if (!mounted.current || current !== generation.current) return;
-      if (before.provider_id !== 'ollama-cloud') {
-        await activeInferenceService.restoreOllama();
+      if (verified.provider_id !== 'ollama-cloud' || verified.model_id !== modelId ||
+          verified.verified !== true || verified.permissions_unchanged !== true) {
+        throw new Error('Unexpected Ollama activation result');
       }
-      if (!mounted.current || current !== generation.current) return;
       const next = await activeInferenceService.status();
       if (!mounted.current || current !== generation.current) return;
       if (next.provider_id !== 'ollama-cloud' || next.model_id !== modelId ||
