@@ -4789,9 +4789,29 @@ async def setup_readiness(db: Optional[Session] = Depends(get_health_db)):
     from backend.core.voice_assets import asset_status, stt_model_installed, _stt_checksum_verified
     from backend.runtime.model_provider import get_default_provider, ModelHealth
 
-    health = get_default_provider().health()
+    from backend.runtime.active_inference import (
+        get_active_inference_selection, ActiveInferenceUnavailable,
+    )
+    from backend.adapters.openai_compatible_adapter import PROVIDERS
+
+    # This is the *actual* selected reasoning processor, not the staged
+    # cloud preview. Readiness does not infer success from local UI state.
+    try:
+        active = get_active_inference_selection()
+        active_provider_id = active.provider_id
+    except ActiveInferenceUnavailable:
+        active_provider_id = "unavailable"
+        active = None
+
+    cloud_active = active_provider_id in PROVIDERS
+    # A cloud provider must not require a second Ollama subscription or key.
+    # Preserve legacy Ollama fields for consumers that inspect Ollama state.
+    health = (ModelHealth("ollama-cloud", ModelHealth.UNKNOWN)
+              if cloud_active or active is None else get_default_provider().health())
     key_ok = has_secret(OLLAMA_API_KEY) or bool(settings.ollama_api_key)
-    model = resolve_selected_model()
+    model = active.model_id if cloud_active else (
+        resolve_selected_model() if active is not None else ""
+    )
     stt_ready = stt_model_installed() and _stt_checksum_verified()
     tts_voice = asset_status().get("tts_voice") or ""
     safe_settings_ok = False
@@ -4811,7 +4831,10 @@ async def setup_readiness(db: Optional[Session] = Depends(get_health_db)):
         verified_inference_model = get_setting(db, "ollama_inference_verified_model")
     except Exception:
         verified_inference_model = None
-    inference_ok = bool(model) and verified_inference_model == model
+    inference_ok = (bool(model) and cloud_active) or (
+        bool(model) and active_provider_id == "ollama-cloud"
+        and verified_inference_model == model
+    )
     # Truthful database connectivity for first-run readiness.
     _database_connected = False
     if db is not None:
@@ -4835,13 +4858,30 @@ async def setup_readiness(db: Optional[Session] = Depends(get_health_db)):
         "tts_voice_ok": bool(tts_voice),
         "safe_settings_ok": safe_settings_ok,
     }
-    full_ready = all(checks.values())
+    # On alternative providers, the credential+model HMAC binding was
+    # established only after BOTH verified probes. Do not reinterpret
+    # ollama_api_key_ok or ollama_health_ok as true for a cloud provider.
+    # The optional voice checks remain independent of model selection.
+    if cloud_active:
+        model_checks_ok = bool(model) and inference_ok
+        full_ready = model_checks_ok and all(
+            checks[name] for name in (
+                "resources_ok", "database_ok", "sidecar_ok",
+                "stt_model_installed", "tts_voice_ok", "safe_settings_ok",
+            )
+        )
+    else:
+        full_ready = active is not None and all(checks.values())
     return {
         "full_ready": full_ready,
+        "active_provider_id": active_provider_id,
+        "active_provider_ready_ok": cloud_active and inference_ok,
         "text_first_available": True,
         "checks": checks,
         "selected_model": model or "",
-        "inference_verified_model": verified_inference_model or "",
+        "inference_verified_model": (
+            model if cloud_active else verified_inference_model or ""
+        ),
         "tts_voice": tts_voice,
     }
 
