@@ -221,7 +221,11 @@ export function AIModelsSettings() {
             {ollamaKey.trim() && <Button disabled={busy} onClick={() => void saveOllamaKey()}>
               Connect Ollama Cloud
             </Button>}
-            <label htmlFor="settings-ollama-model">Ollama model</label>
+            <label htmlFor="settings-ollama-catalog">Available models</label>
+            <select id="settings-ollama-catalog" className="input" value="all" disabled>
+              <option value="all">All Ollama Cloud models</option>
+            </select>
+            <label htmlFor="settings-ollama-model">Choose a model</label>
             <select id="settings-ollama-model" className="input" value={selectedOllama}
               disabled={busy || loadingModels || !ollamaKeyReady}
               onChange={(event) => void activateOllama(event.target.value)}>

@@ -81,10 +81,11 @@ export function SetupScreen({ onComplete }: SetupProps) {
     setMessage(available.length ? 'Choose a model below, then test it.' : 'No models are available. Check your Ollama Cloud account and try again.');
   }, 'Could not find models. Check your key and internet connection, then try again.');
 
-  const testModel = () => run(async () => {
+  const testModel = (modelId = selectedModel) => run(async () => {
     try {
-      await setupService.selectModel(selectedModel);
-      const result = await setupService.inference(selectedModel);
+      if (!modelId) throw new Error('Select a model first');
+      await setupService.selectModel(modelId);
+      const result = await setupService.inference(modelId);
       if (!result.success) throw new Error('The model did not respond.');
       if (readiness?.active_provider_id &&
           readiness.active_provider_id !== 'ollama-cloud') {
@@ -199,13 +200,21 @@ export function SetupScreen({ onComplete }: SetupProps) {
             {step === 1 && <Panel title="2. Choose a model" icon="info">
               <div className="stack" style={{ gap: 12 }}>
                 {provider === 'ollama-cloud' && (models.length > 0 || selectedModel) && <>
+                  <label htmlFor="setup-ollama-catalog">Available models</label>
+                  <select id="setup-ollama-catalog" className="input" value="all" disabled>
+                    <option value="all">All Ollama Cloud models</option>
+                  </select>
                   <label htmlFor="setup-model">Choose a model</label>
-                  <p className="t-muted" id="setup-model-help">A model is the AI that writes Synth's answers. Pick one from the list — you can change it later.</p>
-                  <select id="setup-model" aria-describedby="setup-model-help" className="input" value={selectedModel} disabled={busy} onChange={(e) => { setSelectedModel(e.target.value); setMessage(null); }}>
+                  <p className="t-muted" id="setup-model-help">Choose a model; Sythion verifies it automatically, just like other providers. Change it later under Settings → AI Models.</p>
+                  <select id="setup-model" aria-describedby="setup-model-help" className="input" value={selectedModel} disabled={busy} onChange={(e) => {
+                    const modelId = e.target.value;
+                    setSelectedModel(modelId);
+                    setMessage(null);
+                    if (modelId) void testModel(modelId);
+                  }}>
                     <option value="">Select a model</option>
                     {[...new Set([...(selectedModel ? [selectedModel] : []), ...models])].map((m) => <option key={m} value={m}>{m}</option>)}
                   </select>
-                  <Button disabled={busy || !selectedModel} onClick={() => void testModel()}>Test selected model</Button>
                 </>}
                 {provider === 'ollama-cloud' ? <>
                   {models.length === 0 && !selectedModel && <p>No models found yet. Check your connection and try again.</p>}
