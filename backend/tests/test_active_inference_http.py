@@ -159,3 +159,21 @@ def test_rotated_cloud_key_is_not_reinterpreted_as_ollama_readiness(
     assert r.json()["checks"]["selected_model_ok"] is False
     assert r.json()["checks"]["inference_verified_ok"] is False
     assert r.json()["full_ready"] is False
+
+
+def test_changing_ollama_model_in_settings_is_blocked_with_unfinished_tasks(
+    test_client, test_db, isolated,
+):
+    # Ollama model selection is as consequential as switching to a cloud
+    # provider. Do not mutate the reasoning processor mid-task.
+    test_db.add(Task(
+        id="active-ollama-settings-switch", original_request="In progress",
+        state="running",
+    ))
+    test_db.commit()
+    response = test_client.post(
+        "/api/v1/onboarding/models", json={"model_id": "ollama/another-model"},
+    )
+    assert response.status_code == 409
+    assert "unfinished" in response.text
+    assert test_client.get(ENDPOINT).json()["provider_id"] == "ollama-cloud"
