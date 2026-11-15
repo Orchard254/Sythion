@@ -59,6 +59,7 @@ export function AIModelsSettings() {
       if (selection.status === 'fulfilled') {
         const current = selection.value;
         setActive(current);
+        if (current.provider_id === 'ollama-cloud') setSelectedOllama(current.model_id);
         if (isSupported(current.provider_id)) setProvider(current.provider_id);
         else setError('The active AI provider is unsupported. Review configuration.');
       } else {
@@ -87,7 +88,6 @@ export function AIModelsSettings() {
     void modelService.available().then((models) => {
       if (cancelled || !mounted.current || current !== generation.current) return;
       setOllamaModels([...new Set(models)]);
-      setSelectedOllama((active?.provider_id === 'ollama-cloud' ? active.model_id : '') || '');
     }).catch(() => {
       if (!cancelled && mounted.current && current === generation.current) {
         setError('Could not load Ollama models. Check your Ollama connection or API key.');
@@ -96,7 +96,7 @@ export function AIModelsSettings() {
       if (!cancelled && mounted.current && current === generation.current) setLoadingModels(false);
     });
     return () => { cancelled = true; };
-    // Fetch on provider change, not on every active model update.
+    // Fetch on provider change/key readiness, not on every active model update.
   }, [provider, loading, ollamaKeyReady]);
 
   const chooseProvider = (next: AIProvider) => {
@@ -105,7 +105,8 @@ export function AIModelsSettings() {
     setProvider(next);
     setError(''); setMessage('');
     setKeyEditor(false);
-    setSelectedOllama('');
+    setSelectedOllama(next === 'ollama-cloud' && active?.provider_id === 'ollama-cloud'
+      ? active.model_id : '');
   };
 
   const saveOllamaKey = async () => {
