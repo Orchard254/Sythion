@@ -9,7 +9,7 @@ const mock = vi.hoisted(() => {
     cloudStatus: vi.fn(), cloudSaveCredential: vi.fn(), cloudStage: vi.fn(),
     cloudProbe: vi.fn(), cloudChat: vi.fn(), cloudCatalog: vi.fn(),
     cloudContract: vi.fn(),
-    cloudActivate: vi.fn(), cloudRestore: vi.fn() };
+    cloudActivate: vi.fn(), cloudRestore: vi.fn(), ollamaActivate: vi.fn() };
 });
 vi.mock('../services/api', async (importOriginal) => ({
   ...await importOriginal<typeof import('../services/api')>(),
@@ -23,6 +23,7 @@ vi.mock('../services/api', async (importOriginal) => ({
   },
   activeInferenceService: {
     activate: mock.cloudActivate, restoreOllama: mock.cloudRestore,
+    activateOllama: mock.ollamaActivate,
   },
 }));
 vi.mock('../hooks/useVoiceCapture', () => ({ useVoiceCapture: () => ({ startCapture: vi.fn(), stopCapture: vi.fn() }) }));
@@ -53,6 +54,16 @@ beforeEach(async () => {
       checks.active_provider_ready_ok === true,
   }));
   mock.testCredentials.mockImplementation(async () => { checks.ollama_api_key_ok=true;checks.ollama_health_ok=true;return {valid:true,models:['cloud-model']}; });
+  mock.ollamaActivate.mockImplementation(async (model: string) => {
+    selected = model;
+    checks.selected_model_ok = true;
+    checks.inference_verified_ok = true;
+    activeProvider = 'ollama-cloud';
+    return {
+      provider_id: 'ollama-cloud', model_id: model,
+      verified: true, permissions_unchanged: true,
+    };
+  });
   mock.selectModel.mockImplementation(async (model: string) => {selected=model;checks.selected_model_ok=true;});
   mock.inference.mockImplementation(async () => { checks.inference_verified_ok=true;return {success:true}; });
   mock.applySafeSettings.mockImplementation(async () => { checks.safe_settings_ok=true; return { ok: true }; });
@@ -206,15 +217,16 @@ describe('setup to first conversation', () => {
     expect(view.root.findByProps({id:'setup-model'}).props.value).toBe('beam');
     // Selecting Ollama now runs the same automatic verification flow as cloud.
     expect(view.root.findAllByType('button').some((b) => labels(b) === 'Test selected model')).toBe(false);
-    expect(mock.selectModel).toHaveBeenCalledWith('beam');
-    expect(mock.inference).toHaveBeenCalledWith('beam');
+    expect(mock.ollamaActivate).toHaveBeenCalledWith('beam');
+    expect(mock.selectModel).not.toHaveBeenCalled();
+    expect(mock.inference).not.toHaveBeenCalled();
     expect(mock.testCredentials).not.toHaveBeenCalled();
     expect(view.root.findAllByProps({id:'setup-key'})).toHaveLength(0);
   });
   it('explains a verified provider 402 without bypassing model readiness', async () => {
     await settle(() => view.root.findByProps({id:'setup-key'}).props.onChange({target:{value:'test-key'}}));
     await settle(() => button('Connect and save key').props.onClick());
-    mock.inference.mockRejectedValueOnce(new Error('Inference failed: HTTP error 402 (hidden-provider-detail)'));
+    mock.ollamaActivate.mockRejectedValueOnce(new Error('HTTP error 402 (hidden-provider-detail)'));
     await settle(() => view.root.findByProps({id:'setup-model'}).props.onChange({target:{value:'cloud-model'}}));
     expect(labels(view.root)).toContain('Ollama Cloud returned HTTP 402');
     expect(labels(view.root)).toContain('Check your account credit');
@@ -239,7 +251,7 @@ describe('setup to first conversation', () => {
 
   it('does not claim readiness if automatic verification of another model fails', async () => {
     await connect();
-    mock.inference.mockRejectedValueOnce(new Error('Invalid provider model'));
+    mock.ollamaActivate.mockRejectedValueOnce(new Error('Invalid provider model'));
     await settle(() => view.root.findByProps({id:'setup-model'}).props.onChange({target:{value:'another-model'}}));
     expect(button('Continue').props.disabled).toBe(true);
     expect(labels(view.root)).not.toContain('Your connection is ready.');
