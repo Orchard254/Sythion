@@ -22,7 +22,7 @@ describe('main shell in cloud answer-only mode', () => {
     const settings = vi.fn();
     await render(<Sidebar
       route="assistant" onNavigate={navigate} onOpenSettings={settings}
-      pendingApprovals={3} agent={undefined} overallHealth={undefined}
+      pendingApprovals={0} agent={undefined} overallHealth={undefined}
       connected runtimeState="healthy" runtimeAgeMs={0} version="test"
       cloudAnswerOnly
     />);
