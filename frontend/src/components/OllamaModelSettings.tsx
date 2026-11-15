@@ -3,7 +3,7 @@ import { modelService, setupService, type SetupReadiness } from '../services/api
 import { Button, Notice } from './ui';
 
 /** Explicit Ollama model editing from Settings; never changes permissions. */
-export function OllamaModelSettings() {
+export function OllamaModelSettings({ onReady }: { onReady?: () => void } = {}) {
   const [readiness, setReadiness] = useState<SetupReadiness | null>(null);
   const [key, setKey] = useState('');
   const [model, setModel] = useState('');
@@ -66,6 +66,7 @@ export function OllamaModelSettings() {
       }
       setReadiness(latest);
       setNotice('Ollama model selected and verified. Existing task permissions remain unchanged.');
+      if (onReady) onReady();
     } catch {
       setError('Could not verify this Ollama model. Check its availability and your account.');
     } finally { inFlight.current = false; setBusy(false); }

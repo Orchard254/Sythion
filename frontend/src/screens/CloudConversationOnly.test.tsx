@@ -171,3 +171,55 @@ it('reports the specific eligible-agentic-harness restriction without exposing p
   expect(text(view.root)).not.toContain('DO-NOT-PRINT-THIS');
   expect(mock.conversationTurn).toHaveBeenCalledTimes(1);
 });
+
+describe('embedded AI Assistant cloud lane', () => {
+  it('displays inside the main shell without nesting the standalone shell', async () => {
+    await settle(() => view.unmount());
+    mock.status.mockResolvedValueOnce({ ...status(), tool_probe_verified: true });
+    await settle(() => {
+      view = create(<CloudConversationOnlyScreen onExit={exit} embedded requireToolEvidence />);
+    });
+    expect(view.root.findAllByProps({ className: 'shell' })).toHaveLength(0);
+    expect(text(view.root)).toContain('Talk to Sythion');
+    expect(text(view.root)).toContain('Change AI model in Settings');
+    expect(button('Send text-only message').props.disabled).toBe(true);
+    expect(mock.conversationTurn).not.toHaveBeenCalled();
+  });
+
+  it('requires fresh tool evidence when embedded and never falls back to task-capable assistant', async () => {
+    await settle(() => view.unmount());
+    mock.status.mockResolvedValueOnce(status());
+    await settle(() => {
+      view = create(<CloudConversationOnlyScreen onExit={exit} embedded requireToolEvidence />);
+    });
+    expect(text(view.root)).toContain('qualification is missing or expired');
+    await typeText('Attempt');
+    expect(button('Send text-only message').props.disabled).toBe(true);
+    expect(mock.conversationTurn).not.toHaveBeenCalled();
+  });
+
+  it('sends text through the isolated cloud endpoint even when hosted in the main shell', async () => {
+    await settle(() => view.unmount());
+    mock.status.mockResolvedValueOnce({ ...status(), tool_probe_verified: true });
+    await settle(() => {
+      view = create(<CloudConversationOnlyScreen onExit={exit} embedded requireToolEvidence />);
+    });
+    await typeText('Hello inside main Sythion');
+    await settle(() => button('Send text-only message').props.onClick());
+    expect(mock.conversationTurn).toHaveBeenCalledOnce();
+    expect(mock.conversationTurn).toHaveBeenCalledWith(candidate, 'Hello inside main Sythion', []);
+    expect(text(view.root)).toContain('A safe text response.');
+    expect(text(view.root)).toContain('Sythion');
+  });
+
+  it('opens Settings through the change-model control without extra network requests', async () => {
+    await settle(() => view.unmount());
+    mock.status.mockResolvedValueOnce({ ...status(), tool_probe_verified: true });
+    await settle(() => {
+      view = create(<CloudConversationOnlyScreen onExit={exit} embedded requireToolEvidence />);
+    });
+    await settle(() => button('Change AI model in Settings').props.onClick());
+    expect(exit).toHaveBeenCalledOnce();
+    expect(mock.conversationTurn).not.toHaveBeenCalled();
+  });
+});

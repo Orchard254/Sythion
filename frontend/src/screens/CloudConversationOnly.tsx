@@ -29,8 +29,16 @@ function safeCloudError(error: unknown): string {
   return 'Cloud conversation request failed. No reply or action was recorded.';
 }
 
-/** This screen is deliberately outside AssistantScreen and WorkEntry. */
-export function CloudConversationOnlyScreen({ onExit }: { onExit: () => void }) {
+/** Cloud assistant uses the normal shell, but NEVER the task-capable
+ * AssistantScreen/WorkEntry backend. The standalone legacy entry still works.
+ */
+export function CloudConversationOnlyScreen({
+  onExit, embedded = false, requireToolEvidence = false,
+}: {
+  onExit: () => void;
+  embedded?: boolean;
+  requireToolEvidence?: boolean;
+}) {
   const [selection, setSelection] = useState<CloudPreviewSelection | null>(null);
   const [verified, setVerified] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -52,9 +60,12 @@ export function CloudConversationOnlyScreen({ onExit }: { onExit: () => void }) 
       );
       if (!status.text_probe_verified || !providerExists ||
           !candidate.provider_id || !candidate.model_id ||
-          status.ready_for_execution !== false) {
+          status.ready_for_execution !== false ||
+          (requireToolEvidence && status.tool_probe_verified !== true)) {
         setVerified(false);
-        setError('No current cloud text verification. Return to setup and test one reply.');
+        setError(requireToolEvidence
+          ? 'Cloud model qualification is missing or expired. Open Settings → AI Models and select a compatible model.'
+          : 'No current cloud text verification. Return to setup and test one reply.');
         return;
       }
       setSelection({ provider_id: candidate.provider_id, model_id: candidate.model_id });
@@ -65,7 +76,7 @@ export function CloudConversationOnlyScreen({ onExit }: { onExit: () => void }) 
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, []);
+  }, [requireToolEvidence]);
 
   const send = async () => {
     const text = draft.trim();
@@ -108,36 +119,38 @@ export function CloudConversationOnlyScreen({ onExit }: { onExit: () => void }) 
     }
   };
 
-  return (
-    <div className="shell" style={singleScreenShellStyle()}>
-      <main className="shell__main" style={singleScreenContentStyle({ overflowY: 'auto', padding: '32px 20px' })}>
-        <div className="stack" style={{ maxWidth: 760, margin: '0 auto', gap: 20 }}>
+  const content = (
+    <div className="stack" style={{ maxWidth: 760, margin: '0 auto', gap: 20, padding: embedded ? '24px 20px' : undefined }}>
           <div className="row" style={{ gap: 12, alignItems: 'center' }}>
-            <SythionMark size={38} />
+            {!embedded && <SythionMark size={38} />}
             <div>
-              <h1 className="screen-head__title">Sythion — cloud conversation only</h1>
+              <h1 className="screen-head__title">{embedded ? 'Talk to Sythion' : 'Sythion — cloud conversation only'}</h1>
               <p className="t-muted">
                 {selection ? selection.provider_id + ' · ' + selection.model_id : 'Checking cloud verification…'}
               </p>
             </div>
           </div>
           <Notice tone="info" icon="info">
-            Text-only mode. No tool execution, automation, file access, or memory writes.
+            Cloud answer-only mode. No tool execution, automation, file access, or memory writes.
             Messages remain in this screen only; they are not saved.
             Each Send makes one cloud request and may use your quota.
           </Notice>
-          <Button variant="subtle" disabled={busy} onClick={onExit}>Return to setup</Button>
+          <Button variant="subtle" disabled={busy} onClick={onExit}>
+            {embedded ? 'Change AI model in Settings' : 'Return to setup'}
+          </Button>
           {loading && <p role="status">Checking verified text capability…</p>}
           {error && <Notice tone="danger" icon="alert">{error}</Notice>}
           <Panel title="Cloud conversation" icon="info">
             <div className="stack" style={{ gap: 12 }}>
               {messages.length === 0 && <p className="t-muted">
                 {verified ? 'Ask a question. This mode answers only; it cannot act on requests.' :
-                  'A successful text preview is required before sending messages.'}
+                  requireToolEvidence
+                    ? 'Select a verified cloud model in Settings before sending.'
+                    : 'A successful text preview is required before sending messages.'}
               </p>}
               {messages.map((message, index) => (
                 <div key={index} className="stack" style={{ gap: 3 }}>
-                  <strong>{message.role === 'user' ? 'You' : 'Model reply (unverified text)'}</strong>
+                  <strong>{message.role === 'user' ? 'You' : (embedded ? 'Sythion' : 'Model reply (unverified text)')}</strong>
                   <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{message.content}</p>
                 </div>
               ))}
@@ -152,7 +165,17 @@ export function CloudConversationOnlyScreen({ onExit }: { onExit: () => void }) 
               </Button>
             </div>
           </Panel>
-        </div>
+    </div>
+  );
+
+  return embedded ? (
+    <div className="screen screen--assistant" style={{ overflowY: 'auto', height: '100%' }}>
+      {content}
+    </div>
+  ) : (
+    <div className="shell" style={singleScreenShellStyle()}>
+      <main className="shell__main" style={singleScreenContentStyle({ overflowY: 'auto', padding: '32px 20px' })}>
+        {content}
       </main>
     </div>
   );

@@ -19,7 +19,12 @@ import type { CloudPreviewProviderId } from '../services/api';
 
 type Density = 'comfortable' | 'compact';
 
-export function SettingsScreen() {
+export function SettingsScreen({
+  onCloudReady, onOllamaReady,
+}: {
+  onCloudReady?: () => void;
+  onOllamaReady?: () => void;
+} = {}) {
   const settings = useAppSettings();
   const health = useHealth();
   const secrets = useSecrets();
@@ -154,8 +159,8 @@ export function SettingsScreen() {
               <option value="groq">Groq</option>
             </select>
             {aiProvider === 'ollama-cloud'
-              ? <OllamaModelSettings />
-              : <CloudConnectionSetup key={aiProvider} provider={aiProvider} hideProviderPicker />}
+              ? <OllamaModelSettings onReady={onOllamaReady} />
+              : <CloudConnectionSetup key={aiProvider} provider={aiProvider} hideProviderPicker onReady={onCloudReady} />}
           </div>
         </Panel>
 
