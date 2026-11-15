@@ -4524,6 +4524,116 @@ async def onboarding_status():
     )
 
 
+@router.post("/inference/ollama/activate")
+async def activate_verified_ollama_model(
+    body: ModelSelectRequest, db: Session = Depends(get_db),
+):
+    """Test a candidate WITHOUT mutating the currently working model.
+
+    After the exact authenticated candidate responds, atomically update the
+    persisted Ollama selection and return the original Sythion runtime to it.
+    An unsuccessful candidate cannot change the selected model/adapter.
+    No task commands, retries or provider fallback.
+    """
+    from backend.core import profile
+    from backend.core.config import resolve_selected_model, settings as current_settings
+    from backend.core.secrets import resolve_secret_context
+    from backend.core.settings_store import get_setting, set_setting
+    from backend.adapters.ollama_adapter import get_adapter
+    from backend.runtime.model_provider import get_default_provider
+
+    _require_idle_provider_switch(db)
+    model_id = body.model_id
+    # The original model resolver allows environment/deployed overrides.
+    # An explicit UI switch cannot claim success if those would keep using a
+    # different model; do not change such operator-managed configuration.
+    namespace, is_prototype, fail_closed, _ = resolve_secret_context()
+    if namespace == "Sythion (Synth)" and not is_prototype and not fail_closed:
+        explicit = (os.environ.get("SYTHION_SELECTED_MODEL", "").strip()
+                    or str(current_settings.selected_model or "").strip())
+        if explicit and explicit != model_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Selected Ollama model is pinned by runtime configuration",
+            )
+
+    provider = get_default_provider()
+    try:
+        catalog = await run_in_threadpool(provider.list_models)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Ollama catalog unavailable") from None
+    available = {
+        candidate
+        for model in catalog if isinstance(model, dict)
+        for candidate in (model.get("name"), model.get("model"))
+        if isinstance(candidate, str)
+    }
+    if model_id not in available:
+        raise HTTPException(status_code=400, detail="Model is not in the authenticated Ollama catalog")
+
+    # This temporary override is per-request. Existing Sythion chats continue
+    # on the old active model until a successful verification and commit.
+    adapter = get_adapter()
+    try:
+        response = await adapter.chat(
+            messages=[{"role": "user", "content": "Reply with OK"}],
+            model_id=model_id, max_tokens=64, timeout=60.0,
+        )
+        if not str(_extract_inference_text(response)).strip():
+            raise ValueError("empty reply")
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail="Ollama model verification failed; previous model was kept",
+        ) from None
+
+    # Recheck after the network call: tasks may have been created meanwhile.
+    _require_idle_provider_switch(db)
+    previous_profile = profile.load_profile_strict()
+    previous_selection = previous_profile.get("active_inference_selection")
+    previous_model = previous_profile.get("selected_model", "")
+    previous_verified = get_setting(db, "ollama_inference_verified_model")
+    try:
+        # Both fields are saved in ONE atomic profile update. Never move the
+        # adapter to the candidate before the profile and DB commit complete.
+        profile.save_profile({
+            "selected_model": model_id,
+            "active_inference_selection": {
+                "version": 1, "provider_id": "ollama-cloud",
+            },
+        })
+        set_setting(db, "ollama_inference_verified_model", model_id)
+        db.commit()
+        if resolve_selected_model() != model_id:
+            raise ValueError("Selected model overridden by runtime configuration")
+    except Exception:
+        try:
+            db.rollback()
+            profile.save_profile({
+                "selected_model": previous_model,
+                "active_inference_selection": previous_selection
+                    if previous_selection is not None else {
+                        "version": 1, "provider_id": "ollama-cloud",
+                    },
+            })
+            if previous_verified is not None:
+                set_setting(db, "ollama_inference_verified_model", previous_verified)
+                db.commit()
+        except Exception:
+            logger.error("Ollama selection restoration failed; manual review required")
+        raise HTTPException(
+            status_code=503,
+            detail="Ollama model selection could not be committed; verify active model in Settings",
+        ) from None
+
+    adapter.selected_model = model_id
+    adapter._capability_profile = None
+    return {
+        "provider_id": "ollama-cloud", "model_id": model_id,
+        "verified": True, "permissions_unchanged": True,
+    }
+
+
 @router.post("/onboarding/models", response_model=ModelSelectResponse)
 async def select_model(body: ModelSelectRequest, db=Depends(get_db)):
     """Select one exact authenticated Cloud model ID and persist it.
