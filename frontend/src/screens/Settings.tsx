@@ -14,6 +14,7 @@ import { useAppStore } from '../store/appStore';
 import * as api from '../services/api';
 import { useNavStore } from '../store/navStore';
 import { AIModelsSettings } from '../components/AIModelsSettings';
+import { companionEnabled, setCompanionEnabled } from '../services/companion';
 
 type Density = 'comfortable' | 'compact';
 
@@ -31,6 +32,8 @@ export function SettingsScreen() {
   const [confirmFallback, setConfirmFallback] = useState<{ persisted_file_roots: string[]; fallback_file_roots: string[] } | null>(null);
   const [saving, setSaving] = useState(false);
   const [spokenReplies, setSpokenReplies] = useState(() => localStorage.getItem('sythion.replyMode') !== 'text');
+  const [companionOn, setCompanionOn] = useState(companionEnabled);
+  const [companionBusy, setCompanionBusy] = useState(false);
   const [density, setDensity] = useState<Density>(() => {
     const stored = localStorage.getItem('sythion.density');
     return stored === 'compact' ? 'compact' : 'comfortable';
@@ -69,6 +72,22 @@ export function SettingsScreen() {
       setConfirmFallback(null);
     }
   }, [settings.data]);
+
+  const toggleCompanion = async (enabled: boolean) => {
+    if (companionBusy) return;
+    setCompanionBusy(true);
+    try {
+      await setCompanionEnabled(enabled);
+      setCompanionOn(enabled);
+      notify({ tone: 'ok', title: enabled ? 'Companion enabled' : 'Companion hidden',
+        body: enabled ? 'Companion overlay enabled from Settings.' : 'Companion stays hidden until enabled.' });
+    } catch {
+      notify({ tone: 'danger', title: 'Companion setting failed',
+        body: 'Desktop could not change Companion visibility. The previous preference was kept.' });
+    } finally {
+      setCompanionBusy(false);
+    }
+  };
 
   const installSpeechModel = async () => {
     if (installingModel) return;
@@ -243,6 +262,16 @@ export function SettingsScreen() {
               </div>
 
 
+            </div>
+          </Panel>
+
+          <Panel title="Companion" icon="assistant">
+            <div className="stack">
+              <Switch label="Show Companion overlay" checked={companionOn}
+                onChange={(enabled) => { void toggleCompanion(enabled); }} />
+              <span className="field__hint">The floating Companion is optional.
+                Enable or hide it here. Your AI model and permissions stay unchanged.</span>
+              {companionBusy && <span role="status">Updating Companion…</span>}
             </div>
           </Panel>
 

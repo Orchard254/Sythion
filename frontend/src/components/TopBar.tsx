@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { Icon } from './icons';
-import { activateCompanion } from '../services/companion';
 import { Badge, Button, IconButton, Popover } from './ui';
 import { relTime } from '../lib/format';
 import { useAppStore } from '../store/appStore';
@@ -90,15 +89,6 @@ export function TopBar({
           <div className="clock__time">{time}</div>
           <div className="clock__date">{date}</div>
         </div>
-
-        <Button
-          size="sm"
-          variant="subtle"
-          onClick={() => void activateCompanion()}
-          title="Reveal the Companion overlay window"
-        >
-          Reveal Companion
-        </Button>
 
         <Popover
           open={trayOpen}

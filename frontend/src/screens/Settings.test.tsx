@@ -12,6 +12,11 @@ vi.mock('../hooks/useBackend', () => ({
 }));
 vi.mock('../services/api', () => ({ healthService: { version: async () => ({ version: 'test' }) }, voiceService: {} }));
 vi.mock('../components/AIModelsSettings', () => ({ AIModelsSettings: () => 'AI Models' }));
+const companionMock = vi.hoisted(() => ({ apply: vi.fn(async () => {}), enabled: false }));
+vi.mock('../services/companion', () => ({
+  companionEnabled: () => companionMock.enabled,
+  setCompanionEnabled: companionMock.apply,
+}));
 
 let view: ReactTestRenderer;
 const text = (n: { children: unknown[] }): string => n.children.map(c => typeof c === 'string' ? c : c && typeof c === 'object' && 'children' in c ? text(c as { children: unknown[] }) : '').join('');
@@ -92,5 +97,12 @@ describe('file root settings', () => {
     await click('Remove grant 1');
     expect(button('Save settings').props.disabled).toBe(true);
     expect(mock.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('Companion settings', () => {
+  it('shows Companion overlay toggle inside Settings', () => {
+    expect(JSON.stringify(view.toJSON())).toContain('Show Companion overlay');
+    expect(companionMock.apply).not.toHaveBeenCalled();
   });
 });

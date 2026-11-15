@@ -1,25 +1,28 @@
 import { isTauri } from './bridge';
 
-/**
- * Ask the desktop shell to reveal the Companion overlay.
- *
- * The overlay is created hidden at startup: while the first-run setup gate is
- * active it would float above the setup form, because it is an always-on-top
- * window with no taskbar button. The Control Center calls this once the gate
- * has been cleared.
- *
- * Outside the Tauri shell (a plain browser session) there is no
- * overlay to reveal, so this is a no-op.
- */
+const COMPANION_PREF_KEY = 'sythion.companionEnabled';
+
+/** Default off: only the explicit Settings choice can reveal Companion. */
+export function companionEnabled(): boolean {
+  try { return localStorage.getItem(COMPANION_PREF_KEY) === '1'; }
+  catch { return false; }
+}
+
+export async function setCompanionEnabled(enabled: boolean): Promise<void> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('set_companion_visible', { visible: enabled });
+  }
+  // Commit preference only once the desktop acknowledged visibility.
+  localStorage.setItem(COMPANION_PREF_KEY, enabled ? '1' : '0');
+}
+
 export async function activateCompanion(): Promise<void> {
-  if (!isTauri()) return;
+  if (!companionEnabled() || !isTauri()) return;
   try {
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke('set_companion_visible', { visible: true });
-  } catch (err) {
-    // The overlay is an additional surface, not a dependency of the Control
-    // Center. A failure here must not take the app down, but it must not be
-    // silent either - the shell records the reason in its log file.
-    console.warn('[sythion] could not reveal the Companion overlay:', err);
+  } catch (error) {
+    console.warn('[sythion] could not reveal Companion:', error);
   }
 }

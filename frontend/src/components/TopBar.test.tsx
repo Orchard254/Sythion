@@ -88,18 +88,8 @@ describe('Control Center tray reveal action', () => {
     expect(JSON.stringify(view.toJSON())).toContain('An event arrived');
   });
 
-  it('reaches the real reveal command from the tray entry point', async () => {
-    const button = view.root
-      .findAllByType('button')
-      .find((b) => (b.children || []).some((c: unknown) => c === 'Reveal Companion'));
-    expect(button).toBeDefined();
-
-    await act(async () => {
-      button!.props.onClick();
-    });
-
-    await vi.waitFor(() =>
-      expect(shell.invoke).toHaveBeenCalledWith('set_companion_visible', { visible: true }),
-    );
+  it('does not expose Companion control in the main top bar', () => {
+    expect(JSON.stringify(view.toJSON())).not.toContain('Reveal Companion');
+    expect(shell.invoke).not.toHaveBeenCalled();
   });
 });
