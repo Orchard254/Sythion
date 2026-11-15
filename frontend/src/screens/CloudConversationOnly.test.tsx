@@ -240,6 +240,7 @@ it('embedded cloud mode rechecks tool proof on each send and stops before provid
 
 it('embedded cloud mode sends after a fresh local proof check without extra model tests', async () => {
   await settle(() => view.unmount());
+  mock.status.mockClear();
   mock.status.mockResolvedValue({ ...status(), tool_probe_verified: true });
   await settle(() => {
     view = create(<CloudConversationOnlyScreen onExit={exit} embedded requireToolEvidence />);
