@@ -3908,9 +3908,17 @@ async def get_active_inference_selection():
         raise HTTPException(
             status_code=409, detail="Active model configuration needs attention"
         ) from None
+    # Report the existing Ollama model truthfully; the selection sentinel
+    # has no model ID because Ollama's current ID lives in its original
+    # configuration path and is not replaced by the provider selector.
+    if selected.provider_id == "ollama-cloud":
+        from backend.core.config import resolve_selected_model
+        model_id = resolve_selected_model()
+    else:
+        model_id = selected.model_id
     return {
         "provider_id": selected.provider_id,
-        "model_id": selected.model_id,
+        "model_id": model_id,
         "permissions_unchanged": True,
     }
 
