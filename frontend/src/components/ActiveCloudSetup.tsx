@@ -57,16 +57,24 @@ export function ActiveCloudSetup({
     }).finally(() => {
       if (active && current === generation.current) setLoading(false);
     });
-    return () => { active = false; };
+    return () => {
+      active = false;
+      // Leaving setup or switching provider invalidates outstanding promises.
+      // A late cloud response must not activate a model behind the user's back.
+      generation.current++;
+    };
   }, [provider, phase]);
 
   const submitKey = async () => {
     if (inFlight.current || !key.trim() || loading) return;
     inFlight.current = true; setBusy(true); setError('');
+    const current = generation.current;
     try {
       await cloudPreviewService.saveCredential(provider, key.trim());
+      if (generation.current !== current) return;
       setKey('');
       const status = await cloudPreviewService.status();
+      if (generation.current !== current) return;
       if (!status.providers.some((entry) =>
         entry.provider_id === provider && entry.credential_configured === true)) {
         throw new Error('Credential was not saved');
@@ -74,31 +82,39 @@ export function ActiveCloudSetup({
       setHasKey(true);
       onConnected?.();
     } catch {
-      setError('Could not save the provider key. Check your account and retry.');
-    } finally { inFlight.current = false; setBusy(false); }
+      if (generation.current === current) setError('Could not save the provider key. Check your account and retry.');
+    } finally {
+      inFlight.current = false;
+      if (generation.current === current) setBusy(false);
+    }
   };
 
   const verifyModel = async (id: string) => {
     if (inFlight.current || !id || !hasKey || !models.some((m) => m.id === id)) return;
     inFlight.current = true;
+    const current = generation.current;
     setBusy(true); setError(''); setNotice(''); setVerified(false); setModel(id);
     try {
       const selection = { provider_id: provider, model_id: id };
       const status = await cloudPreviewService.status();
+      if (generation.current !== current) return;
       const proofCurrent = status.staged.provider_id === provider &&
         status.staged.model_id === id &&
         status.text_probe_verified === true &&
         status.tool_probe_verified === true;
       if (!proofCurrent) {
         await cloudPreviewService.stage(selection);
+        if (generation.current !== current) return;
         const chat = await cloudPreviewService.chat(
           selection, 'Say hello in one short plain-text sentence.');
+        if (generation.current !== current) return;
         if (chat.provider_id !== provider || chat.model_id !== id ||
             chat.active !== false || chat.persisted !== false ||
             chat.task_executed !== false || !chat.assistant_text?.trim()) {
           throw new Error('Invalid text qualification');
         }
         const probe = await cloudPreviewService.probe(selection);
+        if (generation.current !== current) return;
         if (probe.provider_id !== provider || probe.model_id !== id ||
             probe.tool_probe_verified !== true || probe.active !== false ||
             probe.evidence_persisted !== true) {
@@ -106,7 +122,9 @@ export function ActiveCloudSetup({
         }
       }
       // This is the ACTUAL Sythion reasoning-selector endpoint, not a preview.
+      if (generation.current !== current) return;
       const activated = await activeInferenceService.activate(selection);
+      if (generation.current !== current) return;
       if (activated.provider_id !== provider || activated.model_id !== id ||
           activated.permissions_unchanged !== true) {
         throw new Error('Active provider did not match selection');
@@ -115,6 +133,7 @@ export function ActiveCloudSetup({
       setNotice('Model selected for Sythion. Existing permissions are unchanged.');
       onVerified?.(id);
     } catch (cause) {
+      if (generation.current !== current) return;
       const response = cause && typeof cause === 'object' && 'response' in cause
         ? cause.response : null;
       const status = response && typeof response === 'object' && 'status' in response
@@ -134,7 +153,10 @@ export function ActiveCloudSetup({
       } else {
         setError('Sythion could not verify this model for text and function calling. Choose another model or check provider access.');
       }
-    } finally { inFlight.current = false; setBusy(false); }
+    } finally {
+      inFlight.current = false;
+      if (generation.current === current) setBusy(false);
+    }
   };
 
   const visibleModels = models.filter((entry) => !freeOnly || entry.free_variant);
