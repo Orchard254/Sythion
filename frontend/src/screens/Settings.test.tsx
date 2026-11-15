@@ -101,8 +101,27 @@ describe('file root settings', () => {
 });
 
 describe('Companion settings', () => {
-  it('shows Companion overlay toggle inside Settings', () => {
-    expect(JSON.stringify(view.toJSON())).toContain('Show Companion overlay');
+  const companionSwitch = () => view.root.findAllByProps({ role: 'switch' })
+    .find((node) => text(node).includes('Show Companion overlay'))!;
+
+  it('shows Companion overlay toggle inside Settings, initially off', () => {
+    expect(companionSwitch().props['aria-checked']).toBe(false);
     expect(companionMock.apply).not.toHaveBeenCalled();
+  });
+
+  it('reveals and hides Companion only on explicit Settings changes', async () => {
+    await act(async () => { companionSwitch().props.onClick(); });
+    expect(companionMock.apply).toHaveBeenCalledWith(true);
+    expect(companionSwitch().props['aria-checked']).toBe(true);
+    await act(async () => { companionSwitch().props.onClick(); });
+    expect(companionMock.apply).toHaveBeenLastCalledWith(false);
+    expect(companionSwitch().props['aria-checked']).toBe(false);
+  });
+
+  it('keeps previous preference when desktop visibility command fails', async () => {
+    companionMock.apply.mockRejectedValueOnce(new Error('desktop refused'));
+    await act(async () => { companionSwitch().props.onClick(); });
+    expect(companionMock.apply).toHaveBeenCalledWith(true);
+    expect(companionSwitch().props['aria-checked']).toBe(false);
   });
 });
