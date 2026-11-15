@@ -199,10 +199,7 @@ export function SetupScreen({ onComplete }: SetupProps) {
             {step === 1 && <Panel title="2. Choose a model" icon="info">
               <div className="stack" style={{ gap: 12 }}>
                 {provider === 'ollama-cloud' && (models.length > 0 || selectedModel) && <>
-                  <label htmlFor="setup-ollama-catalog">Available models</label>
-                  <select id="setup-ollama-catalog" className="input" value="all" disabled>
-                    <option value="all">All Ollama Cloud models</option>
-                  </select>
+                  <span className="t-muted">Available Ollama Cloud models</span>
                   <label htmlFor="setup-model">Choose a model</label>
                   <p className="t-muted" id="setup-model-help">Choose a model; Sythion verifies it automatically, just like other providers. Change it later under Settings → AI Models.</p>
                   <select id="setup-model" aria-describedby="setup-model-help" className="input" value={selectedModel} disabled={busy} onChange={(e) => {
