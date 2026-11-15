@@ -15,7 +15,7 @@ interface SetupProps {
   onCloudConversationOnly?: () => void;
 }
 
-export function SetupScreen({ onComplete, onCloudConversationOnly }: SetupProps) {
+export function SetupScreen({ onComplete }: SetupProps) {
   const [step, setStep] = useState(0);
   const [provider, setProvider] = useState<'ollama-cloud' | CloudPreviewProviderId>('ollama-cloud');
   const [apiKey, setApiKey] = useState('');
@@ -37,7 +37,7 @@ export function SetupScreen({ onComplete, onCloudConversationOnly }: SetupProps)
     if (report.selected_model &&
         (report.active_provider_id ?? 'ollama-cloud') === provider) setSelectedModel(report.selected_model);
     return report;
-  }, []);
+  }, [provider]);
 
   useEffect(() => {
     let cancelled = false;
