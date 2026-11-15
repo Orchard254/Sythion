@@ -43,8 +43,8 @@ export function SettingsScreen({
     const stored = localStorage.getItem('sythion.density');
     return stored === 'compact' ? 'compact' : 'comfortable';
   });
-  const [aiProvider, setAiProvider] = useState<'ollama-cloud' | CloudPreviewProviderId>(
-    cloudAnswerOnly ? 'openrouter' : 'ollama-cloud',
+  const [aiProvider, setAiProvider] = useState<'ollama-cloud' | CloudPreviewProviderId | null>(
+    cloudAnswerOnly ? null : 'ollama-cloud',
   );
   useEffect(() => {
     if (!cloudAnswerOnly) return;
@@ -54,9 +54,12 @@ export function SettingsScreen({
       const current = value.staged.provider_id;
       if (current === 'openrouter' || current === 'nvidia' || current === 'groq') {
         setAiProvider(current);
+      } else {
+        setAiProvider('openrouter');
       }
     }).catch(() => {
-      // Preserve the safe default; model selection still requires a valid key.
+      // Show a selectable provider instead of leaving Settings stuck loading.
+      setAiProvider('openrouter');
     });
     return () => { cancelled = true; };
   }, [cloudAnswerOnly]);
@@ -170,14 +173,17 @@ export function SettingsScreen({
             <label htmlFor="settings-ai-provider">AI provider</label>
             <select id="settings-ai-provider" className="input" value={aiProvider}
               onChange={(e) => setAiProvider(e.target.value as 'ollama-cloud' | CloudPreviewProviderId)}>
+              {aiProvider === null && <option value="" disabled>Loading selected provider…</option>}
               <option value="ollama-cloud">Ollama Cloud</option>
               <option value="openrouter">OpenRouter</option>
               <option value="nvidia">NVIDIA NIM</option>
               <option value="groq">Groq</option>
             </select>
-            {aiProvider === 'ollama-cloud'
-              ? <OllamaModelSettings onReady={onOllamaReady} />
-              : <CloudConnectionSetup key={aiProvider} provider={aiProvider} hideProviderPicker onReady={onCloudReady} />}
+            {aiProvider === null
+              ? <p role="status" className="t-muted">Checking selected AI provider…</p>
+              : aiProvider === 'ollama-cloud'
+                ? <OllamaModelSettings onReady={onOllamaReady} />
+                : <CloudConnectionSetup key={aiProvider} provider={aiProvider} hideProviderPicker onReady={onCloudReady} />}
           </div>
         </Panel>
 
