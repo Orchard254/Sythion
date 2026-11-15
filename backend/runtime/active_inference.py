@@ -173,7 +173,15 @@ class ActiveCompatibleDecisionClient:
     async def decide(self, messages, tools, max_tokens=4000):
         from backend.runtime.model_client import CompatibleCloudModelClient
         require_active_selection_unchanged(self.selection)
-        client = CompatibleCloudModelClient(self.selection.provider_id, self.selection.model_id)
+        # Activation was allowed only after text + tool proofs, and the
+        # persisted active binding is revalidated against the current secret
+        # before and after every decision. Avoid a second hidden provider
+        # request to repeat the same synthetic capability probe on each turn.
+        # Actual decision structure and task permissions remain validated.
+        client = CompatibleCloudModelClient(
+            self.selection.provider_id, self.selection.model_id,
+            preverified_tool_capability=True,
+        )
         try:
             result = await client.decide(messages, tools, max_tokens=max_tokens)
             require_active_selection_unchanged(self.selection)

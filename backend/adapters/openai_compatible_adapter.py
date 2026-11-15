@@ -98,6 +98,7 @@ class OpenAICompatibleCloudAdapter:
         *,
         client: Optional[httpx.AsyncClient] = None,
         api_key: Optional[str] = None,
+        preverified_tool_capability: bool = False,
     ):
         spec = provider_spec(provider_id)
         if not isinstance(model_id, str) or not model_id.strip() or len(model_id) > 180:
@@ -114,7 +115,13 @@ class OpenAICompatibleCloudAdapter:
         self._key = api_key.strip()
         self._client = client
         self._owns_client = client is None
-        self._capability_ok = False
+        # Only the production active-provider factory may set this after
+        # validating the exact credential-bound, previously verified model.
+        # It skips a redundant *synthetic* probe, not model-output validation
+        # or Sythion's runtime action authorization.
+        if type(preverified_tool_capability) is not bool:
+            raise CompatibleProviderError("Invalid capability evidence")
+        self._capability_ok = preverified_tool_capability
         self._probe_lock = asyncio.Lock()
         self._probe_failed_at: Optional[float] = None
 

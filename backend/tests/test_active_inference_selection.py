@@ -120,8 +120,9 @@ async def test_active_decision_uses_one_call_and_closes_socket(test_db, isolated
     active.activate_verified_cloud_selection(test_db, "openrouter", "unit/cloud:free")
     actions = []
     class Fake:
-        def __init__(self, provider, model):
+        def __init__(self, provider, model, *, preverified_tool_capability=False):
             assert (provider, model) == ("openrouter", "unit/cloud:free")
+            assert preverified_tool_capability is True
         async def decide(self, messages, tools, max_tokens):
             actions.append("decide")
             return {"choices": []}
@@ -161,8 +162,8 @@ async def test_provider_switch_during_decision_discards_stale_result(test_db, is
     active.activate_verified_cloud_selection(test_db, "openrouter", "unit/cloud:free")
     actions = []
     class Fake:
-        def __init__(self, provider, model):
-            pass
+        def __init__(self, provider, model, *, preverified_tool_capability=False):
+            assert preverified_tool_capability is True
         async def decide(self, messages, tools, max_tokens):
             profile.save_profile({"active_inference_selection": {
                 "version": 1, "provider_id": "ollama-cloud",

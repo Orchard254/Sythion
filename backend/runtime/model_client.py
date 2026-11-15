@@ -57,15 +57,21 @@ class CompatibleCloudModelClient:
 
     def __init__(
         self, provider_id: str, model_id: str, *, adapter: Optional[Any] = None,
+        preverified_tool_capability: bool = False,
     ):
         # Delayed import preserves Ollama's existing default startup path.
         from backend.adapters.openai_compatible_adapter import (
             OpenAICompatibleCloudAdapter, provider_spec,
         )
         self._provider_id = provider_spec(provider_id).provider_id
+        if adapter is not None and preverified_tool_capability:
+            raise ValueError("An injected adapter cannot assert production capability evidence")
         self._adapter = (
             adapter if adapter is not None else
-            OpenAICompatibleCloudAdapter(self._provider_id, model_id)
+            OpenAICompatibleCloudAdapter(
+                self._provider_id, model_id,
+                preverified_tool_capability=preverified_tool_capability,
+            )
         )
 
     async def decide(
