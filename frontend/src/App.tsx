@@ -25,6 +25,7 @@ import { useAppStore } from './store/appStore';
 import { assessRuntimeHealth } from './lib/runtimeHealth';
 import { setupService } from './services/api';
 import { canStartChat } from './lib/setupReadiness';
+import { readProviderLane, saveProviderLane, cloudShellRoute } from './lib/providerLane';
 import { useNavStore } from './store/navStore';
 import { routeById, type RouteId } from './lib/routes';
 import {
@@ -47,11 +48,28 @@ const queryClient = new QueryClient({
 });
 
 function ScreenFor({
-  route, onEnterCloudMode,
+  route, onEnterCloudMode, cloudAnswerOnly, onCloudModelReady, onOllamaModelReady, onOpenModels,
 }: {
   route: RouteId;
   onEnterCloudMode: () => void;
+  cloudAnswerOnly: boolean;
+  onCloudModelReady: () => void;
+  onOllamaModelReady: () => void;
+  onOpenModels: () => void;
 }) {
+  // No cloud model is routed through AssistantScreen (the task-capable
+  // Ollama assistant). Cloud sends only to /cloud-conversation/turn.
+  if (cloudAnswerOnly) {
+    if (route === 'settings') {
+      return <SettingsScreen onCloudReady={onCloudModelReady} onOllamaReady={onOllamaModelReady} />;
+    }
+    return <CloudConversationOnlyScreen
+      key="cloud-answer-only"
+      embedded requireToolEvidence
+      onExit={onOpenModels}
+    />;
+  }
+
   switch (route) {
     case 'assistant':
       return <AssistantScreen />;
@@ -83,7 +101,7 @@ function ScreenFor({
     case 'system':
       return <SystemScreen />;
     case 'settings':
-      return <SettingsScreen />;
+      return <SettingsScreen onCloudReady={onCloudModelReady} onOllamaReady={onOllamaModelReady} />;
     case 'overview':
     default:
       // Operations is the Control Center landing view.
@@ -100,9 +118,11 @@ function AppContent() {
   const notify = useAppStore((s) => s.notify);
 
   const [setupNeeded, setSetupNeeded] = useState<boolean | null>(null);
-  // Owner-selected alternative lane. Not persisted across reloads and
-  // never unlocks the full Assistant/task shell.
-  const [cloudConversationOnly, setCloudConversationOnly] = useState(false);
+  // Persist only the owner's UI choice. This is never permission evidence:
+  // cloud conversations check the current backend/key/model each mount/send.
+  const [cloudConversationOnly, setCloudConversationOnly] = useState(
+    () => readProviderLane() === 'cloud-answer-only',
+  );
   useEffect(() => {
     if (!isInitialized || !isConnected) return;
     setSetupNeeded(null);
@@ -124,12 +144,44 @@ function AppContent() {
    * so the overlay also comes back on its own once the backend is reachable
    * again after a failed start. */
   useEffect(() => {
-    if (!shouldActivateCompanion({ isConnected, setupNeeded, textFirstMode: false })) return;
+    if (cloudConversationOnly ||
+        !shouldActivateCompanion({ isConnected, setupNeeded, textFirstMode: false })) return;
     void activateCompanion();
-  }, [isConnected, setupNeeded]);
+  }, [isConnected, setupNeeded, cloudConversationOnly]);
 
   const route = useNavStore((s) => s.route);
   const setRoute = useNavStore((s) => s.setRoute);
+  const selectCloud = () => {
+    saveProviderLane('cloud-answer-only');
+    setCloudConversationOnly(true);
+    setRoute('assistant');
+  };
+  const selectOllama = () => {
+    // Settings can switch back only after the existing Ollama readiness
+    // requirement has been re-established, never merely by selecting a name.
+    void setupService.readiness().then((ready) => {
+      if (!canStartChat(ready)) {
+        saveProviderLane('ollama');
+        setCloudConversationOnly(false);
+        setSetupNeeded(true);
+        setRoute('assistant');
+        return;
+      }
+      saveProviderLane('ollama');
+      setCloudConversationOnly(false);
+      setSetupNeeded(false);
+      setRoute('assistant');
+    }).catch(() => {
+      // Unknown readiness must never unlock the task-capable Ollama UI.
+      setSetupNeeded(true);
+      saveProviderLane('ollama');
+      setCloudConversationOnly(false);
+      setRoute('assistant');
+    });
+  };
+  // An existing hash may target tasks/automation. Cloud lane never renders
+  // an executable route even if a hash change bypasses sidebar buttons.
+  const shellRoute = cloudConversationOnly ? cloudShellRoute(route) : route;
 
   const health = useHealth(isBridgeReady);
 
@@ -256,19 +308,17 @@ function AppContent() {
     );
   }
 
-  if (isConnected && cloudConversationOnly) {
-    return <CloudConversationOnlyScreen onExit={() => setCloudConversationOnly(false)} />;
-  }
-
-  if (isConnected && setupNeeded) {
+  if (isConnected && setupNeeded && !cloudConversationOnly) {
     return (
       <SetupScreen
         onComplete={(tf) => {
           localStorage.setItem('sythion.textFirst', tf ? '1' : '0');
+          saveProviderLane('ollama');
+          setCloudConversationOnly(false);
           setRoute('assistant');
           setSetupNeeded(false);
         }}
-        onCloudConversationOnly={() => setCloudConversationOnly(true)}
+        onCloudConversationOnly={selectCloud}
       />
     );
   }
@@ -315,13 +365,14 @@ function AppContent() {
     );
   }
 
-  const def = routeById(route);
+  const def = routeById(shellRoute);
 
   return (
     <div className="shell">
       <Sidebar
-        route={route}
+        route={shellRoute}
         onNavigate={setRoute}
+        cloudAnswerOnly={cloudConversationOnly}
         pendingApprovals={attentionCount}
         agent={agent.data}
         overallHealth={agentHealth.data?.overall}
@@ -334,6 +385,7 @@ function AppContent() {
 
       <TopBar
         route={def}
+        cloudAnswerOnly={cloudConversationOnly}
         connected={isConnected}
         runtimeState={runtimeHealth.state}
         attentionCount={attentionCount}
@@ -341,7 +393,14 @@ function AppContent() {
       />
 
       <main className="shell__main">
-        <ScreenFor route={route} onEnterCloudMode={() => setCloudConversationOnly(true)} />
+        <ScreenFor
+          route={shellRoute}
+          cloudAnswerOnly={cloudConversationOnly}
+          onEnterCloudMode={selectCloud}
+          onCloudModelReady={selectCloud}
+          onOllamaModelReady={selectOllama}
+          onOpenModels={() => setRoute('settings')}
+        />
       </main>
     </div>
   );

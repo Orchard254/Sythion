@@ -23,6 +23,7 @@ export function Sidebar({
   runtimeAgeMs,
   version,
   onOpenSettings,
+  cloudAnswerOnly = false,
 }: {
   route: string;
   onNavigate: (id: RouteDef['id']) => void;
@@ -34,6 +35,7 @@ export function Sidebar({
   runtimeAgeMs: number | null;
   version: string | undefined;
   onOpenSettings: () => void;
+  cloudAnswerOnly?: boolean;
 }) {
   const agentState = agent?.state ?? 'unknown';
   const stateTone = AGENT_STATE_TONE[agentState] ?? 'idle';
@@ -45,14 +47,18 @@ export function Sidebar({
         <SythionMark size={22} />
         <div className="shell__brand-text" style={{ minWidth: 0 }}>
           <div className="shell__brand-name">Sythion</div>
-          <div className="shell__brand-sub">Personal AI runtime</div>
+          <div className="shell__brand-sub">
+            {cloudAnswerOnly ? 'Cloud conversation' : 'Personal AI runtime'}
+          </div>
         </div>
       </div>
 
       <nav className="shell__sidebar" aria-label="Primary">
         <div className="shell__nav">
           {NAV_GROUPS.map((group) => {
-            const items = ROUTES.filter((r) => r.group === group.id && r.id !== 'settings');
+            const items = ROUTES.filter((r) =>
+              r.group === group.id && r.id !== 'settings' &&
+              (!cloudAnswerOnly || r.id === 'assistant'));
             if (items.length === 0) return null;
             return (
               <div className="nav-group" key={group.id}>
@@ -86,13 +92,14 @@ export function Sidebar({
           <button
             type="button"
             className="runtime-card"
-            onClick={() => onNavigate('system')}
-            title="Open System & Integrations"
+            onClick={cloudAnswerOnly ? undefined : () => onNavigate('system')}
+            disabled={cloudAnswerOnly}
+            title={cloudAnswerOnly ? 'Cloud mode: no task or tool execution' : 'Open System & Integrations'}
           >
             <Dot tone={runtimeTone} pulse={runtimeState === 'healthy' && connected} />
             <span className="runtime-card__text">
               <span className="runtime-card__title">
-                {runtimeState === 'healthy'
+                {cloudAnswerOnly ? 'Cloud chat mode' : runtimeState === 'healthy'
                   ? 'Runtime online'
                   : runtimeState === 'checking'
                     ? 'Checking runtime…'
@@ -103,7 +110,7 @@ export function Sidebar({
                         : 'Backend offline'}
               </span>
               <span className="runtime-card__meta">
-                {runtimeState === 'healthy'
+                {cloudAnswerOnly ? 'Answer-only · no tasks or tools' : runtimeState === 'healthy'
                   ? `${humanize(agentState)} agent · v${version ?? '—'}`
                   : runtimeState === 'degraded'
                     ? 'Backend is serving with a degraded startup'
@@ -117,7 +124,9 @@ export function Sidebar({
           </button>
 
           <div className="row" style={{ gap: 6, alignItems: 'center' }}>
-            <Badge tone={stateTone}>{humanize(agentState)}</Badge>
+            <Badge tone={cloudAnswerOnly ? 'idle' : stateTone}>
+              {cloudAnswerOnly ? 'Answer only' : humanize(agentState)}
+            </Badge>
             <span className="spacer" />
             <button
               type="button"

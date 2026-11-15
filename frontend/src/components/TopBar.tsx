@@ -22,12 +22,14 @@ export function TopBar({
   runtimeState,
   attentionCount,
   onNavigate,
+  cloudAnswerOnly = false,
 }: {
   route: RouteDef;
   connected: boolean;
   runtimeState?: RuntimeHealthState;
   attentionCount: number;
   onNavigate: (id: RouteDef['id']) => void;
+  cloudAnswerOnly?: boolean;
 }) {
   const now = useNow();
   const notifications = useAppStore((s) => s.notifications);
@@ -91,16 +93,16 @@ export function TopBar({
           <div className="clock__date">{date}</div>
         </div>
 
-        <Button
+        {!cloudAnswerOnly && <Button
           size="sm"
           variant="subtle"
           onClick={() => void activateCompanion()}
           title="Reveal the Companion overlay window"
         >
           Reveal Companion
-        </Button>
+        </Button>}
 
-        <Popover
+        {!cloudAnswerOnly && <Popover
           open={trayOpen}
           onClose={() => setTrayOpen(false)}
           width={340}
@@ -216,7 +218,7 @@ export function TopBar({
                 </div>
               )}
           </div>
-        </Popover>
+        </Popover>}
       </div>
     </header>
   );
