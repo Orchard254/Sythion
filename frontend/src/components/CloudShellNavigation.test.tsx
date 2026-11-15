@@ -1,11 +1,11 @@
-import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { act, create, type ReactElement, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
 import { routeById } from '../lib/routes';
 
 let view: ReactTestRenderer;
-const render = async (node: React.ReactElement) => {
+const render = async (node: ReactElement) => {
   await act(async () => { view = create(node); });
 };
 const labels = (node: { children: unknown[] }): string =>
