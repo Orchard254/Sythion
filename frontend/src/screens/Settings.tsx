@@ -171,7 +171,7 @@ export function SettingsScreen({
           <div className="stack" style={{ gap: 10 }}>
             <p className="t-muted">Choose your provider and model here. Provider setup never creates a task.</p>
             <label htmlFor="settings-ai-provider">AI provider</label>
-            <select id="settings-ai-provider" className="input" value={aiProvider}
+            <select id="settings-ai-provider" className="input" value={aiProvider ?? ''}
               onChange={(e) => setAiProvider(e.target.value as 'ollama-cloud' | CloudPreviewProviderId)}>
               {aiProvider === null && <option value="" disabled>Loading selected provider…</option>}
               <option value="ollama-cloud">Ollama Cloud</option>
