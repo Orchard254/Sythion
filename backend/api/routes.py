@@ -4090,7 +4090,17 @@ async def verify_inference_assistant_contract(
         engine = ConversationTurnEngine(model)
         # Reuse the actual production prompt and strict output validator,
         # but DO NOT call the dispatching /assistant/turns HTTP handler.
-        messages = engine._build_messages("Hello Sythion.", [], [])
+        # Include synthetic bounded history: the normal Assistant continues
+        # existing conversations when a provider changes, not just fresh chats.
+        # This is fixture data only, never a user transcript or stored memory.
+        messages = engine._build_messages(
+            "Reply briefly to this compatibility check.",
+            [
+                {"role": "user", "content": "Hello Sythion."},
+                {"role": "assistant", "content": "Hello. How can I help?"},
+            ],
+            [],
+        )
         raw = await model.chat(
             messages=messages, temperature=0.2,
             max_tokens=MAX_ASSISTANT_TEXT, timeout=60.0,
