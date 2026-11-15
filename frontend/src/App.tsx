@@ -18,7 +18,6 @@ import { OperationsScreen } from './screens/Operations';
 import { SecurityScreen } from './screens/Security';
 import { SettingsScreen } from './screens/Settings';
 import { SetupScreen } from './screens/Setup';
-import { CloudProviderPreview } from './components/CloudProviderPreview';
 import { SystemScreen } from './screens/SystemIntegrations';
 import { useAppInit } from './hooks/useAppInit';
 import { useAppStore } from './store/appStore';
@@ -48,10 +47,9 @@ const queryClient = new QueryClient({
 });
 
 function ScreenFor({
-  route, onEnterCloudMode, cloudAnswerOnly, onCloudModelReady, onOllamaModelReady, onOpenModels,
+  route, cloudAnswerOnly, onCloudModelReady, onOllamaModelReady, onOpenModels,
 }: {
   route: RouteId;
-  onEnterCloudMode: () => void;
   cloudAnswerOnly: boolean;
   onCloudModelReady: () => void;
   onOllamaModelReady: () => void;
@@ -74,20 +72,8 @@ function ScreenFor({
     case 'assistant':
       return <AssistantScreen />;
     case 'cloud':
-      return (
-        <div className="stack" style={{
-          maxWidth: 800, margin: '0 auto', padding: '24px 20px',
-          overflowY: 'auto', height: '100%', gap: 16,
-        }}>
-          <h1 className="screen-head__title">Cloud Text Chat</h1>
-          <p className="t-muted">
-            Configure and test an alternative model, then enter answer-only
-            conversation. This mode is independent of Ollama, but cannot
-            execute tasks, write memory or use tools.
-          </p>
-          <CloudProviderPreview onEnterConversationOnly={onEnterCloudMode} />
-        </div>
-      );
+      // Retained for old deep links; configuration now belongs in Settings.
+      return <SettingsScreen onCloudReady={onCloudModelReady} onOllamaReady={onOllamaModelReady} />;
     case 'missions':
       // Canonical user-facing term is Goals. `missions` is retained as the route
       // id so existing deep links keep resolving (see ROUTE_ALIASES).
@@ -181,7 +167,8 @@ function AppContent() {
   };
   // An existing hash may target tasks/automation. Cloud lane never renders
   // an executable route even if a hash change bypasses sidebar buttons.
-  const shellRoute = cloudConversationOnly ? cloudShellRoute(route) : route;
+  const shellRoute = cloudConversationOnly ? cloudShellRoute(route) :
+    route === 'cloud' ? 'settings' : route;
 
   const health = useHealth(isBridgeReady);
 
@@ -397,7 +384,6 @@ function AppContent() {
         <ScreenFor
           route={shellRoute}
           cloudAnswerOnly={cloudConversationOnly}
-          onEnterCloudMode={selectCloud}
           onCloudModelReady={selectCloud}
           onOllamaModelReady={selectOllama}
           onOpenModels={() => setRoute('settings')}

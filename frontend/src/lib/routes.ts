@@ -53,10 +53,10 @@ export const ROUTES: RouteDef[] = [
   },
   {
     id: 'cloud',
-    label: 'Cloud Text Chat',
+    label: 'AI Model Settings',
     icon: 'assistant',
     group: 'operate',
-    blurb: 'Experimental answer-only chat; no tools, tasks or memory writes',
+    blurb: 'Legacy link to Settings → AI Models',
   },
   {
     id: 'missions',

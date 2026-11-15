@@ -157,3 +157,16 @@ it('limits Settings to AI model configuration in answer-only cloud mode', async 
   expect(view.root.findAllByType('button').some((b) => text(b) === 'Open Security & Control')).toBe(false);
   expect(mock.update).not.toHaveBeenCalled();
 });
+
+it('shows the currently staged cloud provider in Settings when answer-only mode is active', async () => {
+  mock.cloudStatus.mockResolvedValue({
+    staged: { provider_id: 'nvidia', model_id: 'unit/model:free' },
+    providers: [{ provider_id: 'nvidia', credential_configured: true }],
+    text_probe_verified: true, tool_probe_verified: true, ready_for_execution: false,
+  });
+  await act(async () => { view.unmount(); view = create(<SettingsScreen cloudAnswerOnly />); });
+  expect(view.root.findByProps({ id: 'settings-ai-provider' }).props.value).toBe('nvidia');
+  expect(view.root.findAllByProps({ id: 'retention' })).toHaveLength(0);
+  expect(mock.cloudChat).not.toHaveBeenCalled();
+  expect(mock.cloudProbe).not.toHaveBeenCalled();
+});

@@ -57,13 +57,13 @@ export function Sidebar({
         <div className="shell__nav">
           {NAV_GROUPS.map((group) => {
             const items = ROUTES.filter((r) =>
-              r.group === group.id && r.id !== 'settings' &&
-              (!cloudAnswerOnly || r.id === 'assistant'));
+              r.group === group.id && r.id !== 'settings' && r.id !== 'cloud');
             if (items.length === 0) return null;
             return (
               <div className="nav-group" key={group.id}>
                 <div className="nav-group__label">{group.label}</div>
                 {items.map((item) => {
+                  const locked = cloudAnswerOnly && item.id !== 'assistant';
                   const active = route === item.id;
                   const count = item.id === 'security' ? pendingApprovals : 0;
                   return (
@@ -72,8 +72,11 @@ export function Sidebar({
                       type="button"
                       className={`nav-item${active ? ' nav-item--active' : ''}`}
                       aria-current={active ? 'page' : undefined}
+                      disabled={locked}
                       onClick={() => onNavigate(item.id)}
-                      title={`${item.label} — ${item.blurb}`}
+                      title={locked
+                        ? `${item.label} — unavailable in cloud answer-only mode`
+                        : `${item.label} — ${item.blurb}`}
                     >
                       <span className="nav-item__icon">
                         <Icon name={item.icon} size={16} />

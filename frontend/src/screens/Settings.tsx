@@ -43,7 +43,23 @@ export function SettingsScreen({
     const stored = localStorage.getItem('sythion.density');
     return stored === 'compact' ? 'compact' : 'comfortable';
   });
-  const [aiProvider, setAiProvider] = useState<'ollama-cloud' | CloudPreviewProviderId>('ollama-cloud');
+  const [aiProvider, setAiProvider] = useState<'ollama-cloud' | CloudPreviewProviderId>(
+    cloudAnswerOnly ? 'openrouter' : 'ollama-cloud',
+  );
+  useEffect(() => {
+    if (!cloudAnswerOnly) return;
+    let cancelled = false;
+    void api.cloudPreviewService.status().then((value) => {
+      if (cancelled) return;
+      const current = value.staged.provider_id;
+      if (current === 'openrouter' || current === 'nvidia' || current === 'groq') {
+        setAiProvider(current);
+      }
+    }).catch(() => {
+      // Preserve the safe default; model selection still requires a valid key.
+    });
+    return () => { cancelled = true; };
+  }, [cloudAnswerOnly]);
   const [installingModel, setInstallingModel] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
   const [sidecarVersion, setSidecarVersion] = useState<string | null>(null);
