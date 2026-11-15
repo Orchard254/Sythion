@@ -1,6 +1,7 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AIModelsSettings } from './AIModelsSettings';
+import { ActiveCloudSetup } from './ActiveCloudSetup';
 
 const mock = vi.hoisted(() => ({
   active: vi.fn(), restore: vi.fn(), cloud: vi.fn(), readiness: vi.fn(),
@@ -17,8 +18,8 @@ vi.mock('../services/api', () => ({
 }));
 vi.mock('./ActiveCloudSetup', () => ({
   ActiveCloudSetup: (props: Record<string, unknown>) =>
-    <div id="mock-cloud-picker" data-provider={props.provider} data-phase={props.phase}
-      onConnected={props.onConnected} onVerified={props.onVerified} />,
+    <div id="mock-cloud-picker" data-provider={String(props.provider)}
+      data-phase={String(props.phase)} />,
 }));
 
 let view: ReactTestRenderer;
@@ -81,7 +82,7 @@ it('requires the credentials flow when the provider has no saved key', async () 
   await changeProvider('nvidia');
   let picker = view.root.findByProps({ id: 'mock-cloud-picker' });
   expect(picker.props['data-phase']).toBe('connect');
-  await settle(() => picker.props.onConnected());
+  await settle(() => view.root.findByType(ActiveCloudSetup).props.onConnected());
   picker = view.root.findByProps({ id: 'mock-cloud-picker' });
   expect(picker.props['data-phase']).toBe('model');
 });
@@ -89,7 +90,7 @@ it('requires the credentials flow when the provider has no saved key', async () 
 it('confirms a changed cloud model from the actual active backend status', async () => {
   await changeProvider('groq');
   mock.active.mockResolvedValueOnce(active('groq', 'groq/new'));
-  await settle(() => view.root.findByProps({ id: 'mock-cloud-picker' }).props.onVerified('groq/new'));
+  await settle(() => view.root.findByType(ActiveCloudSetup).props.onVerified('groq/new'));
   expect(text()).toContain('groq/new');
   expect(text()).toContain('Active AI model updated');
   expect(mock.restore).not.toHaveBeenCalled();
