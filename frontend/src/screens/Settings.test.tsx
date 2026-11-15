@@ -146,3 +146,14 @@ it('keeps Ollama model management in Settings rather than a main chat control', 
   expect(view.root.findByProps({ id: 'ollama-settings-model' }).props.value).toBe('ollama/default');
   expect(mock.ollamaInference).not.toHaveBeenCalled();
 });
+
+it('limits Settings to AI model configuration in answer-only cloud mode', async () => {
+  await act(async () => { view.unmount(); view = create(<SettingsScreen cloudAnswerOnly />); });
+  expect(JSON.stringify(view.toJSON())).toContain('AI Models');
+  expect(JSON.stringify(view.toJSON())).toContain('answer-only access');
+  expect(view.root.findAllByProps({ id: 'retention' })).toHaveLength(0);
+  expect(view.root.findAllByProps({ 'aria-label': 'File grant 1' })).toHaveLength(0);
+  expect(view.root.findAllByType('button').some((b) => text(b) === 'Save settings')).toBe(false);
+  expect(view.root.findAllByType('button').some((b) => text(b) === 'Open Security & Control')).toBe(false);
+  expect(mock.update).not.toHaveBeenCalled();
+});

@@ -223,3 +223,29 @@ describe('embedded AI Assistant cloud lane', () => {
     expect(mock.conversationTurn).not.toHaveBeenCalled();
   });
 });
+
+it('embedded cloud mode rechecks tool proof on each send and stops before provider inference if it expires', async () => {
+  await settle(() => view.unmount());
+  mock.status.mockResolvedValueOnce({ ...status(), tool_probe_verified: true })
+    .mockResolvedValueOnce(status());
+  await settle(() => {
+    view = create(<CloudConversationOnlyScreen onExit={exit} embedded requireToolEvidence />);
+  });
+  await typeText('Do not send after tool proof expires');
+  await settle(() => button('Send text-only message').props.onClick());
+  expect(mock.conversationTurn).not.toHaveBeenCalled();
+  expect(text(view.root)).toContain('qualification expired or changed');
+  expect(button('Send text-only message').props.disabled).toBe(true);
+});
+
+it('embedded cloud mode sends after a fresh local proof check without extra model tests', async () => {
+  await settle(() => view.unmount());
+  mock.status.mockResolvedValue({ ...status(), tool_probe_verified: true });
+  await settle(() => {
+    view = create(<CloudConversationOnlyScreen onExit={exit} embedded requireToolEvidence />);
+  });
+  await typeText('One cloud request');
+  await settle(() => button('Send text-only message').props.onClick());
+  expect(mock.status).toHaveBeenCalledTimes(2);
+  expect(mock.conversationTurn).toHaveBeenCalledTimes(1);
+});

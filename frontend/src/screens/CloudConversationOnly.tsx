@@ -86,6 +86,24 @@ export function CloudConversationOnlyScreen({
     setBusy(true);
     setError('');
     try {
+      if (requireToolEvidence) {
+        // Cheap, local-only admission recheck. No provider inference is sent
+        // if the model, credential or tool evidence has become stale.
+        const current = await cloudPreviewService.status();
+        const staged = current.staged;
+        const keyIsPresent = current.providers.some((p) =>
+          p.provider_id === selection.provider_id && p.credential_configured);
+        if (!keyIsPresent ||
+            staged.provider_id !== selection.provider_id ||
+            staged.model_id !== selection.model_id ||
+            current.text_probe_verified !== true ||
+            current.tool_probe_verified !== true ||
+            current.ready_for_execution !== false) {
+          setVerified(false);
+          setError('Cloud model qualification expired or changed. Select the model again in Settings → AI Models.');
+          return;
+        }
+      }
       // Only three prior full pairs are sent; the user-facing transcript is
       // local to this mounted screen, and is never silently persisted.
       const history = messages.slice(-6).map((turn) => ({

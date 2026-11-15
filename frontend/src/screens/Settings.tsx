@@ -20,10 +20,11 @@ import type { CloudPreviewProviderId } from '../services/api';
 type Density = 'comfortable' | 'compact';
 
 export function SettingsScreen({
-  onCloudReady, onOllamaReady,
+  onCloudReady, onOllamaReady, cloudAnswerOnly = false,
 }: {
   onCloudReady?: () => void;
   onOllamaReady?: () => void;
+  cloudAnswerOnly?: boolean;
 } = {}) {
   const settings = useAppSettings();
   const health = useHealth();
@@ -164,7 +165,7 @@ export function SettingsScreen({
           </div>
         </Panel>
 
-        <div className="grid grid--2">
+        {!cloudAnswerOnly && <div className="grid grid--2">
           <Panel
             title="Runtime settings"
             icon="server"
@@ -360,9 +361,9 @@ export function SettingsScreen({
               Open Security &amp; Control
             </Button>
           </Panel>
-        </div>
+        </div>}
 
-        <Panel title="Keyboard" icon="key" tight>
+        {!cloudAnswerOnly && <Panel title="Keyboard" icon="key" tight>
           <div className="grid grid--3">
             {[
               { keys: 'Enter', action: 'Send the composed command' },
@@ -378,7 +379,11 @@ export function SettingsScreen({
             ))}
           </div>
 
-        </Panel>
+        </Panel>}
+        {cloudAnswerOnly && <Notice tone="info" icon="info">
+          The cloud assistant has answer-only access. Runtime controls, file grants, tasks,
+          memory and automation settings are unavailable in this mode.
+        </Notice>}
       </div>
     </div>
   );

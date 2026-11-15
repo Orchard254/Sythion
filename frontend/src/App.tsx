@@ -61,7 +61,7 @@ function ScreenFor({
   // Ollama assistant). Cloud sends only to /cloud-conversation/turn.
   if (cloudAnswerOnly) {
     if (route === 'settings') {
-      return <SettingsScreen onCloudReady={onCloudModelReady} onOllamaReady={onOllamaModelReady} />;
+      return <SettingsScreen cloudAnswerOnly onCloudReady={onCloudModelReady} onOllamaReady={onOllamaModelReady} />;
     }
     return <CloudConversationOnlyScreen
       key="cloud-answer-only"
@@ -240,6 +240,7 @@ function AppContent() {
   // Raise an in-app notification whenever a task enters an interesting
   // terminal state. Derived from polled backend state, not fabricated.
   useEffect(() => {
+    if (cloudConversationOnly) return;
     const interesting = new Set(['failed', 'waiting_for_user', 'interrupted']);
     const next = { ...seenTaskStates };
     let changed = false;
@@ -261,7 +262,7 @@ function AppContent() {
     if (changed) {
       setSeenTaskStates(next);
     }
-  }, [tasks.data, notify, seenTaskStates]);
+  }, [tasks.data, notify, seenTaskStates, cloudConversationOnly]);
 
   const attentionCount = useMemo(() => {
     const skillPending = (skillProposals.data ?? []).filter((p) => p.status === 'proposed' || p.status === 'pending_review').length;
@@ -373,7 +374,7 @@ function AppContent() {
         route={shellRoute}
         onNavigate={setRoute}
         cloudAnswerOnly={cloudConversationOnly}
-        pendingApprovals={attentionCount}
+        pendingApprovals={cloudConversationOnly ? 0 : attentionCount}
         agent={agent.data}
         overallHealth={agentHealth.data?.overall}
         connected={isConnected}
@@ -388,7 +389,7 @@ function AppContent() {
         cloudAnswerOnly={cloudConversationOnly}
         connected={isConnected}
         runtimeState={runtimeHealth.state}
-        attentionCount={attentionCount}
+        attentionCount={cloudConversationOnly ? 0 : attentionCount}
         onNavigate={setRoute}
       />
 
