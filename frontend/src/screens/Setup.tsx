@@ -6,8 +6,9 @@ import { modelTestFailureMessage } from '../lib/modelTestFailure';
 import { singleScreenContentStyle, singleScreenShellStyle } from '../lib/shellLayout';
 import { Button, Notice, Panel } from '../components/ui';
 import { SythionMark } from '../components/icons';
-import { CloudProviderPreview } from '../components/CloudProviderPreview';
-import { setupService, modelService, voiceService, type SetupReadiness } from '../services/api';
+import { ActiveCloudSetup } from '../components/ActiveCloudSetup';
+import { setupService, modelService, voiceService, activeInferenceService,
+  type CloudPreviewProviderId, type SetupReadiness } from '../services/api';
 
 interface SetupProps {
   onComplete: (textFirst: boolean) => void;
@@ -16,7 +17,7 @@ interface SetupProps {
 
 export function SetupScreen({ onComplete, onCloudConversationOnly }: SetupProps) {
   const [step, setStep] = useState(0);
-  const [showCloudPreview, setShowCloudPreview] = useState(false);
+  const [provider, setProvider] = useState<'ollama-cloud' | CloudPreviewProviderId>('ollama-cloud');
   const [apiKey, setApiKey] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
   const [models, setModels] = useState<string[]>([]);
@@ -33,7 +34,8 @@ export function SetupScreen({ onComplete, onCloudConversationOnly }: SetupProps)
   const refresh = useCallback(async () => {
     const report = await setupService.readiness();
     setReadiness(report);
-    if (report.selected_model) setSelectedModel(report.selected_model);
+    if (report.selected_model &&
+        (report.active_provider_id ?? 'ollama-cloud') === provider) setSelectedModel(report.selected_model);
     return report;
   }, []);
 
@@ -42,6 +44,10 @@ export function SetupScreen({ onComplete, onCloudConversationOnly }: SetupProps)
     void setupService.readiness().then((report) => {
       if (cancelled) return;
       setReadiness(report);
+      const active = report.active_provider_id;
+      if (active === 'openrouter' || active === 'nvidia' || active === 'groq') {
+        setProvider(active);
+      }
       setSelectedModel(report.selected_model || '');
     }).catch(() => {
       if (!cancelled) setError('Could not check setup. Retry when Sythion has connected.');
@@ -80,6 +86,10 @@ export function SetupScreen({ onComplete, onCloudConversationOnly }: SetupProps)
       await setupService.selectModel(selectedModel);
       const result = await setupService.inference(selectedModel);
       if (!result.success) throw new Error('The model did not respond.');
+      if (readiness?.active_provider_id &&
+          readiness.active_provider_id !== 'ollama-cloud') {
+        await activeInferenceService.restoreOllama();
+      }
       await refresh();
       setMessage('Synth answered the connection test. You can continue.');
     } catch (error) {
@@ -125,11 +135,12 @@ export function SetupScreen({ onComplete, onCloudConversationOnly }: SetupProps)
   });
 
   const modelReady = canUseModel(readiness);
-  const selectedModelReady = modelReady && selectedModel === readiness?.selected_model;
+  const selectedModelReady = modelReady && selectedModel === readiness?.selected_model &&
+    (readiness?.active_provider_id ?? 'ollama-cloud') === provider;
   const steps = ['Connect', 'Choose a model', 'Choose how to talk', 'Start chatting'];
   const checks: Array<[string, boolean]> = [
     ['Sythion is running on this computer', readiness?.checks.sidecar_ok === true && readiness?.checks.database_ok === true],
-    ['Cloud connection and model tested', modelReady],
+    ['Selected provider and model verified', modelReady],
     ['Guarded permissions and configured history retention', readiness?.checks.safe_settings_ok === true],
     [replyMode === 'voice' ? 'Spoken replies tested' : 'Text replies selected', replyMode === 'text' || ttsVerified],
   ];
@@ -150,7 +161,21 @@ export function SetupScreen({ onComplete, onCloudConversationOnly }: SetupProps)
           {loading ? <p role="status">Checking your setup…</p> : <>
             {step === 0 && <Panel title="1. Connect Synth" icon="key">
               <div className="stack" style={{ gap: 12 }}>
-                <p className="t-muted">Synth answers through your Ollama Cloud account. Your key is saved in this computer's secure credential store.</p>
+                <label htmlFor="setup-provider">Choose your AI provider</label>
+                <select id="setup-provider" className="input" value={provider} disabled={busy}
+                  onChange={(event) => {
+                    setProvider(event.target.value as 'ollama-cloud' | CloudPreviewProviderId);
+                    setApiKey(''); setSelectedModel(''); setModels([]);
+                    setStep(0); setError(null); setMessage(null);
+                  }}>
+                  <option value="ollama-cloud">Ollama Cloud</option>
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="nvidia">NVIDIA NIM</option>
+                  <option value="groq">Groq</option>
+                </select>
+                <p className="t-muted">Choose who provides the reasoning model. You will still use the same Sythion assistant.</p>
+                {provider === 'ollama-cloud' ? <>
+                <p className="t-muted">Use your Ollama Cloud account. Your key is saved in this computer's secure credential store.</p>
                 {!readiness?.checks.ollama_api_key_ok && <div>
                   <p>No key yet? You'll need an Ollama account and an internet connection.</p>
                   <ol>
@@ -167,18 +192,13 @@ export function SetupScreen({ onComplete, onCloudConversationOnly }: SetupProps)
                   <Button variant="primary" disabled={busy || !apiKey.trim()} onClick={() => void connect()}>Connect and save key</Button>
                   {readiness?.checks.ollama_api_key_ok && <Button variant="subtle" disabled={busy} onClick={() => void findModels()}>Use configured key</Button>}
                 </div>
+                </> : <ActiveCloudSetup provider={provider} phase="connect"
+                  onConnected={() => { setError(null); setMessage(null); setStep(1); }} />}
               </div>
             </Panel>}
-            {step === 0 && <>
-              <Button variant="subtle" disabled={busy}
-                onClick={() => setShowCloudPreview((current) => !current)}>
-                {showCloudPreview ? 'Hide alternative cloud providers' : 'Explore alternative cloud providers (preview)'}
-              </Button>
-              {showCloudPreview && <CloudProviderPreview onEnterConversationOnly={onCloudConversationOnly} />}
-            </>}
             {step === 1 && <Panel title="2. Choose a model" icon="info">
               <div className="stack" style={{ gap: 12 }}>
-                {(models.length > 0 || selectedModel) && <>
+                {provider === 'ollama-cloud' && (models.length > 0 || selectedModel) && <>
                   <label htmlFor="setup-model">Choose a model</label>
                   <p className="t-muted" id="setup-model-help">A model is the AI that writes Synth's answers. Pick one from the list — you can change it later.</p>
                   <select id="setup-model" aria-describedby="setup-model-help" className="input" value={selectedModel} disabled={busy} onChange={(e) => { setSelectedModel(e.target.value); setMessage(null); }}>
@@ -187,9 +207,15 @@ export function SetupScreen({ onComplete, onCloudConversationOnly }: SetupProps)
                   </select>
                   <Button disabled={busy || !selectedModel} onClick={() => void testModel()}>Test selected model</Button>
                 </>}
-                {models.length === 0 && !selectedModel && <p>No models found yet. Check your connection and try again.</p>}
-                <Button variant="subtle" disabled={busy} onClick={() => void findModels()}>Refresh available models</Button>
-                <p className="t-muted">{selectedModelReady ? 'Your connection is ready.' : 'The test sends a short request so you know the model can respond.'}</p>
+                {provider === 'ollama-cloud' ? <>
+                  {models.length === 0 && !selectedModel && <p>No models found yet. Check your connection and try again.</p>}
+                  <Button variant="subtle" disabled={busy} onClick={() => void findModels()}>Refresh available models</Button>
+                </> : <ActiveCloudSetup provider={provider} phase="model"
+                  onVerified={(modelId) => {
+                    setSelectedModel(modelId);
+                    void refresh();
+                  }} />}
+                <p className="t-muted">{selectedModelReady ? 'Your connection is ready.' : 'Select and verify a model to continue.'}</p>
                 <p className="t-muted">Continue applies guarded permissions and 90-day history retention.</p>
                 <div className="row" style={{ gap: 8 }}>
                 <Button disabled={busy} onClick={() => { setError(null); setMessage(null); setStep(0); }}>Back</Button>
