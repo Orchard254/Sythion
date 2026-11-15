@@ -9,10 +9,12 @@ export interface SetupChecks {
   stt_model_installed?: boolean;
   tts_voice_ok?: boolean;
   safe_settings_ok?: boolean;
+  active_provider_ready_ok?: boolean;
 }
 
 export interface SetupReadinessLike {
   full_ready?: boolean;
+  active_provider_id?: string;
   checks?: SetupChecks;
 }
 
@@ -50,8 +52,19 @@ export function canClaimFullReady(
 /** Text chat requires real model evidence, independently of optional audio. */
 export function canUseModel(readiness: SetupReadinessLike | null): boolean {
   const c = readiness?.checks;
-  return Boolean(c?.resources_ok && c.database_ok && c.sidecar_ok &&
-    c.ollama_api_key_ok && c.ollama_health_ok && c.selected_model_ok && c.inference_verified_ok);
+  if (!c?.resources_ok || !c.database_ok || !c.sidecar_ok ||
+      !c.selected_model_ok || !c.inference_verified_ok) return false;
+  // The active cloud model was bound server-side to its verified credential.
+  // A cloud user must not be required to configure Ollama as well.
+  if (readiness?.active_provider_id === 'openrouter' ||
+      readiness?.active_provider_id === 'nvidia' ||
+      readiness?.active_provider_id === 'groq') {
+    return c.active_provider_ready_ok === true;
+  }
+  // Unknown/corrupt active selections fail closed rather than using Ollama.
+  if (readiness?.active_provider_id &&
+      readiness.active_provider_id !== 'ollama-cloud') return false;
+  return c.ollama_api_key_ok === true && c.ollama_health_ok === true;
 }
 
 export function canStartChat(readiness: SetupReadinessLike | null): boolean {

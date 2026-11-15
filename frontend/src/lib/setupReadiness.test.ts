@@ -82,3 +82,31 @@ describe('first conversation entry', () => {
     expect(shouldOpenSetup({ checks: completeChecks }, false)).toBe(false);
   });
 });
+
+describe('provider-neutral setup readiness', () => {
+  const base = {
+    resources_ok: true, database_ok: true, sidecar_ok: true,
+    selected_model_ok: true, inference_verified_ok: true, safe_settings_ok: true,
+    ollama_api_key_ok: false, ollama_health_ok: false,
+  };
+  it('accepts actual backend-verified cloud model without requiring Ollama', () => {
+    expect(canStartChat({
+      active_provider_id: 'openrouter',
+      checks: { ...base, active_provider_ready_ok: true },
+    })).toBe(true);
+    expect(canStartChat({
+      active_provider_id: 'groq',
+      checks: { ...base, active_provider_ready_ok: true },
+    })).toBe(true);
+  });
+  it('rejects a staged candidate, unknown active provider or unavailable key', () => {
+    expect(canStartChat({
+      active_provider_id: 'openrouter',
+      checks: { ...base, active_provider_ready_ok: false },
+    })).toBe(false);
+    expect(canStartChat({
+      active_provider_id: 'unavailable',
+      checks: { ...base, ollama_api_key_ok: true, ollama_health_ok: true },
+    })).toBe(false);
+  });
+});

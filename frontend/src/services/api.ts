@@ -610,6 +610,24 @@ export interface CloudConversationOnlyResult extends CloudPreviewChatResult {
   conversation_only: true;
 }
 
+/** Actual Sythion reasoning processor; unlike inert preview staging. */
+export const activeInferenceService = {
+  status: async (): Promise<{ provider_id: string; model_id: string; permissions_unchanged: true }> => {
+    const response = await apiClient.get('/inference/active');
+    return response.data;
+  },
+  activate: async (selection: CloudPreviewSelection): Promise<{ provider_id: string; model_id: string; permissions_unchanged: true }> => {
+    // No provider HTTP request here: backend requires exact verified text and
+    // synthetic tool evidence, and disallows changes while tasks are unfinished.
+    const response = await apiClient.post('/inference/active', selection);
+    return response.data;
+  },
+  restoreOllama: async (): Promise<{ provider_id: string; model_id: string; permissions_unchanged: true }> => {
+    const response = await apiClient.delete('/inference/active');
+    return response.data;
+  },
+};
+
 export const cloudPreviewService = {
   status: async (): Promise<CloudPreviewStatus> => {
     const response = await apiClient.get('/inference-preview/providers');
@@ -829,6 +847,8 @@ function arrayBufferToBase64(buffer: Uint8Array): string {
 export interface SetupReadiness {
   full_ready: boolean;
   text_first_available: boolean;
+  active_provider_id?: string;
+  active_provider_ready_ok?: boolean;
   checks: Record<string, boolean>;
   selected_model: string;
   tts_voice: string;
