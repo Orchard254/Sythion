@@ -265,3 +265,58 @@ async def test_agentic_harness_denial_during_tool_probe_stays_specific_and_redac
             await a.prove_tool_capability()
     assert "PRIVATE RESTRICTED DETAILS" not in str(exc.value)
     assert "test-secret" not in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_authenticated_active_provider_uses_one_decision_request_without_repeat_probe():
+    """The production activator has already bound real tool proof to the key.
+
+    The ordinary adapter default *still* probes first; only the explicit
+    verified-runtime path avoids a second hidden billable test request.
+    """
+    calls = []
+    async def handler(req):
+        body = json.loads(req.content)
+        calls.append(body)
+        return httpx.Response(200, json=_response(
+            tool=True, name="complete_task", args='{"result":"done"}'))
+    tools = [{"type": "function", "function": {
+        "name": "complete_task", "description": "Complete",
+        "parameters": {"type": "object", "properties": {}},
+    }}]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler),
+                                 base_url="https://openrouter.ai/api/v1/") as client:
+        adapter = OpenAICompatibleCloudAdapter(
+            "openrouter", "unit-model", client=client, api_key="inert-key",
+            preverified_tool_capability=True,
+        )
+        response = await adapter.decide(
+            [{"role": "user", "content": "Complete this task"}], tools,
+        )
+    assert response["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "complete_task"
+    assert len(calls) == 1
+    assert calls[0]["tool_choice"] == "required"
+    assert calls[0]["model"] == "unit-model"
+
+
+@pytest.mark.asyncio
+async def test_preverified_path_never_accepts_plaintext_as_a_tool_decision():
+    async def handler(req):
+        return httpx.Response(200, json=_response())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler),
+                                 base_url="https://openrouter.ai/api/v1/") as client:
+        adapter = OpenAICompatibleCloudAdapter(
+            "openrouter", "unit-model", client=client, api_key="inert-key",
+            preverified_tool_capability=True,
+        )
+        with pytest.raises(CompatibleProviderError, match="did not return a tool"):
+            await adapter.decide(
+                [{"role": "user", "content": "do work"}],
+                [{"type": "function", "function": {"name": "complete_task"}}],
+            )
+
+
+def test_preverified_argument_requires_exact_boolean():
+    with pytest.raises(CompatibleProviderError, match="Invalid capability evidence"):
+        OpenAICompatibleCloudAdapter("openrouter", "unit-model",
+                                     api_key="inert-key", preverified_tool_capability="yes")
