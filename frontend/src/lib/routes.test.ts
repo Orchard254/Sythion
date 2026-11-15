@@ -2,13 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_ROUTE, ROUTES, resolveRoute, routeById } from './routes';
 
 describe('cloud answer-only route registration', () => {
-  it('exposes a distinct cloud chat destination outside the task-executing assistant', () => {
+  it('retains the legacy cloud route as an AI-model settings destination', () => {
     const cloud = routeById('cloud');
     const assistant = routeById('assistant');
     expect(cloud.id).toBe('cloud');
     expect(cloud.group).toBe('operate');
-    expect(cloud.label).toBe('Cloud Text Chat');
-    expect(cloud.blurb.toLowerCase()).toContain('no tools');
+    expect(cloud.label).toBe('AI Model Settings');
+    expect(cloud.blurb.toLowerCase()).toContain('settings');
     expect(assistant.id).toBe('assistant');
     expect(assistant.blurb).toContain('task execution');
     expect(ROUTES.filter((route) => route.id === 'cloud')).toHaveLength(1);

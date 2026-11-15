@@ -200,7 +200,9 @@ describe('embedded AI Assistant cloud lane', () => {
 
   it('sends text through the isolated cloud endpoint even when hosted in the main shell', async () => {
     await settle(() => view.unmount());
-    mock.status.mockResolvedValueOnce({ ...status(), tool_probe_verified: true });
+    // The embedded lane checks the same HMAC-backed proof on entry AND before
+    // each send; the mock must retain the verified state for both reads.
+    mock.status.mockResolvedValue({ ...status(), tool_probe_verified: true });
     await settle(() => {
       view = create(<CloudConversationOnlyScreen onExit={exit} embedded requireToolEvidence />);
     });
