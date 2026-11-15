@@ -97,7 +97,6 @@ async function connect() {
   await settle(() => button('Connect and save key').props.onClick());
   expect(view.root.findAllByProps({id:'setup-key'})).toHaveLength(0);
   await settle(() => view.root.findByProps({id:'setup-model'}).props.onChange({target:{value:'cloud-model'}}));
-  await settle(() => button('Test selected model').props.onClick());
 }
 
 describe('setup to first conversation', () => {
@@ -193,12 +192,13 @@ describe('setup to first conversation', () => {
       ] }), status: 200, statusText: 'OK', headers: {}, config };
     };
     await settle(() => button('Use configured key').props.onClick());
-    expect(view.root.findAllByType('option').map((option) => [option.props.value, labels(option)]))
+    expect(view.root.findByProps({id:'setup-model'}).findAllByType('option')
+      .map((option) => [option.props.value, labels(option)]))
       .toStrictEqual([['', 'Select a model'], ['beam', 'beam'], ['other:exact-tag', 'other:exact-tag']]);
     await settle(() => view.root.findByProps({id:'setup-model'}).props.onChange({target:{value:'beam'}}));
     expect(view.root.findByProps({id:'setup-model'}).props.value).toBe('beam');
-    expect(button('Test selected model').props.disabled).toBe(false);
-    await settle(() => button('Test selected model').props.onClick());
+    // Selecting Ollama now runs the same automatic verification flow as cloud.
+    expect(view.root.findAllByType('button').some((b) => labels(b) === 'Test selected model')).toBe(false);
     expect(mock.selectModel).toHaveBeenCalledWith('beam');
     expect(mock.inference).toHaveBeenCalledWith('beam');
     expect(mock.testCredentials).not.toHaveBeenCalled();
@@ -207,9 +207,8 @@ describe('setup to first conversation', () => {
   it('explains a verified provider 402 without bypassing model readiness', async () => {
     await settle(() => view.root.findByProps({id:'setup-key'}).props.onChange({target:{value:'test-key'}}));
     await settle(() => button('Connect and save key').props.onClick());
-    await settle(() => view.root.findByProps({id:'setup-model'}).props.onChange({target:{value:'cloud-model'}}));
     mock.inference.mockRejectedValueOnce(new Error('Inference failed: HTTP error 402 (hidden-provider-detail)'));
-    await settle(() => button('Test selected model').props.onClick());
+    await settle(() => view.root.findByProps({id:'setup-model'}).props.onChange({target:{value:'cloud-model'}}));
     expect(labels(view.root)).toContain('Ollama Cloud returned HTTP 402');
     expect(labels(view.root)).toContain('Check your account credit');
     expect(labels(view.root)).not.toContain('hidden-provider-detail');
@@ -231,8 +230,9 @@ describe('setup to first conversation', () => {
     expect(mock.speak).not.toHaveBeenCalled();
   });
 
-  it('does not say the connection is ready for a different untested model', async () => {
+  it('does not claim readiness if automatic verification of another model fails', async () => {
     await connect();
+    mock.inference.mockRejectedValueOnce(new Error('Invalid provider model'));
     await settle(() => view.root.findByProps({id:'setup-model'}).props.onChange({target:{value:'another-model'}}));
     expect(button('Continue').props.disabled).toBe(true);
     expect(labels(view.root)).not.toContain('Your connection is ready.');
