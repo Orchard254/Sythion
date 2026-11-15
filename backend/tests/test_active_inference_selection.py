@@ -178,3 +178,51 @@ async def test_provider_switch_during_decision_discards_stale_result(test_db, is
     with pytest.raises(active.ActiveInferenceUnavailable, match="changed during"):
         await model_client.get_default_model_client().decide([], [], 100)
     assert actions == ["decide", "closed"]
+
+
+@pytest.mark.asyncio
+async def test_model_switch_uses_new_provider_in_original_assistant_contract(
+    test_db, isolated, monkeypatch,
+):
+    """A model change must affect real Sythion reasoning, not preview chat."""
+    from backend.core.cloud_assistant_evidence import persist_assistant_contract_evidence
+    from backend.services.conversation_turn_engine import ConversationTurnEngine
+    from backend.runtime import compatible_chat_provider as compat
+
+    verified(test_db)
+    active.activate_verified_cloud_selection(test_db, "openrouter", "unit/cloud:free")
+    calls = []
+
+    class Fake:
+        def __init__(self, provider, model):
+            self.model = model
+        async def chat(self, **kwargs):
+            calls.append((self.model, kwargs["messages"][0]["role"]))
+            return {
+                "message": {
+                    "role": "assistant",
+                    "content": '{"assistant_text":"Hello","commands":[]}',
+                },
+            }
+        async def close(self):
+            calls.append(("closed", self.model))
+
+    monkeypatch.setattr(compat, "CompatibleCloudChatProvider", Fake)
+    old = ConversationTurnEngine(ModelClient())
+    reply = await old.run_turn("hi", [], [])
+    assert reply.assistant_text == "Hello"
+    assert reply.commands == []
+
+    profile.stage_cloud_selection("openrouter", "unit/next:free")
+    snap = profile.get_staged_cloud_snapshot()
+    persist_text_evidence(test_db, snap, "synthetic-not-real")
+    persist_probe_evidence(test_db, snap, "synthetic-not-real")
+    persist_assistant_contract_evidence(test_db, snap, "synthetic-not-real")
+    active.activate_verified_cloud_selection(test_db, "openrouter", "unit/next:free")
+    latest = ConversationTurnEngine(ModelClient())
+    next_reply = await latest.run_turn("hello again", [], [])
+    assert next_reply.assistant_text == "Hello"
+    assert next_reply.commands == []
+    assert [row[0] for row in calls if row[0] != "closed"] == [
+        "unit/cloud:free", "unit/next:free",
+    ]
