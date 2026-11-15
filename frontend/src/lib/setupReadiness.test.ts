@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   canClaimFullReady,
   canStartChat,
+  canUseModel,
   shouldOpenSetup,
   hasVerifiedTts,
   hasVerifiedVoice,
@@ -89,20 +90,43 @@ describe('provider-neutral setup readiness', () => {
     selected_model_ok: true, inference_verified_ok: true, safe_settings_ok: true,
     ollama_api_key_ok: false, ollama_health_ok: false,
   };
-  it('accepts actual backend-verified cloud model without requiring Ollama', () => {
-    expect(canStartChat({
+  it('accepts the REAL backend cloud readiness response, with authority at top level', () => {
+    // /setup/readiness returns active_provider_ready_ok alongside checks.
+    // This exact response shape previously left the Continue button disabled
+    // despite the backend reporting a successfully activated model.
+    const report = {
       active_provider_id: 'openrouter',
-      checks: { ...base, active_provider_ready_ok: true },
-    })).toBe(true);
+      active_provider_ready_ok: true,
+      checks: { ...base },
+    };
+    expect(canUseModel(report)).toBe(true);
+    expect(canStartChat(report)).toBe(true);
     expect(canStartChat({
       active_provider_id: 'groq',
-      checks: { ...base, active_provider_ready_ok: true },
+      active_provider_ready_ok: true,
+      checks: { ...base },
     })).toBe(true);
+  });
+  it('permits model confirmation before guarded settings are applied, not chat access', () => {
+    const report = {
+      active_provider_id: 'openrouter',
+      active_provider_ready_ok: true,
+      checks: { ...base, safe_settings_ok: false },
+    };
+    expect(canUseModel(report)).toBe(true);
+    expect(canStartChat(report)).toBe(false);
+    expect(shouldOpenSetup(report, true)).toBe(true);
   });
   it('rejects a staged candidate, unknown active provider or unavailable key', () => {
     expect(canStartChat({
       active_provider_id: 'openrouter',
-      checks: { ...base, active_provider_ready_ok: false },
+      active_provider_ready_ok: false,
+      checks: { ...base },
+    })).toBe(false);
+    // A forged/legacy nested readiness hint is NOT authoritative.
+    expect(canUseModel({
+      active_provider_id: 'openrouter',
+      checks: { ...base, active_provider_ready_ok: true },
     })).toBe(false);
     expect(canStartChat({
       active_provider_id: 'unavailable',

@@ -15,6 +15,8 @@ export interface SetupChecks {
 export interface SetupReadinessLike {
   full_ready?: boolean;
   active_provider_id?: string;
+  /** Backend's authenticated active-provider readiness result, returned at top level. */
+  active_provider_ready_ok?: boolean;
   checks?: SetupChecks;
 }
 
@@ -59,7 +61,10 @@ export function canUseModel(readiness: SetupReadinessLike | null): boolean {
   if (readiness?.active_provider_id === 'openrouter' ||
       readiness?.active_provider_id === 'nvidia' ||
       readiness?.active_provider_id === 'groq') {
-    return c.active_provider_ready_ok === true;
+    // GET /setup/readiness returns this authority at the TOP LEVEL, not
+    // inside checks. Reading checks.active_provider_ready_ok incorrectly
+    // disabled Continue after a successfully activated cloud model.
+    return readiness.active_provider_ready_ok === true;
   }
   // Unknown/corrupt active selections fail closed rather than using Ollama.
   if (readiness?.active_provider_id &&

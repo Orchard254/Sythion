@@ -43,7 +43,13 @@ beforeEach(async () => {
   vi.stubGlobal('sessionStorage', { getItem: () => 'inert-discovery-token' });
   apiClient.defaults.adapter = async () => { throw new Error('Unexpected HTTP request in setup test'); };
   mock.readiness.mockImplementation(async () => ({
-    checks: {...checks}, selected_model: selected, active_provider_id: activeProvider,
+    checks: { ...checks },
+    selected_model: selected,
+    active_provider_id: activeProvider,
+    // Match the actual backend /setup/readiness contract, NOT a fabricated
+    // checks.active_provider_ready_ok. This caught the disabled Continue bug.
+    active_provider_ready_ok: activeProvider !== 'ollama-cloud' &&
+      checks.active_provider_ready_ok === true,
   }));
   mock.testCredentials.mockImplementation(async () => { checks.ollama_api_key_ok=true;checks.ollama_health_ok=true;return {valid:true,models:['cloud-model']}; });
   mock.selectModel.mockImplementation(async (model: string) => {selected=model;checks.selected_model_ok=true;});
