@@ -123,8 +123,18 @@ briefing layer is being built first because it is the user-facing foundation.
   affected App/nav set (14 passed), `tsc --noEmit` exit 0. Also fixed a mock
   regression in `App.pending-proposals.test.tsx` from Stage 2's `useDevices`.
 
-  **Still open:** internet reachability (a tunnel in front of the relay) and
-  per-source message/news connectors (which need granted source access).
+  **Reachability is operational, not a code change.** `LocalControlBoundaryMiddleware`
+  (`backend/core/auth.py:112-114`) deliberately rejects every non-loopback peer
+  for `/api/` with 403. That boundary stays. A phone reaches the relay through
+  a tunnel whose local end connects to `127.0.0.1:<port>` on this PC (for example
+  an SSH tunnel or an owner-controlled WireGuard peer), so the backend still sees
+  a loopback client and the device credential remains the authority. Binding the
+  sidecar directly to `0.0.0.0` would break this boundary and is intentionally
+  NOT done. No third-party relay service is used at any point.
+
+  **Still open:** setting up that tunnel on the owner's network, and per-source
+  message/news connectors (which need granted source access). Both need the
+  owner's environment, not code.
 - **Stage 4 — phone as endpoint (goal submission implemented 2026-11-20):**
   `POST /api/v1/remote/goals` lets a registered device give Synth a goal. It
   requires a valid device credential and the privileged `goals.submit` grant,
