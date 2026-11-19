@@ -3765,8 +3765,16 @@ async def list_inference_preview_providers(db: Optional[Session] = Depends(get_h
     from backend.core.cloud_probe_evidence import is_probe_evidence_current
     from backend.core.cloud_text_evidence import is_text_evidence_current
 
+    from backend.runtime.active_inference import (
+        get_active_inference_selection, ActiveInferenceUnavailable,
+    )
+    try:
+        active_provider_id = get_active_inference_selection().provider_id
+    except ActiveInferenceUnavailable:
+        active_provider_id = "unavailable"
+
     return {
-        "active_provider": "ollama-cloud",
+        "active_provider": active_provider_id,
         "staged": get_staged_cloud_selection(),
         "tool_probe_verified": is_probe_evidence_current(db),
         "text_probe_verified": is_text_evidence_current(db),
@@ -3965,10 +3973,10 @@ async def get_active_inference_selection():
         raise HTTPException(
             status_code=409, detail="Active model configuration needs attention"
         ) from None
-    # Report the existing Ollama model truthfully; the selection sentinel
-    # has no model ID because Ollama's current ID lives in its original
-    # configuration path and is not replaced by the provider selector.
-    if selected.provider_id == "ollama-cloud":
+    # The unconfigured sentinel has no model ID because Ollama's current ID
+    # lives in its original configuration path. A bound ollama-cloud selection
+    # carries its own exact model ID, like every other active cloud provider.
+    if selected.provider_id == "ollama-cloud" and not selected.model_id:
         from backend.core.config import resolve_selected_model
         model_id = resolve_selected_model()
     else:
@@ -5069,7 +5077,10 @@ async def setup_readiness(db: Optional[Session] = Depends(get_health_db)):
         active_provider_id = "unavailable"
         active = None
 
-    cloud_active = active_provider_id in PROVIDERS
+    # A bound selection is a cloud activation. The legacy Ollama sentinel has
+    # an empty model_id and must keep using the native Ollama readiness path,
+    # even though "ollama-cloud" is now a member of PROVIDERS.
+    cloud_active = bool(active and active.model_id) and active_provider_id in PROVIDERS
     # A cloud provider must not require a second Ollama subscription or key.
     # Preserve legacy Ollama fields for consumers that inspect Ollama state.
     health = (ModelHealth("ollama-cloud", ModelHealth.UNKNOWN)

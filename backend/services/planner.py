@@ -21,6 +21,14 @@ from sqlalchemy.orm import Session
 from backend.models.database import GoalPlan, Objective, PlanStep
 from backend.runtime.events import DbEventLedger
 from backend.services.goal_manager import GoalManager
+from backend.services.reasoning_dispatch import (
+    ReasoningAdmissionError, ReasoningPurpose, ReasoningResultError,
+    admit_reasoning_job, as_mapping_result, dispatch_reasoning,
+    handoff_reasoning_result,
+)
+from backend.services.work_attention import (
+    WorkItem, WorkKind, reasoning_signals_for, select_next_work,
+)
 
 
 class PlanValidationError(ValueError):
@@ -653,14 +661,41 @@ class Planner:
             f"{('Failure context / instructions: ' + instruction) if instruction else ''}\n"
             f"Produce at most {max_steps} steps as STRICT JSON."
         ).strip()
-        response = asyncio_run(model_client.decide(
-            messages=[
-                {"role": "system", "content": self.PLAN_PROPOSAL_SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            tools=[],
-            max_tokens=4000,
-        ))
+        name_fn = getattr(model_client, "provider_name", None)
+        provider_id = name_fn() if callable(name_fn) else "unidentified-client"
+        goal_id = getattr(goal, "id", None)
+        try:
+            admission = admit_reasoning_job(
+                purpose=ReasoningPurpose.GOAL_PLANNING,
+                work_id=str(goal_id) if goal_id else None,
+                timeout_seconds=120.0,
+                provider_id=provider_id,
+                signals=reasoning_signals_for(select_next_work([
+                    WorkItem(
+                        kind=WorkKind.GOAL_PLANNING,
+                        work_id=str(goal_id) if goal_id else "goal",
+                        ready=str(getattr(goal, "status", "active")).lower()
+                        not in {"completed", "abandoned", "cancelled"},
+                    ),
+                ])),
+            )
+            job = admission.job
+            response = asyncio_run(dispatch_reasoning(
+                job,
+                lambda: model_client.decide(
+                    messages=[
+                        {"role": "system", "content": self.PLAN_PROPOSAL_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message},
+                    ],
+                    tools=[],
+                    max_tokens=4000,
+                ),
+            ))
+            result = handoff_reasoning_result(as_mapping_result(job, response), job)
+            response = result.value
+        except (ReasoningResultError, ReasoningAdmissionError):
+            raise PlanValidationError(
+                ["model plan did not satisfy the reasoning contract"]) from None
         content = ""
         message = response.get("message") or {}
         content = message.get("content") or ""

@@ -20,8 +20,8 @@ import re
 import secrets
 import threading
 import time
-from dataclasses import dataclass
-from typing import Callable
+from dataclasses import dataclass, field
+from typing import Callable, List
 
 _REVISION = re.compile(r"^sha256:[a-f0-9]{64}$")
 _TOKEN = re.compile(r"^[a-f0-9]{64}$")
@@ -156,3 +156,100 @@ class NativePresenceChallengeBroker:
                 raise PermissionError("native assertion invalid")
             self._pending.pop(challenge_id, None)
         return NativePresenceObservation(host_message_authenticated=True)
+
+
+@dataclass(frozen=True, slots=True)
+class NativeAttestationReceipt:
+    """Auditable record of ONE verified trusted-host assertion.
+
+    It records host-message integrity only. Every authority flag is fixed
+    false: a host signature does not prove an authenticated human, an external
+    effect outcome, recovery clearance, consent, or replay permission.
+    """
+
+    receipt_id: str
+    challenge_id: str
+    task_id: str
+    evidence_revision: str
+    observed_at: float
+    host_message_authenticated: bool = True
+    authenticated_human: bool = False
+    independent_effect_verified: bool = False
+    recovery_cleared: bool = False
+    authorization_issued: bool = False
+    automatic_replay_allowed: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.receipt_id, str) or not self.receipt_id:
+            raise ValueError("receipt identity is required")
+        for name in (
+            "host_message_authenticated", "authenticated_human",
+            "independent_effect_verified", "recovery_cleared",
+            "authorization_issued", "automatic_replay_allowed",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, bool):
+                raise ValueError(f"{name} must be a boolean")
+        if (self.host_message_authenticated is not True
+                or self.authenticated_human is not False
+                or self.independent_effect_verified is not False
+                or self.recovery_cleared is not False
+                or self.authorization_issued is not False
+                or self.automatic_replay_allowed is not False):
+            raise ValueError("attestation receipt may not carry authority flags")
+
+
+class TrustedHostAttestationBoundary:
+    """Backend half of the trusted-host boundary.
+
+    The verifier key can only be supplied by a ``key_provider`` callable wired
+    by the trusted launcher at process start. No HTTP/webview/model input can
+    set it, and there is deliberately no key setter. The provider is consumed
+    exactly once. This does NOT implement Windows Hello or prove human
+    presence; the native host must sign only after its own OS verification.
+    """
+
+    def __init__(self, key_provider: Callable[[], bytes], *, monotonic: Callable[[], float] = time.monotonic):
+        if not callable(key_provider):
+            raise ValueError("a trusted host key provider is required")
+        key = key_provider()
+        if type(key) is not bytes or len(key) < 32:
+            raise ValueError("native host key must be at least 32 bytes")
+        self._broker = NativePresenceChallengeBroker(host_key=key, monotonic=monotonic)
+        self._clock = monotonic
+        self._receipts: List[NativeAttestationReceipt] = []
+        self._lock = threading.Lock()
+
+    @property
+    def configured(self) -> bool:
+        return self._broker.configured
+
+    def issue(self, task_id: str, evidence_revision: str, *, ttl_seconds: int = 90) -> NativePresenceChallenge:
+        return self._broker.issue(task_id, evidence_revision, ttl_seconds=ttl_seconds)
+
+    def verify(
+        self, *, challenge_id: str, task_id: str, evidence_revision: str,
+        signature_hex: str, current_evidence_revision: str,
+    ) -> NativeAttestationReceipt:
+        observation = self._broker.verify_host_assertion(
+            challenge_id=challenge_id, task_id=task_id,
+            evidence_revision=evidence_revision, signature_hex=signature_hex,
+            current_evidence_revision=current_evidence_revision,
+        )
+        if observation != NativePresenceObservation(host_message_authenticated=True):
+            raise PermissionError("unexpected native attestation observation")
+        with self._lock:
+            receipt = NativeAttestationReceipt(
+                receipt_id=secrets.token_hex(16),
+                challenge_id=challenge_id,
+                task_id=task_id,
+                evidence_revision=evidence_revision,
+                observed_at=self._clock(),
+            )
+            self._receipts.append(receipt)
+            return receipt
+
+    def receipts(self) -> tuple:
+        """Read-only audit copies; never authority or consent evidence."""
+        with self._lock:
+            return tuple(self._receipts)

@@ -501,17 +501,18 @@ fn restrict_file_acl_windows(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn write_token_file(dir: &Path, token: &str) -> Result<PathBuf, String> {
+/// Write a private, atomically replaced text file in the profile data dir.
+/// Used by the handshake token and by the trusted-host attestation key.
+pub(crate) fn write_private_text_file(
+    dir: &Path, name: &str, content: &[u8],
+) -> Result<PathBuf, String> {
     safe_storage_path(dir)?;
-    let path = dir.join(TOKEN_FILE_NAME);
+    let path = dir.join(name);
     // Never overwrite or read through a reparse point / unsafe storage path.
     safe_storage_path(&path)?;
     if is_reparse_point(&path) {
-        return Err(format!("refusing to write token through reparse point: {}", path.display()));
+        return Err(format!("refusing to write private file through reparse point: {}", path.display()));
     }
-
-    let payload = serde_json::json!({ "token": token, "version": 1 });
-    let content = serde_json::to_vec_pretty(&payload).map_err(|e| format!("serialize token file: {e}"))?;
 
     // Private unpredictable temp file in the same directory (atomic replace).
     let mut random = [0u8; 16];
@@ -531,9 +532,9 @@ fn write_token_file(dir: &Path, token: &str) -> Result<PathBuf, String> {
     safe_storage_path(&tmp_path)?;
 
     // Write content to the temp file first (no plaintext in the final path yet).
-    if let Err(e) = std::fs::write(&tmp_path, &content) {
+    if let Err(e) = std::fs::write(&tmp_path, content) {
         let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!("write token temp file: {e}"));
+        return Err(format!("write private temp file: {e}"));
     }
 
     // Apply user-only ACL to the temp file BEFORE atomic replace. On failure,
@@ -560,6 +561,13 @@ fn write_token_file(dir: &Path, token: &str) -> Result<PathBuf, String> {
     }
 
     Ok(path)
+}
+
+fn write_token_file(dir: &Path, token: &str) -> Result<PathBuf, String> {
+    let payload = serde_json::json!({ "token": token, "version": 1 });
+    let content = serde_json::to_vec_pretty(&payload)
+        .map_err(|e| format!("serialize token file: {e}"))?;
+    write_private_text_file(dir, TOKEN_FILE_NAME, &content)
 }
 
 fn python_override_workdir(cwd: &Path) -> Result<PathBuf, String> {

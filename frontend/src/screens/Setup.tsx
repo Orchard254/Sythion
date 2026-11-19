@@ -2,13 +2,13 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAppStore } from '../store/appStore';
 import { useVoiceCapture } from '../hooks/useVoiceCapture';
 import { canStartChat, canUseModel } from '../lib/setupReadiness';
-import { modelTestFailureMessage } from '../lib/modelTestFailure';
 import { singleScreenContentStyle, singleScreenShellStyle } from '../lib/shellLayout';
 import { Button, Notice, Panel } from '../components/ui';
 import { SythionMark } from '../components/icons';
 import { ActiveCloudSetup } from '../components/ActiveCloudSetup';
-import { setupService, modelService, voiceService, activeInferenceService,
-  type CloudPreviewProviderId, type SetupReadiness } from '../services/api';
+import { setupService, voiceService, CLOUD_PREVIEW_PROVIDERS, CLOUD_PROVIDER_LABELS,
+  isCloudPreviewProviderId, type CloudPreviewProviderId,
+  type SetupReadiness } from '../services/api';
 
 interface SetupProps {
   onComplete: (textFirst: boolean) => void;
@@ -17,10 +17,8 @@ interface SetupProps {
 
 export function SetupScreen({ onComplete }: SetupProps) {
   const [step, setStep] = useState(0);
-  const [provider, setProvider] = useState<'ollama-cloud' | CloudPreviewProviderId>('ollama-cloud');
-  const [apiKey, setApiKey] = useState('');
+  const [provider, setProvider] = useState<CloudPreviewProviderId>('ollama-cloud');
   const [selectedModel, setSelectedModel] = useState('');
-  const [models, setModels] = useState<string[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [readiness, setReadiness] = useState<SetupReadiness | null>(null);
@@ -34,8 +32,9 @@ export function SetupScreen({ onComplete }: SetupProps) {
   const refresh = useCallback(async () => {
     const report = await setupService.readiness();
     setReadiness(report);
-    if (report.selected_model &&
-        (report.active_provider_id ?? 'ollama-cloud') === provider) setSelectedModel(report.selected_model);
+    if (report.selected_model && report.active_provider_id === provider) {
+      setSelectedModel(report.selected_model);
+    }
     return report;
   }, [provider]);
 
@@ -44,9 +43,8 @@ export function SetupScreen({ onComplete }: SetupProps) {
     void setupService.readiness().then((report) => {
       if (cancelled) return;
       setReadiness(report);
-      const active = report.active_provider_id;
-      if (active === 'openrouter' || active === 'nvidia' || active === 'groq') {
-        setProvider(active);
+      if (isCloudPreviewProviderId(report.active_provider_id)) {
+        setProvider(report.active_provider_id);
       }
       setSelectedModel(report.selected_model || '');
     }).catch(() => {
@@ -61,44 +59,6 @@ export function SetupScreen({ onComplete }: SetupProps) {
     catch (e) { setError(failureHint || (e instanceof Error ? e.message : 'That step did not finish. Please try again.')); }
     finally { setBusy(false); }
   };
-
-  const connect = () => run(async () => {
-    const result = await setupService.testCredentials(apiKey.trim());
-    // This endpoint validates AND saves the key. Writing it a second time
-    // needlessly invalidates the inference evidence on the server.
-    setApiKey('');
-    setModels(result.models.filter(Boolean));
-    await refresh();
-    setStep(1);
-    setMessage(result.models.filter(Boolean).length ? 'Connected. Choose a model below, then test it.' : 'Connected, but no models were found. Check your Ollama Cloud account, then try finding models again.');
-  }, 'Could not finish connecting. Check your key and internet connection, then try again or recheck the connection.');
-
-  const findModels = () => run(async () => {
-    const available = await modelService.available();
-    setModels(available);
-    await refresh();
-    setStep(1);
-    setMessage(available.length ? 'Choose a model below, then test it.' : 'No models are available. Check your Ollama Cloud account and try again.');
-  }, 'Could not find models. Check your key and internet connection, then try again.');
-
-  const testModel = (modelId = selectedModel) => run(async () => {
-    try {
-      if (!modelId) throw new Error('Select a model first');
-      const result = await activeInferenceService.activateOllama(modelId);
-      if (result.provider_id !== 'ollama-cloud' ||
-          result.model_id !== modelId || result.verified !== true ||
-          result.permissions_unchanged !== true) {
-        throw new Error('The model did not pass verification.');
-      }
-      await refresh();
-      setMessage('Synth answered the connection test. You can continue.');
-    } catch (error) {
-      // A backend 502 may encapsulate a provider HTTP 402. Preserve a
-      // truthful, actionable message but never expose provider exception text.
-      // This changes diagnosis only: the readiness gate remains fail-closed.
-      throw new Error(modelTestFailureMessage(error));
-    }
-  });
 
   const testMicrophone = () => run(async () => {
     setVoiceVerified(false);
@@ -136,7 +96,7 @@ export function SetupScreen({ onComplete }: SetupProps) {
 
   const modelReady = canUseModel(readiness);
   const selectedModelReady = modelReady && selectedModel === readiness?.selected_model &&
-    (readiness?.active_provider_id ?? 'ollama-cloud') === provider;
+    readiness?.active_provider_id === provider;
   const steps = ['Connect', 'Choose a model', 'Choose how to talk', 'Start chatting'];
   const checks: Array<[string, boolean]> = [
     ['Sythion is running on this computer', readiness?.checks.sidecar_ok === true && readiness?.checks.database_ok === true],
@@ -164,62 +124,29 @@ export function SetupScreen({ onComplete }: SetupProps) {
                 <label htmlFor="setup-provider">Choose your AI provider</label>
                 <select id="setup-provider" className="input" value={provider} disabled={busy}
                   onChange={(event) => {
-                    setProvider(event.target.value as 'ollama-cloud' | CloudPreviewProviderId);
-                    setApiKey(''); setSelectedModel(''); setModels([]);
+                    const next = event.target.value;
+                    if (!isCloudPreviewProviderId(next)) return;
+                    setProvider(next);
+                    setSelectedModel('');
                     setStep(0); setError(null); setMessage(null);
                   }}>
-                  <option value="ollama-cloud">Ollama Cloud</option>
-                  <option value="openrouter">OpenRouter</option>
-                  <option value="nvidia">NVIDIA NIM</option>
-                  <option value="groq">Groq</option>
+                  {CLOUD_PREVIEW_PROVIDERS.map((id) => (
+                    <option key={id} value={id}>{CLOUD_PROVIDER_LABELS[id]}</option>
+                  ))}
                 </select>
-                <p className="t-muted">Choose who provides the reasoning model. You will still use the same Sythion assistant.</p>
-                {provider === 'ollama-cloud' ? <>
-                <p className="t-muted">Use your Ollama Cloud account. Your key is saved in this computer's secure credential store.</p>
-                {!readiness?.checks.ollama_api_key_ok && <div>
-                  <p>No key yet? You'll need an Ollama account and an internet connection.</p>
-                  <ol>
-                    <li>In your browser, visit <strong>ollama.com/settings/keys</strong> and sign in or create an account.</li>
-                    <li>Create an API key and copy it. Keep it private, like a password.</li>
-                    <li>Return here, paste the key below, and select “Connect and save key”.</li>
-                  </ol>
-                  <p className="t-muted">You don’t need to install Ollama on this computer.</p>
-                </div>}
-                {readiness?.checks.ollama_api_key_ok && <Notice tone="info" icon="check"><span>A key is already configured. Use it to continue, or enter a replacement below.</span></Notice>}
-                <label htmlFor="setup-key">Ollama Cloud API key</label>
-                <input id="setup-key" type="password" autoComplete="off" placeholder="Paste your API key" value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="input" disabled={busy} />
-                <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                  <Button variant="primary" disabled={busy || !apiKey.trim()} onClick={() => void connect()}>Connect and save key</Button>
-                  {readiness?.checks.ollama_api_key_ok && <Button variant="subtle" disabled={busy} onClick={() => void findModels()}>Use configured key</Button>}
-                </div>
-                </> : <ActiveCloudSetup provider={provider} phase="connect"
-                  onConnected={() => { setError(null); setMessage(null); setStep(1); }} />}
+                <p className="t-muted">Choose who provides the reasoning model. You will still use the same Sythion assistant. Your key is saved in this computer's secure credential store.</p>
+                <ActiveCloudSetup provider={provider} phase="connect"
+                  onConnected={() => { setError(null); setMessage(null); setStep(1); }} />
               </div>
             </Panel>}
             {step === 1 && <Panel title="2. Choose a model" icon="info">
               <div className="stack" style={{ gap: 12 }}>
-                {provider === 'ollama-cloud' && (models.length > 0 || selectedModel) && <>
-                  <span className="t-muted">Available Ollama Cloud models</span>
-                  <label htmlFor="setup-model">Choose a model</label>
-                  <p className="t-muted" id="setup-model-help">Choose a model; Sythion verifies it automatically, just like other providers. Change it later under Settings → AI Models.</p>
-                  <select id="setup-model" aria-describedby="setup-model-help" className="input" value={selectedModel} disabled={busy} onChange={(e) => {
-                    const modelId = e.target.value;
-                    setSelectedModel(modelId);
-                    setMessage(null);
-                    if (modelId) void testModel(modelId);
-                  }}>
-                    <option value="">Select a model</option>
-                    {[...new Set([...(selectedModel ? [selectedModel] : []), ...models])].map((m) => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                </>}
-                {provider === 'ollama-cloud' ? <>
-                  {models.length === 0 && !selectedModel && <p>No models found yet. Check your connection and try again.</p>}
-                  <Button variant="subtle" disabled={busy} onClick={() => void findModels()}>Refresh available models</Button>
-                </> : <ActiveCloudSetup provider={provider} phase="model"
+                <ActiveCloudSetup provider={provider} phase="model"
                   onVerified={(modelId) => {
                     setSelectedModel(modelId);
                     void refresh();
-                  }} />}
+                  }} />
+                <p className="t-muted">You can change the model later under Settings → AI Models.</p>
                 <p className="t-muted">{selectedModelReady ? 'Your connection is ready.' : 'Select and verify a model to continue.'}</p>
                 <p className="t-muted">Continue applies guarded permissions and 90-day history retention.</p>
                 <div className="row" style={{ gap: 8 }}>

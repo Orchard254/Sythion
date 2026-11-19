@@ -21,24 +21,53 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
 
 from backend.models.database import AgentWake
+from backend.services.reasoning_dispatch import (
+    DispatchEvent, ReasoningEvent, ReasoningPurpose, get_reasoning_metrics,
+)
+from backend.services.bounded_wake_scheduler import (
+    BoundedWakeScheduler, WakePolicy, WakeCycleReport,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def emit_wake_outcome(wake_key: str, result: Dict[str, Any]) -> None:
+    """Record a wake outcome as a shared-bus event; grants no authority."""
+    get_reasoning_metrics().events.emit(DispatchEvent(
+        ReasoningEvent.IDLE if not result.get("executed")
+        else ReasoningEvent.ADMITTED,
+        wake_key, ReasoningPurpose.GOAL_PLANNING, "runtime",
+        time.monotonic(),
+        result.get("stopped_reason") or "wake_completed",
+    ))
 
 
 class WakeWorker:
     """Single-consumer queue processing audited Main-Agent wake requests."""
 
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, *, reasoning_scheduler=None):
         self._db_manager = db_manager
         self._queue: "asyncio.Queue[Dict[str, Any]]" = asyncio.Queue()
         self._queued_keys: set = set()
         self._task: Optional[asyncio.Task] = None
         self._max_queue = 64
+        # Opt-in observability sink. The worker remains event-driven by default;
+        # a scheduler supplied here is already subscribed to the shared bus.
+        self.reasoning_scheduler = reasoning_scheduler
+
+    def install_reasoning_scheduler(self, scheduler) -> None:
+        """Attach the shared bounded event scheduler for wake observability."""
+        self.reasoning_scheduler = scheduler
+
+    async def run_bounded_wake_cycle(self, selector, wake_handler, policy: WakePolicy) -> WakeCycleReport:
+        """Opt-in time-bounded cycle. Never used by the default worker loop."""
+        return await BoundedWakeScheduler().run(selector, wake_handler, policy)
 
     # ---- lifecycle ---------------------------------------------------------
 
@@ -198,6 +227,11 @@ class WakeWorker:
                 selector,
                 max_steps=settings.max_steps_per_background_cycle,
             )
+
+            # Observability only: wake outcomes become events on the shared
+            # reasoning bus. No event grants consent, starts a model call or
+            # changes task state.
+            emit_wake_outcome(wake.wake_key, result)
 
             outcome = (
                 "completed"

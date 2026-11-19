@@ -436,6 +436,7 @@ def resolve_compatible_provider_key(provider_id: str) -> str:
         "openrouter": OPENROUTER_API_KEY,
         "nvidia": NVIDIA_API_KEY,
         "groq": GROQ_API_KEY,
+        "ollama-cloud": OLLAMA_API_KEY,
     }
     name = key_names.get(provider_id)
     if name is None:

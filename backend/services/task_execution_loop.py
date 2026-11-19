@@ -303,6 +303,7 @@ class TaskExecutionLoop:
                     break
 
                 # Check for pending action (approval/denial)
+                pending_status = ""
                 if task.pending_action:
                     try:
                         pending = json.loads(task.pending_action)
@@ -343,6 +344,12 @@ class TaskExecutionLoop:
                             event_data={"tool_name": pending_tool_name, "params": pending_params},
                         )
                         continue
+                    else:
+                        # An action awaiting a user decision is resolved by the
+                        # runtime, never by asking the model to invent consent.
+                        logger.info(
+                            "Pending mutating action awaits a user decision; no reasoning call")
+                        break
 
                 # Refresh after the drain so inference sees every committed edit.
                 snapshot = self.instruction_revision.open(task_id)
@@ -362,6 +369,9 @@ class TaskExecutionLoop:
                         pending_question=task.pending_question,
                         repair_context=repair_context,
                         budget=budget.budget,
+                        pending_mutating_action=bool(
+                            task.pending_action and pending_status
+                            not in {"approved", "denied"}),
                     )
                     repair_attempts = 0  # Reset on successful decision
                     repair_context = None

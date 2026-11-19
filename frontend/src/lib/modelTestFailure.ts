@@ -1,7 +1,7 @@
 /**
  * Provider inference errors are untrusted (potentially contain backend
  * internals). Return bounded, actionable text and never leak raw details.
- * Ollama Cloud's account 402 can be nested inside the backend's HTTP 502.
+ * A provider's account 402 can be nested inside the backend's HTTP 502.
  */
 export const GENERIC_MODEL_TEST_FAILURE =
   'The model test did not finish. Check your API key and internet connection, then try again or choose another model.';
@@ -22,7 +22,7 @@ export function modelTestFailureMessage(error: unknown): string {
     /(?:HTTP\s+(?:error|status)|status\s+code)\s*:?\s*402\b/i.test(detail);
 
   if (provider402) {
-    return 'Ollama Cloud returned HTTP 402 (payment required). Check your account credit, billing and usage limits. Your API key may be valid, but Sythion cannot continue until a real model test succeeds.';
+    return 'The provider returned HTTP 402 (payment required). Check that provider account’s credit, billing and usage limits. Your API key may be valid, but Sythion cannot continue until a real model test succeeds.';
   }
   return GENERIC_MODEL_TEST_FAILURE;
 }

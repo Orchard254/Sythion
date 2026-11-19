@@ -29,6 +29,24 @@ def prepare(db):
     persist_assistant_contract_evidence(db, snap, "synthetic-key-not-real")
 
 
+def prepare_ollama_cloud(db):
+    profile.stage_cloud_selection("ollama-cloud", "gemma4:31b")
+    secrets.set_secret(secrets.OLLAMA_API_KEY, "synthetic-key-not-real")
+    snap = profile.get_staged_cloud_snapshot()
+    persist_text_evidence(db, snap, "synthetic-key-not-real")
+    persist_probe_evidence(db, snap, "synthetic-key-not-real")
+    persist_assistant_contract_evidence(db, snap, "synthetic-key-not-real")
+
+
+def test_ollama_cloud_activates_through_the_same_endpoint(test_client, test_db, isolated):
+    prepare_ollama_cloud(test_db)
+    body = {"provider_id": "ollama-cloud", "model_id": "gemma4:31b"}
+    r = test_client.post(ENDPOINT, json=body)
+    assert r.status_code == 200, r.text
+    assert r.json() == {**body, "permissions_unchanged": True}
+    assert test_client.get(ENDPOINT).json() == r.json()
+
+
 def test_default_active_selection_does_not_use_staged_preview(test_client, isolated):
     r = test_client.get(ENDPOINT)
     assert r.status_code == 200, r.text

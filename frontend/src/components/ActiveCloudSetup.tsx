@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  activeInferenceService, cloudPreviewService,
+  activeInferenceService, cloudPreviewService, CLOUD_PROVIDER_LABELS,
   type CloudCatalogModel, type CloudPreviewProviderId,
 } from '../services/api';
+import { GENERIC_MODEL_TEST_FAILURE, modelTestFailureMessage } from '../lib/modelTestFailure';
 import { Button, Notice } from './ui';
 
 /** Provider setup embedded in the *existing* Sythion onboarding wizard.
@@ -152,7 +153,10 @@ export function ActiveCloudSetup({
       const body = response && typeof response === 'object' && 'data' in response
         ? response.data : null;
       const detail = body && typeof body === 'object' && 'detail' in body ? body.detail : null;
-      if (status === 429) {
+      const failureText = modelTestFailureMessage(cause);
+      if (failureText !== GENERIC_MODEL_TEST_FAILURE) {
+        setError(failureText);
+      } else if (status === 429) {
         setError('The provider reached its quota or capacity. This does not prove model incompatibility.');
       } else if (status === 502 &&
                  detail === 'Cloud model requires an eligible agentic harness (upstream HTTP 403)') {
@@ -178,7 +182,7 @@ export function ActiveCloudSetup({
       {hasKey && <Notice tone="info" icon="check">
         API key already saved. Use it or enter a replacement.
       </Notice>}
-      <label htmlFor="setup-cloud-key">{provider} API key</label>
+      <label htmlFor="setup-cloud-key">{CLOUD_PROVIDER_LABELS[provider]} API key</label>
       <input id="setup-cloud-key" type="password" className="input" autoComplete="off"
         value={key} disabled={busy || loading} placeholder={hasKey ? 'Leave empty to keep saved key' : 'Paste API key'}
         onChange={(event) => setKey(event.target.value)} />

@@ -58,14 +58,10 @@ export function canUseModel(readiness: SetupReadinessLike | null): boolean {
       !c.selected_model_ok || !c.inference_verified_ok) return false;
   // The active cloud model was bound server-side to its verified credential.
   // A cloud user must not be required to configure Ollama as well.
-  if (readiness?.active_provider_id === 'openrouter' ||
-      readiness?.active_provider_id === 'nvidia' ||
-      readiness?.active_provider_id === 'groq') {
-    // GET /setup/readiness returns this authority at the TOP LEVEL, not
-    // inside checks. Reading checks.active_provider_ready_ok incorrectly
-    // disabled Continue after a successfully activated cloud model.
-    return readiness.active_provider_ready_ok === true;
-  }
+  // GET /setup/readiness returns this authority at the TOP LEVEL, not inside
+  // checks. Apply it to every provider, including a bound Ollama Cloud model,
+  // so no provider needs a second Ollama key or health probe.
+  if (readiness?.active_provider_ready_ok === true) return true;
   // Unknown/corrupt active selections fail closed rather than using Ollama.
   if (readiness?.active_provider_id &&
       readiness.active_provider_id !== 'ollama-cloud') return false;

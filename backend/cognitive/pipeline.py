@@ -459,20 +459,22 @@ class CognitivePipeline:
     @staticmethod
     def _default_constraints() -> ConstraintSet:
         """HARD constraints dominate preferences — the LLM cannot redefine."""
-        hard_text = [
+        # Only checks that this layer actually executes are HARD. The runtime
+        # enforces approvals, leases, budgets and secret handling downstream;
+        # recording those here as unenforced "hard" rules would let a model
+        # proposal look vetted when nothing checked it.
+        cs = ConstraintSet()
+        cs.hard = [HardConstraint(
+            text="no destructive action without explicit permission",
+            check=lambda c: bool(_DESTRUCTIVE_VERBS.search(
+                str(getattr(c, "description", "") or "")))
+            and not c.requires_permission,
+        )]
+        cs.policy_notes = [
             "never execute destructive actions without runtime approval",
             "never bypass policy/verification/lease/budgets",
             "never exfiltrate secrets",
         ]
-        cs = ConstraintSet()
-        cs.hard = [HardConstraint(text=t) for t in hard_text]
-        # Enforceable variant: any destructive candidate lacking the
-        # permission flag is vetoed regardless of its score.
-        cs.hard.append(HardConstraint(
-            text="no destructive action without explicit permission",
-            check=lambda c: bool(_DESTRUCTIVE_VERBS.search(
-                str(getattr(c, "description", "") or "")))
-            and not c.requires_permission))
         cs.soft = [
             SoftPreference("prefer concise responses"),
             SoftPreference("prefer reversible low-risk actions"),

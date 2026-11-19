@@ -107,6 +107,19 @@ describe('provider-neutral setup readiness', () => {
       checks: { ...base },
     })).toBe(true);
   });
+  it('treats a bound Ollama Cloud selection like any other cloud, without Ollama-only checks', () => {
+    expect(canStartChat({
+      active_provider_id: 'ollama-cloud',
+      active_provider_ready_ok: true,
+      checks: { ...base },
+    })).toBe(true);
+    // The unconfigured Ollama sentinel still requires its native checks.
+    expect(canUseModel({
+      active_provider_id: 'ollama-cloud',
+      active_provider_ready_ok: false,
+      checks: { ...base },
+    })).toBe(false);
+  });
   it('permits model confirmation before guarded settings are applied, not chat access', () => {
     const report = {
       active_provider_id: 'openrouter',

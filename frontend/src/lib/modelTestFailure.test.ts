@@ -9,8 +9,8 @@ describe('bounded inference failure text', () => {
       response: { status: 502, data: { detail: raw } },
     };
     const display = modelTestFailureMessage(error);
-    expect(display).toContain('Ollama Cloud returned HTTP 402');
-    expect(display).toContain('account credit');
+    expect(display).toContain('provider returned HTTP 402');
+    expect(display).toContain('credit');
     expect(display).not.toContain('private-provider-trace');
     expect(display).not.toContain('API key is invalid');
   });

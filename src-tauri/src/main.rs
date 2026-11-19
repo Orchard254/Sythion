@@ -1,6 +1,7 @@
 // Prevents an extra console window in release builds on Windows.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod native_attestation;
 mod sidecar;
 
 use std::process::Child;
@@ -634,14 +635,31 @@ fn main() {
         job: Mutex::new(None),
     };
 
+    // Native attestation key is generated and provisioned BEFORE the sidecar
+    // starts. The sidecar reads it once from the user-only-ACL file and deletes
+    // it; no key ever passes through the webview, control token, env or HTTP.
+    let native_attestation = match native_attestation::NativeAttestation::new() {
+        Ok(boundary) => boundary,
+        Err(e) => {
+            eprintln!("native attestation unavailable: {e}");
+            return;
+        }
+    };
+    if let Err(e) = native_attestation.provision(&profile_dir) {
+        eprintln!("native attestation key provisioning failed: {e}");
+        return;
+    }
+
     let app = tauri::Builder::default()
         .plugin(global_shortcut_plugin())
         .manage(state)
         .manage(HitTestState::default())
+        .manage(native_attestation)
         .invoke_handler(tauri::generate_handler![
             get_bridge_config,
             set_companion_hit_regions,
-            set_companion_visible
+            set_companion_visible,
+            native_attestation::verify_native_presence
         ])
         .setup(move |app| {
             let started: Result<(), String> = (|| {

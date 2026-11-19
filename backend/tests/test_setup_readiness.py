@@ -198,7 +198,11 @@ def test_inference_success_and_failure(monkeypatch):
         set_secret_store_for_testing(None)
 
 
-def test_readiness_states(monkeypatch):
+def test_readiness_states(monkeypatch, tmp_path):
+    # Keep the resolved active provider independent of a developer's real
+    # profile, which may legitimately hold a bound cloud selection elsewhere.
+    from backend.core import profile
+    monkeypatch.setattr(profile, "data_dir", lambda: str(tmp_path))
     set_secret_store_for_testing(MemoryStore())
     # The credential is a CONSTANT of this test, not a variable: it is pinned
     # here so the readiness answer never depends on the developer's gitignored
@@ -222,6 +226,9 @@ def test_readiness_states(monkeypatch):
         # The tenth check is STATED here, not inherited from ambient state.
         assert body["checks"]["ollama_api_key_ok"] is True
         assert body["full_ready"] is True
+        # The unconfigured Ollama sentinel is not a cloud activation.
+        assert body["active_provider_id"] == "ollama-cloud"
+        assert body["active_provider_ready_ok"] is False
     finally:
         backend_main.control_token = previous_token
         app.dependency_overrides.clear()
@@ -238,6 +245,28 @@ def test_readiness_states(monkeypatch):
         assert body["checks"]["ollama_api_key_ok"] is True
         assert body["checks"]["selected_model_ok"] is False
         assert body["full_ready"] is False
+    finally:
+        backend_main.control_token = previous_token
+        app.dependency_overrides.clear()
+        set_secret_store_for_testing(None)
+
+
+def test_readiness_treats_bound_ollama_cloud_as_a_cloud_activation(monkeypatch):
+    set_secret_store_for_testing(MemoryStore())
+    from backend.runtime import active_inference as active
+    monkeypatch.setattr(active, "get_active_inference_selection", lambda: (
+        active.ActiveInferenceSelection("ollama-cloud", "gemma4:31b")
+    ))
+    client, previous_token, backend_main = _client(
+        monkeypatch, provider=_Provider(), selected=None)
+    try:
+        res = client.get("/api/v1/setup/readiness")
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["active_provider_id"] == "ollama-cloud"
+        assert body["selected_model"] == "gemma4:31b"
+        assert body["checks"]["inference_verified_ok"] is True
+        assert body["active_provider_ready_ok"] is True
     finally:
         backend_main.control_token = previous_token
         app.dependency_overrides.clear()

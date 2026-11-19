@@ -2,13 +2,20 @@
 
 Status: IMPLEMENTED AS AN INERT, OFFLINE-TESTED-BY-DESIGN MODULE. NOT ACTIVE.
 
-Three trusted OpenAI-compatible clouds share a single adapter:
+Four trusted OpenAI-compatible clouds share a single adapter:
 - OpenRouter: https://openrouter.ai/api/v1
 - NVIDIA NIM: https://integrate.api.nvidia.com/v1
 - Groq: https://api.groq.com/openai/v1
+- Ollama Cloud: https://ollama.com/v1
 
 Secrets are stored under separate scoped keys openrouter_api_key,
-nvidia_api_key and groq_api_key via the existing write-only vault.
+nvidia_api_key, groq_api_key and ollama_api_key via the existing write-only
+vault. Ollama Cloud omits `tool_choice` on inference requests because its
+OpenAI-compatible endpoint does not support that field; the exact named
+function-call proof and argument check are still required. A bound Ollama
+Cloud selection uses the same HMAC credential binding, activation endpoint,
+model catalog and readiness contract as the other three providers. The legacy
+unconfigured Ollama sentinel remains a separate native fallback.
 No arbitrary URL, environment credential shortcut, automatic retry, fallback
 or model selection is introduced in this phase.
 

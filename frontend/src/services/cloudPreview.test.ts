@@ -42,6 +42,7 @@ describe('cloud preview API security and wire contracts', () => {
     ['openrouter', '/secrets/openrouter_api_key'],
     ['nvidia', '/secrets/nvidia_api_key'],
     ['groq', '/secrets/groq_api_key'],
+    ['ollama-cloud', '/secrets/ollama_api_key'],
   ] as const)('maps only %s into its exact vault key', async (provider, expectedPath) => {
     await cloudPreviewService.saveCredential(provider, '    synthetic-secret  ');
     expect(calls).toStrictEqual([

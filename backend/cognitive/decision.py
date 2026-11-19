@@ -14,6 +14,7 @@ metadata; it can never invoke real tools or mutate state.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -42,8 +43,20 @@ RISK_SCORE = {RiskLevel.NONE: 1.0, RiskLevel.LOW: 0.85,
 
 @dataclass
 class HardConstraint:
+    """An ALWAYS-enforced runtime constraint on model-proposed candidates.
+
+    A hard constraint without an executable check is not a hard constraint:
+    it is an unenforced claim. Policy statements the runtime enforces at a
+    different layer belong in ``ConstraintSet.policy_notes``, never here.
+    ``check(candidate)`` returns True when the candidate VIOLATES it.
+    """
+
     text: str
-    check: Optional[Any] = None   # Optional callable(candidate)->bool (True=veto)
+    check: Callable[[Any], bool]
+
+    def __post_init__(self) -> None:
+        if not callable(self.check):
+            raise TypeError("hard constraint requires an executable check")
 
 
 @dataclass
@@ -56,6 +69,11 @@ class SoftPreference:
 class ConstraintSet:
     hard: List[HardConstraint] = field(default_factory=list)
     soft: List[SoftPreference] = field(default_factory=list)
+    # Advisory policy context. These are NOT vetoes here; the runtime enforces
+    # them at execution time (permissions, leases, approvals, budgets). Keeping
+    # them separate prevents an LLM-proposed candidate from appearing to pass
+    # an "enforced" constraint that no code actually checks.
+    policy_notes: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -151,8 +169,9 @@ class DecisionSystem:
         VIOLATES the constraint.
         """
         for constraint in hard:
-            if constraint.check is None:
-                continue
+            # Construction guarantees a callable; fail closed if a malformed
+            # constraint is injected at runtime. An unevaluable check vetoes
+            # the candidate rather than silently allowing it.
             try:
                 if constraint.check(cand):
                     return constraint.text

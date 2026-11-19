@@ -44,6 +44,7 @@ beforeEach(async () => {
   mock.active.mockResolvedValue(active());
   mock.cloud.mockResolvedValue({
     providers: [
+      { provider_id: 'ollama-cloud', credential_configured: true },
       { provider_id: 'openrouter', credential_configured: true },
       { provider_id: 'nvidia', credential_configured: false },
       { provider_id: 'groq', credential_configured: true },
@@ -103,30 +104,26 @@ it('confirms a changed cloud model from the actual active backend status', async
   expect(mock.restore).not.toHaveBeenCalled();
 });
 
-it('activates Ollama through one guarded verification without mutating the active model first', async () => {
+it('uses the same guarded provider picker for Ollama Cloud as for other clouds', async () => {
   await changeProvider('ollama-cloud');
-  const selector = view.root.findByProps({ id: 'settings-ollama-model' });
-  expect(selector.props.disabled).toBe(false);
-  mock.active.mockResolvedValueOnce(active('ollama-cloud', 'ollama/test'));
-  await settle(() => selector.props.onChange({ target: { value: 'ollama/test' } }));
-  expect(mock.activateOllama).toHaveBeenCalledWith('ollama/test');
-  expect(mock.select).not.toHaveBeenCalled();
-  expect(mock.inference).not.toHaveBeenCalled();
+  const picker = view.root.findByProps({ id: 'mock-cloud-picker' });
+  expect(picker.props['data-provider']).toBe('ollama-cloud');
+  expect(picker.props['data-phase']).toBe('model');
+  expect(view.root.findAllByProps({ id: 'settings-ollama-model' })).toHaveLength(0);
+  mock.active.mockResolvedValueOnce(active('ollama-cloud', 'gemma4:31b'));
+  await settle(() => view.root.findByType(ActiveCloudSetup).props.onVerified('gemma4:31b'));
+  expect(text()).toContain('gemma4:31b');
+  expect(text()).toContain('Active AI model updated');
   expect(mock.restore).not.toHaveBeenCalled();
-  expect(text()).toContain('Ollama model verified and selected');
 });
 
-it('does not claim a successful switch if the Ollama verification fails', async () => {
+it('does not claim a successful Ollama Cloud switch if verification changes the active model', async () => {
   await changeProvider('ollama-cloud');
-  mock.activateOllama.mockRejectedValueOnce(new Error('synthetic provider failure'));
-  await settle(() => view.root.findByProps({ id: 'settings-ollama-model' }).props.onChange({
-    target: { value: 'ollama/test' },
-  }));
+  mock.active.mockResolvedValueOnce(active('openrouter', 'unit/model:free'));
+  await settle(() => view.root.findByType(ActiveCloudSetup).props.onVerified('gemma4:31b'));
   expect(mock.restore).not.toHaveBeenCalled();
-  expect(mock.select).not.toHaveBeenCalled();
-  expect(mock.inference).not.toHaveBeenCalled();
-  expect(text()).toContain('could not activate this Ollama model');
-  expect(text()).not.toContain('Ollama model verified and selected');
+  expect(text()).toContain('active model changed');
+  expect(text()).not.toContain('Active AI model updated');
 });
 
 it('does not silently default to Ollama when active selection is invalid', async () => {

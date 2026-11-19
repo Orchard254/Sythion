@@ -61,6 +61,31 @@ VAULT_WRITE_VIOLATION_STATUS = 409
 VAULT_WRITE_VIOLATION_ERROR = "VAULT_WRITE_BLOCKED"
 
 
+def _provision_native_attestation():
+    """Consume the host-provisioned verifier key once, then delete the file.
+
+    A missing or malformed key leaves the boundary unconfigured (fail closed).
+    The key is never logged or exposed through any API.
+    """
+    from pathlib import Path
+
+    from .core.storage import data_dir
+
+    path = Path(data_dir()) / "native_attestation.key"
+    if not path.is_file():
+        return None
+    try:
+        from .services.recovery_native_challenge import TrustedHostAttestationBoundary
+
+        key = bytes.fromhex(path.read_text(encoding="ascii").strip())
+        boundary = TrustedHostAttestationBoundary(lambda: key)
+        path.unlink(missing_ok=True)
+        return boundary
+    except Exception:
+        path.unlink(missing_ok=True)
+        return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
@@ -83,6 +108,7 @@ async def lifespan(app: FastAPI):
         handshake_token = read_launch_token()
         control_token = handshake_token or generate_control_token()
         logger.info("Sythion (Synth) starting with per-launch control token initialized")
+        app.state.native_attestation = _provision_native_attestation()
 
         # Validate critical configuration early so misconfig is obvious at boot
         from .core.config import validate_startup_config

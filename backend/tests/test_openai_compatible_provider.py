@@ -320,3 +320,71 @@ def test_preverified_argument_requires_exact_boolean():
     with pytest.raises(CompatibleProviderError, match="Invalid capability evidence"):
         OpenAICompatibleCloudAdapter("openrouter", "unit-model",
                                      api_key="inert-key", preverified_tool_capability="yes")
+
+
+def test_ollama_cloud_is_registered_with_a_fixed_url_and_no_forced_tool_choice():
+    from urllib.parse import urlsplit
+    spec = provider_spec("ollama-cloud")
+    target = urlsplit(spec.base_url)
+    assert target.scheme == "https"
+    assert target.hostname == "ollama.com"
+    assert target.path.rstrip("/") == "/v1"
+    assert spec.key_name == "ollama_api_key"
+    assert spec.supports_tool_choice is False
+    assert all(provider_spec(pid).supports_tool_choice is True
+               for pid in ("openrouter", "nvidia", "groq"))
+
+
+def test_ollama_cloud_key_resolves_through_the_shared_scoped_store(monkeypatch):
+    secrets.set_secret_store_for_testing(secrets.MemoryStore())
+    try:
+        secrets.set_secret(secrets.OLLAMA_API_KEY, "inert-scoped-key")
+        monkeypatch.setenv("OLLAMA_API_KEY", "inert-env-override")
+        assert secrets.resolve_compatible_provider_key("ollama-cloud") == "inert-scoped-key"
+    finally:
+        secrets.set_secret_store_for_testing(None)
+
+
+@pytest.mark.asyncio
+async def test_ollama_cloud_probe_and_decision_omit_tool_choice_but_keep_strict_proof():
+    calls = []
+
+    async def handler(req):
+        body = json.loads(req.content)
+        calls.append(body)
+        assert req.url.host == "ollama.com"
+        assert req.url.path == "/v1/chat/completions"
+        if len(calls) == 1:
+            return httpx.Response(200, json=_response(tool=True))
+        return httpx.Response(200, json=_response(
+            tool=True, name="complete_task", args='{"result":"done"}'))
+
+    tools = [{"type": "function", "function": {
+        "name": "complete_task", "description": "Complete",
+        "parameters": {"type": "object", "properties": {}},
+    }}]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler),
+                                 base_url="https://ollama.com/v1/") as client:
+        adapter = OpenAICompatibleCloudAdapter(
+            "ollama-cloud", "gemma4:31b", client=client, api_key="inert-key")
+        response = await adapter.decide([{"role": "user", "content": "do work"}], tools)
+    assert len(calls) == 2
+    assert "tool_choice" not in calls[0]
+    assert "tool_choice" not in calls[1]
+    assert calls[0]["max_tokens"] == 90
+    assert response["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "complete_task"
+
+
+@pytest.mark.asyncio
+async def test_ollama_cloud_bad_probe_still_fails_closed():
+    async def handler(req):
+        return httpx.Response(200, json=_response())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler),
+                                 base_url="https://ollama.com/v1/") as client:
+        adapter = OpenAICompatibleCloudAdapter(
+            "ollama-cloud", "gemma4:31b", client=client, api_key="inert-key")
+        with pytest.raises(CompatibleProviderError, match="capability probe failed"):
+            await adapter.decide(
+                [{"role": "user", "content": "task"}],
+                [{"type": "function", "function": {"name": "complete_task"}}],
+            )

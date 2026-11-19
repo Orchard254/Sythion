@@ -226,3 +226,32 @@ async def test_model_switch_uses_new_provider_in_original_assistant_contract(
     assert [row[0] for row in calls if row[0] != "closed"] == [
         "unit/cloud:free", "unit/next:free",
     ]
+
+
+def verified_ollama_cloud(db):
+    profile.stage_cloud_selection("ollama-cloud", "gemma4:31b")
+    secrets.set_secret(secrets.OLLAMA_API_KEY, "synthetic-not-real")
+    snapshot = profile.get_staged_cloud_snapshot()
+    persist_text_evidence(db, snapshot, "synthetic-not-real")
+    persist_probe_evidence(db, snapshot, "synthetic-not-real")
+    persist_assistant_contract_evidence(db, snapshot, "synthetic-not-real")
+
+
+def test_bound_ollama_selection_uses_the_same_provider_seams(test_db, isolated):
+    verified_ollama_cloud(test_db)
+    chosen = active.activate_verified_cloud_selection(
+        test_db, "ollama-cloud", "gemma4:31b")
+    assert chosen == active.ActiveInferenceSelection("ollama-cloud", "gemma4:31b")
+    assert active.get_active_inference_selection() == chosen
+    assert isinstance(ModelClient().provider, active.ActiveCompatibleChatProvider)
+    decision = model_client.get_default_model_client()
+    assert isinstance(decision, active.ActiveCompatibleDecisionClient)
+    assert decision.provider_name() == "ollama-cloud"
+
+
+def test_unbound_ollama_sentinel_stays_on_the_legacy_native_provider(isolated):
+    selected = active.get_active_inference_selection()
+    assert selected == active.ActiveInferenceSelection("ollama-cloud", "")
+    assert active._is_legacy_ollama_default(selected) is True
+    bound = active.ActiveInferenceSelection("ollama-cloud", "gemma4:31b")
+    assert active._is_legacy_ollama_default(bound) is False

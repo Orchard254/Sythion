@@ -58,10 +58,13 @@ def test_provider_listing_uses_only_vault_presence_not_network(test_client, prev
     assert body["active_provider"] == "ollama-cloud"
     assert body["ready_for_execution"] is False
     assert body["staged"] == {}
-    assert {p["provider_id"] for p in body["providers"]} == {"openrouter", "nvidia", "groq"}
+    assert {p["provider_id"] for p in body["providers"]} == {
+        "openrouter", "nvidia", "groq", "ollama-cloud",
+    }
     by_id = {p["provider_id"]: p for p in body["providers"]}
     assert by_id["openrouter"]["credential_configured"] is True
     assert by_id["groq"]["credential_configured"] is False
+    assert by_id["ollama-cloud"]["credential_configured"] is False
     assert "synthetic-sensitive-token" not in response.text
 
 
@@ -442,3 +445,28 @@ def test_model_catalog_sanitizes_rejected_key(test_client, preview_profile, monk
     assert response.status_code == 502
     assert "stored credential" in response.json()["detail"]
     assert "synthetic-sensitive-token" not in response.text
+
+
+def test_provider_listing_reports_the_truthful_active_provider(test_client, preview_profile):
+    profile.save_profile({"active_inference_selection": {
+        "version": 1,
+        "provider_id": "groq",
+        "model_id": "unit/groq:free",
+        "nonce": "0" * 32,
+        "mac": "0" * 64,
+    }})
+    # A damaged binding must be reported as unavailable, never as Ollama.
+    response = test_client.get("/api/v1/inference-preview/providers")
+    assert response.status_code == 200, response.text
+    assert response.json()["active_provider"] == "unavailable"
+
+
+def test_ollama_cloud_stages_like_any_other_provider(test_client, preview_profile):
+    response = test_client.post("/api/v1/inference-preview/stage", json={
+        "provider_id": "ollama-cloud", "model_id": "gemma4:31b",
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["provider_id"] == "ollama-cloud"
+    assert profile.get_staged_cloud_selection() == {
+        "provider_id": "ollama-cloud", "model_id": "gemma4:31b",
+    }

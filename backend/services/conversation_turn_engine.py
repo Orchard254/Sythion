@@ -38,7 +38,13 @@ except Exception:  # pragma: no cover - import path compatibility
             validate_discussion_resolution_selection,
         )
 
-from .reasoning_dispatch import ReasoningJob, ReasoningPurpose, dispatch_reasoning
+from .reasoning_dispatch import (
+    ReasoningPurpose, ReasoningResultError, admit_reasoning_job,
+    as_text_result, dispatch_reasoning, handoff_reasoning_result,
+)
+from .work_attention import (
+    WorkItem, WorkKind, reasoning_signals_for, select_next_work,
+)
 
 from .conversation_text_policy import (
     PLAIN_PROSE_NO_ACTION_DISCLOSURE,
@@ -419,13 +425,30 @@ class ConversationTurnEngine:
                 "max_tokens": MAX_ASSISTANT_TEXT,
                 "timeout": 60.0,
             }
+            name_fn = getattr(self.model_client, "provider_name", None)
+            if callable(name_fn):
+                provider_id = name_fn()
+            else:
+                # Out-of-contract test doubles have no processor identity;
+                # record that honestly instead of inventing a provider name.
+                provider_id = "unidentified-client"
+            admission = admit_reasoning_job(
+                purpose=ReasoningPurpose.CONVERSATION,
+                # The provider is already given a 60s timeout; the outer
+                # deadline is only a safety bound if it ignores that limit.
+                timeout_seconds=70.0,
+                provider_id=provider_id,
+                signals=reasoning_signals_for(select_next_work([
+                    WorkItem(
+                        kind=WorkKind.CONVERSATION,
+                        work_id="conversation",
+                        ready=bool(messages),
+                    ),
+                ])),
+            )
+            job = admission.job
             response = await dispatch_reasoning(
-                ReasoningJob(
-                    purpose=ReasoningPurpose.CONVERSATION,
-                    # The provider is already given a 60s timeout; the outer
-                    # deadline is only a safety bound if it ignores that limit.
-                    timeout_seconds=70.0,
-                ),
+                job,
                 lambda: self.model_client.chat(**call_kwargs),
             )
         except asyncio.CancelledError:
@@ -440,12 +463,14 @@ class ConversationTurnEngine:
             # are never retried.
             raise ConversationModelError() from None
 
-        if not isinstance(response, str):
+        try:
+            result = handoff_reasoning_result(as_text_result(job, response), job)
+        except ReasoningResultError as exc:
             raise ConversationTurnValidationError(
-                "model response must be text",
+                str(exc),
                 reason_code="response_type",
-            )
-        return response
+            ) from None
+        return result.value
 
     @staticmethod
     def _is_transient_model_availability_error(exc: BaseException) -> bool:

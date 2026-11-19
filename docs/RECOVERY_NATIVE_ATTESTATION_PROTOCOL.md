@@ -1,6 +1,6 @@
 # Native recovery presence protocol — foundation only
 
-**Status:** Offline contract implemented 2026-11-09; no production native verifier, route, consent, clearance or replay.
+**Status:** Offline contract implemented 2026-11-09; backend trusted-host injection boundary and non-authorizing receipt added 2026-11-19; native Tauri host half (per-launch key, ACL'd handoff file, HWND-bound Windows Hello interop, sign-only-on-Verified) authored and **compile-verified 2026-11-19** (`cargo check --offline` exit 0 after installing VS BuildTools + Windows SDK). **Windows Hello outcomes were not exercised by owner direction. No production route, consent, clearance or replay.**
 
 This document describes the narrow boundary required before a trusted desktop
 host can make a credible human-presence assertion during recovery review.
@@ -57,6 +57,46 @@ The currently returned `NativePresenceObservation` acknowledges only
 These flags remain false even in simulated-success tests. This module is not
 imported by the current resume route or TaskRunner and has **no** authority to
 change task/goal state, execute tools, approve actions, or clear uncertainty.
+
+## Backend trusted-host boundary (2026-11-19, partial)
+
+`TrustedHostAttestationBoundary` in `backend/services/recovery_native_challenge.py`
+now makes key provenance injection-only: a `key_provider` callable supplied by
+the trusted launcher is consumed exactly once at construction, there is no key
+setter, and HTTP/webview/model input cannot supply or replace it. A verified
+host assertion produces an immutable `NativeAttestationReceipt` whose authority
+flags (`authenticated_human`, `independent_effect_verified`, `recovery_cleared`,
+`authorization_issued`, `automatic_replay_allowed`) are structurally fixed
+false. Replay, stale revision and wrong task scope write no receipt.
+
+This is the **backend half only**. It does not implement the native Windows
+Hello prompt, HWND-bound verification, the protected host-to-sidecar key
+channel, or any OS-backed proof of human presence. No route exposes it, and it
+does not change resume, approval or task state. 53 focused tests pass; see
+`backend/tests/test_trusted_host_attestation_boundary.py`.
+
+## Native host half (authored 2026-11-19, compile unverified)
+
+- `src-tauri/src/native_attestation.rs` generates the 32-byte per-launch key
+  with `getrandom`, provisions it through `write_private_text_file` (private
+  ACL, atomic replace, reparse-point refusal), signs the exact backend
+  canonical message once per challenge, and calls
+  `IUserConsentVerifierInterop::RequestVerificationForWindowAsync` bound to the
+  Tauri window HWND. It signs **only** when the OS returns `Verified`; cancel,
+  busy, unavailable and failure deny.
+- `src-tauri/src/main.rs` provisions the key before starting the sidecar and
+  registers the `verify_native_presence` command.
+- `backend/main.py` consumes the key file once at startup, constructs the
+  `TrustedHostAttestationBoundary`, deletes the file, and leaves the boundary
+  unconfigured on a missing or malformed key. 20 focused tests pass for the
+  handoff and boundary.
+
+Verification: after installing Visual Studio BuildTools 2022 (VCTools) and the
+Windows 10 SDK, `cargo check --offline` completed with exit code 0. Three real
+compile errors in the first draft (wrong async-operation import, `?` in a
+`main()` returning `()`, and a `!Send` COM pointer held across `await`) were
+fixed; the WinRT operation is now awaited by a bounded blocking poll inside a
+synchronous Tauri command. No live Windows Hello outcome was exercised.
 
 ## Future trusted Windows integration (not implemented)
 

@@ -330,6 +330,42 @@ class TestDecisionSystem:
         assert evaluation.selected is None
         assert evaluation.vetoed[0]["action_id"] == "high_risk_action"
 
+    def test_a_hard_constraint_without_an_executable_check_is_rejected(self):
+        # An unenforced claim must not be labelled "hard": that would let a
+        # model proposal appear vetted by a rule no code actually applies.
+        with pytest.raises(TypeError, match="check"):
+            HardConstraint(text="unenforced policy statement")
+
+    def test_pipeline_hard_rules_are_all_enforced_and_advisory_rules_are_explicit(self):
+        constraints = CognitivePipeline._default_constraints()
+        assert constraints.hard
+        assert all(callable(c.check) for c in constraints.hard)
+        assert "never exfiltrate secrets" in constraints.policy_notes
+        assert "never bypass policy/verification/lease/budgets" in constraints.policy_notes
+        assert all("exfiltrate" not in c.text for c in constraints.hard)
+
+    def test_advisory_policy_note_never_vetoes_by_itself(self):
+        # A policy note is context for the downstream runtime, not a decision
+        # here. Treating it as a veto would be a false claim of enforcement.
+        candidate = _cand("destructive_note", description="delete project files")
+        evaluation = DecisionSystem().evaluate(
+            [candidate], ConstraintSet(policy_notes=["no deletions"]))
+        assert evaluation.vetoed == []
+        assert evaluation.selected.candidate.action_id == "destructive_note"
+
+    def test_permission_flag_allows_an_otherwise_destructive_proposal(self):
+        candidate = CandidateAction(
+            action_id="permitted_delete",
+            decision_type=DecisionType.EXECUTE_STEP,
+            description="delete temporary files",
+            risk=RiskLevel.LOW, reversible=True,
+            requires_permission=True,
+        )
+        evaluation = DecisionSystem().evaluate(
+            [candidate], CognitivePipeline._default_constraints())
+        assert evaluation.vetoed == []
+        assert evaluation.selected.candidate.action_id == "permitted_delete"
+
     def test_lower_risk_preferred(self):
         system = DecisionSystem()
         low = _cand("low", risk=RiskLevel.LOW)

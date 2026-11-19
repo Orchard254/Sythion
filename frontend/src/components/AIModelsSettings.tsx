@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { ActiveCloudSetup } from './ActiveCloudSetup';
 import { Button, Notice, Panel } from './ui';
 import {
-  activeInferenceService, cloudPreviewService, modelService, setupService,
+  activeInferenceService, cloudPreviewService,
   type CloudPreviewProviderId,
 } from '../services/api';
 
-type AIProvider = 'ollama-cloud' | CloudPreviewProviderId;
+type AIProvider = CloudPreviewProviderId;
 type ActiveModel = { provider_id: string; model_id: string; permissions_unchanged: true };
 
 const PROVIDERS: Record<AIProvider, string> = {
@@ -26,13 +26,8 @@ export function AIModelsSettings() {
   const [provider, setProvider] = useState<AIProvider | null>(null);
   const [hasKey, setHasKey] = useState<Partial<Record<CloudPreviewProviderId, boolean>>>({});
   const [keyEditor, setKeyEditor] = useState(false);
-  const [ollamaKey, setOllamaKey] = useState('');
-  const [ollamaKeyReady, setOllamaKeyReady] = useState(false);
-  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
-  const [selectedOllama, setSelectedOllama] = useState('');
   const [loading, setLoading] = useState(true);
-  const [loadingModels, setLoadingModels] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [busy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const mounted = useRef(false);
@@ -52,14 +47,12 @@ export function AIModelsSettings() {
       const results = await Promise.allSettled([
         activeInferenceService.status(),
         cloudPreviewService.status(),
-        setupService.readiness(),
       ]);
       if (cancelled || !mounted.current) return;
-      const [selection, credentials, readiness] = results;
+      const [selection, credentials] = results;
       if (selection.status === 'fulfilled') {
         const current = selection.value;
         setActive(current);
-        if (current.provider_id === 'ollama-cloud') setSelectedOllama(current.model_id);
         if (isSupported(current.provider_id)) setProvider(current.provider_id);
         else setError('The active AI provider is unsupported. Review configuration.');
       } else {
@@ -71,33 +64,11 @@ export function AIModelsSettings() {
           entries.map((entry) => [entry.provider_id, entry.credential_configured === true]),
         ) as Partial<Record<CloudPreviewProviderId, boolean>>);
       }
-      if (readiness.status === 'fulfilled') {
-        setOllamaKeyReady(readiness.value.checks.ollama_api_key_ok === true);
-      }
       setLoading(false);
     }
     void load();
     return () => { cancelled = true; };
   }, []);
-
-  useEffect(() => {
-    if (loading || provider !== 'ollama-cloud' || !ollamaKeyReady) return;
-    let cancelled = false;
-    const current = ++generation.current;
-    setLoadingModels(true);
-    void modelService.available().then((models) => {
-      if (cancelled || !mounted.current || current !== generation.current) return;
-      setOllamaModels([...new Set(models)]);
-    }).catch(() => {
-      if (!cancelled && mounted.current && current === generation.current) {
-        setError('Could not load Ollama models. Check your Ollama connection or API key.');
-      }
-    }).finally(() => {
-      if (!cancelled && mounted.current && current === generation.current) setLoadingModels(false);
-    });
-    return () => { cancelled = true; };
-    // Fetch on provider change/key readiness, not on every active model update.
-  }, [provider, loading, ollamaKeyReady]);
 
   const chooseProvider = (next: AIProvider) => {
     if (inFlight.current || busy || loading) return;
@@ -105,71 +76,17 @@ export function AIModelsSettings() {
     setProvider(next);
     setError(''); setMessage('');
     setKeyEditor(false);
-    setSelectedOllama(next === 'ollama-cloud' && active?.provider_id === 'ollama-cloud'
-      ? active.model_id : '');
-  };
-
-  const saveOllamaKey = async () => {
-    if (!ollamaKey.trim() || inFlight.current) return;
-    inFlight.current = true; setBusy(true); setError(''); setMessage('');
-    const current = generation.current;
-    try {
-      const result = await setupService.testCredentials(ollamaKey.trim());
-      if (!mounted.current || current !== generation.current) return;
-      if (!result.valid) throw new Error('Credential was not accepted');
-      setOllamaKey(''); setOllamaKeyReady(true);
-      setOllamaModels(result.models.filter(Boolean));
-      setMessage('Ollama key saved. Select a model to verify it.');
-    } catch {
-      if (mounted.current && current === generation.current) {
-        setError('Could not verify the Ollama Cloud API key. Review your account access.');
-      }
-    } finally {
-      inFlight.current = false;
-      if (mounted.current && current === generation.current) setBusy(false);
-    }
-  };
-
-  const activateOllama = async (modelId: string) => {
-    if (!modelId || !ollamaKeyReady || !ollamaModels.includes(modelId) ||
-        inFlight.current || busy) return;
-    inFlight.current = true; setBusy(true); setError(''); setMessage('');
-    const current = generation.current;
-    setSelectedOllama(modelId);
-    try {
-      // Test candidate without changing the current model. Backend commits
-      // selection only after its exact provider request succeeds.
-      const verified = await activeInferenceService.activateOllama(modelId);
-      if (!mounted.current || current !== generation.current) return;
-      if (verified.provider_id !== 'ollama-cloud' || verified.model_id !== modelId ||
-          verified.verified !== true || verified.permissions_unchanged !== true) {
-        throw new Error('Unexpected Ollama activation result');
-      }
-      const next = await activeInferenceService.status();
-      if (!mounted.current || current !== generation.current) return;
-      if (next.provider_id !== 'ollama-cloud' || next.model_id !== modelId ||
-          next.permissions_unchanged !== true) throw new Error('Unexpected active model');
-      setActive(next);
-      setMessage('Ollama model verified and selected for Sythion.');
-    } catch {
-      if (mounted.current && current === generation.current) {
-        setError('Sythion could not activate this Ollama model. Check access and finish any active tasks before switching.');
-      }
-    } finally {
-      inFlight.current = false;
-      if (mounted.current && current === generation.current) setBusy(false);
-    }
   };
 
   const onCloudConnected = () => {
-    if (!provider || provider === 'ollama-cloud') return;
+    if (!provider) return;
     setHasKey((previous) => ({ ...previous, [provider]: true }));
     setKeyEditor(false);
     setError(''); setMessage('');
   };
 
   const onCloudVerified = (modelId: string) => {
-    if (!provider || provider === 'ollama-cloud') return;
+    if (!provider) return;
     const expected = provider;
     const currentGeneration = generation.current;
     void activeInferenceService.status().then((current) => {
@@ -207,29 +124,7 @@ export function AIModelsSettings() {
             {Object.entries(PROVIDERS).map(([id, label]) =>
               <option key={id} value={id}>{label}</option>)}
           </select>
-          {provider === 'ollama-cloud' && <>
-            <label htmlFor="settings-ollama-key">Ollama Cloud API key</label>
-            <input id="settings-ollama-key" className="input" type="password"
-              autoComplete="off" disabled={busy} value={ollamaKey}
-              placeholder={ollamaKeyReady ? 'Saved key available — leave empty to keep it' : 'Enter Ollama Cloud API key'}
-              onChange={(event) => setOllamaKey(event.target.value)} />
-            {ollamaKey.trim() && <Button disabled={busy} onClick={() => void saveOllamaKey()}>
-              Connect Ollama Cloud
-            </Button>}
-            <span className="t-muted">Available Ollama Cloud models</span>
-            <label htmlFor="settings-ollama-model">Choose a model</label>
-            <select id="settings-ollama-model" className="input" value={selectedOllama}
-              disabled={busy || loadingModels || !ollamaKeyReady}
-              onChange={(event) => void activateOllama(event.target.value)}>
-              <option value="">Select a model</option>
-              {[...new Set([...(selectedOllama ? [selectedOllama] : []), ...ollamaModels])]
-                .map((id) => <option value={id} key={id}>{id}</option>)}
-            </select>
-            {loadingModels && <p role="status">Loading Ollama models…</p>}
-            <p className="t-muted">Selecting a different model verifies it before use.
-              Switching may be blocked until unfinished tasks are completed.</p>
-          </>}
-          {provider && provider !== 'ollama-cloud' && <>
+          {provider && <>
             {hasKey[provider] && !keyEditor &&
               <Button variant="subtle" disabled={busy} onClick={() => setKeyEditor(true)}>
                 Change saved API key

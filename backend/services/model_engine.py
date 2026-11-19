@@ -19,8 +19,15 @@ from backend.tools.executor import ToolExecutor
 from backend.core.budgets import TaskBudget, BudgetExceededError
 from backend.services.model_context_builder import ModelContextBuilder
 from backend.services.model_prompt_contract import build_system_prompt
-from backend.services.reasoning_dispatch import ReasoningJob, ReasoningPurpose, ReasoningJournalError, dispatch_reasoning
-from pydantic import BaseModel, ConfigDict, Field
+from backend.services.reasoning_dispatch import (
+    ReasoningAdmissionError, ReasoningPurpose, ReasoningJournalError,
+    ReasoningResultError, admit_reasoning_job, as_mapping_result,
+    dispatch_reasoning, handoff_reasoning_result,
+)
+from backend.services.work_attention import (
+    WorkItem, WorkKind, reasoning_signals_for, select_next_work,
+)
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +58,16 @@ class ExecuteToolInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     tool_name: str = Field(..., description="Name of the tool to execute")
     params: Dict[str, Any] = Field(default_factory=dict, description="Tool parameters")
+
+
+def _reject_duplicate_json_keys(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
+    """Reject ambiguous model output instead of silently keeping the last key."""
+    result: Dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
 
 
 class ModelDecisionError(Exception):
@@ -85,6 +102,16 @@ class ModelDecisionEngine:
     
 
     MAX_REPAIR_ATTEMPTS = 2
+
+    # Model output is a proposal, not an execution grant. Every call must match
+    # the declared input contract before it can enter the execution path.
+    _DECISION_INPUT_SCHEMAS = {
+        DecisionType.COMPLETE_TASK: CompleteTaskInput,
+        DecisionType.FAIL_TASK: FailTaskInput,
+        DecisionType.REQUEST_USER_INPUT: RequestUserInput,
+        DecisionType.RUN_SKILL: RunSkillInput,
+        DecisionType.EXECUTE_TOOL: ExecuteToolInput,
+    }
 
     # gemma4:31b supports 256K tokens — output and task caps raised accordingly
     MAX_TOKENS_PER_REQUEST = 8192    # was 4000
@@ -346,6 +373,66 @@ class ModelDecisionEngine:
             return message
         return {k: v for k, v in message.items() if k.lower() not in self._REASONING_FIELDS}
 
+    def _validate_call_arguments(
+        self, name: str, args: Any, visible_names: set
+    ) -> Dict[str, Any]:
+        """Validate one model-proposed call against its declared schema.
+
+        Unknown names are rejected here too, so a hidden/mutating tool cannot
+        be parked as a pending call and executed later. Validation is
+        fail-closed: malformed or unparseable output never reaches the
+        executor, and the model's raw argument object is never forwarded.
+        """
+        if name in self._DECISION_INPUT_SCHEMAS:
+            schema = self._DECISION_INPUT_SCHEMAS[name]
+        elif name in visible_names:
+            tool = self.tool_executor.get_tool(name)
+            schema = getattr(tool, "input_schema", None) if tool else None
+        else:
+            raise ModelDecisionError(
+                code="INVALID_DECISION_TYPE",
+                message=f"Unknown decision type: {name}",
+            )
+
+        if not isinstance(args, dict):
+            raise ModelDecisionError(
+                code="INVALID_ARGUMENTS",
+                message="Model decision arguments must be an object",
+            )
+        if not isinstance(schema, type) or not issubclass(schema, BaseModel):
+            # A visible tool without a declared schema has no additional
+            # contract to enforce; the object shape check above still applies.
+            return dict(args)
+        try:
+            validated = schema.model_validate(args)
+        except ValidationError:
+            raise ModelDecisionError(
+                code="INVALID_ARGUMENTS",
+                message="Model decision arguments do not match the required schema",
+            ) from None
+        data = validated.model_dump()
+
+        # The wrapper is valid, but the tool it names must also receive valid
+        # parameters. Unknown tool names stay for the executor to reject.
+        if name == DecisionType.EXECUTE_TOOL:
+            params = data.get("params")
+            if not isinstance(params, dict):
+                raise ModelDecisionError(
+                    code="INVALID_ARGUMENTS",
+                    message="Tool parameters must be an object",
+                )
+            tool = self.tool_executor.get_tool(data.get("tool_name"))
+            tool_schema = getattr(tool, "input_schema", None) if tool else None
+            if isinstance(tool_schema, type) and issubclass(tool_schema, BaseModel):
+                try:
+                    tool_schema.model_validate(params)
+                except ValidationError:
+                    raise ModelDecisionError(
+                        code="INVALID_ARGUMENTS",
+                        message="Tool parameters do not match the tool schema",
+                    ) from None
+        return data
+
     def _parse_decision(self, response: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         """
         Parse a model response into a decision type and its parameters.
@@ -402,7 +489,8 @@ class ModelDecisionEngine:
                     message="Model returned empty response"
                 )
             
-            # Parse all tool calls into a list for sequential execution
+            # Parse all tool calls into a list for sequential execution.
+            visible_names = {t["name"] for t in self._model_visible_tools()}
             parsed_tool_calls = []
             for tool_call in tool_calls:
                 function_call = tool_call.get('function', {})
@@ -410,14 +498,17 @@ class ModelDecisionEngine:
                 raw_arguments = function_call.get('arguments', {})
                 if isinstance(raw_arguments, str):
                     try:
-                        parsed_args = json.loads(raw_arguments)
-                    except json.JSONDecodeError as e:
+                        parsed_args = json.loads(
+                            raw_arguments, object_pairs_hook=_reject_duplicate_json_keys)
+                    except (ValueError, TypeError):
                         raise ModelDecisionError(
                             code="INVALID_JSON",
-                            message=f"Failed to parse arguments: {str(e)}"
+                            message="Failed to parse model arguments"
                         )
                 else:
                     parsed_args = raw_arguments or {}
+                parsed_args = self._validate_call_arguments(
+                    decision_type_name, parsed_args, visible_names)
                 parsed_tool_calls.append({'decision_type': decision_type_name, 'args': parsed_args})
 
             if len(parsed_tool_calls) > 1:
@@ -527,6 +618,7 @@ class ModelDecisionEngine:
         session_id: Optional[str] = None,
         access_context: Optional[Any] = None,
         context: Optional[Any] = None,
+        pending_mutating_action: bool = False,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Make a decision for the current task state.
@@ -598,16 +690,40 @@ class ModelDecisionEngine:
                     max_tokens=self.MAX_TOKENS_PER_REQUEST,
                 )
 
+            name_fn = getattr(self.model_client, "provider_name", None)
+            if callable(name_fn):
+                provider_id = name_fn()
+            else:
+                provider_id = "unidentified-client"
+            admission = admit_reasoning_job(
+                purpose=ReasoningPurpose.TASK_DECISION,
+                work_id=task_id,
+                timeout_seconds=decision_timeout,
+                provider_id=provider_id,
+                pending_mutating_action=pending_mutating_action,
+                signals=reasoning_signals_for(select_next_work([
+                    WorkItem(
+                        kind=WorkKind.TASK_DECISION,
+                        work_id=task_id,
+                        ready=str(current_state).lower() not in {
+                            "completed", "failed", "cancelled",
+                        },
+                    ),
+                ]), pending_mutating_action=pending_mutating_action),
+            )
+            job = admission.job
             response = await dispatch_reasoning(
-                ReasoningJob(
-                    purpose=ReasoningPurpose.TASK_DECISION,
-                    work_id=task_id,
-                    timeout_seconds=decision_timeout,
-                ),
+                job,
                 _call,
                 on_event=self.reasoning_journal,
             )
-            
+            # Both entry paths produce the SAME provider-neutral result type.
+            # An invalid response fails closed here, before token accounting,
+            # parsing or any possibility of a fallback retry.
+            reasoning_result = handoff_reasoning_result(
+                as_mapping_result(job, response), job)
+            response = reasoning_result.value
+
             # Track tokens (estimate)
             usage = response.get('usage', {})
             tokens_used = usage.get('total_tokens', 0)
@@ -631,7 +747,9 @@ class ModelDecisionEngine:
                 'type': decision_type,
                 'params': params,
                 'timestamp': datetime.utcnow().isoformat(),
-                'tokens': tokens_used
+                'tokens': tokens_used,
+                'reasoning_job_id': reasoning_result.job_id,
+                'reasoning_provider_id': reasoning_result.provider_id,
             })
             
             logger.info(f"Model decision: {decision_type}")
@@ -648,6 +766,20 @@ class ModelDecisionEngine:
             ) from exc
         except ModelDecisionError:
             raise
+        except ReasoningResultError:
+            # Invalid model output is not a provider outage: never retry or
+            # fall back to another processor on a malformed result.
+            raise ModelDecisionError(
+                code="INVALID_RESPONSE",
+                message="Model response did not satisfy the reasoning result contract",
+            ) from None
+        except ReasoningAdmissionError:
+            # No provider call was made. Admission failure is not a reason to
+            # invoke a different processor.
+            raise ModelDecisionError(
+                code="ADMISSION_DENIED",
+                message="Reasoning invocation was not admitted",
+            ) from None
         except asyncio.TimeoutError as e:
             # Phase 6: classify timeout; failed attempts consume budget too
             # (the provider did process the request until the deadline).

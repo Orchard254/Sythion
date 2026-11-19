@@ -419,6 +419,12 @@ def test_db():
 
 
 @pytest.fixture
+def db_session(test_db):
+    """Compatibility alias for modules that name the shared session db_session."""
+    return test_db
+
+
+@pytest.fixture
 def test_client(test_db):
     """Provide a FastAPI TestClient with the test DB."""
     from fastapi.testclient import TestClient
@@ -592,6 +598,11 @@ def _isolate_local_env_settings(monkeypatch, request):
     The isolation swaps approved directories; it is not file-access-free.
     See item 006, finding F8.
     """
+    if request.node.get_closest_marker("process_kill") is not None:
+        # Opt-in real-process tests check SYTHION_RUN_PROCESS_KILL inside the
+        # test body. Stripping it here would silently skip the very path the
+        # owner explicitly enabled.
+        return
     if request.node.get_closest_marker("provider_e2e") is not None:
         # Deliberate carve-out: the two provider-e2e modules gate themselves
         # with ``pytestmark ... skipif(not _provider_ready())``, which is

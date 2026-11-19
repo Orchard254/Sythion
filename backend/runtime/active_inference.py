@@ -193,9 +193,19 @@ class ActiveCompatibleDecisionClient:
             await client.close()
 
 
+def _is_legacy_ollama_default(selected: ActiveInferenceSelection) -> bool:
+    """The unconfigured sentinel keeps the native Ollama provider.
+
+    A bound ollama-cloud selection has an explicit model ID and HMAC binding,
+    so it follows the exact same compatible-provider path as every other cloud
+    rather than falling back to the Ollama-specific transport.
+    """
+    return selected.provider_id == "ollama-cloud" and not selected.model_id
+
+
 def get_active_chat_provider() -> Any:
     selected = get_active_inference_selection()
-    if selected.provider_id == "ollama-cloud":
+    if _is_legacy_ollama_default(selected):
         from backend.runtime.model_provider import get_default_provider
         return get_default_provider()
     return ActiveCompatibleChatProvider(selected)
@@ -203,7 +213,7 @@ def get_active_chat_provider() -> Any:
 
 def get_active_decision_client() -> Any:
     selected = get_active_inference_selection()
-    if selected.provider_id == "ollama-cloud":
+    if _is_legacy_ollama_default(selected):
         from backend.runtime.model_client import OllamaCloudModelClient
         return OllamaCloudModelClient()
     return ActiveCompatibleDecisionClient(selected)

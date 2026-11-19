@@ -562,12 +562,30 @@ export const setupService = {
 
 /* --- Inert, provider-aware onboarding preview (NOT active inference) ---- */
 
-export type CloudPreviewProviderId = 'openrouter' | 'nvidia' | 'groq';
+export type CloudPreviewProviderId = 'openrouter' | 'nvidia' | 'groq' | 'ollama-cloud';
+
+/** Fixed order used by provider pickers; Ollama Cloud is no longer special. */
+export const CLOUD_PREVIEW_PROVIDERS: readonly CloudPreviewProviderId[] = [
+  'ollama-cloud', 'openrouter', 'nvidia', 'groq',
+];
+
+export const CLOUD_PROVIDER_LABELS: Record<CloudPreviewProviderId, string> = {
+  'ollama-cloud': 'Ollama Cloud',
+  openrouter: 'OpenRouter',
+  nvidia: 'NVIDIA NIM',
+  groq: 'Groq',
+};
+
+export function isCloudPreviewProviderId(value: unknown): value is CloudPreviewProviderId {
+  return typeof value === 'string' &&
+    CLOUD_PREVIEW_PROVIDERS.some((id) => id === value);
+}
 
 const CLOUD_SECRET_NAMES: Record<CloudPreviewProviderId, string> = {
   openrouter: 'openrouter_api_key',
   nvidia: 'nvidia_api_key',
   groq: 'groq_api_key',
+  'ollama-cloud': 'ollama_api_key',
 };
 
 export interface CloudPreviewSelection {

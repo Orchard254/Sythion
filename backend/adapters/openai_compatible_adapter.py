@@ -25,6 +25,10 @@ class CompatibleProviderSpec:
     provider_id: str
     base_url: str
     key_name: str
+    # Ollama Cloud's OpenAI-compatible API does not accept `tool_choice`.
+    # The provider still has to call the named probe function, so omitting
+    # the field keeps the same strict proof instead of weakening it.
+    supports_tool_choice: bool = True
 
 
 # A fixed egress allowlist is critical: the bearer token cannot be redirected
@@ -38,6 +42,10 @@ PROVIDERS: Dict[str, CompatibleProviderSpec] = {
     ),
     "groq": CompatibleProviderSpec(
         "groq", "https://api.groq.com/openai/v1", "groq_api_key"
+    ),
+    "ollama-cloud": CompatibleProviderSpec(
+        "ollama-cloud", "https://ollama.com/v1", "ollama_api_key",
+        supports_tool_choice=False,
     ),
 }
 
@@ -273,10 +281,13 @@ class OpenAICompatibleCloudAdapter:
                 "model": self.model_id,
                 "messages": [{"role": "user", "content": "Call sythion_capability_probe with answer 7."}],
                 "tools": [tool],
-                "tool_choice": {"type": "function", "function": {"name": "sythion_capability_probe"}},
                 "max_tokens": 90,
                 "stream": False,
             }
+            if self.spec.supports_tool_choice:
+                payload["tool_choice"] = {
+                    "type": "function", "function": {"name": "sythion_capability_probe"},
+                }
             try:
                 body = await self._request("POST", "chat/completions", data=payload)
                 calls = _tool_calls(_message(body))
@@ -327,14 +338,16 @@ class OpenAICompatibleCloudAdapter:
         if not isinstance(messages, list) or not messages:
             raise CompatibleProviderError("Messages are required")
         await self.prove_tool_capability()
-        body = await self._request("POST", "chat/completions", data={
+        data = {
             "model": self.model_id,
             "messages": messages,
             "tools": tools,
-            "tool_choice": "required",
             "max_tokens": max_tokens,
             "stream": False,
-        })
+        }
+        if self.spec.supports_tool_choice:
+            data["tool_choice"] = "required"
+        body = await self._request("POST", "chat/completions", data=data)
         _tool_calls(_message(body))
         return body
 
