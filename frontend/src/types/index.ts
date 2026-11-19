@@ -562,6 +562,26 @@ export type DataOrigin = 'live' | 'demo';
 export type Tone = 'ok' | 'warn' | 'danger' | 'info' | 'idle' | 'accent' | 'plain';
 
 /* --- Assistant conversation turns (POST /assistant/turns) ---------------- */
+export interface BriefingItem {
+  kind: string;
+  ref: string;
+  title: string;
+  reason: string;
+  suggested_action: string;
+  authority: 'none';
+  approved: false;
+}
+
+export interface Briefing {
+  headline: string;
+  items: BriefingItem[];
+  has_blockers: boolean;
+  authorized: false;
+  approval_issued: false;
+  execution_started: false;
+  note: string;
+}
+
 export interface AssistantTurn {
   exchange_id: string;
   user_text: string;
@@ -573,4 +593,5 @@ export interface AssistantTurn {
   task_scheduling_status?: string | null;
   dispatch_status?: string | null;
   scheduling_established?: boolean | null;
+  briefing?: Briefing | null;
 }

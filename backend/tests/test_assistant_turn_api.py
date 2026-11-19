@@ -129,6 +129,34 @@ async def test_ordinary_conversation_works(request, _patch_engine):
 
 
 @pytest.mark.asyncio
+async def test_turn_carries_read_only_briefing(request, _patch_engine):
+    """A completed turn includes a non-authorizing briefing from local state."""
+    import uuid
+
+    db = request.getfixturevalue("test_db")
+    db.add(Task(
+        id="brief-task", original_request="request",
+        state="waiting_for_user", pending_question="Which file should I use?",
+    ))
+    db.commit()
+
+    bg = BackgroundTasks()
+    resp = await assistant_turn(
+        AssistantTurnRequest(client_request_id=f"test-{uuid.uuid4()}", text="Hello"),
+        bg, db, None,
+    )
+
+    assert resp.status == "completed"
+    assert resp.briefing is not None
+    assert resp.briefing["has_blockers"] is True
+    assert any(i["ref"] == "brief-task" for i in resp.briefing["items"])
+    assert resp.briefing["authorized"] is False
+    assert resp.briefing["approval_issued"] is False
+    assert resp.briefing["execution_started"] is False
+    assert all(i["authority"] == "none" for i in resp.briefing["items"])
+
+
+@pytest.mark.asyncio
 async def test_malformed_model_output_surfaces_failure(request, _patch_engine):
     db = request.getfixturevalue("test_db")
     ENGINE_STATE["raise"] = ConversationTurnValidationError("malformed model output")

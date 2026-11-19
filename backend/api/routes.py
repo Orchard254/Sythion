@@ -1561,7 +1561,19 @@ async def assistant_turn(
         receipt_id=composer_receipt_id,
         request_receipt_id=composer_receipt_id,
         composer_receipt_id=composer_receipt_id,
+        briefing=_build_turn_briefing(db),
     )
+
+
+def _build_turn_briefing(db) -> dict | None:
+    """Best-effort read-only briefing; never fail a completed turn over it."""
+    try:
+        from backend.services.user_briefing import build_user_briefing
+        return build_user_briefing(db)
+    except Exception as exc:  # pragma: no cover - briefing is non-critical
+        logger.warning("Could not build turn briefing: %s", exc)
+        return None
+
 
 async def _run_partial_recall_post_persistence_semantic_index(
     bind: Any,
@@ -2863,6 +2875,17 @@ async def set_bounded_wake_policy(request: Request, db: Session = Depends(get_db
     db.commit()
     _apply_bounded_wake_live(db)
     return {"enabled": svc.bounded_wake_enabled()}
+
+
+@router.get("/briefing")
+async def get_briefing(db: Session = Depends(get_db)):
+    """Read-only summary of blocked work and what needs the owner's attention.
+
+    Never grants authority, clears a blocker, or approves an action.
+    """
+    from backend.services.user_briefing import build_user_briefing
+
+    return build_user_briefing(db)
 
 
 @router.get("/agent/activity")

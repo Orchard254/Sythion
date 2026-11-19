@@ -6,6 +6,7 @@ import { Icon } from '../components/icons';
 import { TaskDetailDrawer } from '../components/TaskDetailDrawer';
 import { WorkEntry } from '../components/WorkEntry';
 import { AssistantStatusIndicator } from '../components/AssistantStatus';
+import { BriefingCard } from '../components/BriefingCard';
 import { useVoiceCapture } from '../hooks/useVoiceCapture';
 import {
   Badge,
@@ -17,7 +18,7 @@ import { useAppStore } from '../store/appStore';
 import { useNavStore } from '../store/navStore';
 import { deriveAuthorization } from '../lib/autonomy';
 import { awaitingReason, deriveAssistantStatus, findAwaitingTasks } from '../lib/assistantStatus';
-import type { Task } from '../types';
+import type { Briefing, Task } from '../types';
 
 /* AI Assistant.
  *
@@ -242,6 +243,10 @@ useLayoutEffect(() => {
   );
   const pinnedIds = useMemo(() => new Set(visibleAwaiting.map((t) => t.id)), [visibleAwaiting]);
 
+  // Read-only "heads up" supplied by the runtime after a turn. It never grants
+  // authority; decisions stay in the task drawer / settings review surfaces.
+  const [briefing, setBriefing] = useState<Briefing | null>(null);
+
   // The thread. Completed work and genuine failures read as conversation;
   // anything waiting on the owner is pinned above instead.
   const thread = useMemo(
@@ -362,8 +367,9 @@ useLayoutEffect(() => {
                   </div>
 
         {/* Essential safety information, pinned and always visible. */}
-        {visibleAwaiting.length > 0 && (
+        {(visibleAwaiting.length > 0 || briefing?.has_blockers) && (
           <div className="attention" role="region" aria-label="Needs your decision">
+            {briefing?.has_blockers && <BriefingCard briefing={briefing} />}
             {visibleAwaiting.map((t) => (
               <ApprovalCard key={t.id} task={t} onOpen={() => setSelected(t)} />
             ))}
@@ -499,6 +505,7 @@ useLayoutEffect(() => {
                     try {
                       const turnResult = await actions.assistantTurn(text, clientRequestId);
                       const exchangeId = turnResult.exchange_id;
+                      setBriefing(turnResult.briefing ?? null);
                       const mappedTask: Task = {
                         id: exchangeId,
                         conversation_id: exchangeId,

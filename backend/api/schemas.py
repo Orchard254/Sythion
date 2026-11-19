@@ -946,6 +946,10 @@ class AssistantTurnResponse(BaseModel):
     receipt_id: Optional[str] = None
     request_receipt_id: Optional[str] = None
     composer_receipt_id: Optional[str] = None
+    # Read-only, non-authorizing summary of blocked work. Assembled by the
+    # runtime from durable state, never from model output. No field here grants
+    # permission, clears a blocker, or approves an action.
+    briefing: Optional[dict] = None
 
 
 

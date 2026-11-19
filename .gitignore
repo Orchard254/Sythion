@@ -67,3 +67,8 @@ build/staging/test-runtime-offline/
 # Local test and Vite temporary output
 /t.txt
 /frontend/vite.config.ts.timestamp-*.mjs
+
+# Installed frontend dependencies and test caches (never source)
+node_modules/
+frontend/node_modules/
+**/.vitest-cache/

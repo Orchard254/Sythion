@@ -2148,6 +2148,50 @@ button {
   align-items: flex-start;
 }
 
+/* Read-only briefing card. It informs; it never authorizes. */
+.briefing__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.briefing__list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.briefing__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 10px;
+  border-left: 2px solid var(--warn, #d99a2b);
+}
+
+.briefing__title {
+  font-weight: 600;
+}
+
+.briefing__reason {
+  opacity: 0.85;
+}
+
+.briefing__action {
+  opacity: 0.7;
+  font-size: 0.9em;
+}
+
+.briefing__note {
+  margin: 6px 0 0;
+  opacity: 0.75;
+  font-size: 0.85em;
+}
+
 .attention__icon {
   display: flex;
   align-items: center;
