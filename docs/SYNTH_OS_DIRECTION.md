@@ -64,9 +64,21 @@ briefing layer is being built first because it is the user-facing foundation.
   Evidence: `test_user_briefing.py` (6 passed), `test_assistant_turn_api.py`
   (turn briefing test), `BriefingCard.test.tsx` (3 passed), 86 frontend tests
   pass, `tsc --noEmit` exit 0. Full backend suite pending.
-- **Stage 1 — on-demand + morning brief:** a read-only briefing endpoint and a
-  scheduled local brief from app-local state (goals, tasks, blockers, agent
-  status, device health).
+- **Stage 1 — on-demand + morning brief (implemented 2026-11-20):** a read-only
+  briefing endpoint and a scheduled local brief from app-local state. Built:
+  `backend/services/morning_brief.py` composes a deterministic brief (goals and
+  tasks finished since yesterday, blocked work, Main Agent state, local health)
+  with no model call and no authority; `MorningBrief` persists exactly one brief
+  per local date; `ensure_daily_brief` is idempotent. `GET /api/v1/briefing/morning`
+  returns today's brief (stored or freshly built, never persisted by the read
+  path). `backend/services/morning_brief_scheduler.py` is an opt-in
+  (`morning_brief_enabled`, default OFF) loop gated on `morning_brief_local_hour`
+  (default 8), wired into `main.py` lifespan with clean shutdown. The brief is
+  attached to the Assistant turn as `briefing.morning_brief` and rendered as a
+  read-only proactive card. Evidence: `test_morning_brief.py` (9 passed),
+  `test_morning_brief_scheduler.py` (5 passed), `test_user_briefing.py` (6),
+  `test_assistant_turn_api.py` (turn briefing), `MorningBriefCard.test.tsx` (2),
+  78 frontend tests pass, `tsc --noEmit` exit 0. Full backend suite pending.
 - **Stage 2 — device registry:** local machine identity, last-seen, health, and
   capability records; visible to the owner.
 - **Stage 3 — trusted remote endpoint:** phone connects as a full conversational

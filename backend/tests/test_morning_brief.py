@@ -1,0 +1,117 @@
+"""Stage 1 morning brief: deterministic, read-only, once per local date."""
+
+from datetime import datetime
+
+from backend.models.database import MorningBrief, Objective, Task
+from backend.services.morning_brief import build_morning_brief, ensure_daily_brief
+
+
+NOW = datetime(2026, 11, 20, 9, 30, 0)
+
+
+def test_default_config_is_off(test_db):
+    from backend.core.config import Settings
+
+    config = Settings(_env_file=None)
+    assert config.morning_brief_enabled is False
+    assert config.morning_brief_local_hour == 8
+
+
+def test_invalid_hour_rejected_only_when_enabled(monkeypatch):
+    from backend.core import config
+    from backend.core.config import validate_startup_config
+
+    monkeypatch.setattr(config.settings, "ollama_api_key", "k")
+    monkeypatch.setattr(config.settings, "selected_model", "m")
+    monkeypatch.setattr(config.settings, "morning_brief_enabled", True)
+    monkeypatch.setattr(config.settings, "morning_brief_local_hour", 24)
+    assert "morning_brief_local_hour" in " ".join(
+        msg for _, msg in validate_startup_config())
+
+    monkeypatch.setattr(config.settings, "morning_brief_enabled", False)
+    assert "morning_brief_" not in " ".join(
+        msg for _, msg in validate_startup_config())
+
+
+def test_brief_is_non_authorizing_and_structured(test_db):
+    brief = build_morning_brief(test_db, now=NOW)
+    assert brief["date"] == "2026-11-20"
+    assert brief["headline"].startswith("Good morning")
+    assert [s["key"] for s in brief["sections"]] == [
+        "goals", "tasks", "blockers", "agent", "system",
+    ]
+    assert brief["authorized"] is False
+    assert brief["approval_issued"] is False
+    assert brief["execution_started"] is False
+    assert "not an approval" in brief["note"]
+    assert "not an approval" in brief["text"]
+    assert test_db.query(MorningBrief).count() == 0  # build does not persist
+
+
+def test_brief_reports_recent_work_and_blockers(test_db):
+    test_db.add(Objective(id="g1", title="Ship the report", status="completed",
+                          updated_at=NOW))
+    test_db.add(Task(id="t1", original_request="draft the report",
+                     state="completed", updated_at=NOW))
+    test_db.add(Task(id="t2", original_request="waiting task",
+                     state="waiting_for_user", pending_question="Which file?"))
+    test_db.commit()
+
+    brief = build_morning_brief(test_db, now=NOW)
+    sections = {s["key"]: s["lines"] for s in brief["sections"]}
+    assert any("Ship the report" in line for line in sections["goals"])
+    assert any("draft the report" in line for line in sections["tasks"])
+    assert any("Which file?" in line for line in sections["blockers"])
+
+
+def test_build_makes_no_state_changes(test_db):
+    test_db.add(Task(id="t1", original_request="r", state="waiting_for_user",
+                     pending_question="Which file?"))
+    test_db.commit()
+    before = test_db.query(Task).get("t1").state
+    build_morning_brief(test_db, now=NOW)
+    assert test_db.query(Task).get("t1").state == before
+
+
+def test_ensure_daily_brief_is_idempotent(test_db):
+    first, created1 = ensure_daily_brief(test_db, now=NOW)
+    test_db.commit()
+    second, created2 = ensure_daily_brief(test_db, now=NOW)
+
+    assert created1 is True
+    assert created2 is False
+    assert second == first
+    assert test_db.query(MorningBrief).count() == 1
+
+
+def test_next_day_creates_a_new_brief(test_db):
+    ensure_daily_brief(test_db, now=NOW)
+    test_db.commit()
+    _, created = ensure_daily_brief(
+        test_db, now=datetime(2026, 11, 21, 9, 0, 0))
+    assert created is True
+    assert test_db.query(MorningBrief).count() == 2
+
+
+def test_read_morning_brief_returns_stored_without_writing(test_db):
+    from backend.services.morning_brief import read_morning_brief
+
+    stored, _ = ensure_daily_brief(test_db, now=NOW)
+    test_db.commit()
+    result = read_morning_brief(test_db, now=NOW)
+    assert result == stored
+    assert test_db.query(MorningBrief).count() == 1
+
+
+def test_morning_brief_endpoint_is_read_only(test_client, test_db):
+    response = test_client.get("/api/v1/briefing/morning")
+    assert response.status_code == 200
+    body = response.json()
+    assert "headline" in body
+    assert [s["key"] for s in body["sections"]] == [
+        "goals", "tasks", "blockers", "agent", "system",
+    ]
+    assert body["authorized"] is False
+    assert body["approval_issued"] is False
+    assert body["execution_started"] is False
+    assert test_db.query(MorningBrief).count() == 0  # endpoint does not persist

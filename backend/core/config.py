@@ -151,6 +151,15 @@ class Settings(BaseSettings):
     bounded_wake_interval_seconds: float = 30.0
     bounded_wake_max_cycles: int = 12
 
+    # Stage 1 of SYNTH_OS_DIRECTION.md: a deterministic, read-only morning
+    # brief assembled from local state and delivered as a proactive message.
+    # DEFAULT OFF; no scheduled work exists until the owner opts in.
+    # - morning_brief_enabled: owner opt-in for the scheduled local brief.
+    # - morning_brief_local_hour: local hour (0-23) at/after which the daily
+    #   brief is generated. Idempotent: at most one brief per local date.
+    morning_brief_enabled: bool = False
+    morning_brief_local_hour: int = 8
+
     # Phase 4.5 hardening:
     # - wake_reclaim_seconds: a wake stuck in RUNNING (worker crash) older
     #   than this may be reclaimed by another worker pass.
@@ -351,6 +360,14 @@ def validate_startup_config():
                 "error",
                 f"bounded_wake_max_cycles must be between 1 and 1000 "
                 f"(got {max_cycles!r})."
+            ))
+
+    if settings.morning_brief_enabled:
+        hour = settings.morning_brief_local_hour
+        if isinstance(hour, bool) or not isinstance(hour, int) or not 0 <= hour <= 23:
+            issues.append((
+                "error",
+                f"morning_brief_local_hour must be between 0 and 23 (got {hour!r})."
             ))
 
     return issues

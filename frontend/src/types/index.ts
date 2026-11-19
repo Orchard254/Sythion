@@ -572,6 +572,18 @@ export interface BriefingItem {
   approved: false;
 }
 
+export interface MorningBrief {
+  date: string;
+  generated_at: string;
+  headline: string;
+  sections: { key: string; title: string; lines: string[] }[];
+  text: string;
+  authorized: false;
+  approval_issued: false;
+  execution_started: false;
+  note: string;
+}
+
 export interface Briefing {
   headline: string;
   items: BriefingItem[];
@@ -580,6 +592,7 @@ export interface Briefing {
   approval_issued: false;
   execution_started: false;
   note: string;
+  morning_brief?: MorningBrief | null;
 }
 
 export interface AssistantTurn {

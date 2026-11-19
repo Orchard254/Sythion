@@ -154,6 +154,11 @@ async def test_turn_carries_read_only_briefing(request, _patch_engine):
     assert resp.briefing["approval_issued"] is False
     assert resp.briefing["execution_started"] is False
     assert all(i["authority"] == "none" for i in resp.briefing["items"])
+    morning = resp.briefing.get("morning_brief")
+    assert morning is not None
+    assert morning["authorized"] is False
+    assert morning["approval_issued"] is False
+    assert any(s["key"] == "blockers" for s in morning["sections"])
 
 
 @pytest.mark.asyncio

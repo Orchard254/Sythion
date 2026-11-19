@@ -222,7 +222,23 @@ async def lifespan(app: FastAPI):
                 await wake_worker.drain_durable()
         except Exception as exc:
             logger.warning(f"Main agent initialization skipped due to error: {exc}")
-    
+
+        # Stage 1 of SYNTH_OS_DIRECTION.md: opt-in daily morning brief. No timer
+        # and no persisted brief exist unless the owner enabled it. The scheduler
+        # only assembles a read-only brief from local state; it never calls a
+        # model, grants permission, or changes task state.
+        if settings.morning_brief_enabled:
+            try:
+                from .services.morning_brief_scheduler import (
+                    MorningBriefPolicy, start_morning_brief_scheduler,
+                )
+                start_morning_brief_scheduler(db_manager, MorningBriefPolicy(
+                    enabled=True,
+                    local_hour=settings.morning_brief_local_hour,
+                ))
+            except Exception as exc:
+                logger.warning(f"Morning brief scheduler start skipped: {exc}")
+
         # Initialize tool executor
         tool_executor = ToolExecutor()
     
@@ -300,6 +316,11 @@ async def lifespan(app: FastAPI):
                 set_wake_worker(None)
         except Exception as exc:
             logger.warning(f" Wake worker shutdown skipped: {exc}")
+        try:
+            from .services.morning_brief_scheduler import stop_morning_brief_scheduler
+            await stop_morning_brief_scheduler()
+        except Exception as exc:
+            logger.warning(f" Morning brief scheduler shutdown skipped: {exc}")
         try:
             if db_manager is not None:
                 session = db_manager.new_session()

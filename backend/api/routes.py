@@ -1569,7 +1569,13 @@ def _build_turn_briefing(db) -> dict | None:
     """Best-effort read-only briefing; never fail a completed turn over it."""
     try:
         from backend.services.user_briefing import build_user_briefing
-        return build_user_briefing(db)
+        briefing = build_user_briefing(db)
+        try:
+            from backend.services.morning_brief import read_morning_brief
+            briefing["morning_brief"] = read_morning_brief(db)
+        except Exception:  # pragma: no cover - morning brief is non-critical
+            briefing["morning_brief"] = None
+        return briefing
     except Exception as exc:  # pragma: no cover - briefing is non-critical
         logger.warning("Could not build turn briefing: %s", exc)
         return None
@@ -2875,6 +2881,17 @@ async def set_bounded_wake_policy(request: Request, db: Session = Depends(get_db
     db.commit()
     _apply_bounded_wake_live(db)
     return {"enabled": svc.bounded_wake_enabled()}
+
+
+@router.get("/briefing/morning")
+async def get_morning_brief(db: Session = Depends(get_db)):
+    """Today's read-only morning brief (stored, or freshly assembled).
+
+    Never grants authority, calls a model, or changes task state.
+    """
+    from backend.services.morning_brief import read_morning_brief
+
+    return read_morning_brief(db)
 
 
 @router.get("/briefing")

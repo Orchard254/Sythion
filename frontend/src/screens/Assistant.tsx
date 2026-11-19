@@ -7,6 +7,7 @@ import { TaskDetailDrawer } from '../components/TaskDetailDrawer';
 import { WorkEntry } from '../components/WorkEntry';
 import { AssistantStatusIndicator } from '../components/AssistantStatus';
 import { BriefingCard } from '../components/BriefingCard';
+import { MorningBriefCard } from '../components/MorningBriefCard';
 import { useVoiceCapture } from '../hooks/useVoiceCapture';
 import {
   Badge,
@@ -373,6 +374,14 @@ useLayoutEffect(() => {
             {visibleAwaiting.map((t) => (
               <ApprovalCard key={t.id} task={t} onOpen={() => setSelected(t)} />
             ))}
+          </div>
+        )}
+
+        {/* Proactive morning brief: a message from the Core in the same
+            conversation. It is read-only and never authorizes anything. */}
+        {briefing?.morning_brief && (
+          <div className="assistant__morning" role="region" aria-label="Morning brief">
+            <MorningBriefCard brief={briefing.morning_brief} />
           </div>
         )}
 

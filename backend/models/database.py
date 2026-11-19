@@ -956,6 +956,22 @@ class MemoryContextLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class MorningBrief(Base):
+    """One durable, read-only morning brief per local calendar date.
+
+    The brief is assembled deterministically from local state by the Core. It is
+    a proactive message in the conversation timeline, not an authorization, a
+    model decision, or proof that any external effect did or did not occur.
+    """
+
+    __tablename__ = "morning_briefs"
+
+    # Local date in YYYY-MM-DD form; the primary key enforces one brief per day.
+    id = Column(String, primary_key=True)
+    payload = Column(Text, nullable=False)  # JSON of the full brief structure
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class ConversationExchange(Base):
     """A complete pure-conversation exchange, separate from episodic summaries."""
 
