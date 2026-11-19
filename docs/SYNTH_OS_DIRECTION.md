@@ -101,9 +101,21 @@ briefing layer is being built first because it is the user-facing foundation.
   devices never reach the reasoning boundary. Credential issue/revoke and grant
   add/remove are audited owner actions. Evidence: `test_remote_access.py`
   (12 passed), `test_device_registry.py` (8), plus startup/health/clean-build
-  suites (90 passed, 7 skipped, 17s). **Still open:** the transport itself
-  (secure tunnel vs relay) and the phone client UI — those do not affect the
-  trust contract and are the next pieces.
+  suites (90 passed, 7 skipped, 17s).
+
+  **Transport decision (owner delegated, 2026-11-20): first-party relay.** No
+  third-party relay service is used — a third party would see chats and
+  briefings in transit. The relay is a broker inside the Core: a registered,
+  authenticated device opens a durable, device-bound message session
+  (`POST /api/v1/remote/sessions`), polls messages and posts text
+  (`GET/POST /api/v1/remote/sessions/{id}/messages`), and closes it. Sessions
+  expire; a device can only reach its own; messages are durable so an offline
+  phone receives what it missed. If internet reachability is wanted later, a
+  tunnel simply sits in front of this relay — the protocol does not change.
+  Built in `backend/services/relay.py` with `RelaySession`/`RelayMessage` models;
+  `test_relay.py` (9 passed); affected set 90 passed / 7 skipped (18s).
+  **Still open:** the phone client UI and per-source message/news connectors
+  (which need granted source access).
 - **Stage 4 — phone as endpoint (goal submission implemented 2026-11-20):**
   `POST /api/v1/remote/goals` lets a registered device give Synth a goal. It
   requires a valid device credential and the privileged `goals.submit` grant,

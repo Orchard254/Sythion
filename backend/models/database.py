@@ -992,6 +992,37 @@ class RegisteredDevice(Base):
     capabilities = Column(Text, nullable=False, default="[]")  # JSON list of names
 
 
+class RelaySession(Base):
+    """A device's message session with the Core's first-party relay.
+
+    The relay is a broker inside the Core, not a third party. Sessions are
+    bound to a registered device and expire; messages are durable so a phone
+    that was offline still receives briefings and replies when it reconnects.
+    """
+
+    __tablename__ = "relay_sessions"
+
+    id = Column(String, primary_key=True)
+    device_id = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default="open")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    last_poll_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+
+
+class RelayMessage(Base):
+    """One durable message in a relay session (briefing, reply, or user text)."""
+
+    __tablename__ = "relay_messages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String, nullable=False, index=True)
+    role = Column(String, nullable=False)  # "synth" | "owner"
+    kind = Column(String, nullable=False, default="text")  # text | briefing | morning_brief
+    text = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class DeviceCredential(Base):
     """A per-device bearer credential for remote clients.
 

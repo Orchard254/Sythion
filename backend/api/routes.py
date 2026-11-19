@@ -3035,6 +3035,99 @@ async def remove_device_grant(
     return {"device_id": device_id, "capability": capability, "revoked": revoked}
 
 
+def _remote_device_or_401(request: Request, db, capability: str) -> str:
+    """Authenticate a remote device and check one capability. Returns device_id."""
+    from backend.services.remote_access import check_access, verify_device_credential
+
+    device_id = request.headers.get("X-Sythion-Device-Id", "")
+    token = request.headers.get("X-Sythion-Device-Token", "")
+    if not device_id or not verify_device_credential(db, device_id, token):
+        raise HTTPException(status_code=401, detail="invalid device credential")
+    allowed, reason = check_access(db, device_id, capability)
+    if not allowed:
+        raise HTTPException(status_code=403, detail=f"remote access denied: {reason}")
+    return device_id
+
+
+@router.post("/remote/sessions")
+async def open_relay_session(request: Request, db: Session = Depends(get_db)):
+    """Open a first-party relay session for a device.
+
+    The session is seeded with the current briefing and morning brief so a
+    phone that was offline still receives what it missed.
+    """
+    from backend.services.relay import open_session
+
+    device_id = _remote_device_or_401(request, db, "conversation.write")
+    session = open_session(db, device_id)
+    db.commit()
+    return session
+
+
+@router.get("/remote/sessions/{session_id}/messages")
+async def poll_relay_messages(
+    session_id: str, request: Request,
+    after_id: int = 0, limit: int = 50,
+    db: Session = Depends(get_db),
+):
+    from backend.services.relay import poll_messages, session_belongs_to
+
+    device_id = _remote_device_or_401(request, db, "conversation.write")
+    if not session_belongs_to(db, session_id, device_id):
+        raise HTTPException(status_code=404, detail="session not found")
+    try:
+        messages = poll_messages(db, session_id, after_id=after_id, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    db.commit()
+    return {"session_id": session_id, "messages": messages}
+
+
+@router.post("/remote/sessions/{session_id}/messages")
+async def post_relay_message(
+    session_id: str, request: Request, db: Session = Depends(get_db),
+):
+    """Post owner text and get a non-authorizing Synth reply in the session."""
+    from backend.services.conversation_turn_engine import ConversationTurnEngine
+    from backend.services.conversation_runtime import ModelClient
+    from backend.services.relay import enqueue_reply, post_message, session_belongs_to
+    from backend.runtime.events import DbEventLedger
+
+    device_id = _remote_device_or_401(request, db, "conversation.write")
+    if not session_belongs_to(db, session_id, device_id):
+        raise HTTPException(status_code=404, detail="session not found")
+    data = await request.json()
+    text = data.get("text") if isinstance(data, dict) else None
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPException(status_code=400, detail="text is required")
+
+    posted = post_message(db, session_id, text)
+    result = await ConversationTurnEngine(ModelClient()).run_turn(text)
+    if isinstance(result, dict):
+        answer = result.get("assistant_text", "") or ""
+    else:
+        answer = getattr(result, "assistant_text", "") or ""
+    reply = enqueue_reply(db, session_id, answer)
+    DbEventLedger(db).append_event(
+        "device-registry", "device.relay_message", {"device_id": device_id})
+    db.commit()
+    return {"posted": posted, "reply": reply, "authorized": False}
+
+
+@router.delete("/remote/sessions/{session_id}")
+async def close_relay_session(
+    session_id: str, request: Request, db: Session = Depends(get_db),
+):
+    from backend.services.relay import close_session, session_belongs_to
+
+    device_id = _remote_device_or_401(request, db, "conversation.write")
+    if not session_belongs_to(db, session_id, device_id):
+        raise HTTPException(status_code=404, detail="session not found")
+    closed = close_session(db, session_id)
+    db.commit()
+    return {"session_id": session_id, "closed": closed}
+
+
 @router.post("/remote/goals")
 async def remote_create_goal(request: Request, db: Session = Depends(get_db)):
     """Give Synth a goal from a remote device (e.g. a phone).
