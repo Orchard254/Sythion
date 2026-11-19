@@ -163,6 +163,24 @@ class MainAgentService:
         self.db.commit()
         return enabled
 
+    def bounded_wake_enabled(self) -> bool:
+        """Owner switch for the bounded time-driven wake loop (default OFF).
+
+        Independent of the event-driven background switch: both must be on
+        before a timer is created. The persisted override wins over the config
+        default, exactly like ``background_enabled``.
+        """
+        persisted = get_setting(self.db, "bounded_wake_enabled")
+        if persisted is None:
+            return bool(settings.bounded_wake_enabled)
+        return persisted.strip().lower() == "true"
+
+    def set_bounded_wake_enabled(self, enabled: bool) -> bool:
+        set_setting(self.db, "bounded_wake_enabled",
+                    "true" if enabled else "false")
+        self.db.commit()
+        return enabled
+
     def may_execute_background(self) -> tuple:
         """(allowed, reason) — the single policy gate for background sessions."""
         row = self.get_or_create()

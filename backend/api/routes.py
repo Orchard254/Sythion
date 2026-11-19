@@ -2776,6 +2776,20 @@ async def resume_agent(db: Session = Depends(get_db)):
     return {"agent_id": agent.agent_id, "state": agent.state}
 
 
+def _apply_bounded_wake_live(db: Session) -> None:
+    """Reconcile the running bounded-wake loop with current owner policy.
+
+    Best-effort and idempotent: the loop is owned by the process, not the
+    request. A missing worker (e.g. startup disabled) simply means there is
+    nothing to reconcile; the persisted policy still takes effect next boot.
+    """
+    from backend.services.wake_worker import get_wake_worker
+
+    worker = get_wake_worker()
+    if worker is not None:
+        worker.apply_owner_policy(db)
+
+
 @router.get("/agent/background")
 async def get_background_policy(db: Session = Depends(get_db)):
     """Whether event-driven background orchestration is currently enabled."""
@@ -2804,7 +2818,51 @@ async def set_background_policy(request: Request, db: Session = Depends(get_db))
         {"enabled": enabled},
     )
     db.commit()
+    # Disabling background must also stop any bounded time-driven loop.
+    _apply_bounded_wake_live(db)
     return {"enabled": svc.background_enabled()}
+
+
+@router.get("/agent/bounded-wake")
+async def get_bounded_wake_policy(db: Session = Depends(get_db)):
+    """Bounded time-driven wake policy (independent, default OFF)."""
+    from backend.core.config import settings
+    from backend.services.main_agent import MainAgentService
+
+    svc = MainAgentService(db)
+    return {
+        "enabled": svc.bounded_wake_enabled(),
+        "default": bool(settings.bounded_wake_enabled),
+        "interval_seconds": settings.bounded_wake_interval_seconds,
+        "max_cycles": settings.bounded_wake_max_cycles,
+        "requires_background": svc.background_enabled(),
+    }
+
+
+@router.put("/agent/bounded-wake")
+async def set_bounded_wake_policy(request: Request, db: Session = Depends(get_db)):
+    """Owner switch for the bounded time-driven wake loop (persisted, audited).
+
+    Takes effect live only when background orchestration is also enabled; the
+    loop itself never invokes a model or grants authority, and every wake it
+    submits still passes the single ``may_execute_background`` gate.
+    """
+    from backend.services.main_agent import MainAgentService
+    from backend.runtime.events import DbEventLedger
+
+    data = await request.json()
+    enabled = bool(data.get("enabled"))
+    svc = MainAgentService(db)
+    svc.set_bounded_wake_enabled(enabled)
+    agent = svc.get_or_create()
+    DbEventLedger(db).append_event(
+        f"agent:{agent.agent_id}",
+        "agent.bounded_wake_policy_changed",
+        {"enabled": enabled},
+    )
+    db.commit()
+    _apply_bounded_wake_live(db)
+    return {"enabled": svc.bounded_wake_enabled()}
 
 
 @router.get("/agent/activity")
@@ -3744,6 +3802,9 @@ async def update_settings(request: Request, db: Session = Depends(get_db)):
         updated = persist_settings(db, data, fallback_ack=fallback_ack)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # Owner policy may have changed through the generic settings surface too.
+    _apply_bounded_wake_live(db)
 
     return {
         "message": "Settings updated",

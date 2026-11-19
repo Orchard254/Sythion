@@ -56,12 +56,30 @@ existing event-driven worker. It is safe by construction and inert by default:
   (`background_disabled`), never executed.
 - Invalid bounds are rejected by `validate_startup_config()` only when enabled.
 
+Owner-facing control surface (so "owner-gated" is usable, not just a config flag):
+
+- `bounded_wake_enabled` is a whitelisted, persisted non-secret setting
+  (`settings_store.ALLOWED_SETTINGS` / `_BOOL_KEYS`), so it can be set through
+  the same authenticated settings API as `background_orchestration_enabled`.
+- `MainAgentService.bounded_wake_enabled()` / `set_bounded_wake_enabled()` give
+  the persisted override the same precedence as the background switch.
+- `GET/PUT /api/v1/agent/bounded-wake` expose the policy (enabled, default,
+  interval/max cycles, and whether background is also enabled) and persist the
+  change with an audited `agent.bounded_wake_policy_changed` event.
+- `WakeWorker.apply_owner_policy(db)` is the single idempotent reconciler: it
+  starts the loop only when BOTH switches are on and stops it the moment either
+  is switched off. It is called at startup and after any settings/background/
+  bounded-wake policy change, so the toggle takes effect live without restart.
+- Disabling background orchestration also stops a running bounded loop.
+
 Evidence:
 
 ```
 pytest test_owner_gated_bounded_wake.py -q                  → 9 passed
+pytest test_bounded_wake_owner_control.py -q                → 7 passed
 pytest [new + bounded scheduler + wake integration +
        main_agent + phase45 + config isolation] -q          → 84 passed
+pytest [owner control + settings + startup + target validation] -q → 70 passed
 pytest [startup boot/status/bootstrap] -q                   → 18 passed
 from backend.main import app                                 → import ok
 ```

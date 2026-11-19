@@ -209,23 +209,17 @@ async def lifespan(app: FastAPI):
                 try:
                     svc = MainAgentService(fresh)
                     wake_worker.submit_startup(svc.get().agent_id)
+
+                    # Owner-gated, bounded TIME-DRIVEN goal wake. The shared
+                    # helper creates a timer only when BOTH owner switches are
+                    # on (background_orchestration_enabled AND
+                    # bounded_wake_enabled). It only submits ordinary durable
+                    # wakes; the single policy gate and protected runtime still
+                    # execute them.
+                    wake_worker.apply_owner_policy(fresh)
                 finally:
                     fresh.close()
                 await wake_worker.drain_durable()
-
-                # Owner-gated, bounded TIME-DRIVEN goal wake. This is a SECOND
-                # explicit switch (bounded_wake_enabled, default OFF) on top of
-                # background_orchestration_enabled, so an operator must opt into
-                # both. It only submits ordinary durable wakes; the single policy
-                # gate and protected runtime still execute them. No timer exists
-                # unless both switches are on.
-                if settings.bounded_wake_enabled:
-                    from .services.bounded_wake_scheduler import WakePolicy
-                    wake_worker.start_bounded_loop(WakePolicy(
-                        enabled=True,
-                        interval_seconds=settings.bounded_wake_interval_seconds,
-                        max_cycles=settings.bounded_wake_max_cycles,
-                    ))
         except Exception as exc:
             logger.warning(f"Main agent initialization skipped due to error: {exc}")
     

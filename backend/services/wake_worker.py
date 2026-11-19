@@ -145,6 +145,29 @@ class WakeWorker:
         self._bounded_scheduler = None
         logger.info("Owner-gated bounded wake loop stopped")
 
+    def apply_owner_policy(self, db) -> bool:
+        """Reconcile the bounded loop with BOTH current owner switches.
+
+        Idempotent and safe to call after any policy/settings change or at
+        startup. Creates no timer unless both ``background_orchestration_enabled``
+        and ``bounded_wake_enabled`` are on; stops a running loop the moment
+        either is switched off. Returns whether the loop is running afterwards.
+        """
+        from backend.core.config import settings
+        from backend.services.main_agent import MainAgentService
+
+        svc = MainAgentService(db)
+        if not (svc.background_enabled() and svc.bounded_wake_enabled()):
+            self.stop_bounded_loop()
+            return False
+        if self.bounded_loop_running():
+            return True
+        return self.start_bounded_loop(WakePolicy(
+            enabled=True,
+            interval_seconds=settings.bounded_wake_interval_seconds,
+            max_cycles=settings.bounded_wake_max_cycles,
+        ))
+
     # ---- lifecycle ---------------------------------------------------------
 
     def start(self) -> None:

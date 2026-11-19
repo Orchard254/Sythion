@@ -34,12 +34,17 @@ ALLOWED_SETTINGS = frozenset(
         # Phase 4: explicit operator switch for event-driven background
         # orchestration. Default OFF (safe); enabling is an owner decision.
         "background_orchestration_enabled",
+        # Owner switch for the bounded TIME-DRIVEN wake loop. Default OFF and
+        # independent of the event-driven switch above; both must be on before
+        # any timer is created.
+        "bounded_wake_enabled",
     }
 )
 
 _INT_KEYS = frozenset({"retention_days"})
 _BOOL_KEYS = frozenset({"voice_enabled", "voice_recording_enabled",
-                        "background_orchestration_enabled"})
+                        "background_orchestration_enabled",
+                        "bounded_wake_enabled"})
 
 
 def get_setting(db: Session, key: str) -> Optional[str]:
