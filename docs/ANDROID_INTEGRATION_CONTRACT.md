@@ -42,7 +42,7 @@ repository on 2026-11-20 and are committed to `master`:
 | Consent-gated screen capture + image transport | Partial | Local-only `gui_screenshot`; no remote consent-gated capture. |
 | VPN / TLS remote transport, WSS gateway | Absent | Sidecar is plain HTTP on `127.0.0.1` (`main.py` L484–491). Loopback rule blocks remote peers. |
 | Per-device capability discovery endpoint | **Implemented 2026-11-20** | `backend/services/device_capability_discovery.py` + `GET /api/v1/devices/{id}/capabilities`. Merges global status × grants × trust floor into unavailable/restricted/available/granted. `test_device_capability_discovery.py` (7 passed); affected set 79 passed (8s). |
-| Remote-action lifecycle state machine | Partial | Coarse `Task.state` + pending_action + AgentWake exist; the proposed received→…→verified chain does not. |
+| Remote-action lifecycle state machine | **Implemented 2026-11-20** | `backend/runtime/remote_action_lifecycle.py` + `RemoteAction`/`RemoteActionEvent` models. received→understanding→planned→awaiting_approval→executing→verifying→completed, plus failed/cancelled and a terminal `uncertain` that forbids replay. Approval needs a trusted decision id; verified completion needs evidence; execution is refused while TaskOwnership records an uncertain effect. `test_remote_action_lifecycle.py` (10 passed); affected set 111 passed / 7 skipped (84s). |
 | Remote approval surface | Absent | Permission primitives are foundation-only; no trusted owner approval route for remote actions. |
 | Device enrollment + approval Tauri commands | Absent | Only 4 local window/bridge commands today. |
 
@@ -58,8 +58,8 @@ repository on 2026-11-20 and are committed to `master`:
 
 - `GET /api/v1/devices/{id}/capabilities` → `{device_id, trust_level, capabilities: [{capability, status, granted, min_trust, global_capability, global_status, allowed, reason}], note}` — **implemented**; status ∈ unavailable|restricted|available|granted, with `allowed` true only for `granted`.
 - Remote-action record keyed by `{action_id, idempotency_key}` with states
-  `received → understanding → planned → awaiting_approval → executing → verifying → completed|failed|cancelled`, plus a distinct **uncertain** terminal state that forbids replay until reconciled.
-- `POST /api/v1/remote/actions/{id}/approve|deny` — owner-only, bound to a trusted decision id; never reachable by the requesting device.
+  `received → understanding → planned → awaiting_approval → executing → verifying → completed|failed|cancelled`, plus a distinct **uncertain** terminal state that forbids replay until reconciled — **implemented** as a foundation primitive (no API exposure yet). Reusing an idempotency key returns the same uncertain record; a retry requires a new key.
+- `POST /api/v1/remote/actions/{id}/approve|deny` — owner-only, bound to a trusted decision id; never reachable by the requesting device. Still to build: the lifecycle enforces that a `decision_id` is required to leave `awaiting_approval`, but the trusted owner approval route is not wired yet.
 - Device-authenticated WSS scope with per-message sequence numbers and acknowledgements, reusing the relay's credential + grant checks.
 
 ## 6. Locked decisions (from the owner's proposal)

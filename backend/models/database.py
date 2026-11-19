@@ -1023,6 +1023,54 @@ class RelayMessage(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class RemoteAction(Base):
+    """Durable lifecycle record for one remote-device action.
+
+    Foundation primitive, like TaskOwnership/PermissionProposal: callers own the
+    transaction. UNCERTAIN is a terminal state that forbids replay — a retry must
+    be a new action with a new idempotency key, never a revival of this row.
+    """
+
+    __tablename__ = "remote_actions"
+
+    action_id = Column(String, primary_key=True)
+    idempotency_key = Column(String, nullable=False, unique=True, index=True)
+    device_id = Column(String, nullable=False, index=True)
+    task_id = Column(String, nullable=True)
+    owned_action_id = Column(String, nullable=True)
+    state = Column(String, nullable=False, default="received", index=True)
+    version = Column(Integer, nullable=False, default=1)
+    reason = Column(Text, nullable=True)
+    approval_decision_id = Column(String, nullable=True)
+    evidence_ref = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    resolved_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('received','understanding','planned','awaiting_approval',"
+            "'executing','verifying','completed','failed','cancelled','uncertain')",
+            name="check_remote_action_state",
+        ),
+    )
+
+
+class RemoteActionEvent(Base):
+    """Immutable event record for a remote action's lifecycle."""
+
+    __tablename__ = "remote_action_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    action_id = Column(String, nullable=False, index=True)
+    sequence = Column(Integer, nullable=False)
+    from_state = Column(String, nullable=True)
+    to_state = Column(String, nullable=False)
+    reason = Column(Text, nullable=True)
+    decision_id = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class DeviceCredential(Base):
     """A per-device bearer credential for remote clients.
 
