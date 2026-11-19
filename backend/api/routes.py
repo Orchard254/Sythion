@@ -3246,6 +3246,127 @@ async def remote_turn(request: Request, db: Session = Depends(get_db)):
     }
 
 
+def _reject_device_auth_for_owner_route(request: Request) -> None:
+    """Owner approval routes are UI/control-boundary only, never device routes."""
+    if request.headers.get("X-Sythion-Device-Id") or request.headers.get("X-Sythion-Device-Token"):
+        raise HTTPException(
+            status_code=403,
+            detail="Owner approval cannot be submitted through a device channel",
+        )
+
+
+@router.get("/approvals/pending")
+async def list_pending_approvals(request: Request, db: Session = Depends(get_db)):
+    """Awaiting, exact permission proposals for the trusted owner UI.
+
+    Metadata only: a listing never approves anything and carries no execution
+    authority. Protected by the loopback control-token middleware.
+    """
+    _reject_device_auth_for_owner_route(request)
+    from backend.models.database import PermissionProposalRow
+
+    rows = (
+        db.query(PermissionProposalRow)
+        .filter(PermissionProposalRow.status == "awaiting")
+        .order_by(PermissionProposalRow.created_at.asc())
+        .limit(50)
+        .all()
+    )
+    return {"proposals": [{
+        "proposal_id": row.proposal_id,
+        "task_id": row.task_id,
+        "action_id": row.action_id,
+        "tool_name": row.tool_name,
+        "task_version": int(row.task_version),
+        "target_canonical": row.target_canonical,
+        "proposal_digest": row.proposal_digest,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    } for row in rows]}
+
+
+@router.post("/approvals/decide")
+async def decide_approval(request: Request, db: Session = Depends(get_db)):
+    """Record a trusted owner decision for an exact permission proposal.
+
+    The ``decision_id`` is supplied by the trusted UI and bound into the
+    PermissionDecisionReceipt; it is never derived from model output. This
+    route is reachable only through the loopback control-token boundary and
+    explicitly refuses device-channel credentials.
+    """
+    _reject_device_auth_for_owner_route(request)
+    from backend.runtime.permission_proposal import PermissionProposalManager
+    from backend.runtime.consequential_approval import ConsequentialApprovalService
+    from backend.runtime.events import DbEventLedger
+
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="a JSON object is required")
+
+    proposal_id = data.get("proposal_id")
+    decision_id = data.get("decision_id")
+    decision = data.get("decision")
+    if not isinstance(proposal_id, str) or not proposal_id.strip():
+        raise HTTPException(status_code=400, detail="proposal_id is required")
+    if not isinstance(decision_id, str) or not decision_id.strip():
+        raise HTTPException(status_code=400, detail="decision_id is required")
+    if decision not in ("approve", "deny"):
+        raise HTTPException(status_code=400, detail="decision must be approve or deny")
+
+    try:
+        proposal = PermissionProposalManager(db).get(proposal_id=proposal_id.strip())
+    except Exception:
+        proposal = None
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="unknown permission proposal")
+
+    expected_decision_id = decision_id.strip()
+
+    def owner_authenticator(context):
+        # The request already passed the loopback control-token boundary. This
+        # authenticator only pins the UI-supplied decision id to this exact
+        # decision; it never accepts a model- or device-supplied value.
+        return bool(
+            isinstance(context.get("decision_id"), str)
+            and context["decision_id"] == expected_decision_id
+        )
+
+    svc = ConsequentialApprovalService(db=db, authenticator=owner_authenticator)
+    try:
+        result = svc.record_decision(
+            proposal=proposal,
+            task_id=proposal.task_id,
+            action_id=proposal.action_id,
+            decision_id=expected_decision_id,
+            decision=decision,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    receipt = result.receipt
+    DbEventLedger(db).append_event(
+        f"task:{proposal.task_id}", "permission.decision_recorded", {
+            "proposal_id": proposal.proposal_id,
+            "decision_id": expected_decision_id,
+            "decision": decision,
+            "status": receipt.status if receipt is not None else "unknown",
+        },
+    )
+    db.commit()
+    return {
+        "proposal_id": proposal.proposal_id,
+        "decision_id": expected_decision_id,
+        "decision": decision,
+        "status": receipt.status if receipt is not None else "unknown",
+        "approved": bool(result.approved),
+        "allowed": bool(result.allowed),
+        "reason": result.reason or "",
+        "authorization_issued": False,
+    }
+
+
 @router.get("/agent/activity")
 async def agent_activity(limit: int = 20, db: Session = Depends(get_db)):
     """Recent wakes + recent agent events (answers 'what is Sythion doing?')."""
