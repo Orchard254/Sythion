@@ -22,12 +22,49 @@ scheduler, NVIDIA-only E2E scope, context-provenance changes, wake-path
 integration, contract versioning, and the event-bus reset fix. Earlier runs
 recorded 4729 passed (before the reset fix, 1 failure), 4729/61/10 green, and
 4692/64/10 before the later changes.
+
+After adding the owner-gated bounded wake feature the full suite was re-run:
+```
+python -m pytest backend/tests -q
+4750 passed, 61 skipped, 10 xfailed, 0 failed, 0 errors in 1921.55s (0:32:01)
+```
+(9 new bounded-wake tests included; no regressions.)
 ```
 
 Earlier polluted/aborted runs (49 failures, then 1 failure + 1 error) were
 traced to an acceptance fixture that permanently mutated a module global and to
 a mirror refresh performed while a suite was running. Both were fixed; the
 final mirror test and the previously erroring module pass in isolation.
+
+## Owner-gated bounded background goal wake (new, default OFF)
+
+A second, explicit time-driven wake path is now wired in, distinct from the
+existing event-driven worker. It is safe by construction and inert by default:
+
+- `Settings.bounded_wake_enabled = False` (default), `bounded_wake_interval_seconds = 30.0`,
+  `bounded_wake_max_cycles = 12`. No timer exists unless the owner opts in.
+- **Two switches are required**: `background_orchestration_enabled` (the owner's
+  background-execution gate) AND `bounded_wake_enabled` (the time-driven switch).
+  `main.py` only starts the loop when background orchestration is already enabled.
+- `WakeWorker.start_bounded_loop()` refuses a disabled policy (returns False,
+  creates no task); the loop has a hard `max_cycles` cap and treats idle as the
+  normal outcome.
+- The loop **only submits ordinary durable wakes** (`goal.wake`) via the existing
+  `submit()` path. It never invokes a model, grants permission, or changes task
+  state. Every wake still re-checks `MainAgentService.may_execute_background()`
+  in `_process`, so with the owner gate off it is resolved as an auditable SKIP
+  (`background_disabled`), never executed.
+- Invalid bounds are rejected by `validate_startup_config()` only when enabled.
+
+Evidence:
+
+```
+pytest test_owner_gated_bounded_wake.py -q                  → 9 passed
+pytest [new + bounded scheduler + wake integration +
+       main_agent + phase45 + config isolation] -q          → 84 passed
+pytest [startup boot/status/bootstrap] -q                   → 18 passed
+from backend.main import app                                 → import ok
+```
 
 ## Shared contract across all reasoning entry paths
 

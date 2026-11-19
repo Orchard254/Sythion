@@ -137,6 +137,20 @@ class Settings(BaseSettings):
     max_steps_per_background_cycle: int = 5
     background_orchestration_enabled: bool = False
 
+    # Owner-gated, bounded TIME-DRIVEN background goal wake (default OFF).
+    # This is a second, explicit switch distinct from the event-driven wake
+    # worker above: when enabled, a bounded scheduler periodically asks the
+    # deterministic attention policy whether a goal is runnable and, if so,
+    # submits a normal durable wake. Execution STILL passes through the single
+    # MainAgent policy gate (may_execute_background) and the protected runtime;
+    # the loop itself never invokes a model, grants permission or changes state.
+    # - bounded_wake_enabled: owner opt-in; DEFAULT OFF, no timer when false.
+    # - bounded_wake_interval_seconds: seconds between bounded attention cycles.
+    # - bounded_wake_max_cycles: hard per-process cap on cycles.
+    bounded_wake_enabled: bool = False
+    bounded_wake_interval_seconds: float = 30.0
+    bounded_wake_max_cycles: int = 12
+
     # Phase 4.5 hardening:
     # - wake_reclaim_seconds: a wake stuck in RUNNING (worker crash) older
     #   than this may be reclaimed by another worker pass.
@@ -317,5 +331,26 @@ def validate_startup_config():
             "error",
             f"max_elapsed_time_seconds must be >= 1 (got {settings.max_elapsed_time_seconds})."
         ))
+
+    # Bounded background wake is inert unless the owner explicitly enabled it;
+    # validate its bounds only when it can actually run so the default-off path
+    # stays untouched by a stray env value.
+    if settings.bounded_wake_enabled:
+        interval = settings.bounded_wake_interval_seconds
+        max_cycles = settings.bounded_wake_max_cycles
+        if (isinstance(interval, bool) or not isinstance(interval, (int, float))
+                or not 0.1 <= interval <= 3600):
+            issues.append((
+                "error",
+                f"bounded_wake_interval_seconds must be between 0.1 and 3600 "
+                f"(got {interval!r})."
+            ))
+        if (isinstance(max_cycles, bool) or not isinstance(max_cycles, int)
+                or not 1 <= max_cycles <= 1000):
+            issues.append((
+                "error",
+                f"bounded_wake_max_cycles must be between 1 and 1000 "
+                f"(got {max_cycles!r})."
+            ))
 
     return issues

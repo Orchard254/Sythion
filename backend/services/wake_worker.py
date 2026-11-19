@@ -57,6 +57,11 @@ class WakeWorker:
         self._queued_keys: set = set()
         self._task: Optional[asyncio.Task] = None
         self._max_queue = 64
+        # Optional owner-gated time-driven loop. The worker stays purely
+        # event-driven unless start_bounded_loop() is explicitly called.
+        self._bounded_task: Optional[asyncio.Task] = None
+        self._bounded_scheduler: Optional[BoundedWakeScheduler] = None
+        self._bounded_session = None
         # Opt-in observability sink. The worker remains event-driven by default;
         # a scheduler supplied here is already subscribed to the shared bus.
         self.reasoning_scheduler = reasoning_scheduler
@@ -68,6 +73,77 @@ class WakeWorker:
     async def run_bounded_wake_cycle(self, selector, wake_handler, policy: WakePolicy) -> WakeCycleReport:
         """Opt-in time-bounded cycle. Never used by the default worker loop."""
         return await BoundedWakeScheduler().run(selector, wake_handler, policy)
+
+    # ---- owner-gated bounded time-driven loop (default OFF) ---------------
+
+    def bounded_loop_running(self) -> bool:
+        return self._bounded_task is not None and not self._bounded_task.done()
+
+    def start_bounded_loop(self, policy: WakePolicy) -> bool:
+        """Start the bounded loop only for an explicitly enabled policy.
+
+        Returns True when a loop was started, False when the policy is disabled
+        (or already running). The owner gate is enforced twice: here, so a
+        disabled policy creates no timer at all, and again inside every wake via
+        ``may_execute_background`` in ``_process``. The loop cannot itself run a
+        model, grant authority or change task state — it only submits ordinary
+        durable wakes that flow through the existing gate and protected runtime.
+        """
+        if not isinstance(policy, WakePolicy):
+            raise TypeError("policy must be a WakePolicy")
+        if not policy.enabled or self.bounded_loop_running():
+            return False
+        # Selector and wake handler are built inside the background task so the
+        # DB session is created and used on the same event-loop thread.
+        self._bounded_scheduler = BoundedWakeScheduler()
+        self._bounded_task = asyncio.create_task(
+            self._run_bounded_loop(policy), name="sythion-bounded-wake-loop"
+        )
+        logger.info(
+            "Owner-gated bounded wake loop started (interval=%.1fs, max_cycles=%d)",
+            policy.interval_seconds, policy.max_cycles,
+        )
+        return True
+
+    async def _run_bounded_loop(self, policy: WakePolicy) -> None:
+        from backend.services.goal_selector import RunnableGoalSelector
+
+        session = self._db_manager.new_session()
+        self._bounded_session = session
+        selector = RunnableGoalSelector(session)
+
+        async def wake_handler(goal_id: str) -> None:
+            # Submits a NORMAL durable wake. Execution still goes through
+            # _process -> may_execute_background -> protected runtime.
+            self.submit(
+                "goal.wake",
+                trigger_reference=goal_id,
+                wake_key=f"goal.wake:{goal_id}",
+            )
+
+        try:
+            report = await self._bounded_scheduler.run(selector, wake_handler, policy)
+            logger.info(
+                "Bounded wake loop finished: cycles=%d idle=%d work=%d failed=%d",
+                report.cycles, report.idle_cycles, report.work_cycles,
+                report.failed_cycles,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover - never kill the process
+            logger.exception("Bounded wake loop failed: %s", exc)
+        finally:
+            session.close()
+            self._bounded_session = None
+
+    def stop_bounded_loop(self) -> None:
+        if self._bounded_scheduler is not None:
+            self._bounded_scheduler.stop()
+        if self._bounded_task is not None and not self._bounded_task.done():
+            self._bounded_task.cancel()
+        self._bounded_task = None
+        self._bounded_scheduler = None
+        logger.info("Owner-gated bounded wake loop stopped")
 
     # ---- lifecycle ---------------------------------------------------------
 
@@ -88,6 +164,7 @@ class WakeWorker:
             except (asyncio.CancelledError, Exception):
                 pass
         self._task = None
+        self.stop_bounded_loop()
         logger.info("Main-agent wake worker stopped")
 
     @property
