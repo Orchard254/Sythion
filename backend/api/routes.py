@@ -2919,6 +2919,22 @@ async def list_registered_devices(db: Session = Depends(get_db)):
     return {"devices": list_devices(db)}
 
 
+@router.get("/devices/{device_id}/capabilities")
+async def get_device_capabilities(device_id: str, db: Session = Depends(get_db)):
+    """Per-device capability discovery: global status x grants x trust floor.
+
+    Read-only. The four states are unavailable / restricted / available /
+    granted; only 'granted' carries effective access. Nothing here changes a
+    grant or a trust level.
+    """
+    from backend.services.device_capability_discovery import describe_device_capabilities
+
+    try:
+        return describe_device_capabilities(db, device_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="unknown device")
+
+
 @router.get("/devices/local")
 async def get_local_device(db: Session = Depends(get_db)):
     from backend.services.device_registry import local_device_id, get_device
