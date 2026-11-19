@@ -104,11 +104,17 @@ briefing layer is being built first because it is the user-facing foundation.
   suites (90 passed, 7 skipped, 17s). **Still open:** the transport itself
   (secure tunnel vs relay) and the phone client UI — those do not affect the
   trust contract and are the next pieces.
-- **Stage 4 — phone as endpoint:** per-source grants (messages, notifications,
-  news), goal submission from the phone, and operation of the phone where the
-  owner has granted it — one source at a time. Conversational approval must be
-  bound to a specific, fresh proposal; a free-floating "yes" in chat is never
-  itself authority, and model output never becomes approval.
+- **Stage 4 — phone as endpoint (goal submission implemented 2026-11-20):**
+  `POST /api/v1/remote/goals` lets a registered device give Synth a goal. It
+  requires a valid device credential and the privileged `goals.submit` grant,
+  and uses the exact same validated creation path as the local API (the goal
+  creation logic was factored into a shared helper). The device supplies only
+  the request, never authority over execution. Evidence: `test_remote_access.py`
+  (14 passed) plus goal/turn/startup/health suites (178 passed, 7 skipped,
+  24s). **Still open:** per-source connectors (messages, notifications, news),
+  operating the phone, and conversational approval binding — these need source
+  access and owner decisions, not just code. A free-floating "yes" in chat is
+  never itself authority, and model output never becomes approval.
 - **Stage 5 — dedicated host:** migrate the always-on Core to a separate
   internet-connected machine once local reliability is demonstrated.
 

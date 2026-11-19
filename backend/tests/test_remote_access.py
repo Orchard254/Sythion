@@ -124,6 +124,53 @@ def test_access_rejects_unknown_inputs(test_db):
         False, "unknown_capability")
 
 
+def test_remote_goal_requires_privileged_grant(test_client, test_db):
+    device_id = _device(test_db, trust="trusted")
+    token = issue_device_credential(test_db, device_id, now=NOW)
+    grant_capability(test_db, device_id, "goals.submit")
+    test_db.commit()
+    headers = {
+        "X-Sythion-Device-Id": device_id,
+        "X-Sythion-Device-Token": token,
+    }
+    # trusted is below the privileged floor for goals.submit
+    response = test_client.post(
+        "/api/v1/remote/goals", json={"title": "A goal"}, headers=headers)
+    assert response.status_code == 403
+    assert "insufficient_trust" in response.json()["detail"]
+
+    set_trust_level(test_db, device_id, "privileged")
+    test_db.commit()
+    response = test_client.post(
+        "/api/v1/remote/goals", json={"title": "A goal"}, headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["title"] == "A goal"
+    assert body["device_id"] == device_id
+    assert body["authorized"] is False
+    assert body["approval_issued"] is False
+
+    events = [
+        e.event_type for e in test_db.query(TaskEvent)
+        .filter(TaskEvent.event_type == "device.remote_goal_submitted").all()
+    ]
+    assert events == ["device.remote_goal_submitted"]
+
+
+def test_remote_goal_rejects_invalid_payload(test_client, test_db):
+    device_id = _device(test_db, trust="privileged")
+    token = issue_device_credential(test_db, device_id, now=NOW)
+    grant_capability(test_db, device_id, "goals.submit")
+    test_db.commit()
+    headers = {
+        "X-Sythion-Device-Id": device_id,
+        "X-Sythion-Device-Token": token,
+    }
+    response = test_client.post(
+        "/api/v1/remote/goals", json={"title": ""}, headers=headers)
+    assert response.status_code == 422
+
+
 def test_remote_turn_requires_valid_device_credential(test_client, test_db):
     response = test_client.post("/api/v1/remote/turns", json={"text": "hello"})
     assert response.status_code == 401

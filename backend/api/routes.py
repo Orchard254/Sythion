@@ -2596,9 +2596,8 @@ def _goal_detail(db: Session, goal_id: str) -> Dict[str, Any]:
     }
 
 
-@router.post("/goals")
-async def create_goal(payload: GoalCreateRequest, db: Session = Depends(get_db)):
-    """Create a durable goal with an optional validated plan.
+def _create_goal_from_request(payload: GoalCreateRequest, db: Session):
+    """Shared goal creation for local and remote entry points.
 
     Candidate steps are schema-validated AND dependency-validated before any
     persistence; malformed plans are rejected without partial state.
@@ -2628,6 +2627,13 @@ async def create_goal(payload: GoalCreateRequest, db: Session = Depends(get_db))
         raise HTTPException(status_code=422, detail={"errors": exc.errors})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    return goal
+
+
+@router.post("/goals")
+async def create_goal(payload: GoalCreateRequest, db: Session = Depends(get_db)):
+    """Create a durable goal with an optional validated plan."""
+    goal = _create_goal_from_request(payload, db)
     return _goal_detail(db, goal.id)
 
 
@@ -3027,6 +3033,51 @@ async def remove_device_grant(
             {"device_id": device_id, "capability": capability})
         db.commit()
     return {"device_id": device_id, "capability": capability, "revoked": revoked}
+
+
+@router.post("/remote/goals")
+async def remote_create_goal(request: Request, db: Session = Depends(get_db)):
+    """Give Synth a goal from a remote device (e.g. a phone).
+
+    Requires a valid device credential AND the privileged ``goals.submit``
+    grant. Uses the exact same validated goal-creation path as the local API;
+    the device only supplies the request, never authority over execution.
+    """
+    from pydantic import ValidationError as PydanticValidationError
+
+    from backend.services.remote_access import check_access, verify_device_credential
+    from backend.runtime.events import DbEventLedger
+
+    device_id = request.headers.get("X-Sythion-Device-Id", "")
+    token = request.headers.get("X-Sythion-Device-Token", "")
+    if not device_id or not verify_device_credential(db, device_id, token):
+        raise HTTPException(status_code=401, detail="invalid device credential")
+    allowed, reason = check_access(db, device_id, "goals.submit")
+    if not allowed:
+        raise HTTPException(status_code=403, detail=f"remote access denied: {reason}")
+
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+    try:
+        payload = GoalCreateRequest(**(data if isinstance(data, dict) else {}))
+    except PydanticValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors())
+
+    goal = _create_goal_from_request(payload, db)
+    DbEventLedger(db).append_event(
+        "device-registry", "device.remote_goal_submitted",
+        {"device_id": device_id, "goal_id": goal.id},
+    )
+    db.commit()
+    return {
+        "goal_id": goal.id,
+        "title": goal.title,
+        "device_id": device_id,
+        "authorized": False,
+        "approval_issued": False,
+    }
 
 
 @router.post("/remote/turns")
