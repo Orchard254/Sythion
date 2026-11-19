@@ -195,6 +195,28 @@ lifecycle suite covers real ORM vertical slices, evidence-gated completion,
 no-replay restart policy, and side-effect-free next-work selection. Installed
 app and Windows UI clauses remain unexercised.
 
+### Real-tool vertical slice (S196/S198, in-boundary)
+
+Re-verified that the in-boundary real-tool clauses are already covered by
+dedicated tests (not scripted fakes). No new code was needed.
+
+```
+pytest test_goal_readonly_tool_adapter.py test_goal_worker_binding.py \
+       test_goal_worker_handoff.py test_goal_execution_vertical_slice.py \
+       acceptance/test_target_validation.py test_action_budget_authority.py -q
+→ 79 passed
+```
+
+Proves, using the actual `ToolExecutor` with reviewed `FileRead`/`FileHash`
+tools in a disposable workspace: tool output agrees with independent `hashlib`
+and raw-byte checks; line-ending normalization never corrupts byte evidence;
+tampering changes the digest; outside-root read/hash and unauthorized writes
+are refused before any OS effect; a mutating tool is blocked even with a
+`direct_user_instruction` claim; worker/recorder exceptions never repeat work;
+cancelled work propagates; unknown/nonterminal outcomes do not retry; and an
+unavailable executor starts no tasks (`tool_executor=None`). Native Windows and
+installed-app clauses of S196/S198 remain unexercised.
+
 ## Real process-kill acceptance (partial S184/S185/S199)
 
 ```
