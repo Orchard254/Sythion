@@ -90,10 +90,20 @@ briefing layer is being built first because it is the user-facing foundation.
   owner-only trust controls. Evidence: `test_device_registry.py` (8 passed) plus
   startup/health/lifespan/clean-build suites (58 passed, 7 skipped); frontend
   `DevicesCard.test.tsx` (3 passed), `tsc --noEmit` exit 0.
-- **Stage 3 — trusted remote endpoint:** phone connects as a full conversational
-  client with a per-device trust level and explicit grants. Talking to Synth
-  works like the hosted assistants; consequential actions still go through the
-  trusted boundary.
+- **Stage 3 — trusted remote endpoint (transport-agnostic core implemented
+  2026-11-20):** a remote client identifies as a registered device and presents a
+  per-device credential (hash-only storage, revocable, returned once). Access
+  requires BOTH an explicit owner grant AND a minimum trust level per capability
+  (`briefing.read`/`agent.status` = observed, `devices.read`/`conversation.write`
+  = trusted, `goals.submit`/`messages.read` = privileged). `POST
+  /api/v1/remote/turns` is the same conversational contract as the desktop turn,
+  reachable only after credential + `conversation.write` checks; rejected
+  devices never reach the reasoning boundary. Credential issue/revoke and grant
+  add/remove are audited owner actions. Evidence: `test_remote_access.py`
+  (12 passed), `test_device_registry.py` (8), plus startup/health/clean-build
+  suites (90 passed, 7 skipped, 17s). **Still open:** the transport itself
+  (secure tunnel vs relay) and the phone client UI — those do not affect the
+  trust contract and are the next pieces.
 - **Stage 4 — phone as endpoint:** per-source grants (messages, notifications,
   news), goal submission from the phone, and operation of the phone where the
   owner has granted it — one source at a time. Conversational approval must be

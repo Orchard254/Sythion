@@ -2953,6 +2953,139 @@ async def set_device_trust(device_id: str, request: Request, db: Session = Depen
     return updated
 
 
+@router.post("/devices/{device_id}/credential")
+async def create_device_credential(device_id: str, db: Session = Depends(get_db)):
+    """Issue a remote-client credential. The plaintext is returned ONCE.
+
+    Owner action: the hash alone is stored, and the event is audited.
+    """
+    from backend.services.remote_access import issue_device_credential
+    from backend.runtime.events import DbEventLedger
+
+    try:
+        token = issue_device_credential(db, device_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="unknown device")
+    DbEventLedger(db).append_event(
+        "device-registry", "device.credential_issued", {"device_id": device_id})
+    db.commit()
+    return {"device_id": device_id, "token": token}
+
+
+@router.delete("/devices/{device_id}/credential")
+async def delete_device_credential(device_id: str, db: Session = Depends(get_db)):
+    from backend.services.remote_access import revoke_device_credential
+    from backend.runtime.events import DbEventLedger
+
+    revoked = revoke_device_credential(db, device_id)
+    if revoked:
+        DbEventLedger(db).append_event(
+            "device-registry", "device.credential_revoked", {"device_id": device_id})
+        db.commit()
+    return {"device_id": device_id, "revoked": revoked}
+
+
+@router.get("/devices/{device_id}/grants")
+async def get_device_grants(device_id: str, db: Session = Depends(get_db)):
+    from backend.services.remote_access import list_grants
+
+    return {"device_id": device_id, "grants": list_grants(db, device_id)}
+
+
+@router.put("/devices/{device_id}/grants/{capability}")
+async def add_device_grant(
+    device_id: str, capability: str, db: Session = Depends(get_db),
+):
+    """Explicit owner grant of one capability to one device."""
+    from backend.services.remote_access import grant_capability
+    from backend.runtime.events import DbEventLedger
+
+    try:
+        result = grant_capability(db, device_id, capability)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="unknown device")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="unknown capability")
+    DbEventLedger(db).append_event(
+        "device-registry", "device.grant_added",
+        {"device_id": device_id, "capability": capability})
+    db.commit()
+    return result
+
+
+@router.delete("/devices/{device_id}/grants/{capability}")
+async def remove_device_grant(
+    device_id: str, capability: str, db: Session = Depends(get_db),
+):
+    from backend.services.remote_access import revoke_capability
+    from backend.runtime.events import DbEventLedger
+
+    revoked = revoke_capability(db, device_id, capability)
+    if revoked:
+        DbEventLedger(db).append_event(
+            "device-registry", "device.grant_removed",
+            {"device_id": device_id, "capability": capability})
+        db.commit()
+    return {"device_id": device_id, "capability": capability, "revoked": revoked}
+
+
+@router.post("/remote/turns")
+async def remote_turn(request: Request, db: Session = Depends(get_db)):
+    """Talk to Synth as a registered remote device (e.g. a phone).
+
+    This is the same conversational contract as the desktop turn, reached only
+    after the device presents a valid credential and an explicit
+    ``conversation.write`` grant at a sufficient trust level. A rejected device
+    never reaches the reasoning boundary. The response is non-authorizing.
+    """
+    from backend.services.remote_access import (
+        check_access, verify_device_credential,
+    )
+
+    device_id = request.headers.get("X-Sythion-Device-Id", "")
+    token = request.headers.get("X-Sythion-Device-Token", "")
+    if not device_id or not verify_device_credential(db, device_id, token):
+        raise HTTPException(status_code=401, detail="invalid device credential")
+
+    allowed, reason = check_access(db, device_id, "conversation.write")
+    if not allowed:
+        raise HTTPException(
+            status_code=403, detail=f"remote access denied: {reason}")
+
+    data = await request.json()
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="a JSON object is required")
+    text = data.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPException(status_code=400, detail="text is required")
+
+    from backend.services.conversation_turn_engine import ConversationTurnEngine
+    from backend.services.conversation_runtime import ModelClient
+    from backend.runtime.events import DbEventLedger
+
+    result = await ConversationTurnEngine(ModelClient()).run_turn(text)
+    if isinstance(result, dict):
+        assistant_text = result.get("assistant_text", "") or ""
+        turn_status = result.get("status", "completed")
+    else:
+        assistant_text = getattr(result, "assistant_text", "") or ""
+        turn_status = getattr(result, "status", "completed")
+    briefing = _build_turn_briefing(db)
+    DbEventLedger(db).append_event(
+        "device-registry", "device.remote_turn",
+        {"device_id": device_id},
+    )
+    db.commit()
+    return {
+        "assistant_text": assistant_text,
+        "status": turn_status,
+        "briefing": briefing,
+        "device_id": device_id,
+        "authorized": False,
+        "approval_issued": False,
+    }
+
+
 @router.get("/agent/activity")
 async def agent_activity(limit: int = 20, db: Session = Depends(get_db)):
     """Recent wakes + recent agent events (answers 'what is Sythion doing?')."""

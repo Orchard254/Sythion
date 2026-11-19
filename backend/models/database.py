@@ -992,6 +992,35 @@ class RegisteredDevice(Base):
     capabilities = Column(Text, nullable=False, default="[]")  # JSON list of names
 
 
+class DeviceCredential(Base):
+    """A per-device bearer credential for remote clients.
+
+    Only a hash is stored; the plaintext is shown to the owner once at issue
+    time. Revocation is a durable flag, not a deletion, so the event is auditable.
+    """
+
+    __tablename__ = "device_credentials"
+
+    device_id = Column(String, primary_key=True)
+    token_hash = Column(String, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    revoked_at = Column(DateTime, nullable=True)
+
+
+class DeviceGrant(Base):
+    """One explicit capability granted to one device by the owner.
+
+    Grants are additive and never widen themselves; they are created and removed
+    only through authenticated owner actions.
+    """
+
+    __tablename__ = "device_grants"
+
+    device_id = Column(String, nullable=False, primary_key=True)
+    capability = Column(String, nullable=False, primary_key=True)
+    granted_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class ConversationExchange(Base):
     """A complete pure-conversation exchange, separate from episodic summaries."""
 
