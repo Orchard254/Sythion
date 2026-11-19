@@ -572,6 +572,21 @@ export interface BriefingItem {
   approved: false;
 }
 
+export interface RelaySession {
+  session_id: string;
+  device_id: string;
+  status: string;
+  expires_at: string | null;
+}
+
+export interface RelayMessage {
+  id: number;
+  role: 'synth' | 'owner';
+  kind: string;
+  text: string;
+  created_at: string;
+}
+
 export interface RegisteredDevice {
   device_id: string;
   name: string;

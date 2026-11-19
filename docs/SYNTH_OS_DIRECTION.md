@@ -114,8 +114,17 @@ briefing layer is being built first because it is the user-facing foundation.
   tunnel simply sits in front of this relay — the protocol does not change.
   Built in `backend/services/relay.py` with `RelaySession`/`RelayMessage` models;
   `test_relay.py` (9 passed); affected set 90 passed / 7 skipped (18s).
-  **Still open:** the phone client UI and per-source message/news connectors
-  (which need granted source access).
+  **Phone client UI (minimal, implemented 2026-11-20):** `PhoneRelayScreen` is a
+  simple Remote route in the Control Center. It takes a device id + credential,
+  opens a relay session, polls durable messages and posts text. The credential
+  input is a password field; nothing in the screen can approve an action or
+  clear a blocker. `relayService` in `services/api.ts` carries the device headers
+  per request — no third party. Evidence: `PhoneRelay.test.tsx` (2 passed),
+  affected App/nav set (14 passed), `tsc --noEmit` exit 0. Also fixed a mock
+  regression in `App.pending-proposals.test.tsx` from Stage 2's `useDevices`.
+
+  **Still open:** internet reachability (a tunnel in front of the relay) and
+  per-source message/news connectors (which need granted source access).
 - **Stage 4 — phone as endpoint (goal submission implemented 2026-11-20):**
   `POST /api/v1/remote/goals` lets a registered device give Synth a goal. It
   requires a valid device credential and the privileged `goals.submit` grant,

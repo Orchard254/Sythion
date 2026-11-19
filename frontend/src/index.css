@@ -2148,6 +2148,34 @@ button {
   align-items: flex-start;
 }
 
+/* First-party relay client messages. */
+.relay__messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 380px;
+  overflow-y: auto;
+}
+
+.relay__message {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--r-md, 8px);
+  background: var(--surface-soft, rgba(127, 127, 127, 0.08));
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.relay__message--owner { background: var(--accent-soft, rgba(90, 140, 255, 0.12)); }
+
+.relay__role {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.8em;
+  opacity: 0.7;
+}
+
 /* Read-only briefing card. It informs; it never authorizes. */
 .briefing__head {
   display: flex;

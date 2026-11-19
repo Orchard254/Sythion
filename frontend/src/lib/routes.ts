@@ -12,7 +12,8 @@ export type RouteId =
   | 'automations'
   | 'security'
   | 'system'
-  | 'settings';
+  | 'settings'
+  | 'phone';
 
 export type NavGroupId = 'operate' | 'personal' | 'environment' | 'control';
 
@@ -94,6 +95,13 @@ export const ROUTES: RouteDef[] = [
     icon: 'settings',
     group: 'control',
     blurb: 'Interface preferences and application settings',
+  },
+  {
+    id: 'phone',
+    label: 'Remote',
+    icon: 'system',
+    group: 'control',
+    blurb: 'Talk to Synth through its first-party relay',
   },
 ];
 

@@ -13,6 +13,7 @@ vi.mock('./hooks/useBackend', () => {
     useHealth: () => ({ data: {}, dataUpdatedAt: Date.now() }),
     useAgent: single, useAgentHealth: single, useVersion: single, useBackgroundPolicy: single,
     useCapabilities: empty, useTasks: empty, useAgentActivity: single, useMemoryEdges: empty,
+    useDevices: empty,
     useSkillProposals: () => ({ data: mock.proposals, refetch: vi.fn() }),
     useToolProposals: empty, useActions: () => ({ live: mock.live, approveSkillProposal: mock.approve, rejectSkillProposal: mock.reject }),
   };

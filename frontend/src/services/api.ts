@@ -437,6 +437,60 @@ export const agentService = {
   },
 };
 
+/** First-party relay: a device talks to the Core through a bound session.
+ * No third party is involved; the device credential is passed per request. */
+export const relayService = {
+  open: async (deviceId: string, token: string) => {
+    const response = await apiClient.post('/remote/sessions', null, {
+      headers: {
+        'X-Sythion-Device-Id': deviceId,
+        'X-Sythion-Device-Token': token,
+      },
+    });
+    return response.data as import('../types').RelaySession;
+  },
+
+  poll: async (sessionId: string, deviceId: string, token: string, afterId = 0) => {
+    const response = await apiClient.get(
+      `/remote/sessions/${sessionId}/messages`,
+      {
+        params: { after_id: afterId },
+        headers: {
+          'X-Sythion-Device-Id': deviceId,
+          'X-Sythion-Device-Token': token,
+        },
+      },
+    );
+    return response.data.messages as import('../types').RelayMessage[];
+  },
+
+  send: async (
+    sessionId: string, deviceId: string, token: string, text: string,
+  ) => {
+    const response = await apiClient.post(
+      `/remote/sessions/${sessionId}/messages`,
+      { text },
+      {
+        headers: {
+          'X-Sythion-Device-Id': deviceId,
+          'X-Sythion-Device-Token': token,
+        },
+      },
+    );
+    return response.data;
+  },
+
+  close: async (sessionId: string, deviceId: string, token: string) => {
+    const response = await apiClient.delete(`/remote/sessions/${sessionId}`, {
+      headers: {
+        'X-Sythion-Device-Id': deviceId,
+        'X-Sythion-Device-Token': token,
+      },
+    });
+    return response.data;
+  },
+};
+
 export const agentRegistryService = {
   list: async (): Promise<AgentRegistry> => {
     const response = await apiClient.get('/agents');

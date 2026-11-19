@@ -18,6 +18,7 @@ import { SecurityScreen } from './screens/Security';
 import { SettingsScreen } from './screens/Settings';
 import { SetupScreen } from './screens/Setup';
 import { SystemScreen } from './screens/SystemIntegrations';
+import { PhoneRelayScreen } from './screens/PhoneRelay';
 import { useAppInit } from './hooks/useAppInit';
 import { useAppStore } from './store/appStore';
 import { assessRuntimeHealth } from './lib/runtimeHealth';
@@ -65,6 +66,8 @@ function ScreenFor({ route }: { route: RouteId }) {
       return <SystemScreen />;
     case 'settings':
       return <SettingsScreen />;
+    case 'phone':
+      return <PhoneRelayScreen />;
     case 'overview':
     default:
       // Operations is the Control Center landing view.
