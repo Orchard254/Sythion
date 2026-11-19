@@ -2905,6 +2905,54 @@ async def get_briefing(db: Session = Depends(get_db)):
     return build_user_briefing(db)
 
 
+@router.get("/devices")
+async def list_registered_devices(db: Session = Depends(get_db)):
+    """Owner-visible device registry. Read-only; trust is not authority here."""
+    from backend.services.device_registry import list_devices
+
+    return {"devices": list_devices(db)}
+
+
+@router.get("/devices/local")
+async def get_local_device(db: Session = Depends(get_db)):
+    from backend.services.device_registry import local_device_id, get_device
+
+    device = get_device(db, local_device_id())
+    if device is None:
+        raise HTTPException(status_code=404, detail="This device is not registered")
+    return device
+
+
+@router.put("/devices/{device_id}/trust")
+async def set_device_trust(device_id: str, request: Request, db: Session = Depends(get_db)):
+    """Explicit owner action to set a device's trust level (audited).
+
+    A device can never widen its own trust; this endpoint is the only write
+    path and is gated by the same authenticated control boundary as other
+    owner policies.
+    """
+    from backend.services.device_registry import set_trust_level
+    from backend.runtime.events import DbEventLedger
+
+    data = await request.json()
+    level = data.get("trust_level")
+    if not isinstance(level, str):
+        raise HTTPException(status_code=400, detail="trust_level is required")
+    try:
+        updated = set_trust_level(db, device_id, level)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="unknown trust level")
+    except LookupError:
+        raise HTTPException(status_code=404, detail="unknown device")
+
+    DbEventLedger(db).append_event(
+        "device-registry", "device.trust_changed",
+        {"device_id": device_id, "trust_level": level},
+    )
+    db.commit()
+    return updated
+
+
 @router.get("/agent/activity")
 async def agent_activity(limit: int = 20, db: Session = Depends(get_db)):
     """Recent wakes + recent agent events (answers 'what is Sythion doing?')."""

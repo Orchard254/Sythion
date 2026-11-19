@@ -972,6 +972,26 @@ class MorningBrief(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class RegisteredDevice(Base):
+    """An endpoint in the Synth OS (this PC, a phone, a future machine).
+
+    A device is a sensor/actuator, not the system. Its trust level starts at the
+    lowest rung and only the owner can raise it; Synth can never widen its own
+    device permissions. Last-seen and capabilities are recorded for the owner's
+    visibility, not used as authority by themselves.
+    """
+
+    __tablename__ = "registered_devices"
+
+    device_id = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    kind = Column(String, nullable=False, default="local_windows")
+    trust_level = Column(String, nullable=False, default="observed")
+    first_seen = Column(DateTime, nullable=False, default=datetime.utcnow)
+    last_seen = Column(DateTime, nullable=False, default=datetime.utcnow)
+    capabilities = Column(Text, nullable=False, default="[]")  # JSON list of names
+
+
 class ConversationExchange(Base):
     """A complete pure-conversation exchange, separate from episodic summaries."""
 

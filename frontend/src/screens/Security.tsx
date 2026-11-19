@@ -18,6 +18,7 @@ import {
   useActions,
   useAgent,
   useAgentActivity,
+  useDevices,
   useAgentHealth,
   useBackgroundPolicy,
   useCapabilities,
@@ -45,6 +46,7 @@ import {
   taskTone,
 } from '../lib/format';
 import { useNavStore } from '../store/navStore';
+import { DevicesCard } from '../components/DevicesCard';
 
 export function SecurityScreen() {
   const agent = useAgent();
@@ -57,6 +59,7 @@ export function SecurityScreen() {
   const edges = useMemoryEdges();
   const skillProposals = useSkillProposals();
   const toolProposals = useToolProposals();
+  const devices = useDevices();
   const actions = useActions();
   const notify = useAppStore((s) => s.notify);
   const navigate = useNavStore((s) => s.setRoute);
@@ -288,6 +291,20 @@ export function SecurityScreen() {
             </div>
           </div>
         </Panel>
+
+        {/* --- Devices (Synth OS endpoints) ---------------------------- */}
+        <DevicesCard
+          devices={devices.data?.devices ?? []}
+          onTrustChange={(deviceId, level) => {
+            void actions.setDeviceTrust(deviceId, level)
+              .then(() => devices.refetch())
+              .catch((error) => notify({
+                tone: 'danger',
+                title: 'Could not change device trust',
+                body: String(error),
+              }));
+          }}
+        />
 
         {/* --- Autonomy modes ----------------------------------------- */}
         <Panel

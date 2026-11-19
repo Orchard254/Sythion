@@ -79,8 +79,17 @@ briefing layer is being built first because it is the user-facing foundation.
   `test_morning_brief_scheduler.py` (5 passed), `test_user_briefing.py` (6),
   `test_assistant_turn_api.py` (turn briefing), `MorningBriefCard.test.tsx` (2),
   78 frontend tests pass, `tsc --noEmit` exit 0. Full backend suite pending.
-- **Stage 2 — device registry:** local machine identity, last-seen, health, and
-  capability records; visible to the owner.
+- **Stage 2 — device registry (implemented 2026-11-20):** `RegisteredDevice`
+  records a stable, non-reversible local id, name, kind, first/last seen and
+  capability domains. `backend/services/device_registry.py` upserts this machine
+  at startup; re-registration refreshes observation fields but can NEVER raise
+  trust. Trust levels are `observed`/`trusted`/`privileged`, set only through
+  `PUT /api/v1/devices/{id}/trust` (an authenticated owner action, audited as
+  `device.trust_changed`). `GET /api/v1/devices` and `/devices/local` expose the
+  registry read-only; `DevicesCard` renders it in the Security screen with
+  owner-only trust controls. Evidence: `test_device_registry.py` (8 passed) plus
+  startup/health/lifespan/clean-build suites (58 passed, 7 skipped); frontend
+  `DevicesCard.test.tsx` (3 passed), `tsc --noEmit` exit 0.
 - **Stage 3 — trusted remote endpoint:** phone connects as a full conversational
   client with a per-device trust level and explicit grants. Talking to Synth
   works like the hosted assistants; consequential actions still go through the

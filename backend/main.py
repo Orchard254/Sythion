@@ -223,6 +223,20 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning(f"Main agent initialization skipped due to error: {exc}")
 
+        # Stage 2 of SYNTH_OS_DIRECTION.md: register this machine as a device
+        # endpoint. Observation only — re-registering never raises trust and
+        # grants no authority. Best-effort so startup is never blocked by it.
+        try:
+            from .services.device_registry import register_local_device
+            device_session = db_manager.new_session()
+            try:
+                register_local_device(device_session)
+                device_session.commit()
+            finally:
+                device_session.close()
+        except Exception as exc:
+            logger.warning(f"Local device registration skipped: {exc}")
+
         # Stage 1 of SYNTH_OS_DIRECTION.md: opt-in daily morning brief. No timer
         # and no persisted brief exist unless the owner enabled it. The scheduler
         # only assembles a read-only brief from local state; it never calls a

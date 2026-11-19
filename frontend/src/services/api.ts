@@ -420,6 +420,21 @@ export const agentService = {
     const response = await apiClient.post('/agent/wake');
     return response.data;
   },
+
+  devices: async (): Promise<import('../types').DeviceList> => {
+    const response = await apiClient.get('/devices');
+    return response.data;
+  },
+
+  setDeviceTrust: async (
+    deviceId: string,
+    trustLevel: 'observed' | 'trusted' | 'privileged',
+  ): Promise<import('../types').RegisteredDevice> => {
+    const response = await apiClient.put(`/devices/${deviceId}/trust`, {
+      trust_level: trustLevel,
+    });
+    return response.data;
+  },
 };
 
 export const agentRegistryService = {

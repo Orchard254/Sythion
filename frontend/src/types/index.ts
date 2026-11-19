@@ -572,6 +572,20 @@ export interface BriefingItem {
   approved: false;
 }
 
+export interface RegisteredDevice {
+  device_id: string;
+  name: string;
+  kind: string;
+  trust_level: 'observed' | 'trusted' | 'privileged';
+  first_seen: string | null;
+  last_seen: string | null;
+  capabilities: string[];
+}
+
+export interface DeviceList {
+  devices: RegisteredDevice[];
+}
+
 export interface MorningBrief {
   date: string;
   generated_at: string;

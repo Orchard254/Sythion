@@ -185,6 +185,12 @@ export function useBackgroundPolicy() {
   });
 }
 
+export function useDevices() {
+  return useSource('devices', api.agentService.devices, {
+    refetchInterval: 30_000,
+  });
+}
+
 export function useAgentRegistry() {
   return useSource('agents', api.agentRegistryService.list, {
     staleMs: 30_000,
@@ -343,6 +349,13 @@ export function useActions() {
       async wakeAgent() {
         if (!live) throw new Error('Not connected to a Sythion backend.');
         return api.agentService.wake();
+      },
+      async setDeviceTrust(
+        deviceId: string,
+        trustLevel: 'observed' | 'trusted' | 'privileged',
+      ) {
+        if (!live) throw new Error('Not connected to a Sythion backend.');
+        return api.agentService.setDeviceTrust(deviceId, trustLevel);
       },
       async approveSkillProposal(id: string | number) {
         if (!live) throw new Error('Not connected to a Sythion backend.');
