@@ -370,11 +370,20 @@ app.add_middleware(
     allowed_origins=_trusted_origins,
 )
 
+# Dedicated device scope. It does NOT weaken the control boundary above: it
+# guards only /device/* with a per-device credential and keeps the same
+# loopback peer rule. Owner approval routes remain under /api/*.
+from .core.device_scope import DeviceScopeMiddleware
+app.add_middleware(DeviceScopeMiddleware)
+
 # Include API routes
 app.include_router(api_router, prefix="/api/v1")
 
 from backend.api.browser_bridge_routes import router as browser_router
 app.include_router(browser_router)
+
+from backend.api.device_gateway_routes import router as device_gateway_router
+app.include_router(device_gateway_router)
 
 from backend.api.learning_routes import router as learning_router
 app.include_router(learning_router, prefix="/api/v1")
