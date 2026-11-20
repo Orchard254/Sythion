@@ -58,6 +58,40 @@ describe('MorningBriefCard', () => {
     expect(onNavigate).toHaveBeenCalledWith('security');
   });
 
+  it('links registered devices to the system device panel', () => {
+    const onNavigate = vi.fn();
+    const withDevices = {
+      ...brief,
+      sections: [
+        { key: 'goals', title: 'Goals', lines: ['Ship the report'] },
+        { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
+        { key: 'reconciliation', title: 'Needs reconciliation', lines: ['Nothing needs reconciliation.'] },
+        { key: 'devices', title: 'Registered devices',
+          lines: ['this-pc [dev_1]: trust=trusted, last_seen=2026-11-20T08:00:00'] },
+      ],
+    };
+    const view = create(<MorningBriefCard brief={withDevices} onNavigate={onNavigate} />);
+    const devices = view.root.findAllByType('button')
+      .find((b) => b.children.some((c) => typeof c === 'string' && c === 'View devices'));
+    expect(devices).toBeDefined();
+    devices!.props.onClick();
+    expect(onNavigate).toHaveBeenCalledWith('system');
+  });
+
+  it('does not offer device navigation when no devices are registered', () => {
+    const withEmptyDevices = {
+      ...brief,
+      sections: [
+        { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
+        { key: 'devices', title: 'Registered devices', lines: ['No devices have registered.'] },
+      ],
+    };
+    const view = create(<MorningBriefCard brief={withEmptyDevices} />);
+    const labels = view.root.findAllByType('button').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join(''));
+    expect(labels).not.toContain('View devices');
+  });
+
   it('renders no navigation when there is nothing to review', () => {
     const calm = {
       ...brief,
