@@ -3,8 +3,9 @@
 This is the Core's proactive "voice": one durable brief per local date, built
 without any model call, tool execution, or authority. It reports what happened
 (goals/tasks finished), what is stuck (the blocked-work briefing), the agent's
-state, and local system health. Every brief is marked non-authorizing: it is
-information for the owner, never approval, clearance, or proof of an effect.
+state, registered devices (identity, trust, last-seen) and local system health.
+Every brief is marked non-authorizing: it is information for the owner, never
+approval, clearance, or proof of an effect.
 """
 
 from __future__ import annotations
@@ -92,6 +93,22 @@ def build_morning_brief(db: Session, *, now: datetime | None = None) -> dict[str
     except Exception as exc:  # pragma: no cover - health is best-effort
         health_lines = [f"Health checks unavailable: {_bound(str(exc), 'error')}."]
 
+    # Device registry: durable device identity, trust and last-seen. Observation
+    # only — a trust level here is reported, never used as authority by the brief.
+    try:
+        from backend.services.device_registry import list_devices
+
+        devices = list_devices(db)
+        device_lines = [
+            f"{_bound(d.get('name'), 'unnamed device')} "
+            f"[{_bound(d.get('device_id'), 'unknown id')}]: "
+            f"trust={_bound(d.get('trust_level'), 'unknown')}, "
+            f"last_seen={_bound(d.get('last_seen'), 'never')}"
+            for d in devices
+        ] or ["No devices have registered."]
+    except Exception as exc:  # pragma: no cover - registry is best-effort
+        device_lines = [f"Device registry unavailable: {_bound(str(exc), 'error')}."]
+
     sections = [
         _section("goals", "Goals finished since yesterday",
                  [f"{_bound(g.title, 'untitled goal')}" for g in finished_goals]
@@ -102,6 +119,7 @@ def build_morning_brief(db: Session, *, now: datetime | None = None) -> dict[str
         _section("blockers", "Needs your attention",
                  blocker_lines or ["Nothing is blocked."]),
         _section("agent", "Synth", agent_lines),
+        _section("devices", "Registered devices", device_lines),
         _section("system", "Local health", health_lines),
     ]
 

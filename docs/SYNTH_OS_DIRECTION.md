@@ -67,8 +67,9 @@ briefing layer is being built first because it is the user-facing foundation.
 - **Stage 1 — on-demand + morning brief (implemented 2026-11-20):** a read-only
   briefing endpoint and a scheduled local brief from app-local state. Built:
   `backend/services/morning_brief.py` composes a deterministic brief (goals and
-  tasks finished since yesterday, blocked work, Main Agent state, local health)
-  with no model call and no authority; `MorningBrief` persists exactly one brief
+  tasks finished since yesterday, blocked work, Main Agent state, registered
+  devices (identity, trust level, last-seen) and local health) with no model call
+  and no authority; `MorningBrief` persists exactly one brief
   per local date; `ensure_daily_brief` is idempotent. `GET /api/v1/briefing/morning`
   returns today's brief (stored or freshly built, never persisted by the read
   path). `backend/services/morning_brief_scheduler.py` is an opt-in
@@ -79,6 +80,12 @@ briefing layer is being built first because it is the user-facing foundation.
   `test_morning_brief_scheduler.py` (5 passed), `test_user_briefing.py` (6),
   `test_assistant_turn_api.py` (turn briefing), `MorningBriefCard.test.tsx` (2),
   78 frontend tests pass, `tsc --noEmit` exit 0. Full backend suite pending.
+
+  **Device registry in the brief (2026-11-20):** a `Registered devices` section
+  reports each device's name, id, trust level and last-seen from the durable
+  registry (observation only — trust here is never used as authority by the
+  brief). Evidence: `test_morning_brief.py` (11 passed incl. populated/empty
+  device cases), affected set 90 passed / 7 skipped (11s).
 - **Stage 2 — device registry (implemented 2026-11-20):** `RegisteredDevice`
   records a stable, non-reversible local id, name, kind, first/last seen and
   capability domains. `backend/services/device_registry.py` upserts this machine

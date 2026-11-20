@@ -38,7 +38,7 @@ def test_brief_is_non_authorizing_and_structured(test_db):
     assert brief["date"] == "2026-11-20"
     assert brief["headline"].startswith("Good morning")
     assert [s["key"] for s in brief["sections"]] == [
-        "goals", "tasks", "blockers", "agent", "system",
+        "goals", "tasks", "blockers", "agent", "devices", "system",
     ]
     assert brief["authorized"] is False
     assert brief["approval_issued"] is False
@@ -62,6 +62,30 @@ def test_brief_reports_recent_work_and_blockers(test_db):
     assert any("Ship the report" in line for line in sections["goals"])
     assert any("draft the report" in line for line in sections["tasks"])
     assert any("Which file?" in line for line in sections["blockers"])
+
+
+def test_brief_reports_registered_devices(test_db):
+    from backend.services.device_registry import (
+        register_local_device, set_trust_level,
+    )
+
+    device = register_local_device(test_db, now=NOW)
+    set_trust_level(test_db, device["device_id"], "trusted")
+    test_db.commit()
+
+    brief = build_morning_brief(test_db, now=NOW)
+    devices = next(s for s in brief["sections"] if s["key"] == "devices")
+    assert len(devices["lines"]) == 1
+    line = devices["lines"][0]
+    assert device["device_id"] in line
+    assert "trust=trusted" in line
+    assert "last_seen=" in line
+
+
+def test_brief_devices_section_handles_empty_registry(test_db):
+    brief = build_morning_brief(test_db, now=NOW)
+    devices = next(s for s in brief["sections"] if s["key"] == "devices")
+    assert devices["lines"] == ["No devices have registered."]
 
 
 def test_build_makes_no_state_changes(test_db):
@@ -109,7 +133,7 @@ def test_morning_brief_endpoint_is_read_only(test_client, test_db):
     body = response.json()
     assert "headline" in body
     assert [s["key"] for s in body["sections"]] == [
-        "goals", "tasks", "blockers", "agent", "system",
+        "goals", "tasks", "blockers", "agent", "devices", "system",
     ]
     assert body["authorized"] is False
     assert body["approval_issued"] is False
