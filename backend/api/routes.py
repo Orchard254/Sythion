@@ -3367,6 +3367,58 @@ async def decide_approval(request: Request, db: Session = Depends(get_db)):
     }
 
 
+def _non_authorizing(action: dict) -> dict:
+    """Mark an action projection as owner-visible but never authorizing."""
+    result = dict(action)
+    result["authorized"] = False
+    result["approval_issued"] = False
+    return result
+
+
+@router.get("/remote-actions")
+async def list_remote_actions(request: Request, limit: int = 20, db: Session = Depends(get_db)):
+    """Owner-visible remote-action lifecycle states. Read-only.
+
+    Never grants authority, clears a blocker, or approves an action. Device
+    channels are explicitly refused; this is a control-center view.
+    """
+    _reject_device_auth_for_owner_route(request)
+    from backend.runtime.remote_action_lifecycle import RemoteActionManager
+
+    try:
+        actions = RemoteActionManager(db).list_recent(limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"actions": [_non_authorizing(a) for a in actions]}
+
+
+@router.get("/remote-actions/uncertain")
+async def list_uncertain_remote_actions(request: Request, db: Session = Depends(get_db)):
+    """Uncertain remote actions that must be reconciled, never auto-replayed."""
+    _reject_device_auth_for_owner_route(request)
+    from backend.runtime.remote_action_lifecycle import RemoteActionManager
+
+    return {"actions": [
+        _non_authorizing(a) for a in RemoteActionManager(db).list_uncertain()
+    ]}
+
+
+@router.get("/remote-actions/{action_id}")
+async def get_remote_action(action_id: str, request: Request, db: Session = Depends(get_db)):
+    """One action's durable state and immutable event sequence."""
+    _reject_device_auth_for_owner_route(request)
+    from backend.runtime.remote_action_lifecycle import RemoteActionManager
+
+    manager = RemoteActionManager(db)
+    action = manager.get(action_id)
+    if action is None:
+        raise HTTPException(status_code=404, detail="unknown remote action")
+    return {
+        "action": _non_authorizing(action),
+        "events": manager.events(action_id),
+    }
+
+
 @router.get("/agent/activity")
 async def agent_activity(limit: int = 20, db: Session = Depends(get_db)):
     """Recent wakes + recent agent events (answers 'what is Sythion doing?')."""

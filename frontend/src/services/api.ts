@@ -437,6 +437,19 @@ export const agentService = {
   },
 };
 
+/** Owner-visible remote-action lifecycle (read-only; never approves). */
+export const remoteActionService = {
+  list: async (limit = 20): Promise<{ actions: import('../types').RemoteAction[] }> => {
+    const response = await apiClient.get('/remote-actions', { params: { limit } });
+    return response.data;
+  },
+
+  uncertain: async (): Promise<{ actions: import('../types').RemoteAction[] }> => {
+    const response = await apiClient.get('/remote-actions/uncertain');
+    return response.data;
+  },
+};
+
 /** First-party relay: a device talks to the Core through a bound session.
  * No third party is involved; the device credential is passed per request. */
 export const relayService = {

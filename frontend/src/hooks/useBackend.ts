@@ -185,6 +185,18 @@ export function useBackgroundPolicy() {
   });
 }
 
+export function useRemoteActions() {
+  return useSource('remote-actions', () => api.remoteActionService.list(20), {
+    refetchInterval: 15_000,
+  });
+}
+
+export function useUncertainRemoteActions() {
+  return useSource('remote-actions-uncertain', api.remoteActionService.uncertain, {
+    refetchInterval: 15_000,
+  });
+}
+
 export function useDevices() {
   return useSource('devices', api.agentService.devices, {
     refetchInterval: 30_000,

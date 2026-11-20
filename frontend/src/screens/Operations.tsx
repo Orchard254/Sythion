@@ -9,7 +9,8 @@ import {
   Rail,
   ScreenHead,
 } from '../components/ui';
-import { useAgent, useCapabilities, useHealth, useObjectives, useTasks } from '../hooks/useBackend';
+import { useAgent, useCapabilities, useHealth, useObjectives, useRemoteActions, useTasks } from '../hooks/useBackend';
+import { RemoteActionsPanel } from '../components/RemoteActionsPanel';
 import { dateTime, humanize, parseTimestamp, relTime, taskLabel, taskTone, OBJECTIVE_TONE } from '../lib/format';
 import { useNavStore } from '../store/navStore';
 import {
@@ -51,6 +52,7 @@ export function OperationsScreen() {
   const health = useHealth();
   const agent = useAgent();
   const capabilities = useCapabilities();
+  const remoteActions = useRemoteActions();
 
   const setRoute = useNavStore((s) => s.setRoute);
 
@@ -367,6 +369,8 @@ export function OperationsScreen() {
                 </div>
               )}
             </Panel>
+
+            <RemoteActionsPanel actions={remoteActions.data?.actions ?? []} />
 
             <Panel title="System status" icon="shield" tight className="operations-panel">
               <div className="row row--between" style={{ gap: 8 }}>

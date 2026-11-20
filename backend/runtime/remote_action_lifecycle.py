@@ -278,6 +278,18 @@ class RemoteActionManager:
         assert updated is not None
         return updated
 
+    def list_recent(self, *, limit: int = 20) -> List[Dict[str, Any]]:
+        """Most recently updated actions for owner visibility (read-only)."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        rows = (
+            self._session.query(RemoteAction)
+            .order_by(RemoteAction.updated_at.desc(), RemoteAction.action_id.asc())
+            .limit(limit)
+            .all()
+        )
+        return [_to_dict(row) for row in rows]
+
     def list_uncertain(self) -> List[Dict[str, Any]]:
         rows = (
             self._session.query(RemoteAction)

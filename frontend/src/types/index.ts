@@ -572,6 +572,26 @@ export interface BriefingItem {
   approved: false;
 }
 
+export interface RemoteAction {
+  action_id: string;
+  idempotency_key: string;
+  device_id: string;
+  task_id: string | null;
+  owned_action_id: string | null;
+  state: 'received' | 'understanding' | 'planned' | 'awaiting_approval' | 'executing' | 'verifying' | 'completed' | 'failed' | 'cancelled' | 'uncertain';
+  version: number;
+  reason: string | null;
+  approval_decision_id: string | null;
+  evidence_ref: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  resolved_at: string | null;
+  terminal: boolean;
+  uncertain: boolean;
+  authorized: false;
+  approval_issued: false;
+}
+
 export interface RelaySession {
   session_id: string;
   device_id: string;
