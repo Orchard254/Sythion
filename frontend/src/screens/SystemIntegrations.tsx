@@ -27,6 +27,7 @@ import {
   useVoiceAssets,
 } from '../hooks/useBackend';
 import { dateTime, humanize, relTime } from '../lib/format';
+import { DeviceChannelPanel } from '../components/DeviceChannelPanel';
 
 type Tab = 'runtime' | 'models' | 'capabilities' | 'diagnostics';
 
@@ -128,6 +129,7 @@ export function SystemScreen() {
 
         {tab === 'runtime' && (
           <div className="grid grid--2">
+            <DeviceChannelPanel />
             <Panel
               title="Process"
               icon="server"
