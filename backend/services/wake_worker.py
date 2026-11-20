@@ -115,10 +115,15 @@ class WakeWorker:
         async def wake_handler(goal_id: str) -> None:
             # Submits a NORMAL durable wake. Execution still goes through
             # _process -> may_execute_background -> protected runtime.
+            # Each cycle is a distinct wake intent. A constant key would be
+            # deduplicated after cycle 1 (submit_wake checks existence,
+            # regardless of the row's status), so cycles 2..N would create no
+            # PENDING row and the goal would never be re-woken. The UUID suffix
+            # is unique across process restarts too, since the DB is durable.
             self.submit(
                 "goal.wake",
                 trigger_reference=goal_id,
-                wake_key=f"goal.wake:{goal_id}",
+                wake_key=f"goal.wake:{goal_id}:{uuid.uuid4().hex}",
             )
 
         try:

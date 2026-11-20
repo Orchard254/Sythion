@@ -121,10 +121,55 @@ async def test_enabled_loop_submits_ordinary_durable_wakes(db_manager, monkeypat
     await asyncio.wait_for(worker._bounded_task, timeout=10)
 
     assert len(submitted) == 2
+    keys = []
     for args, kwargs in submitted:
         assert args[0] == "goal.wake"
-        assert kwargs["wake_key"] == "goal.wake:goal-1"
+        keys.append(kwargs["wake_key"])
+    # Each cycle carries a distinct per-attempt key so recurrent wakes are not
+    # deduplicated away by submit_wake's existence check.
+    assert len(set(keys)) == 2
+    assert all(k.startswith("goal.wake:goal-1:") for k in keys)
     worker.stop_bounded_loop()
+
+
+@pytest.mark.asyncio
+async def test_recurring_cycles_create_distinct_pending_wakes(db_manager, monkeypatch):
+    """Two work cycles must yield two distinct durable PENDING wakes.
+
+    This uses the REAL submit (no mock): a constant wake_key is deduplicated by
+    submit_wake after cycle 1 because it checks existence, not status — so the
+    old code created only one PENDING row and cycles 2..N never executed.
+    """
+    import backend.services.goal_selector as goal_selector
+    from backend.models.database import AgentWake
+
+    class RunnableSelector:
+        def __init__(self, session):
+            pass
+
+        def pick_goal(self, *, respect_backoff=True):
+            return {"goal_id": "goal-1", "priority": 1}
+
+    monkeypatch.setattr(goal_selector, "RunnableGoalSelector", RunnableSelector)
+    worker = WakeWorker(db_manager=db_manager)
+
+    worker.start_bounded_loop(WakePolicy(
+        enabled=True, interval_seconds=0.1, max_cycles=2))
+    await asyncio.wait_for(worker._bounded_task, timeout=10)
+    worker.stop_bounded_loop()
+
+    s = db_manager.new_session()
+    try:
+        rows = s.query(AgentWake).filter_by(trigger_type="goal.wake").all()
+        snapshot = [(r.wake_key, r.status) for r in rows]
+    finally:
+        s.close()
+
+    keys = [k for k, _ in snapshot]
+    assert len(keys) == 2, f"expected two distinct wakes, got {snapshot}"
+    assert len(set(keys)) == 2
+    assert all(k.startswith("goal.wake:goal-1:") for k in keys)
+    assert all(status == "PENDING" for _, status in snapshot)
 
 
 @pytest.mark.asyncio

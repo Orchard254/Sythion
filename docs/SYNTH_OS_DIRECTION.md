@@ -48,6 +48,14 @@ packages, memory, objectives and device status; goals with evidence and
 blockers; durable wakes; an owner-gated bounded wake; read-only recovery review
 packets; and a versioned authority-free reasoning contract.
 
+**Bounded-wake recurrence invariant (2026-11-21):** every cycle of the
+owner-gated bounded wake loop submits a distinct durable wake key
+(`goal.wake:{goal}:{uuid}`). `submit_wake` deduplicates on key existence
+regardless of the row's status, so a constant key would let cycle 1's completed
+wake suppress cycles 2..N forever — the goal would never be re-woken. The UUID
+suffix is unique across restarts because the wake table is durable. Regression
+test uses the real `submit()` over two cycles (`test_owner_gated_bounded_wake.py`).
+
 **Memory retention invariant (2026-11-21):** when stale-memory pruning is
 over budget, it deletes the *stalest* entries first (ranked by `last_accessed_at
 or updated_at`, ascending), never the freshest ones. The old newest-first slice
