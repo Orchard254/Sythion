@@ -158,6 +158,8 @@ def test_brief_receipts_do_not_flag_http_fallback(test_db):
     assert session["session_id"] in joined
     assert "HTTP fallback (acks unavailable)" in joined
     assert "unacked" not in joined
+    # The bogus "acked through #0" must never be rendered for a fallback line.
+    assert "acked through #0" not in joined
 
 
 def test_brief_receipts_report_unacked_lag(test_db):

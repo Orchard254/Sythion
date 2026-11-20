@@ -98,7 +98,7 @@ describe('RelayBriefCard', () => {
       headline: 'Good morning.',
       sections: [
         { key: 'receipts', title: 'Delivery receipts',
-          lines: ['session rs_1: acked through #0 · HTTP fallback (acks unavailable)'] },
+          lines: ['session rs_1: HTTP fallback (acks unavailable)'] },
       ],
       note: '',
     }))!;

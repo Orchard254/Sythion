@@ -71,26 +71,22 @@ export function briefStatusSummary(brief: StructuredBrief): BriefStatusSummary {
         if (trust) deviceTrust.push(trust[1].toLowerCase());
       }
     } else if (row.key === 'receipts') {
-      // Lines look like "session rs_1: acked through #12" and, when lagging,
-      // "N unacked". An HTTP fallback line reads "acked through #0 · HTTP
-      // fallback (acks unavailable)" — that session has no real acks and must
-      // NOT inflate receiptSessions. The marker follows the "acked through"
-      // part after a '·' split, so pair them via lookahead.
-      const parts = row.detail.split('·').map((p) => p.trim()).filter(Boolean);
-      for (let i = 0; i < parts.length; i += 1) {
-        const trimmed = parts[i];
-        if (EMPTY_MARKERS.some((m) => trimmed.includes(m))) continue;
+      // Real lines look like "session rs_1: acked through #12" and, when
+      // lagging, "N unacked". HTTP fallback lines are "session rs_x: HTTP
+      // fallback (acks unavailable)" with NO "acked through #N" phrase, so
+      // there is no bogus #0 ack to guard against.
+      for (const part of row.detail.split('·')) {
+        const trimmed = part.trim();
+        if (HTTP_FALLBACK_MARKER.test(trimmed)) {
+          receiptFallbackLines += 1;
+          continue;
+        }
+        if (!trimmed || EMPTY_MARKERS.some((m) => trimmed.includes(m))) continue;
         const match = trimmed.match(/acked through #(\d+)/i);
         if (match) {
-          const isFallback = HTTP_FALLBACK_MARKER.test(trimmed)
-            || HTTP_FALLBACK_MARKER.test(parts[i + 1] ?? '');
-          if (isFallback) {
-            receiptFallbackLines += 1;
-          } else {
-            receiptSessions += 1;
-            const seq = Number(match[1]);
-            receiptHighWater = receiptHighWater === null ? seq : Math.max(receiptHighWater, seq);
-          }
+          receiptSessions += 1;
+          const seq = Number(match[1]);
+          receiptHighWater = receiptHighWater === null ? seq : Math.max(receiptHighWater, seq);
         }
         const lag = trimmed.match(/(\d+)\s+unacked/i);
         if (lag) receiptUnacked += Number(lag[1]);
@@ -137,8 +133,9 @@ const EMPTY_MARKERS = [
   'No delivery receipts recorded', 'HTTP fallback (acks unavailable)',
 ];
 
-// A session on the HTTP polling fallback cannot emit acks; its "acked through
-// #0" line is not a real receipt and must not be counted.
+// A session on the HTTP polling fallback cannot emit acks. The Core renders it
+// as "session rs_x: HTTP fallback (acks unavailable)" (no "acked through #N"),
+// so we count it as a fallback line, never as a real receipt.
 const HTTP_FALLBACK_MARKER = /HTTP fallback \(acks unavailable\)/i;
 
 /** Conditional actions: only offered when the section's detail needs attention. */
