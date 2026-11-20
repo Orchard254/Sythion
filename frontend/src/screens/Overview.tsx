@@ -26,7 +26,9 @@ import {
   useGoals,
   useHealth,
   useObjectives,
+  usePendingApprovals,
   useSkillProposals,
+  useUncertainRemoteActions,
   useTasks,
   useToolProposals,
 } from '../hooks/useBackend';
@@ -34,6 +36,7 @@ import { useAppStore } from '../store/appStore';
 import { useNavStore } from '../store/navStore';
 import type { RouteId } from '../lib/routes';
 import { AUTONOMY_MODES, capabilityCounts, deriveAuthorization, deriveAutonomy } from '../lib/autonomy';
+import { countDecisionsDue, describeDecisionsDue } from '../lib/decisionCounts';
 import {
   AGENT_STATE_TONE,
   HEALTH_TONE,
@@ -68,6 +71,8 @@ export function OverviewScreen() {
   const capabilities = useCapabilities();
   const skillProposals = useSkillProposals();
   const toolProposals = useToolProposals();
+  const pendingApprovalsApi = usePendingApprovals();
+  const uncertainActions = useUncertainRemoteActions();
   const delegations = useDelegations();
   const activity = useAgentActivity();
   const actions = useActions();
@@ -121,6 +126,16 @@ export function OverviewScreen() {
   const pendingApprovals =
     (skillProposals.data ?? []).filter((p) => (p.status ?? '').includes('pending')).length +
     (toolProposals.data ?? []).filter((p) => p.status === 'pending_review').length;
+  const ownerApprovals = (pendingApprovalsApi.data?.proposals ?? []).length;
+  const needsReconciliation = (uncertainActions.data?.actions ?? []).length;
+  const decisionInputs = {
+    proposalApprovals: pendingApprovals,
+    ownerApprovals,
+    needsReconciliation,
+    awaitingYou: awaitingYou.length,
+  };
+  // Everything that needs a decision from the owner, from all durable sources.
+  const decisionsDue = countDecisionsDue(decisionInputs);
 
   const activeObjectives = (objectives.data ?? []).filter((o) => o.status === 'active');
   const objectiveProgress = (id: string) => {
@@ -202,13 +217,11 @@ export function OverviewScreen() {
             onClick={() => navigate('missions')}
           />
           <Stat
-            label="Pending approvals"
+            label="Needs your decision"
             icon="shield"
-            value={pendingApprovals + awaitingYou.length}
-            tone={pendingApprovals + awaitingYou.length > 0 ? 'accent' : undefined}
-            foot={
-              pendingApprovals + awaitingYou.length > 0 ? 'Requires your decision' : 'Nothing waiting on you'
-            }
+            value={decisionsDue}
+            tone={decisionsDue > 0 ? 'accent' : undefined}
+            foot={describeDecisionsDue(decisionInputs)}
             onClick={() => navigate('security')}
           />
           <Stat
