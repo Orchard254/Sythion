@@ -19,6 +19,40 @@ export interface BriefAction {
   route: RouteId;
 }
 
+export interface BriefStatusSummary {
+  health: string | null;
+  agentState: string | null;
+  deviceTrust: string[];
+}
+
+/**
+ * Extract a compact, read-only status summary from the brief's structured rows.
+ * Values come only from data the Core assembled; this never infers or invents
+ * state and never grants authority.
+ */
+export function briefStatusSummary(brief: StructuredBrief): BriefStatusSummary {
+  let health: string | null = null;
+  let agentState: string | null = null;
+  const deviceTrust: string[] = [];
+
+  for (const row of brief.rows) {
+    if (row.key === 'system') {
+      const match = row.detail.match(/Overall:\s*([A-Z_]+)/i);
+      if (match) health = match[1].toUpperCase();
+    } else if (row.key === 'agent') {
+      const match = row.detail.match(/State:\s*([a-z_]+)/i);
+      if (match) agentState = match[1].toLowerCase();
+    } else if (row.key === 'devices') {
+      // Each device line looks like "name [id]: trust=..., last_seen=..."
+      for (const part of row.detail.split('·')) {
+        const trust = part.match(/trust=([a-z_]+)/i);
+        if (trust) deviceTrust.push(trust[1].toLowerCase());
+      }
+    }
+  }
+  return { health, agentState, deviceTrust };
+}
+
 /** Sections that need owner attention and where to handle them on the phone. */
 const ACTIONS: Record<string, BriefAction> = {
   reconciliation: { label: 'Review', route: 'overview' },

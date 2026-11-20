@@ -23,6 +23,32 @@ describe('RelayBriefCard', () => {
     expect(rendered).toContain('Read-only brief.');
   });
 
+  it('renders a read-only status summary for a morning brief', () => {
+    const statusBrief = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [
+        { key: 'system', title: 'Local health', lines: ['Overall: DEGRADED.'] },
+        { key: 'agent', title: 'Synth', lines: ['State: paused.'] },
+        { key: 'devices', title: 'Registered devices', lines: ['this-pc [dev_1]: trust=trusted, last_seen=...'] },
+      ],
+      note: '',
+    }))!;
+    const view = create(<RelayBriefCard brief={statusBrief} />);
+    expect(view.root.findByProps({ 'data-testid': 'relay-brief-status' })).toBeDefined();
+    const statusText = view.root.findAllByType('span').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join('')).join(' ');
+    expect(statusText).toContain('health: DEGRADED');
+    expect(statusText).toContain('agent: paused');
+    expect(statusText).toContain('device: trusted');
+    // Status is read-only: no action buttons without a handler.
+    expect(view.root.findAllByType('button')).toHaveLength(0);
+  });
+
+  it('renders no status strip when no status sections exist', () => {
+    const view = create(<RelayBriefCard brief={brief} />);
+    expect(view.root.findAllByProps({ 'data-testid': 'relay-brief-status' })).toHaveLength(0);
+  });
+
   it('renders no action buttons without an onAction handler', () => {
     const view = create(<RelayBriefCard brief={brief} />);
     expect(view.root.findAllByType('button')).toHaveLength(0);

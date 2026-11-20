@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { briefActions, parseRelayBrief } from './relayBrief';
+import { briefActions, briefStatusSummary, parseRelayBrief } from './relayBrief';
 
 describe('parseRelayBrief', () => {
   it('parses a seeded morning_brief into structured rows', () => {
@@ -112,6 +112,36 @@ describe('briefActions', () => {
       note: '',
     }))!;
     expect(briefActions(active)).toEqual([]);
+  });
+
+  it('extracts a read-only status summary from health, agent and device rows', () => {
+    const brief = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [
+        { key: 'system', title: 'Local health', lines: ['Overall: DEGRADED.', 'database: HEALTHY'] },
+        { key: 'agent', title: 'Synth', lines: ['State: paused.', 'Last outcome: completed.'] },
+        { key: 'devices', title: 'Registered devices',
+          lines: ['this-pc [dev_1]: trust=trusted, last_seen=...',
+                  'phone [dev_2]: trust=observed, last_seen=...'] },
+      ],
+      note: '',
+    }))!;
+    expect(briefStatusSummary(brief)).toEqual({
+      health: 'DEGRADED',
+      agentState: 'paused',
+      deviceTrust: ['trusted', 'observed'],
+    });
+  });
+
+  it('returns null/empty status values when no status sections exist', () => {
+    const brief = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [{ key: 'goals', title: 'Goals', lines: ['Ship report'] }],
+      note: '',
+    }))!;
+    expect(briefStatusSummary(brief)).toEqual({
+      health: null, agentState: null, deviceTrust: [],
+    });
   });
 
   it('maps an agent_not_active heads-up item to agent status', () => {

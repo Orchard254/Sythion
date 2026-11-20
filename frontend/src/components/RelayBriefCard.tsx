@@ -1,5 +1,7 @@
 import { Badge, Button } from './ui';
-import { briefActions, type StructuredBrief } from '../lib/relayBrief';
+import {
+  briefActions, briefStatusSummary, type StructuredBrief,
+} from '../lib/relayBrief';
 import type { RouteId } from '../lib/routes';
 
 interface Props {
@@ -15,12 +17,27 @@ interface Props {
  */
 export function RelayBriefCard({ brief, onAction }: Props) {
   const actions = onAction ? briefActions(brief) : [];
+  const status = briefStatusSummary(brief);
+  const hasStatus = status.health !== null || status.agentState !== null || status.deviceTrust.length > 0;
   return (
     <div className="stack stack--tight" data-testid="relay-brief-card">
       <div className="row row--wrap" style={{ gap: 8 }}>
         <Badge tone="info">{brief.kind === 'morning_brief' ? 'Morning brief' : 'Heads up'}</Badge>
         <strong>{brief.headline}</strong>
       </div>
+      {hasStatus && (
+        <div className="row row--wrap" style={{ gap: 6 }} data-testid="relay-brief-status">
+          {status.health && (
+            <Badge tone={/HEALTHY/.test(status.health) ? 'ok' : 'warn'}>health: {status.health}</Badge>
+          )}
+          {status.agentState && (
+            <Badge tone={status.agentState === 'active' ? 'ok' : 'warn'}>agent: {status.agentState}</Badge>
+          )}
+          {status.deviceTrust.map((trust, index) => (
+            <Badge key={`${trust}:${index}`} tone="info">device: {trust}</Badge>
+          ))}
+        </div>
+      )}
       {brief.rows.map((row, index) => (
         <div key={`${row.key}:${index}`} className="stack stack--tight">
           <span className="briefing__title">{row.label}</span>
