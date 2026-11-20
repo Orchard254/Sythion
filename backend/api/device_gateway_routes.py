@@ -25,6 +25,12 @@ from backend.services.relay import (
     post_message,
 )
 from backend.services.remote_access import check_access, verify_device_credential
+from backend.services.remote_action_tracking import (
+    complete_remote_action,
+    fail_remote_action,
+    request_idempotency_key,
+    start_remote_action,
+)
 
 logger = logging.getLogger("backend.api.device_gateway")
 router = APIRouter()
@@ -109,13 +115,38 @@ async def device_relay_ws(websocket: WebSocket, db: Session = Depends(get_db)):
                     await websocket.send_text(json.dumps({
                         "type": "error", "reason": "text_required", "authorized": False}))
                     continue
-                posted = post_message(db, session["session_id"], text)
+                action = start_remote_action(
+                    db, device_id, request_idempotency_key(frame))
+                if action.get("terminal_replay"):
+                    await websocket.send_text(json.dumps({
+                        "type": "error", "reason": "terminal_replay_refused",
+                        "action_id": action["action_id"], "authorized": False,
+                    }))
+                    continue
                 db.commit()
-                await websocket.send_text(json.dumps({
-                    "type": "accepted",
-                    "sequence": int(posted["id"]),
-                    "authorized": False,
-                }))
+                try:
+                    posted = post_message(db, session["session_id"], text)
+                    finished = complete_remote_action(
+                        db, action["action_id"], f"relay-message:{posted['id']}")
+                    db.commit()
+                    await websocket.send_text(json.dumps({
+                        "type": "accepted",
+                        "sequence": int(posted["id"]),
+                        "action_id": action["action_id"],
+                        "action_state": finished["state"],
+                        "authorized": False,
+                    }))
+                except Exception as exc:
+                    db.rollback()
+                    fail_remote_action(
+                        db, action["action_id"],
+                        f"relay_send_failed:{type(exc).__name__}", uncertain=True,
+                    )
+                    db.commit()
+                    await websocket.send_text(json.dumps({
+                        "type": "error", "reason": "send_recorded_uncertain",
+                        "action_id": action["action_id"], "authorized": False,
+                    }))
                 continue
 
             await websocket.send_text(json.dumps({

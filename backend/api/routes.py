@@ -3174,19 +3174,48 @@ async def remote_create_goal(request: Request, db: Session = Depends(get_db)):
     except PydanticValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors())
 
-    goal = _create_goal_from_request(payload, db)
-    DbEventLedger(db).append_event(
-        "device-registry", "device.remote_goal_submitted",
-        {"device_id": device_id, "goal_id": goal.id},
+    from backend.services.remote_action_tracking import (
+        complete_remote_action, fail_remote_action, request_idempotency_key,
+        start_remote_action,
     )
-    db.commit()
-    return {
-        "goal_id": goal.id,
-        "title": goal.title,
-        "device_id": device_id,
-        "authorized": False,
-        "approval_issued": False,
-    }
+
+    action = start_remote_action(
+        db, device_id, request_idempotency_key(data))
+    if action.get("terminal_replay"):
+        raise HTTPException(
+            status_code=409,
+            detail="Remote goal submission is already resolved; it was not replayed",
+        )
+    db.commit()  # durable before goal creation begins
+    try:
+        goal = _create_goal_from_request(payload, db)
+        DbEventLedger(db).append_event(
+            "device-registry", "device.remote_goal_submitted",
+            {"device_id": device_id, "goal_id": goal.id,
+             "action_id": action["action_id"]},
+        )
+        finished = complete_remote_action(db, action["action_id"], goal.id)
+        db.commit()
+        return {
+            "goal_id": goal.id,
+            "title": goal.title,
+            "device_id": device_id,
+            "action_id": action["action_id"],
+            "action_state": finished["state"],
+            "authorized": False,
+            "approval_issued": False,
+        }
+    except Exception as exc:
+        db.rollback()
+        status = exc.status_code if isinstance(exc, HTTPException) else 502
+        detail = exc.detail if isinstance(exc, HTTPException) else (
+            "Remote goal submission outcome is uncertain; it was not retried")
+        fail_remote_action(
+            db, action["action_id"],
+            f"remote_goal_failed:{type(exc).__name__}", uncertain=True,
+        )
+        db.commit()
+        raise HTTPException(status_code=status, detail=detail)
 
 
 @router.post("/remote/turns")
@@ -3222,28 +3251,58 @@ async def remote_turn(request: Request, db: Session = Depends(get_db)):
     from backend.services.conversation_turn_engine import ConversationTurnEngine
     from backend.services.conversation_runtime import ModelClient
     from backend.runtime.events import DbEventLedger
-
-    result = await ConversationTurnEngine(ModelClient()).run_turn(text)
-    if isinstance(result, dict):
-        assistant_text = result.get("assistant_text", "") or ""
-        turn_status = result.get("status", "completed")
-    else:
-        assistant_text = getattr(result, "assistant_text", "") or ""
-        turn_status = getattr(result, "status", "completed")
-    briefing = _build_turn_briefing(db)
-    DbEventLedger(db).append_event(
-        "device-registry", "device.remote_turn",
-        {"device_id": device_id},
+    from backend.services.remote_action_tracking import (
+        complete_remote_action, fail_remote_action, request_idempotency_key,
+        start_remote_action,
     )
-    db.commit()
-    return {
-        "assistant_text": assistant_text,
-        "status": turn_status,
-        "briefing": briefing,
-        "device_id": device_id,
-        "authorized": False,
-        "approval_issued": False,
-    }
+
+    action = start_remote_action(
+        db, device_id, request_idempotency_key(data))
+    if action.get("terminal_replay"):
+        raise HTTPException(
+            status_code=409,
+            detail="Remote action outcome is unresolved; it was not replayed",
+        )
+    db.commit()  # the action is durable before the model call starts
+    try:
+        result = await ConversationTurnEngine(ModelClient()).run_turn(text)
+        if isinstance(result, dict):
+            assistant_text = result.get("assistant_text", "") or ""
+            turn_status = result.get("status", "completed")
+        else:
+            assistant_text = getattr(result, "assistant_text", "") or ""
+            turn_status = getattr(result, "status", "completed")
+        briefing = _build_turn_briefing(db)
+        sequence = DbEventLedger(db).append_event(
+            "device-registry", "device.remote_turn",
+            {"device_id": device_id, "action_id": action["action_id"]},
+        )
+        finished = complete_remote_action(
+            db, action["action_id"], f"event:{sequence}")
+        db.commit()
+        return {
+            "assistant_text": assistant_text,
+            "status": turn_status,
+            "briefing": briefing,
+            "device_id": device_id,
+            "action_id": action["action_id"],
+            "action_state": finished["state"],
+            "authorized": False,
+            "approval_issued": False,
+        }
+    except Exception as exc:
+        # The action was committed before execution; drop only the operation's
+        # partial writes, then record an uncertain terminal state for the owner.
+        db.rollback()
+        fail_remote_action(
+            db, action["action_id"],
+            f"remote_turn_failed:{type(exc).__name__}", uncertain=True,
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=502,
+            detail="Remote turn outcome is uncertain; it was not retried",
+        )
 
 
 def _reject_device_auth_for_owner_route(request: Request) -> None:
