@@ -114,6 +114,36 @@ describe('briefActions', () => {
     expect(briefActions(active)).toEqual([]);
   });
 
+  it('maps an agent_not_active heads-up item to agent status', () => {
+    const text = JSON.stringify({
+      headline: 'Heads up.', has_blockers: true,
+      items: [{ kind: 'agent_not_active', title: 'Background work is paused',
+                reason: 'Main Agent state: paused.' }],
+      note: 'Not an approval.',
+    });
+    expect(briefActions(parseRelayBrief('briefing', text)!)).toEqual([
+      { label: 'Agent status', route: 'system' },
+    ]);
+  });
+
+  it('dedupes agent actions when both a heads-up item and agent row are present', () => {
+    const text = JSON.stringify({
+      headline: 'Good morning.', has_blockers: true,
+      items: [{ kind: 'agent_not_active', title: 'Agent paused', reason: 'state=paused' }],
+      note: '',
+      morning_brief: {
+        date: '2026-11-20', headline: 'Good morning.', generated_at: '',
+        sections: [{ key: 'agent', title: 'Synth', lines: ['State: paused.'] }],
+        text: '', authorized: false, approval_issued: false,
+        execution_started: false, note: '',
+      },
+    });
+    // The heads-up parser reads top-level items; the agent row is covered by the
+    // conditional rule. A combined brief would dedupe by label+route.
+    const actions = briefActions(parseRelayBrief('briefing', text)!);
+    expect(actions.filter((a) => a.label === 'Agent status')).toHaveLength(1);
+  });
+
   it('maps a permission_awaiting heads-up item to approvals', () => {
     const text = JSON.stringify({
       headline: 'Heads up.', has_blockers: true,

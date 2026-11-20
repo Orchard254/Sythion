@@ -27,6 +27,8 @@ const ACTIONS: Record<string, BriefAction> = {
   task_needs_input: { label: 'Review', route: 'overview' },
   goal_step_blocked: { label: 'Review', route: 'overview' },
   permission_awaiting: { label: 'Approvals', route: 'security' },
+  // A heads-up "agent not active" item always needs the agent-status panel.
+  agent_not_active: { label: 'Agent status', route: 'system' },
   devices: { label: 'Devices', route: 'system' },
   device_actions: { label: 'Device actions', route: 'overview' },
   goals: { label: 'Goals', route: 'missions' },
