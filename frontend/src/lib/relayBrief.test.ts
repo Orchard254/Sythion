@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseRelayBrief } from './relayBrief';
+import { briefActions, parseRelayBrief } from './relayBrief';
 
 describe('parseRelayBrief', () => {
   it('parses a seeded morning_brief into structured rows', () => {
@@ -16,8 +16,8 @@ describe('parseRelayBrief', () => {
     expect(result!.kind).toBe('morning_brief');
     expect(result!.headline).toBe('Good morning.');
     expect(result!.rows).toEqual([
-      { label: 'Goals finished', detail: 'Ship the report' },
-      { label: 'Local health', detail: 'Overall: DEGRADED.' },
+      { key: 'goals', label: 'Goals finished', detail: 'Ship the report' },
+      { key: 'system', label: 'Local health', detail: 'Overall: DEGRADED.' },
     ]);
     expect(result!.note).toBe('Read-only brief.');
   });
@@ -32,7 +32,7 @@ describe('parseRelayBrief', () => {
     expect(result).not.toBeNull();
     expect(result!.kind).toBe('briefing');
     expect(result!.rows[0]).toEqual({
-      label: 'A task is waiting', detail: 'Which file?',
+      key: 'task_needs_input', label: 'A task is waiting', detail: 'Which file?',
     });
   });
 
@@ -40,5 +40,51 @@ describe('parseRelayBrief', () => {
     expect(parseRelayBrief('text', 'hello')).toBeNull();
     expect(parseRelayBrief('morning_brief', 'not json')).toBeNull();
     expect(parseRelayBrief('briefing', '{}')).toBeNull();
+  });
+});
+
+describe('briefActions', () => {
+  it('derives distinct reconciliation/approvals/devices/goals actions', () => {
+    const text = JSON.stringify({
+      headline: 'Good morning.',
+      sections: [
+        { key: 'reconciliation', title: 'Needs reconciliation', lines: ['Uncertain action ra_1'] },
+        { key: 'blockers', title: 'Needs your attention', lines: ['task held'] },
+        { key: 'devices', title: 'Registered devices', lines: ['dev_1'] },
+        { key: 'device_actions', title: 'Recent device actions', lines: ['ra_1: completed'] },
+        { key: 'goals', title: 'Goals finished', lines: ['Ship report'] },
+        { key: 'system', title: 'Local health', lines: ['Overall: HEALTHY.'] },
+      ],
+    });
+    const brief = parseRelayBrief('morning_brief', text)!;
+    const actions = briefActions(brief);
+    expect(actions).toEqual([
+      { label: 'Review', route: 'overview' },
+      { label: 'Devices', route: 'system' },
+      { label: 'Device actions', route: 'overview' },
+      { label: 'Goals', route: 'missions' },
+    ]);
+  });
+
+  it('skips empty sections and yields no actions for a calm brief', () => {
+    const text = JSON.stringify({
+      headline: 'Good morning.',
+      sections: [
+        { key: 'reconciliation', title: 'Needs reconciliation', lines: ['Nothing needs reconciliation.'] },
+        { key: 'goals', title: 'Goals finished', lines: ['None reported.'] },
+      ],
+    });
+    expect(briefActions(parseRelayBrief('morning_brief', text)!)).toEqual([]);
+  });
+
+  it('maps a permission_awaiting heads-up item to approvals', () => {
+    const text = JSON.stringify({
+      headline: 'Heads up.', has_blockers: true,
+      items: [{ kind: 'permission_awaiting', title: 'Permission', reason: 'file_write' }],
+      note: '',
+    });
+    expect(briefActions(parseRelayBrief('briefing', text)!)).toEqual([
+      { label: 'Approvals', route: 'security' },
+    ]);
   });
 });

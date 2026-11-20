@@ -6,6 +6,7 @@ import {
 } from '../services/deviceRelaySocket';
 import { Badge, Button, Notice, Panel } from '../components/ui';
 import { RelayBriefCard } from '../components/RelayBriefCard';
+import { useNavStore } from '../store/navStore';
 import { parseRelayBrief } from '../lib/relayBrief';
 import type { RelayMessage } from '../types';
 
@@ -18,6 +19,7 @@ import type { RelayMessage } from '../types';
  * approve an action, clear a blocker, or grant a permission.
  */
 export function PhoneRelayScreen() {
+  const setRoute = useNavStore((s) => s.setRoute);
   const [deviceId, setDeviceId] = useState('');
   const [token, setToken] = useState('');
   const [connected, setConnected] = useState(false);
@@ -193,7 +195,7 @@ export function PhoneRelayScreen() {
                 <div key={message.id} className={`relay__message relay__message--${message.role}`}>
                   <span className="relay__role">{message.role}</span>
                   {brief
-                    ? <RelayBriefCard brief={brief} />
+                    ? <RelayBriefCard brief={brief} onAction={setRoute} />
                     : <span>{message.text}</span>}
                 </div>
               );
