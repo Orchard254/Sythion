@@ -48,6 +48,14 @@ packages, memory, objectives and device status; goals with evidence and
 blockers; durable wakes; an owner-gated bounded wake; read-only recovery review
 packets; and a versioned authority-free reasoning contract.
 
+**Memory retention invariant (2026-11-21):** when stale-memory pruning is
+over budget, it deletes the *stalest* entries first (ranked by `last_accessed_at
+or updated_at`, ascending), never the freshest ones. The old newest-first slice
+silently kept the oldest memories and discarded recent ones — a data-loss bug,
+now fixed and regression-tested in `test_memory_consolidation.py`. Profile
+entries are never pruned and at least `MEMORY_MIN_KEEP` entries always remain.
+Pruning runs automatically after tasks when memory consolidation is enabled.
+
 The *system* layer is missing: there is no device registry, no phone client, no
 remote transport, no morning brief, and no progressive trust ledger. The
 briefing layer is being built first because it is the user-facing foundation.

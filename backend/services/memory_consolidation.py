@@ -171,17 +171,23 @@ def prune_stale_memories(db, now: Optional[datetime] = None) -> Dict[str, int]:
     if len(all_entries) <= MEMORY_MIN_KEEP:
         return {"pruned": 0, "kept": len(all_entries)}
 
+    # Rank by the same "last seen" value used for eligibility, stalest first.
+    # all_entries is newest-first by updated_at; slicing it directly used to
+    # delete the FRESHEST stale entries and keep the oldest (a data-loss
+    # inversion). Keep (last_seen, entry) pairs so ordering and eligibility agree.
     prunable = []
     for entry in all_entries:
         if entry.category == "profile":
             continue  # never prune profile entries
         last_seen = entry.last_accessed_at or entry.updated_at
         if last_seen and last_seen < cutoff:
-            prunable.append(entry)
+            prunable.append((last_seen, entry))
 
-    # Reserve space for minimum keep
+    # Reserve space for minimum keep, then delete the stalest first. The key
+    # tie-breaker makes selection deterministic when timestamps collide.
     max_prune = max(0, len(all_entries) - MEMORY_MIN_KEEP)
-    prunable = prunable[:max_prune]
+    prunable.sort(key=lambda pair: (pair[0], pair[1].key))
+    prunable = [entry for _, entry in prunable[:max_prune]]
 
     pruned = 0
     for entry in prunable:

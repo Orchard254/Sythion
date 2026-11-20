@@ -2,6 +2,8 @@
 Tests for background memory consolidation (PREMem-style pre-storage reasoning).
 """
 
+from datetime import datetime, timedelta
+
 import pytest
 from unittest.mock import AsyncMock
 
@@ -324,6 +326,72 @@ def test_consolidate_adapter_failure_returns_empty(memory_db_setup):
     turns = [_Turn("user", "hi"), _Turn("assistant", "hello")]
     applied = asyncio_run(consolidate_memory(memory_db_setup, turns, [], adapter))
     assert applied == []
+
+
+# --- stale-memory pruning ---------------------------------------------------
+
+def test_prune_removes_stalest_not_freshest(memory_db_setup):
+    """Pruning must delete the OLDEST stale memories, keeping fresher ones.
+
+    all_entries is newest-first by updated_at; a naive prunable[:budget] used to
+    delete the newest stale entries and keep the stalest — silent data loss.
+    """
+    from backend.services.memory_consolidation import (
+        MEMORY_MIN_KEEP, MEMORY_PRUNE_DAYS, prune_stale_memories,
+    )
+
+    session = memory_db_setup
+    now = datetime(2026, 11, 21, 12, 0, 0)
+
+    # 15 stale non-profile entries with distinct ages, all older than cutoff.
+    # updated_at mirrors last_accessed_at, so the OLD newest-first ordering
+    # would prune the FRESHEST stale ones — exactly the inversion we guard.
+    for i in range(15):
+        seen = now - timedelta(days=MEMORY_PRUNE_DAYS + 1 + i)
+        key = f"stale_{i:02d}"
+        session.add(MemoryEntry(key=key, value=key, category="preference",
+                                last_accessed_at=seen, updated_at=seen))
+
+    # Two fresh entries (not stale) and one stale profile entry (never pruned).
+    for i in range(2):
+        session.add(MemoryEntry(key=f"fresh_{i}", value="f", category="preference",
+                                last_accessed_at=now - timedelta(days=1), updated_at=now))
+    profile_seen = now - timedelta(days=90)
+    session.add(MemoryEntry(key="profile_key", value="p", category="profile",
+                            last_accessed_at=profile_seen, updated_at=profile_seen))
+    session.commit()
+
+    total_before = 15 + 2 + 1
+    expected_pruned = total_before - MEMORY_MIN_KEEP  # 8
+
+    result = prune_stale_memories(session, now=now)
+    assert result == {"pruned": expected_pruned, "kept": total_before - expected_pruned}
+
+    remaining = {e.key for e in session.query(MemoryEntry).all()}
+    # The 8 stalest (indices 7..14) are gone; the 7 freshest stale ones remain.
+    for i in range(15):
+        key = f"stale_{i:02d}"
+        if i >= 15 - expected_pruned:
+            assert key not in remaining, f"stalest {key} should have been pruned"
+        else:
+            assert key in remaining, f"fresher stale {key} should have been kept"
+    assert "fresh_0" in remaining and "fresh_1" in remaining
+    assert "profile_key" in remaining  # profile entries are never pruned
+
+
+def test_prune_keeps_all_when_at_or_below_minimum(memory_db_setup):
+    from backend.services.memory_consolidation import prune_stale_memories
+
+    session = memory_db_setup
+    now = datetime(2026, 11, 21, 12, 0, 0)
+    old = now - timedelta(days=365)
+    for i in range(10):  # exactly MEMORY_MIN_KEEP
+        session.add(MemoryEntry(key=f"old_{i}", value="v", category="preference",
+                                last_accessed_at=old, updated_at=old))
+    session.commit()
+
+    assert prune_stale_memories(session, now=now) == {"pruned": 0, "kept": 10}
+    assert session.query(MemoryEntry).count() == 10
 
 
 def asyncio_run(coro):
