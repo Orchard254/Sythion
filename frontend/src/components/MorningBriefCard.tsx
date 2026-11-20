@@ -30,6 +30,9 @@ export function MorningBriefCard({ brief, onNavigate }: Props) {
   const hasRecentDeviceActions = brief.sections.some(
     (s) => s.key === 'device_actions' && !s.lines.every((l) => l.includes('No device actions recorded')),
   );
+  const hasReceipts = brief.sections.some(
+    (s) => s.key === 'receipts' && !s.lines.every((l) => l.includes('No delivery receipts recorded')),
+  );
   const hasFinishedWork = brief.sections.some(
     (s) => (s.key === 'goals' || s.key === 'tasks') && !s.lines.every((l) => l.includes('None reported.')),
   );
@@ -57,7 +60,7 @@ export function MorningBriefCard({ brief, onNavigate }: Props) {
           </div>
         ))}
       </div>
-      {(hasReconciliation || hasBlockers || hasRegisteredDevices || hasRecentDeviceActions || healthNeedsAttention || agentNeedsAttention || hasFinishedWork) && (
+      {(hasReconciliation || hasBlockers || hasRegisteredDevices || hasRecentDeviceActions || hasReceipts || healthNeedsAttention || agentNeedsAttention || hasFinishedWork) && (
         <div className="row row--wrap" style={{ gap: 8 }}>
           <Button size="sm" variant="ghost" icon="chevronRight"
             onClick={() => navigate('overview')}>
@@ -77,6 +80,12 @@ export function MorningBriefCard({ brief, onNavigate }: Props) {
             <Button size="sm" variant="ghost" icon="chevronRight"
               onClick={() => navigate('overview')}>
               View device actions
+            </Button>
+          )}
+          {hasReceipts && (
+            <Button size="sm" variant="ghost" icon="chevronRight"
+              onClick={() => navigate('system')}>
+              View receipts
             </Button>
           )}
           {healthNeedsAttention && (

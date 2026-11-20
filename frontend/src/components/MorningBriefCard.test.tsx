@@ -125,6 +125,38 @@ describe('MorningBriefCard', () => {
     expect(labels).not.toContain('View device actions');
   });
 
+  it('links a populated receipts section to the System receipt panel', () => {
+    const onNavigate = vi.fn();
+    const withReceipts = {
+      ...brief,
+      sections: [
+        { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
+        { key: 'receipts', title: 'Delivery receipts',
+          lines: ['session rs_1: acked through #12'] },
+      ],
+    };
+    const view = create(<MorningBriefCard brief={withReceipts} onNavigate={onNavigate} />);
+    const receipts = view.root.findAllByType('button')
+      .find((b) => b.children.some((c) => typeof c === 'string' && c === 'View receipts'));
+    expect(receipts).toBeDefined();
+    receipts!.props.onClick();
+    expect(onNavigate).toHaveBeenCalledWith('system');
+  });
+
+  it('does not offer receipts navigation when no receipts are recorded', () => {
+    const withEmpty = {
+      ...brief,
+      sections: [
+        { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
+        { key: 'receipts', title: 'Delivery receipts', lines: ['No delivery receipts recorded.'] },
+      ],
+    };
+    const view = create(<MorningBriefCard brief={withEmpty} />);
+    const labels = view.root.findAllByType('button').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join(''));
+    expect(labels).not.toContain('View receipts');
+  });
+
   it('links a degraded Local health section to System diagnostics', () => {
     const onNavigate = vi.fn();
     const unhealthy = {

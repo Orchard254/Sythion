@@ -77,6 +77,24 @@ describe('briefActions', () => {
     expect(briefActions(parseRelayBrief('morning_brief', text)!)).toEqual([]);
   });
 
+  it('maps a receipts section to the System receipt panel and skips empty ones', () => {
+    const withReceipts = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [{ key: 'receipts', title: 'Delivery receipts', lines: ['session rs_1: acked through #12'] }],
+      note: '',
+    }))!;
+    expect(briefActions(withReceipts)).toEqual([
+      { label: 'Receipts', route: 'system' },
+    ]);
+
+    const empty = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [{ key: 'receipts', title: 'Delivery receipts', lines: ['No delivery receipts recorded.'] }],
+      note: '',
+    }))!;
+    expect(briefActions(empty)).toEqual([]);
+  });
+
   it('offers diagnostics only for a non-healthy system section', () => {
     const detail = 'Overall: DEGRADED. · database: HEALTHY';
     const degraded = parseRelayBrief('morning_brief', JSON.stringify({

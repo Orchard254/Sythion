@@ -86,6 +86,7 @@ const ACTIONS: Record<string, BriefAction> = {
   agent_not_active: { label: 'Agent status', route: 'system' },
   devices: { label: 'Devices', route: 'system' },
   device_actions: { label: 'Device actions', route: 'overview' },
+  receipts: { label: 'Receipts', route: 'system' },
   goals: { label: 'Goals', route: 'missions' },
   tasks: { label: 'Goals', route: 'missions' },
 };
@@ -93,6 +94,7 @@ const ACTIONS: Record<string, BriefAction> = {
 const EMPTY_MARKERS = [
   'Nothing needs reconciliation', 'Nothing is blocked', 'None reported.',
   'No devices have registered', 'No device actions recorded',
+  'No delivery receipts recorded',
 ];
 
 /** Conditional actions: only offered when the section's detail needs attention. */
