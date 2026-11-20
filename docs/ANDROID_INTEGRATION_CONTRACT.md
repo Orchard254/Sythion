@@ -79,6 +79,8 @@ repository on 2026-11-20 and are committed to `master`:
 
   **Device navigation from the brief implemented 2026-11-20:** `MorningBriefCard` shows a "View devices" button when the brief contains registered devices, routing to the system screen's device panel (`system`); absent when no devices are registered. Navigation only. Evidence: `MorningBriefCard.test.tsx` (6 passed), affected frontend set 91 passed, `tsc --noEmit` exit 0.
 
+  **Health navigation from the brief implemented 2026-11-20:** `MorningBriefCard` shows a "View diagnostics" button when its Local health section contains a non-healthy check (DEGRADED/UNAVAILABLE/UNKNOWN), routing to the System screen's diagnostics panel (`system`); absent when all checks are healthy. Navigation only. Evidence: `MorningBriefCard.test.tsx` (10 passed), affected frontend set 96 passed, `tsc --noEmit` exit 0.
+
   **Agent-status navigation from the heads-up implemented 2026-11-20:** `BriefingCard` shows a "View agent status" button for `agent_not_active` items, routing to the System screen's runtime/agent-state panel (`system`). Navigation only. Evidence: `BriefingCard.test.tsx` (6 passed), affected frontend set 94 passed, `tsc --noEmit` exit 0.
 
   **Brief actionability for device actions implemented 2026-11-20:** `MorningBriefCard` shows a "View device actions" button when the brief has a populated Recent device actions section, routing to the Control Center Operations screen where `RemoteActionsPanel` lives (`overview`); absent when no actions recorded. Navigation only. Evidence: `MorningBriefCard.test.tsx` (8 passed), affected frontend set 93 passed, `tsc --noEmit` exit 0.

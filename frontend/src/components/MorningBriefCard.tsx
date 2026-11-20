@@ -30,6 +30,11 @@ export function MorningBriefCard({ brief, onNavigate }: Props) {
   const hasRecentDeviceActions = brief.sections.some(
     (s) => s.key === 'device_actions' && !s.lines.every((l) => l.includes('No device actions recorded')),
   );
+  // A health section is actionable when any check is not healthy.
+  const healthNeedsAttention = brief.sections
+    .filter((s) => s.key === 'system')
+    .some((s) => s.lines.some((l) =>
+      /DEGRADED|UNAVAILABLE|UNKNOWN|unavailable/i.test(l)));
 
   return (
     <section className="notice notice--info" role="status" aria-label="Morning brief" data-testid="morning-brief-card">
@@ -44,7 +49,7 @@ export function MorningBriefCard({ brief, onNavigate }: Props) {
           </div>
         ))}
       </div>
-      {(hasReconciliation || hasBlockers || hasRegisteredDevices || hasRecentDeviceActions) && (
+      {(hasReconciliation || hasBlockers || hasRegisteredDevices || hasRecentDeviceActions || healthNeedsAttention) && (
         <div className="row row--wrap" style={{ gap: 8 }}>
           <Button size="sm" variant="ghost" icon="chevronRight"
             onClick={() => navigate('overview')}>
@@ -64,6 +69,12 @@ export function MorningBriefCard({ brief, onNavigate }: Props) {
             <Button size="sm" variant="ghost" icon="chevronRight"
               onClick={() => navigate('overview')}>
               View device actions
+            </Button>
+          )}
+          {healthNeedsAttention && (
+            <Button size="sm" variant="ghost" icon="chevronRight"
+              onClick={() => navigate('system')}>
+              View diagnostics
             </Button>
           )}
         </div>

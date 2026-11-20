@@ -125,6 +125,38 @@ describe('MorningBriefCard', () => {
     expect(labels).not.toContain('View device actions');
   });
 
+  it('links a degraded Local health section to System diagnostics', () => {
+    const onNavigate = vi.fn();
+    const unhealthy = {
+      ...brief,
+      sections: [
+        { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
+        { key: 'system', title: 'Local health',
+          lines: ['Overall: DEGRADED.', 'database: HEALTHY', 'main_agent: UNAVAILABLE'] },
+      ],
+    };
+    const view = create(<MorningBriefCard brief={unhealthy} onNavigate={onNavigate} />);
+    const diagnostics = view.root.findAllByType('button')
+      .find((b) => b.children.some((c) => typeof c === 'string' && c === 'View diagnostics'));
+    expect(diagnostics).toBeDefined();
+    diagnostics!.props.onClick();
+    expect(onNavigate).toHaveBeenCalledWith('system');
+  });
+
+  it('does not offer diagnostics navigation when health is all healthy', () => {
+    const healthy = {
+      ...brief,
+      sections: [
+        { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
+        { key: 'system', title: 'Local health', lines: ['Overall: HEALTHY.', 'database: HEALTHY'] },
+      ],
+    };
+    const view = create(<MorningBriefCard brief={healthy} />);
+    const labels = view.root.findAllByType('button').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join(''));
+    expect(labels).not.toContain('View diagnostics');
+  });
+
   it('renders no navigation when there is nothing to review', () => {
     const calm = {
       ...brief,
