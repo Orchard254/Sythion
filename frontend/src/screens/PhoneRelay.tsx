@@ -23,6 +23,7 @@ export function PhoneRelayScreen() {
   const [messages, setMessages] = useState<RelayMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
+  const [tracked, setTracked] = useState<{ replySequence: number; actionState: string } | null>(null);
   const socketRef = useRef<RelaySocketLike | null>(null);
   const sessionRef = useRef<string | null>(null);
   const lastId = useRef(0);
@@ -42,6 +43,11 @@ export function PhoneRelayScreen() {
         id: frame.sequence, role: frame.role, kind: frame.kind,
         text: frame.text, created_at: '',
       });
+      return;
+    }
+    if (frame.type === 'accepted') {
+      // The durable reply is tracked: bind its sequence and lifecycle state.
+      setTracked({ replySequence: frame.reply_sequence, actionState: frame.action_state });
       return;
     }
     if (frame.type === 'error') {
@@ -65,6 +71,7 @@ export function PhoneRelayScreen() {
     setError('');
     lastId.current = 0;
     setMessages([]);
+    setTracked(null);
     try {
       const socket = await openDeviceRelaySocket(deviceId, token, {
         onFrame: handleFrame,
@@ -165,6 +172,15 @@ export function PhoneRelayScreen() {
               </div>
             ))}
           </div>
+          {tracked && (
+            <div className="row row--wrap" style={{ gap: 8, marginTop: 8 }}
+              data-testid="relay-tracked-action">
+              <Badge tone={tracked.actionState === 'completed' ? 'ok' : 'warn'}>
+                {tracked.actionState}
+              </Badge>
+              <span className="t-mono t-faint">reply #{tracked.replySequence}</span>
+            </div>
+          )}
           <div className="row row--wrap" style={{ gap: 8, marginTop: 12 }}>
             <input
               value={draft}

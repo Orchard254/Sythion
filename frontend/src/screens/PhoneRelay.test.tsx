@@ -2,7 +2,7 @@ import { act, create } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PhoneRelayScreen } from './PhoneRelay';
 import { relayService } from '../services/api';
-import { openDeviceRelaySocket, type RelaySocketHandlers, type RelaySocketLike } from '../services/deviceRelaySocket';
+import { openDeviceRelaySocket, sendRelayText, type RelaySocketHandlers, type RelaySocketLike } from '../services/deviceRelaySocket';
 
 vi.mock('../services/api', () => ({
   relayService: {
@@ -40,6 +40,7 @@ const click = (view: ReturnType<typeof create>, label: string) => {
 
 describe('PhoneRelayScreen', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     vi.mocked(relayService.open).mockResolvedValue(opened);
     vi.mocked(relayService.poll).mockResolvedValue([]);
     vi.mocked(relayService.send).mockResolvedValue({});
@@ -85,6 +86,47 @@ describe('PhoneRelayScreen', () => {
     const rendered = JSON.stringify(view.toJSON());
     expect(rendered).toContain('Hello from Synth.');
     expect(rendered).toContain('synth');
+  });
+
+  it('sends text over WSS and renders the tracked reply_sequence/action_state', async () => {
+    const socket = fakeSocket();
+    vi.mocked(openDeviceRelaySocket).mockResolvedValue(socket);
+    let view!: ReturnType<typeof create>;
+    await act(async () => { view = create(<PhoneRelayScreen />); });
+    const inputs = view.root.findAllByType('input');
+    await act(async () => {
+      inputs[0].props.onChange({ target: { value: 'dev_1' } });
+      inputs[1].props.onChange({ target: { value: 'secret-token' } });
+    });
+    await act(async () => { click(view, 'Connect').props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+    const handlers = vi.mocked(openDeviceRelaySocket).mock.calls[0][2] as RelaySocketHandlers;
+    await act(async () => { handlers.onOpen!(); });
+    await act(async () => { await Promise.resolve(); });
+
+    // Type and send via the WSS transport.
+    const messageInput = view.root.findAllByType('input').find(
+      (i) => i.props['aria-label'] === 'Message Synth')!;
+    await act(async () => {
+      messageInput.props.onChange({ target: { value: 'hello over ws' } });
+    });
+    await act(async () => { click(view, 'Send').props.onClick(); });
+    expect(sendRelayText).toHaveBeenCalledWith(socket, 'hello over ws');
+
+    // The server acknowledges with a tracked, verified reply.
+    await act(async () => {
+      handlers.onFrame({
+        type: 'accepted', sequence: 3, reply_sequence: 9,
+        action_id: 'ra_1', action_state: 'completed', authorized: false,
+      });
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    const badge = view.root.findByProps({ 'data-testid': 'relay-tracked-action' });
+    expect(badge).toBeDefined();
+    const rendered = allText(view);
+    expect(rendered).toContain('completed');
+    expect(rendered).toContain('reply #9');
   });
 
   it('falls back to HTTP polling when WSS is unavailable', async () => {
