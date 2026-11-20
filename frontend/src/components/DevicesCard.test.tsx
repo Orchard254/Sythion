@@ -1,7 +1,7 @@
-import { create } from 'react-test-renderer';
+import { act, create } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { DevicesCard } from './DevicesCard';
-import type { RegisteredDevice } from '../types';
+import type { DeviceCapabilities, RegisteredDevice } from '../types';
 
 const device: RegisteredDevice = {
   device_id: 'dev_abc',
@@ -25,14 +25,15 @@ describe('DevicesCard', () => {
 
   it('renders trust controls only when an owner callback is provided', () => {
     const without = create(<DevicesCard devices={[device]} />);
-    expect(without.root.findAllByType('button')).toHaveLength(0);
+    const trustLabels = without.root.findAllByType('button')
+      .map((b) => b.children.join(''));
+    expect(trustLabels).not.toContain('trusted');
 
     const onChange = vi.fn();
     const withCallback = create(
       <DevicesCard devices={[device]} onTrustChange={onChange} />,
     );
     const buttons = withCallback.root.findAllByType('button');
-    expect(buttons.length).toBeGreaterThan(0);
     buttons.find((b) => b.children.join('') === 'trusted')?.props.onClick();
     expect(onChange).toHaveBeenCalledWith('dev_abc', 'trusted');
   });
@@ -40,5 +41,52 @@ describe('DevicesCard', () => {
   it('handles an empty registry', () => {
     const view = create(<DevicesCard devices={[]} />);
     expect(JSON.stringify(view.toJSON())).toContain('No devices');
+  });
+
+  it('shows per-device capability status on demand', async () => {
+    const capabilities: DeviceCapabilities = {
+      device_id: 'dev_abc',
+      trust_level: 'observed',
+      note: 'Read-only discovery.',
+      capabilities: [
+        { capability: 'briefing.read', status: 'granted', granted: true,
+          min_trust: 'observed', global_capability: null, global_status: null,
+          allowed: true, reason: 'ok' },
+        { capability: 'goals.submit', status: 'restricted', granted: true,
+          min_trust: 'privileged', global_capability: 'goal_planning',
+          global_status: 'AVAILABLE', allowed: false, reason: 'insufficient_trust' },
+      ],
+    };
+    const load = vi.fn().mockResolvedValue(capabilities);
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(<DevicesCard devices={[device]} loadCapabilities={load} />);
+    });
+
+    const toggle = view.root.findByProps({ 'data-testid': 'capabilities-toggle-dev_abc' });
+    await act(async () => { toggle.props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(load).toHaveBeenCalledWith('dev_abc');
+    const rendered = JSON.stringify(view.toJSON());
+    expect(rendered).toContain('briefing.read');
+    expect(rendered).toContain('granted');
+    expect(rendered).toContain('goals.submit');
+    expect(rendered).toContain('restricted');
+    expect(rendered).toContain('insufficient_trust');
+  });
+
+  it('surfaces capability load errors without granting', async () => {
+    const load = vi.fn().mockRejectedValue(new Error('endpoint unavailable'));
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(<DevicesCard devices={[device]} loadCapabilities={load} />);
+    });
+    const toggle = view.root.findByProps({ 'data-testid': 'capabilities-toggle-dev_abc' });
+    await act(async () => { toggle.props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(JSON.stringify(view.toJSON())).toContain('endpoint unavailable');
   });
 });

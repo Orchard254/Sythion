@@ -6,7 +6,8 @@ import {
 } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import apiClient, {
-  approvalService, assistantService, goalService, reconciliationService, taskService,
+  approvalService, assistantService, deviceCapabilityService, goalService,
+  reconciliationService, taskService,
 } from './api';
 
 /**
@@ -75,6 +76,27 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('device capability discovery service', () => {
+  afterEach(() => {
+    delete apiClient.defaults.adapter;
+  });
+
+  it('reads per-device capabilities from the exact endpoint', async () => {
+    const seen: string[] = [];
+    apiClient.defaults.adapter = (config) => {
+      seen.push(`${config.method} ${config.url}`);
+      return Promise.resolve({
+        data: { device_id: 'dev_1', trust_level: 'observed',
+          capabilities: [], note: 'Read-only discovery.' },
+        status: 200, statusText: 'OK', headers: {}, config,
+      } as unknown as AxiosResponse);
+    };
+    const result = await deviceCapabilityService.get('dev_1');
+    expect(result.device_id).toBe('dev_1');
+    expect(seen).toEqual(['get /devices/dev_1/capabilities']);
+  });
 });
 
 describe('owner reconciliation service', () => {

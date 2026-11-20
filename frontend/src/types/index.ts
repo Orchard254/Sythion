@@ -630,6 +630,24 @@ export interface RelayMessage {
   created_at: string;
 }
 
+export interface DeviceCapability {
+  capability: string;
+  status: 'unavailable' | 'restricted' | 'available' | 'granted';
+  granted: boolean;
+  min_trust: string;
+  global_capability: string | null;
+  global_status: string | null;
+  allowed: boolean;
+  reason: string;
+}
+
+export interface DeviceCapabilities {
+  device_id: string;
+  trust_level: string;
+  capabilities: DeviceCapability[];
+  note: string;
+}
+
 export interface RegisteredDevice {
   device_id: string;
   name: string;

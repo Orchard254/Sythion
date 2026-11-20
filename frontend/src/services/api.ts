@@ -437,6 +437,14 @@ export const agentService = {
   },
 };
 
+/** Per-device capability discovery (read-only, never grants). */
+export const deviceCapabilityService = {
+  get: async (deviceId: string): Promise<import('../types').DeviceCapabilities> => {
+    const response = await apiClient.get(`/devices/${deviceId}/capabilities`);
+    return response.data;
+  },
+};
+
 /** Owner reconciliation of uncertain remote actions (never auto-replays). */
 export const reconciliationService = {
   reconcile: async (

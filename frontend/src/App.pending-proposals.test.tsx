@@ -18,7 +18,10 @@ vi.mock('./hooks/useBackend', () => {
     useToolProposals: empty, useActions: () => ({ live: mock.live, approveSkillProposal: mock.approve, rejectSkillProposal: mock.reject }),
   };
 });
-vi.mock('./services/api', () => ({ setupService: { readiness: async () => ({}) } }));
+vi.mock('./services/api', () => ({
+  setupService: { readiness: async () => ({}) },
+  deviceCapabilityService: { get: async () => ({ capabilities: [] }) },
+}));
 vi.mock('./lib/setupReadiness', () => ({ canStartChat: () => true }));
 vi.mock('./lib/surface', () => ({ isCompanionSurface: () => false }));
 vi.mock('./lib/companionActivation', () => ({ shouldActivateCompanion: () => false }));
