@@ -27,6 +27,7 @@ from backend.services.relay import (
     post_message,
 )
 from backend.services.remote_access import check_access, verify_device_credential
+from backend.services.relay_acks import AckError, record_ack
 from backend.services.remote_action_tracking import (
     complete_remote_action,
     fail_remote_action,
@@ -44,7 +45,8 @@ async def device_relay_ws(websocket: WebSocket, db: Session = Depends(get_db)):
 
     Frames from the server carry a monotonically increasing ``sequence`` (the
     durable RelayMessage id). The client may send ``ack``, ``poll`` or ``send``
-    frames. A ``send`` runs the same turn contract as the HTTP remote paths:
+    frames. An ``ack`` is persisted as durable delivery evidence and surfaced to
+    the owner read-only. A ``send`` runs the same turn contract as the HTTP remote paths:
     it stores the owner message, generates a durable Synth reply, records an
     audited event, and completes the tracked lifecycle with evidence. Nothing
     here grants authority or approval.
@@ -112,8 +114,21 @@ async def device_relay_ws(websocket: WebSocket, db: Session = Depends(get_db)):
             frame_type = frame.get("type")
             if frame_type == "ack":
                 sequence = frame.get("sequence")
-                if isinstance(sequence, int) and sequence >= last_ack:
-                    last_ack = sequence
+                # Keep the monotonic guard for this connection, and persist the
+                # ack so the Core retains delivery evidence across disconnects.
+                if isinstance(sequence, int) and not isinstance(sequence, bool) \
+                        and sequence >= last_ack:
+                    try:
+                        record_ack(
+                            db, session_id=session["session_id"],
+                            device_id=device_id, sequence=sequence,
+                        )
+                        db.commit()
+                        last_ack = sequence
+                    except AckError:
+                        # Ignore invalid/unknown sequences; never let a malformed
+                        # ack frame tear down the socket or grant anything.
+                        pass
                 continue
             if frame_type == "poll":
                 await push_new_messages()

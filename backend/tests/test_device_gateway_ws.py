@@ -94,6 +94,33 @@ def test_ws_rejects_when_shell_disables_channel(test_client, test_db, monkeypatc
     assert exc.value.code == 1008
 
 
+def test_ws_ack_frame_is_recorded_durably(test_client, test_db):
+    from backend.models.database import RelayAck, RelayMessage
+
+    device_id, token = _device(test_db)
+    with test_client.websocket_connect(_ws_url(device_id, token)) as ws:
+        session = json.loads(ws.receive_text())
+        assert session["type"] == "session"
+        # No blockers exist, so only the morning brief is seeded (a briefing is
+        # seeded only when the user briefing has blockers).
+        seeded = json.loads(ws.receive_text())
+        assert seeded["type"] == "message"
+        # Acknowledge the seeded message's durable sequence.
+        ws.send_text(json.dumps({"type": "ack", "sequence": seeded["sequence"]}))
+        # A malformed ack must not tear down the socket or be persisted.
+        ws.send_text(json.dumps({"type": "ack", "sequence": 999999}))
+        ws.send_text(json.dumps({"type": "poll"}))
+
+    records = test_db.query(RelayAck).all()
+    assert len(records) == 1
+    assert records[0].device_id == device_id
+    assert records[0].session_id == session["session_id"]
+    assert records[0].sequence == seeded["sequence"]
+    # The acked sequence is a real durable RelayMessage in this session.
+    message = test_db.query(RelayMessage).filter_by(id=seeded["sequence"]).one()
+    assert message.session_id == session["session_id"]
+
+
 def test_ws_rejects_invalid_credential(test_client, test_db):
     device_id, _ = _device(test_db)
     with pytest.raises(WebSocketDisconnect) as exc:

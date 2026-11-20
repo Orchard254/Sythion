@@ -3486,6 +3486,26 @@ async def list_uncertain_remote_actions(request: Request, db: Session = Depends(
     ]}
 
 
+@router.get("/relay-acks")
+async def list_relay_acks(
+    request: Request, session_id: str | None = None, limit: int = 50,
+    db: Session = Depends(get_db),
+):
+    """Owner-visible durable delivery acks from device relay sessions.
+
+    Read-only evidence of which sequenced frames a device confirmed receiving.
+    Never grants authority, proves an effect, or authorizes an action. Device
+    channels are explicitly refused; this is a control-center view.
+    """
+    _reject_device_auth_for_owner_route(request)
+    from backend.services.relay_acks import ack_summary
+
+    try:
+        return ack_summary(db, session_id=session_id, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.get("/remote-actions/{action_id}/reconciliations")
 async def list_action_reconciliations(
     action_id: str, request: Request, db: Session = Depends(get_db),

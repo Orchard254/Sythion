@@ -4,7 +4,7 @@ Database models and schema definitions for Sythion (Synth).
 
 from sqlalchemy import (
     Column, String, Integer, Float, Text, DateTime, ForeignKey,
-    CheckConstraint, Index, JSON, Boolean, text as _sql_text,
+    CheckConstraint, UniqueConstraint, Index, JSON, Boolean, text as _sql_text,
 )
 from sqlalchemy.orm import relationship, declarative_base, Session, backref
 from datetime import datetime
@@ -1021,6 +1021,29 @@ class RelayMessage(Base):
     kind = Column(String, nullable=False, default="text")  # text | briefing | morning_brief
     text = Column(Text, nullable=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class RelayAck(Base):
+    """A device's durable acknowledgement of a sequenced relay message.
+
+    The device WSS path records the frame sequence a phone confirms receiving.
+    An ack is delivery evidence only: it never grants authority, proves an
+    external effect, or changes a tracked action. Owner-visible, read-only.
+    """
+
+    __tablename__ = "relay_acks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String, nullable=False, index=True)
+    device_id = Column(String, nullable=False, index=True)
+    sequence = Column(Integer, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id", "sequence", name="uq_relay_ack_session_sequence",
+        ),
+    )
 
 
 class RemoteAction(Base):
