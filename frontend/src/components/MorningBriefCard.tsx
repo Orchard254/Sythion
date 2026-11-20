@@ -35,6 +35,11 @@ export function MorningBriefCard({ brief, onNavigate }: Props) {
     .filter((s) => s.key === 'system')
     .some((s) => s.lines.some((l) =>
       /DEGRADED|UNAVAILABLE|UNKNOWN|unavailable/i.test(l)));
+  // The Synth (agent) section is actionable when the agent is not active.
+  const agentNeedsAttention = brief.sections
+    .filter((s) => s.key === 'agent')
+    .some((s) => s.lines.some((l) =>
+      /State:\s*(paused|degraded|shutdown|unknown)|not been initialized/i.test(l)));
 
   return (
     <section className="notice notice--info" role="status" aria-label="Morning brief" data-testid="morning-brief-card">
@@ -49,7 +54,7 @@ export function MorningBriefCard({ brief, onNavigate }: Props) {
           </div>
         ))}
       </div>
-      {(hasReconciliation || hasBlockers || hasRegisteredDevices || hasRecentDeviceActions || healthNeedsAttention) && (
+      {(hasReconciliation || hasBlockers || hasRegisteredDevices || hasRecentDeviceActions || healthNeedsAttention || agentNeedsAttention) && (
         <div className="row row--wrap" style={{ gap: 8 }}>
           <Button size="sm" variant="ghost" icon="chevronRight"
             onClick={() => navigate('overview')}>
@@ -75,6 +80,12 @@ export function MorningBriefCard({ brief, onNavigate }: Props) {
             <Button size="sm" variant="ghost" icon="chevronRight"
               onClick={() => navigate('system')}>
               View diagnostics
+            </Button>
+          )}
+          {agentNeedsAttention && (
+            <Button size="sm" variant="ghost" icon="chevronRight"
+              onClick={() => navigate('system')}>
+              View agent status
             </Button>
           )}
         </div>

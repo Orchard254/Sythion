@@ -157,6 +157,38 @@ describe('MorningBriefCard', () => {
     expect(labels).not.toContain('View diagnostics');
   });
 
+  it('links a non-active Synth agent section to System agent status', () => {
+    const onNavigate = vi.fn();
+    const paused = {
+      ...brief,
+      sections: [
+        { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
+        { key: 'agent', title: 'Synth',
+          lines: ['State: paused.', 'Last wake: none recorded.', 'Last outcome: none recorded.'] },
+      ],
+    };
+    const view = create(<MorningBriefCard brief={paused} onNavigate={onNavigate} />);
+    const agent = view.root.findAllByType('button')
+      .find((b) => b.children.some((c) => typeof c === 'string' && c === 'View agent status'));
+    expect(agent).toBeDefined();
+    agent!.props.onClick();
+    expect(onNavigate).toHaveBeenCalledWith('system');
+  });
+
+  it('does not offer agent-status navigation when the agent is active', () => {
+    const active = {
+      ...brief,
+      sections: [
+        { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
+        { key: 'agent', title: 'Synth', lines: ['State: active.', 'Last outcome: completed.'] },
+      ],
+    };
+    const view = create(<MorningBriefCard brief={active} />);
+    const labels = view.root.findAllByType('button').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join(''));
+    expect(labels).not.toContain('View agent status');
+  });
+
   it('renders no navigation when there is nothing to review', () => {
     const calm = {
       ...brief,
