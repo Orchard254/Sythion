@@ -27,6 +27,15 @@ export function PhoneRelayScreen() {
   const socketRef = useRef<RelaySocketLike | null>(null);
   const sessionRef = useRef<string | null>(null);
   const lastId = useRef(0);
+  const pendingKey = useRef<string | null>(null);
+
+  // Generate an idempotency key in the trusted UI, never from the model.
+  const newIdempotencyKey = useCallback(() => {
+    const random = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return `phone-${random}`;
+  }, []);
 
   const appendMessage = useCallback((message: RelayMessage) => {
     setMessages((old) => [...old, message]);
@@ -72,6 +81,7 @@ export function PhoneRelayScreen() {
     lastId.current = 0;
     setMessages([]);
     setTracked(null);
+    pendingKey.current = null;
     try {
       const socket = await openDeviceRelaySocket(deviceId, token, {
         onFrame: handleFrame,
@@ -113,10 +123,12 @@ export function PhoneRelayScreen() {
   const send = async () => {
     if (!connected || !draft.trim()) return;
     const text = draft;
+    const key = pendingKey.current ?? newIdempotencyKey();
     setDraft('');
+    setTracked(null);
     try {
       if (transport === 'ws' && socketRef.current) {
-        sendRelayText(socketRef.current, text);
+        sendRelayText(socketRef.current, text, key);
       } else if (sessionRef.current) {
         await relayService.send(sessionRef.current, deviceId, token, text);
         const next = await relayService.poll(sessionRef.current, deviceId, token, lastId.current);
@@ -127,7 +139,15 @@ export function PhoneRelayScreen() {
       }
     } catch (err) {
       setError(String(err));
+    } finally {
+      pendingKey.current = null;
     }
+  };
+
+  const onDraftChange = (value: string) => {
+    if (!value) pendingKey.current = null;
+    else if (!draft && !pendingKey.current) pendingKey.current = newIdempotencyKey();
+    setDraft(value);
   };
 
   return (
@@ -184,7 +204,7 @@ export function PhoneRelayScreen() {
           <div className="row row--wrap" style={{ gap: 8, marginTop: 12 }}>
             <input
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={(e) => onDraftChange(e.target.value)}
               placeholder="Message Synth"
               aria-label="Message Synth"
             />

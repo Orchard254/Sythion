@@ -111,7 +111,11 @@ describe('PhoneRelayScreen', () => {
       messageInput.props.onChange({ target: { value: 'hello over ws' } });
     });
     await act(async () => { click(view, 'Send').props.onClick(); });
-    expect(sendRelayText).toHaveBeenCalledWith(socket, 'hello over ws');
+    expect(sendRelayText).toHaveBeenCalledTimes(1);
+    const [sentSocket, sentText, sentKey] = vi.mocked(sendRelayText).mock.calls[0];
+    expect(sentSocket).toBe(socket);
+    expect(sentText).toBe('hello over ws');
+    expect(sentKey).toMatch(/^phone-/);
 
     // The server acknowledges with a tracked, verified reply.
     await act(async () => {
@@ -127,6 +131,41 @@ describe('PhoneRelayScreen', () => {
     const rendered = allText(view);
     expect(rendered).toContain('completed');
     expect(rendered).toContain('reply #9');
+  });
+
+  it('uses a stable UI-generated idempotency key per message', async () => {
+    const socket = fakeSocket();
+    vi.mocked(openDeviceRelaySocket).mockResolvedValue(socket);
+    let view!: ReturnType<typeof create>;
+    await act(async () => { view = create(<PhoneRelayScreen />); });
+    const inputs = view.root.findAllByType('input');
+    await act(async () => {
+      inputs[0].props.onChange({ target: { value: 'dev_1' } });
+      inputs[1].props.onChange({ target: { value: 'secret-token' } });
+    });
+    await act(async () => { click(view, 'Connect').props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+    const handlers = vi.mocked(openDeviceRelaySocket).mock.calls[0][2] as RelaySocketHandlers;
+    await act(async () => { handlers.onOpen!(); });
+    await act(async () => { await Promise.resolve(); });
+
+    const messageInput = () => view.root.findAllByType('input').find(
+      (i) => i.props['aria-label'] === 'Message Synth')!;
+
+    // Typing then editing the same draft keeps the same key (dedup on retry).
+    await act(async () => { messageInput().props.onChange({ target: { value: 'he' } }); });
+    await act(async () => { messageInput().props.onChange({ target: { value: 'hello' } }); });
+    await act(async () => { click(view, 'Send').props.onClick(); });
+    const firstKey = vi.mocked(sendRelayText).mock.calls[0][2];
+    expect(firstKey).toMatch(/^phone-/);
+
+    // A new message after clearing gets a fresh key.
+    await act(async () => { messageInput().props.onChange({ target: { value: '' } }); });
+    await act(async () => { messageInput().props.onChange({ target: { value: 'second' } }); });
+    await act(async () => { click(view, 'Send').props.onClick(); });
+    const secondKey = vi.mocked(sendRelayText).mock.calls[1][2];
+    expect(secondKey).toMatch(/^phone-/);
+    expect(secondKey).not.toBe(firstKey);
   });
 
   it('falls back to HTTP polling when WSS is unavailable', async () => {
