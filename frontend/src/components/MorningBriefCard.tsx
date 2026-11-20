@@ -30,6 +30,9 @@ export function MorningBriefCard({ brief, onNavigate }: Props) {
   const hasRecentDeviceActions = brief.sections.some(
     (s) => s.key === 'device_actions' && !s.lines.every((l) => l.includes('No device actions recorded')),
   );
+  const hasFinishedWork = brief.sections.some(
+    (s) => (s.key === 'goals' || s.key === 'tasks') && !s.lines.every((l) => l.includes('None reported.')),
+  );
   // A health section is actionable when any check is not healthy.
   const healthNeedsAttention = brief.sections
     .filter((s) => s.key === 'system')
@@ -54,7 +57,7 @@ export function MorningBriefCard({ brief, onNavigate }: Props) {
           </div>
         ))}
       </div>
-      {(hasReconciliation || hasBlockers || hasRegisteredDevices || hasRecentDeviceActions || healthNeedsAttention || agentNeedsAttention) && (
+      {(hasReconciliation || hasBlockers || hasRegisteredDevices || hasRecentDeviceActions || healthNeedsAttention || agentNeedsAttention || hasFinishedWork) && (
         <div className="row row--wrap" style={{ gap: 8 }}>
           <Button size="sm" variant="ghost" icon="chevronRight"
             onClick={() => navigate('overview')}>
@@ -86,6 +89,12 @@ export function MorningBriefCard({ brief, onNavigate }: Props) {
             <Button size="sm" variant="ghost" icon="chevronRight"
               onClick={() => navigate('system')}>
               View agent status
+            </Button>
+          )}
+          {hasFinishedWork && (
+            <Button size="sm" variant="ghost" icon="chevronRight"
+              onClick={() => navigate('missions')}>
+              View goals
             </Button>
           )}
         </div>

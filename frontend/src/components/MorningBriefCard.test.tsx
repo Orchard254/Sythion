@@ -189,11 +189,59 @@ describe('MorningBriefCard', () => {
     expect(labels).not.toContain('View agent status');
   });
 
+  it('links finished goals and tasks to the Goals screen', () => {
+    const onNavigate = vi.fn();
+    const withWork = {
+      ...brief,
+      sections: [
+        { key: 'goals', title: 'Goals finished since yesterday', lines: ['Ship the report'] },
+        { key: 'tasks', title: 'Tasks finished since yesterday', lines: ['t1: draft the report'] },
+        { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
+      ],
+    };
+    const view = create(<MorningBriefCard brief={withWork} onNavigate={onNavigate} />);
+    const goals = view.root.findAllByType('button')
+      .find((b) => b.children.some((c) => typeof c === 'string' && c === 'View goals'));
+    expect(goals).toBeDefined();
+    goals!.props.onClick();
+    expect(onNavigate).toHaveBeenCalledWith('missions');
+  });
+
+  it('offers one goals link when both goals and tasks sections are present', () => {
+    const withWork = {
+      ...brief,
+      sections: [
+        { key: 'goals', title: 'Goals finished', lines: ['Ship the report'] },
+        { key: 'tasks', title: 'Tasks finished', lines: ['t1: draft'] },
+        { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
+      ],
+    };
+    const view = create(<MorningBriefCard brief={withWork} />);
+    const goalsButtons = view.root.findAllByType('button').filter((b) =>
+      b.children.some((c) => typeof c === 'string' && c === 'View goals'));
+    expect(goalsButtons).toHaveLength(1);
+  });
+
+  it('does not offer goals navigation when nothing was reported', () => {
+    const calm = {
+      ...brief,
+      sections: [
+        { key: 'goals', title: 'Goals finished', lines: ['None reported.'] },
+        { key: 'tasks', title: 'Tasks finished', lines: ['None reported.'] },
+        { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
+      ],
+    };
+    const view = create(<MorningBriefCard brief={calm} />);
+    const labels = view.root.findAllByType('button').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join(''));
+    expect(labels).not.toContain('View goals');
+  });
+
   it('renders no navigation when there is nothing to review', () => {
     const calm = {
       ...brief,
       sections: [
-        { key: 'goals', title: 'Goals', lines: ['Ship the report'] },
+        { key: 'goals', title: 'Goals', lines: ['None reported.'] },
         { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
         { key: 'reconciliation', title: 'Needs reconciliation', lines: ['Nothing needs reconciliation.'] },
       ],
