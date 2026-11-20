@@ -99,6 +99,12 @@ briefing layer is being built first because it is the user-facing foundation.
   (read-only; a state here is never a decision or authority). Evidence:
   `test_morning_brief.py` (15 passed incl. populated/empty cases), affected set
   104 passed / 7 skipped (17s).
+
+  **Delivery receipts in the brief (2026-11-20):** a `Delivery receipts` section
+  reports per-session highest-ack high-water marks from the durable `RelayAck`
+  state via `ack_summary` (read-only evidence; a receipt never proves an effect
+  or grants authority). Evidence: `test_morning_brief.py` (17 passed incl.
+  populated/empty cases), affected set 116 passed / 7 skipped (13s).
 - **Stage 2 — device registry (implemented 2026-11-20):** `RegisteredDevice`
   records a stable, non-reversible local id, name, kind, first/last seen and
   capability domains. `backend/services/device_registry.py` upserts this machine

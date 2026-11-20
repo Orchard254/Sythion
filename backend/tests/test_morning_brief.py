@@ -38,7 +38,7 @@ def test_brief_is_non_authorizing_and_structured(test_db):
     assert brief["date"] == "2026-11-20"
     assert brief["headline"].startswith("Good morning")
     assert [s["key"] for s in brief["sections"]] == [
-        "goals", "tasks", "blockers", "reconciliation", "agent", "devices", "device_actions", "system",
+        "goals", "tasks", "blockers", "reconciliation", "agent", "devices", "device_actions", "receipts", "system",
     ]
     assert brief["authorized"] is False
     assert brief["approval_issued"] is False
@@ -104,6 +104,33 @@ def test_brief_recent_device_actions_empty_is_explicit(test_db):
     brief = build_morning_brief(test_db, now=NOW)
     section = next(s for s in brief["sections"] if s["key"] == "device_actions")
     assert section["lines"] == ["No device actions recorded."]
+
+
+def test_brief_reports_durable_delivery_receipts(test_db):
+    from backend.services.device_registry import register_local_device
+    from backend.services.relay import open_session, post_message
+    from backend.services.relay_acks import record_ack
+
+    device = register_local_device(test_db, now=NOW)
+    device_id = device["device_id"]
+    session = open_session(test_db, device_id)
+    msg = post_message(test_db, session["session_id"], "hello")
+    test_db.commit()
+    record_ack(test_db, session_id=session["session_id"],
+               device_id=device_id, sequence=msg["id"])
+    test_db.commit()
+
+    brief = build_morning_brief(test_db, now=NOW)
+    section = next(s for s in brief["sections"] if s["key"] == "receipts")
+    joined = " ".join(section["lines"])
+    assert session["session_id"] in joined
+    assert f"acked through #{msg['id']}" in joined
+
+
+def test_brief_delivery_receipts_empty_is_explicit(test_db):
+    brief = build_morning_brief(test_db, now=NOW)
+    section = next(s for s in brief["sections"] if s["key"] == "receipts")
+    assert section["lines"] == ["No delivery receipts recorded."]
 
 
 def test_brief_reports_uncertain_actions_and_pending_approvals(test_db):
@@ -192,7 +219,7 @@ def test_morning_brief_endpoint_is_read_only(test_client, test_db):
     body = response.json()
     assert "headline" in body
     assert [s["key"] for s in body["sections"]] == [
-        "goals", "tasks", "blockers", "reconciliation", "agent", "devices", "device_actions", "system",
+        "goals", "tasks", "blockers", "reconciliation", "agent", "devices", "device_actions", "receipts", "system",
     ]
     assert body["authorized"] is False
     assert body["approval_issued"] is False

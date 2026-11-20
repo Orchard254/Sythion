@@ -4,8 +4,9 @@ This is the Core's proactive "voice": one durable brief per local date, built
 without any model call, tool execution, or authority. It reports what happened
 (goals/tasks finished), what is stuck (the blocked-work briefing), what needs
 reconciliation (uncertain remote actions, pending owner approvals), the agent's
-state, registered devices (identity, trust, last-seen), recent device actions
-and local system health.
+state, registered devices (identity, trust, last-seen), recent device actions,
+durable delivery receipts (per-session ack high-water marks) and local system
+health.
 Every brief is marked non-authorizing: it is information for the owner, never
 approval, clearance, or proof of an effect.
 """
@@ -126,6 +127,21 @@ def build_morning_brief(db: Session, *, now: datetime | None = None) -> dict[str
     except Exception as exc:  # pragma: no cover - best-effort observation
         recent_action_lines = [f"Device actions unavailable: {_bound(str(exc), 'error')}."]
 
+    # Durable delivery receipts from the relay. Read-only evidence of which
+    # sequenced frames devices confirmed receiving; a receipt is never proof of
+    # an external effect or an authority.
+    try:
+        from backend.services.relay_acks import ack_summary
+
+        marks = ack_summary(db, limit=_MAX_LINES)["sessions"]
+        receipt_lines = [
+            f"session {_bound(m.get('session_id'), 'unknown')}: "
+            f"acked through #{m.get('highest_ack', 0)}"
+            for m in marks[:_MAX_LINES]
+        ] or ["No delivery receipts recorded."]
+    except Exception as exc:  # pragma: no cover - best-effort observation
+        receipt_lines = [f"Delivery receipts unavailable: {_bound(str(exc), 'error')}."]
+
     # What needs reconciliation: uncertain remote actions and pending owner
     # approvals from durable state. Reporting is not approving — nothing here
     # clears a blocker, resolves an uncertain effect, or grants permission.
@@ -172,6 +188,7 @@ def build_morning_brief(db: Session, *, now: datetime | None = None) -> dict[str
         _section("agent", "Synth", agent_lines),
         _section("devices", "Registered devices", device_lines),
         _section("device_actions", "Recent device actions", recent_action_lines),
+        _section("receipts", "Delivery receipts", receipt_lines),
         _section("system", "Local health", health_lines),
     ]
 
