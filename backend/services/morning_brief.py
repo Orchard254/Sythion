@@ -2,7 +2,8 @@
 
 This is the Core's proactive "voice": one durable brief per local date, built
 without any model call, tool execution, or authority. It reports what happened
-(goals/tasks finished), what is stuck (the blocked-work briefing), the agent's
+(goals/tasks finished), what is stuck (the blocked-work briefing), what needs
+reconciliation (uncertain remote actions, pending owner approvals), the agent's
 state, registered devices (identity, trust, last-seen) and local system health.
 Every brief is marked non-authorizing: it is information for the owner, never
 approval, clearance, or proof of an effect.
@@ -109,6 +110,39 @@ def build_morning_brief(db: Session, *, now: datetime | None = None) -> dict[str
     except Exception as exc:  # pragma: no cover - registry is best-effort
         device_lines = [f"Device registry unavailable: {_bound(str(exc), 'error')}."]
 
+    # What needs reconciliation: uncertain remote actions and pending owner
+    # approvals from durable state. Reporting is not approving — nothing here
+    # clears a blocker, resolves an uncertain effect, or grants permission.
+    reconcile_lines: list[str] = []
+    try:
+        from backend.runtime.remote_action_lifecycle import RemoteActionManager
+        from backend.models.database import PermissionProposalRow
+
+        uncertain = RemoteActionManager(db).list_uncertain()
+        for action in uncertain[:_MAX_LINES]:
+            reconcile_lines.append(
+                f"Uncertain remote action {_bound(action.get('action_id'), 'unknown')}: "
+                f"{_bound(action.get('reason'), 'outcome unresolved')}"
+            )
+
+        pending = (
+            db.query(PermissionProposalRow)
+            .filter(PermissionProposalRow.status == "awaiting")
+            .order_by(PermissionProposalRow.created_at.asc())
+            .limit(_MAX_LINES)
+            .all()
+        )
+        for proposal in pending:
+            reconcile_lines.append(
+                f"Permission awaiting decision: "
+                f"{_bound(proposal.tool_name, 'unknown tool')} "
+                f"(task {_bound(proposal.task_id, 'unknown')})"
+            )
+    except Exception as exc:  # pragma: no cover - best-effort observation
+        reconcile_lines = [f"Reconciliation state unavailable: {_bound(str(exc), 'error')}."]
+    if not reconcile_lines:
+        reconcile_lines = ["Nothing needs reconciliation."]
+
     sections = [
         _section("goals", "Goals finished since yesterday",
                  [f"{_bound(g.title, 'untitled goal')}" for g in finished_goals]
@@ -118,6 +152,7 @@ def build_morning_brief(db: Session, *, now: datetime | None = None) -> dict[str
                   for t in finished_tasks] or ["None reported."]),
         _section("blockers", "Needs your attention",
                  blocker_lines or ["Nothing is blocked."]),
+        _section("reconciliation", "Needs reconciliation", reconcile_lines),
         _section("agent", "Synth", agent_lines),
         _section("devices", "Registered devices", device_lines),
         _section("system", "Local health", health_lines),

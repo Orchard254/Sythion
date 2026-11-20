@@ -86,6 +86,13 @@ briefing layer is being built first because it is the user-facing foundation.
   registry (observation only — trust here is never used as authority by the
   brief). Evidence: `test_morning_brief.py` (11 passed incl. populated/empty
   device cases), affected set 90 passed / 7 skipped (11s).
+
+  **Needs-reconciliation in the brief (2026-11-20):** a `Needs reconciliation`
+  section surfaces uncertain remote actions and awaiting permission proposals
+  from durable state (observation only — it never resolves an uncertain effect,
+  clears a blocker, or approves anything). Evidence: `test_morning_brief.py`
+  (13 passed incl. uncertain-action + pending-approval and empty cases),
+  affected set 125 passed / 7 skipped (36s).
 - **Stage 2 — device registry (implemented 2026-11-20):** `RegisteredDevice`
   records a stable, non-reversible local id, name, kind, first/last seen and
   capability domains. `backend/services/device_registry.py` upserts this machine
