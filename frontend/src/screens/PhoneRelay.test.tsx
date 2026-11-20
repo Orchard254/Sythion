@@ -366,4 +366,114 @@ describe('PhoneRelayScreen', () => {
     const labels = view.root.findAllByType('button').map((b) => b.children.join(''));
     expect(labels).not.toContain('Approve');
   });
+
+  // --- bounded WSS reconnect -------------------------------------------------
+
+  const connectWithSocket = async (view: ReturnType<typeof create>) => {
+    const inputs = view.root.findAllByType('input');
+    await act(async () => {
+      inputs[0].props.onChange({ target: { value: 'dev_1' } });
+      inputs[1].props.onChange({ target: { value: 'secret-token' } });
+    });
+    await act(async () => { click(view, 'Connect').props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+    return view;
+  };
+
+  const handlersAt = (call: number): RelaySocketHandlers =>
+    vi.mocked(openDeviceRelaySocket).mock.calls[call][2] as RelaySocketHandlers;
+
+  it('reconnects a dropped WSS socket with bounded backoff, then falls back to HTTP', async () => {
+    vi.useFakeTimers();
+    // A fresh socket for the initial connection and each of the 3 reconnects.
+    for (let i = 0; i < 4; i += 1) {
+      vi.mocked(openDeviceRelaySocket).mockResolvedValueOnce(fakeSocket());
+    }
+    let view!: ReturnType<typeof create>;
+    await act(async () => { view = create(<PhoneRelayScreen />); });
+    await connectWithSocket(view);
+    expect(openDeviceRelaySocket).toHaveBeenCalledTimes(1);
+
+    // Drop after opening -> first reconnect after 1000ms.
+    await act(async () => { handlersAt(0).onOpen!(); });
+    await act(async () => { handlersAt(0).onClose!(); });
+    expect(allText(view)).toContain('Reconnecting');
+    await act(async () => { vi.advanceTimersByTime(1000); await Promise.resolve(); });
+    expect(openDeviceRelaySocket).toHaveBeenCalledTimes(2);
+
+    // Each reconnect fails to open and closes -> 2000ms then 4000ms backoff.
+    await act(async () => { handlersAt(1).onClose!(); });
+    await act(async () => { vi.advanceTimersByTime(2000); await Promise.resolve(); });
+    expect(openDeviceRelaySocket).toHaveBeenCalledTimes(3);
+    await act(async () => { handlersAt(2).onClose!(); });
+    await act(async () => { vi.advanceTimersByTime(4000); await Promise.resolve(); });
+    expect(openDeviceRelaySocket).toHaveBeenCalledTimes(4);
+
+    // Fourth drop exhausts the budget -> HTTP polling on the same relay.
+    await act(async () => { handlersAt(3).onClose!(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(relayService.open).toHaveBeenCalledWith('dev_1', 'secret-token');
+    expect(allText(view)).toContain('Connected via HTTP');
+    expect(allText(view)).not.toContain('Reconnecting');
+  });
+
+  it('resets the backoff after a successful reconnect', async () => {
+    vi.useFakeTimers();
+    for (let i = 0; i < 3; i += 1) {
+      vi.mocked(openDeviceRelaySocket).mockResolvedValueOnce(fakeSocket());
+    }
+    let view!: ReturnType<typeof create>;
+    await act(async () => { view = create(<PhoneRelayScreen />); });
+    await connectWithSocket(view);
+
+    await act(async () => { handlersAt(0).onOpen!(); });
+    await act(async () => { handlersAt(0).onClose!(); });
+    await act(async () => { vi.advanceTimersByTime(1000); await Promise.resolve(); });
+    expect(openDeviceRelaySocket).toHaveBeenCalledTimes(2);
+    // A successful open resets the attempt counter and clears the indicator.
+    await act(async () => { handlersAt(1).onOpen!(); });
+    expect(allText(view)).not.toContain('Reconnecting');
+
+    // The next drop starts again at the base 1000ms delay, not 2000ms.
+    await act(async () => { handlersAt(1).onClose!(); });
+    await act(async () => { vi.advanceTimersByTime(1000); await Promise.resolve(); });
+    expect(openDeviceRelaySocket).toHaveBeenCalledTimes(3);
+    await act(async () => { vi.advanceTimersByTime(2000); await Promise.resolve(); });
+    expect(openDeviceRelaySocket).toHaveBeenCalledTimes(3); // no extra attempt pending
+  });
+
+  it('cancels reconnect on manual disconnect', async () => {
+    vi.useFakeTimers();
+    for (let i = 0; i < 4; i += 1) {
+      vi.mocked(openDeviceRelaySocket).mockResolvedValueOnce(fakeSocket());
+    }
+    let view!: ReturnType<typeof create>;
+    await act(async () => { view = create(<PhoneRelayScreen />); });
+    await connectWithSocket(view);
+    await act(async () => { handlersAt(0).onOpen!(); });
+
+    await act(async () => { click(view, 'Disconnect').props.onClick(); });
+    await act(async () => { handlersAt(0).onClose!(); }); // browser fires close
+    await act(async () => { vi.advanceTimersByTime(10000); await Promise.resolve(); });
+    expect(openDeviceRelaySocket).toHaveBeenCalledTimes(1);
+    expect(relayService.open).not.toHaveBeenCalled();
+    expect(allText(view)).not.toContain('Reconnecting');
+  });
+
+  it('cancels reconnect on unmount', async () => {
+    vi.useFakeTimers();
+    for (let i = 0; i < 4; i += 1) {
+      vi.mocked(openDeviceRelaySocket).mockResolvedValueOnce(fakeSocket());
+    }
+    let view!: ReturnType<typeof create>;
+    await act(async () => { view = create(<PhoneRelayScreen />); });
+    await connectWithSocket(view);
+    await act(async () => { handlersAt(0).onOpen!(); });
+
+    await act(async () => { view.unmount(); });
+    await act(async () => { handlersAt(0).onClose!(); });
+    await act(async () => { vi.advanceTimersByTime(10000); await Promise.resolve(); });
+    expect(openDeviceRelaySocket).toHaveBeenCalledTimes(1);
+    expect(relayService.open).not.toHaveBeenCalled();
+  });
 });
