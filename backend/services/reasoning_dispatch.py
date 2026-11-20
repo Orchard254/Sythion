@@ -601,12 +601,15 @@ async def dispatch_reasoning(
     metrics = get_reasoning_metrics()
     acquire_dispatch_slot(job)
     try:
-        metrics.record_model_started(job)
         # Persistence must succeed *before* invoking a provider. A failed
         # start receipt is an admission failure, not a reason to make an
-        # untracked call.
+        # untracked call. Record the model as started only AFTER the receipt
+        # is durably persisted: otherwise a failed start leaves a phantom
+        # model_calls increment, a leaked _started entry and a MODEL_STARTED
+        # event for a call that never happened, skewing effectiveness reports.
         if on_event is not None:
             await _record_phase(on_event, job, "started")
+        metrics.record_model_started(job)
         try:
             awaitable = call()
             if not inspect.isawaitable(awaitable):

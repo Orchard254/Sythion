@@ -48,6 +48,13 @@ packages, memory, objectives and device status; goals with evidence and
 blockers; durable wakes; an owner-gated bounded wake; read-only recovery review
 packets; and a versioned authority-free reasoning contract.
 
+**Reasoning-accounting invariant (2026-11-21):** `dispatch_reasoning` records a
+model as started only AFTER the durable "started" receipt is persisted. If that
+receipt fails, no provider call happens, so `model_calls` must not increment,
+no `_started` entry may leak, and no `MODEL_STARTED` event may be emitted —
+otherwise the effectiveness report falsely claims "model activity without
+verified useful work." Regression test in `test_reasoning_dispatch.py`.
+
 **Model-selection evidence invariant (2026-11-21):** after capability and
 availability filtering, and when the configured primary is not a candidate,
 `ModelSelector.select` picks the best-evaluated model by walking the ranking

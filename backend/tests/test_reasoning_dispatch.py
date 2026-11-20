@@ -21,7 +21,9 @@ from backend.services.reasoning_dispatch import (
     as_mapping_result,
     as_text_result,
     dispatch_reasoning,
+    get_reasoning_metrics,
     handoff_reasoning_result,
+    ReasoningJournalError,
 )
 
 
@@ -363,3 +365,34 @@ async def test_null_result_remains_untrusted_for_caller_validation():
         return None
 
     assert await dispatch_reasoning(ReasoningJob(ReasoningPurpose.CONVERSATION, 1), model) is None
+
+
+@pytest.mark.asyncio
+async def test_failed_start_receipt_leaves_no_phantom_model_metrics():
+    """A start-receipt persistence failure must not count a model call or leak
+    an _started entry — no provider was invoked, so the effectiveness report
+    must stay honest.
+    """
+    from backend.services.reasoning_journal import ReasoningJournal
+
+    metrics = get_reasoning_metrics()
+    metrics.reset()
+
+    async def recorder(*_args):
+        raise RuntimeError("ownership lost")
+
+    async def provider():
+        raise AssertionError("provider must not run when the start receipt fails")
+
+    with pytest.raises(ReasoningJournalError, match="event persistence failed"):
+        await dispatch_reasoning(
+            ReasoningJob(ReasoningPurpose.TASK_DECISION, 1, work_id="t"),
+            provider, on_event=ReasoningJournal(recorder),
+        )
+
+    report = metrics.report()
+    assert report.model_calls == 0
+    assert report.model_responses == 0
+    assert report.failed_calls == 0
+    assert metrics._started == {}
+    metrics.reset()
