@@ -4,6 +4,8 @@ export interface RelayLagSignal {
   lagging: boolean;
   unacked: number;
   laggingSessions: number;
+  /** Sessions on HTTP fallback, which physically cannot emit acks. */
+  fallbackSessions: number;
 }
 
 /**
@@ -13,8 +15,13 @@ export interface RelayLagSignal {
  * proves an effect, or changes any action.
  */
 export function relayLagSignal(summary: RelayAckSummary | null): RelayLagSignal {
-  if (!summary) return { lagging: false, unacked: 0, laggingSessions: 0 };
+  if (!summary) return { lagging: false, unacked: 0, laggingSessions: 0, fallbackSessions: 0 };
   const sessions = Array.isArray(summary.sessions) ? summary.sessions : [];
+  // HTTP fallback sessions cannot ack. Count them so the Overview can explain
+  // a "no lag" state that is really "acks impossible", not "all confirmed".
+  const fallbackSessions = sessions.filter(
+    (s) => s.ack_mode === 'http' && s.acks_possible === false,
+  ).length;
   // Use the backend's explicit per-session lagging flag when present; older
   // payloads without it fall back to unacked > 0. HTTP fallback sessions have
   // acks_possible=false and must never be counted as a silent device.
@@ -28,7 +35,10 @@ export function relayLagSignal(summary: RelayAckSummary | null): RelayLagSignal 
   const unacked = typeof summary.unacked_total === 'number'
     ? summary.unacked_total
     : sessions.reduce((sum, s) => sum + (isLagging(s) ? s.unacked : 0), 0);
-  return { lagging: unacked > 0 || laggingSessions > 0, unacked, laggingSessions };
+  return {
+    lagging: unacked > 0 || laggingSessions > 0,
+    unacked, laggingSessions, fallbackSessions,
+  };
 }
 
 export function describeRelayLag(signal: RelayLagSignal): string {

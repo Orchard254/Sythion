@@ -16,21 +16,33 @@ interface Props {
  */
 export function RelayLagNotice({ summary, onView }: Props) {
   const signal = relayLagSignal(summary);
-  if (!signal.lagging) return null;
+  // Show a fallback-only state too: "no lag" can mean acks are impossible,
+  // not that everything was confirmed. Never hide that from the owner.
+  if (!signal.lagging && signal.fallbackSessions === 0) return null;
 
   return (
     <div data-testid="relay-lag-notice">
       <Notice
-        tone="warn"
+        tone={signal.lagging ? 'warn' : 'info'}
         action={onView ? (
           <Button size="sm" variant="ghost" onClick={() => onView('system')}>
             View receipts
           </Button>
         ) : undefined}
       >
-        <Badge tone="warn">{signal.unacked} unacked</Badge>{' '}
-        {describeRelayLag(signal)}. This is delivery evidence only — no action
-        has been authorized or retried.
+        {signal.lagging && (
+          <>
+            <Badge tone="warn">{signal.unacked} unacked</Badge>{' '}
+            {describeRelayLag(signal)}.{' '}
+          </>
+        )}
+        {signal.fallbackSessions > 0 && (
+          <Badge tone="info">
+            {signal.fallbackSessions}
+            {signal.fallbackSessions === 1 ? ' device' : ' devices'} on HTTP fallback · acks unavailable
+          </Badge>
+        )}{' '}
+        This is delivery evidence only — no action has been authorized or retried.
       </Notice>
     </div>
   );

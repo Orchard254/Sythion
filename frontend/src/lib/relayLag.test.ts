@@ -16,13 +16,17 @@ const summary = (unacked_total: number, lagging: number): RelayAckSummary => ({
 
 describe('relayLagSignal', () => {
   it('is not lagging when the summary is null or fully acked', () => {
-    expect(relayLagSignal(null)).toEqual({ lagging: false, unacked: 0, laggingSessions: 0 });
+    expect(relayLagSignal(null)).toEqual({
+      lagging: false, unacked: 0, laggingSessions: 0, fallbackSessions: 0,
+    });
     expect(relayLagSignal(summary(0, 0)).lagging).toBe(false);
   });
 
   it('reports unacked total and lagging session count', () => {
     const signal = relayLagSignal(summary(6, 3));
-    expect(signal).toEqual({ lagging: true, unacked: 6, laggingSessions: 3 });
+    expect(signal).toEqual({
+      lagging: true, unacked: 6, laggingSessions: 3, fallbackSessions: 0,
+    });
   });
 
   it('does not count HTTP fallback sessions (acks impossible) as lagging', () => {
@@ -35,6 +39,23 @@ describe('relayLagSignal', () => {
     expect(signal.lagging).toBe(false);
     expect(signal.laggingSessions).toBe(0);
     expect(signal.unacked).toBe(0);
+    // The fallback session is still counted for the informational signal.
+    expect(signal.fallbackSessions).toBe(1);
+  });
+
+  it('counts multiple fallback sessions alongside real lagging ones', () => {
+    const mixed = summary(3, 1);
+    mixed.sessions = [
+      ...mixed.sessions,
+      { session_id: 'rs_http_1', highest_ack: 0, latest_message: 4, unacked: 4,
+        ack_mode: 'http' as const, acks_possible: false, lagging: false },
+      { session_id: 'rs_http_2', highest_ack: 0, latest_message: 2, unacked: 2,
+        ack_mode: 'http' as const, acks_possible: false, lagging: false },
+    ];
+    const signal = relayLagSignal(mixed);
+    expect(signal.lagging).toBe(true);
+    expect(signal.laggingSessions).toBe(1);
+    expect(signal.fallbackSessions).toBe(2);
   });
 
   it('falls back to summing sessions when unacked_total is absent', () => {

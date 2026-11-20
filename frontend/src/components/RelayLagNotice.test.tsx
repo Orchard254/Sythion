@@ -37,6 +37,41 @@ describe('RelayLagNotice', () => {
     expect(view.root.findAllByType('button')).toHaveLength(0);
   });
 
+  it('surfaces fallback-only state even when there is no unacked lag', () => {
+    const fallbackOnly: RelayAckSummary = {
+      ...lagging,
+      unacked_total: 0,
+      sessions: [{
+        session_id: 'rs_http', highest_ack: 0, latest_message: 4, unacked: 4,
+        ack_mode: 'http', acks_possible: false, lagging: false,
+      }],
+    };
+    const view = create(<RelayLagNotice summary={fallbackOnly} />);
+    expect(view.root.findByProps({ 'data-testid': 'relay-lag-notice' })).toBeDefined();
+    const badgeText = view.root.findAllByType('span').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join('')).join(' ');
+    expect(badgeText).toContain('1 device on HTTP fallback · acks unavailable');
+    expect(badgeText).not.toContain('unacked');
+    // Read-only: no controls without a handler.
+    expect(view.root.findAllByType('button')).toHaveLength(0);
+  });
+
+  it('shows both lag and fallback signals in a mixed state', () => {
+    const mixed: RelayAckSummary = {
+      ...lagging,
+      sessions: [
+        ...lagging.sessions,
+        { session_id: 'rs_http', highest_ack: 0, latest_message: 4, unacked: 4,
+          ack_mode: 'http' as const, acks_possible: false, lagging: false },
+      ],
+    };
+    const view = create(<RelayLagNotice summary={mixed} />);
+    const badgeText = view.root.findAllByType('span').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join('')).join(' ');
+    expect(badgeText).toContain('4 unacked');
+    expect(badgeText).toContain('1 device on HTTP fallback');
+  });
+
   it('offers read-only navigation to the receipt panel when a handler is given', () => {
     const onView = vi.fn();
     const view = create(<RelayLagNotice summary={lagging} onView={onView} />);
