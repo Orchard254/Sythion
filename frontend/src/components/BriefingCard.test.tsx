@@ -1,5 +1,5 @@
 import { create } from 'react-test-renderer';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { BriefingCard } from './BriefingCard';
 import type { Briefing } from '../types';
 
@@ -37,6 +37,33 @@ describe('BriefingCard', () => {
 
   it('never renders an approve control', () => {
     const view = create(<BriefingCard briefing={briefing} />);
-    expect(view.root.findAllByType('button')).toHaveLength(0);
+    const labels = view.root.findAllByType('button').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join(''));
+    expect(labels).not.toContain('Approve');
+    expect(labels).not.toContain('Approve this action');
+  });
+
+  it('links reconciliation items to the Control Center review panel', () => {
+    const onNavigate = vi.fn();
+    const view = create(<BriefingCard briefing={briefing} onNavigate={onNavigate} />);
+    const review = view.root.findAllByType('button')
+      .find((b) => b.children.some((c) => typeof c === 'string' && c === 'Review in Control Center'));
+    expect(review).toBeDefined();
+    review!.props.onClick();
+    expect(onNavigate).toHaveBeenCalledWith('overview');
+  });
+
+  it('links pending approvals to the Security approvals panel', () => {
+    const onNavigate = vi.fn();
+    const withPermission = {
+      ...briefing,
+      items: [{ ...briefing.items[0], kind: 'permission_awaiting' }],
+    };
+    const view = create(<BriefingCard briefing={withPermission} onNavigate={onNavigate} />);
+    const approvals = view.root.findAllByType('button')
+      .find((b) => b.children.some((c) => typeof c === 'string' && c === 'Open approvals'));
+    expect(approvals).toBeDefined();
+    approvals!.props.onClick();
+    expect(onNavigate).toHaveBeenCalledWith('security');
   });
 });

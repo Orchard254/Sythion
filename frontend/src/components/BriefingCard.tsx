@@ -1,15 +1,29 @@
-import { Badge } from './ui';
+import { Badge, Button } from './ui';
+import { useNavStore } from '../store/navStore';
+import type { RouteId } from '../lib/routes';
 import type { Briefing } from '../types';
+
+interface Props {
+  briefing: Briefing;
+  /** Injectable for tests; defaults to the app's navigation store. */
+  onNavigate?: (route: RouteId) => void;
+}
 
 /**
  * Read-only "heads up" card derived from durable runtime state.
  *
- * It is deliberately non-authorizing: no button here can clear a blocker,
- * grant a permission, or approve an action. Decisions stay in the existing
- * trusted review interfaces (task drawer / settings proposals).
+ * The navigation buttons only take the owner to the trusted review panels; the
+ * card itself cannot clear a blocker, grant a permission, or approve an action.
  */
-export function BriefingCard({ briefing }: { briefing: Briefing }) {
+export function BriefingCard({ briefing, onNavigate }: Props) {
+  const setRoute = useNavStore((s) => s.setRoute);
+  const navigate = onNavigate ?? setRoute;
+
   if (!briefing.has_blockers || briefing.items.length === 0) return null;
+
+  const hasPermissionItem = briefing.items.some((i) => i.kind === 'permission_awaiting');
+  const hasReconciliationItem = briefing.items.some((i) =>
+    i.kind === 'task_held' || i.kind === 'task_needs_input' || i.kind === 'goal_step_blocked');
 
   return (
     <section className="notice notice--warn" role="status" aria-label="Heads up" data-testid="briefing-card">
@@ -26,6 +40,20 @@ export function BriefingCard({ briefing }: { briefing: Briefing }) {
           </li>
         ))}
       </ul>
+      <div className="row row--wrap" style={{ gap: 8 }}>
+        {hasReconciliationItem && (
+          <Button size="sm" variant="ghost" icon="chevronRight"
+            onClick={() => navigate('overview')}>
+            Review in Control Center
+          </Button>
+        )}
+        {hasPermissionItem && (
+          <Button size="sm" variant="ghost" icon="chevronRight"
+            onClick={() => navigate('security')}>
+            Open approvals
+          </Button>
+        )}
+      </div>
       <p className="briefing__note">{briefing.note}</p>
     </section>
   );

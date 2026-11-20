@@ -1,5 +1,5 @@
 import { create } from 'react-test-renderer';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MorningBriefCard } from './MorningBriefCard';
 import type { MorningBrief } from '../types';
 
@@ -30,6 +30,44 @@ describe('MorningBriefCard', () => {
 
   it('never renders a control that could authorize an action', () => {
     const view = create(<MorningBriefCard brief={brief} />);
+    const labels = view.root.findAllByType('button').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join(''));
+    expect(labels).not.toContain('Approve');
+  });
+
+  it('links reconciliation and approvals to the Control Center panels', () => {
+    const onNavigate = vi.fn();
+    const withReconciliation = {
+      ...brief,
+      sections: [
+        ...brief.sections,
+        { key: 'reconciliation', title: 'Needs reconciliation',
+          lines: ['Uncertain remote action ra_1: outcome unknown'] },
+      ],
+    };
+    const view = create(<MorningBriefCard brief={withReconciliation} onNavigate={onNavigate} />);
+    const review = view.root.findAllByType('button')
+      .find((b) => b.children.some((c) => typeof c === 'string' && c === 'Review in Control Center'));
+    const approvals = view.root.findAllByType('button')
+      .find((b) => b.children.some((c) => typeof c === 'string' && c === 'Open approvals'));
+    expect(review).toBeDefined();
+    expect(approvals).toBeDefined();
+    review!.props.onClick();
+    approvals!.props.onClick();
+    expect(onNavigate).toHaveBeenCalledWith('overview');
+    expect(onNavigate).toHaveBeenCalledWith('security');
+  });
+
+  it('renders no navigation when there is nothing to review', () => {
+    const calm = {
+      ...brief,
+      sections: [
+        { key: 'goals', title: 'Goals', lines: ['Ship the report'] },
+        { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
+        { key: 'reconciliation', title: 'Needs reconciliation', lines: ['Nothing needs reconciliation.'] },
+      ],
+    };
+    const view = create(<MorningBriefCard brief={calm} />);
     expect(view.root.findAllByType('button')).toHaveLength(0);
   });
 });
