@@ -208,6 +208,12 @@ export function PhoneRelayScreen() {
                 {tracked.actionState}
               </Badge>
               <span className="t-mono t-faint">reply #{tracked.replySequence}</span>
+              {tracked.actionState === 'uncertain' && (
+                <Button size="sm" variant="ghost" icon="chevronRight"
+                  onClick={() => setRoute('overview')}>
+                  Reconcile
+                </Button>
+              )}
             </div>
           )}
           <div className="row row--wrap" style={{ gap: 8, marginTop: 12 }}>

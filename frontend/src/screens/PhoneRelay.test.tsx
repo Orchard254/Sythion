@@ -16,6 +16,9 @@ vi.mock('../services/deviceRelaySocket', () => ({
   buildDeviceRelayWsUrl: vi.fn(),
 }));
 
+const setRoute = vi.fn();
+vi.mock('../store/navStore', () => ({ useNavStore: () => setRoute }));
+
 const opened = {
   session_id: 'rs_test', device_id: 'dev_1', status: 'open', expires_at: null,
 };
@@ -41,6 +44,7 @@ const click = (view: ReturnType<typeof create>, label: string) => {
 describe('PhoneRelayScreen', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    setRoute.mockClear();
     vi.mocked(relayService.open).mockResolvedValue(opened);
     vi.mocked(relayService.poll).mockResolvedValue([]);
     vi.mocked(relayService.send).mockResolvedValue({});
@@ -183,6 +187,48 @@ describe('PhoneRelayScreen', () => {
 
     expect(relayService.open).toHaveBeenCalledWith('dev_1', 'secret-token');
     expect(allText(view)).toContain('Connected via HTTP');
+  });
+
+  it('offers reconciliation navigation when a reply outcome is uncertain', async () => {
+    const socket = fakeSocket();
+    vi.mocked(openDeviceRelaySocket).mockResolvedValue(socket);
+    let view!: ReturnType<typeof create>;
+    await act(async () => { view = create(<PhoneRelayScreen />); });
+    const inputs = view.root.findAllByType('input');
+    await act(async () => {
+      inputs[0].props.onChange({ target: { value: 'dev_1' } });
+      inputs[1].props.onChange({ target: { value: 'secret-token' } });
+    });
+    await act(async () => { click(view, 'Connect').props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+    const handlers = vi.mocked(openDeviceRelaySocket).mock.calls[0][2] as RelaySocketHandlers;
+    await act(async () => { handlers.onOpen!(); });
+    await act(async () => { await Promise.resolve(); });
+
+    // Completed outcomes must not show a reconcile affordance.
+    await act(async () => {
+      handlers.onFrame({
+        type: 'accepted', sequence: 1, reply_sequence: 2,
+        action_id: 'ra_1', action_state: 'completed', authorized: false,
+      });
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(view.root.findAllByType('button').some(
+      (b) => b.children.some((c) => typeof c === 'string' && c === 'Reconcile'))).toBe(false);
+
+    // An uncertain outcome gets a one-click path to the reconciliation panel.
+    await act(async () => {
+      handlers.onFrame({
+        type: 'accepted', sequence: 2, reply_sequence: 3,
+        action_id: 'ra_2', action_state: 'uncertain', authorized: false,
+      });
+    });
+    await act(async () => { await Promise.resolve(); });
+    const reconcile = view.root.findAllByType('button')
+      .find((b) => b.children.some((c) => typeof c === 'string' && c === 'Reconcile'));
+    expect(reconcile).toBeDefined();
+    reconcile!.props.onClick();
+    expect(setRoute).toHaveBeenCalledWith('overview');
   });
 
   it('sends over the HTTP fallback with the UI-generated idempotency key', async () => {
