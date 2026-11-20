@@ -105,6 +105,29 @@ def test_owner_can_approve_exact_proposal(test_client, test_db):
     assert receipt.status == "approved"
 
 
+def test_ui_generated_decision_id_is_bound_to_receipt(test_client, test_db):
+    import uuid
+
+    from backend.runtime.permission_decision_receipt import (
+        PermissionDecisionReceiptManager,
+    )
+
+    proposal = _stage(test_db, action_id="ui-id")
+    decision_id = f"owner-ui-{uuid.uuid4()}"
+    response = test_client.post("/api/v1/approvals/decide", json={
+        "proposal_id": proposal.proposal_id,
+        "decision_id": decision_id,
+        "decision": "approve",
+    })
+    assert response.status_code == 200
+    assert response.json()["decision_id"] == decision_id
+    receipt = PermissionDecisionReceiptManager(db=test_db).get(
+        decision_id=decision_id)
+    assert receipt is not None
+    assert receipt.decision_id == decision_id
+    assert receipt.status == "approved"
+
+
 def test_decision_requires_valid_inputs(test_client, test_db):
     proposal = _stage(test_db, action_id="inputs")
     cases = [

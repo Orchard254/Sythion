@@ -561,6 +561,29 @@ export type DataOrigin = 'live' | 'demo';
 
 export type Tone = 'ok' | 'warn' | 'danger' | 'info' | 'idle' | 'accent' | 'plain';
 
+/* --- Trusted owner approvals (control boundary only) ------------------- */
+export interface PendingApproval {
+  proposal_id: string;
+  task_id: string;
+  action_id: string;
+  tool_name: string;
+  task_version: number;
+  target_canonical: string;
+  proposal_digest: string;
+  created_at: string | null;
+}
+
+export interface ApprovalDecision {
+  proposal_id: string;
+  decision_id: string;
+  decision: 'approve' | 'deny';
+  status: string;
+  approved: boolean;
+  allowed: boolean;
+  reason: string;
+  authorization_issued: false;
+}
+
 /* --- Assistant conversation turns (POST /assistant/turns) ---------------- */
 export interface BriefingItem {
   kind: string;

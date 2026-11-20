@@ -24,6 +24,7 @@ import {
   useCapabilities,
   useHealth,
   useMemoryEdges,
+  usePendingApprovals,
   useSkillProposals,
   useTasks,
   useToolProposals,
@@ -47,6 +48,7 @@ import {
 } from '../lib/format';
 import { useNavStore } from '../store/navStore';
 import { DevicesCard } from '../components/DevicesCard';
+import { PendingApprovalsPanel } from '../components/PendingApprovalsPanel';
 
 export function SecurityScreen() {
   const agent = useAgent();
@@ -60,6 +62,7 @@ export function SecurityScreen() {
   const skillProposals = useSkillProposals();
   const toolProposals = useToolProposals();
   const devices = useDevices();
+  const pendingApprovals = usePendingApprovals();
   const actions = useActions();
   const notify = useAppStore((s) => s.notify);
   const navigate = useNavStore((s) => s.setRoute);
@@ -85,7 +88,8 @@ export function SecurityScreen() {
   const awaitingInput = (tasks.data ?? []).filter((t) => t.state === 'waiting_for_user');
   const sensitive = (tasks.data ?? []).filter((t) => t.state === 'failed' || t.state === 'cancelled');
 
-  const pendingCount = pendingSkill.length + pendingTools.length + heldTasks.length;
+  const permissionProposals = pendingApprovals.data?.proposals ?? [];
+  const pendingCount = pendingSkill.length + pendingTools.length + heldTasks.length + permissionProposals.length;
   const staleEdges = (edges.data ?? []).filter((e) => e.status === 'stale');
 
   const run = async (key: string, fn: () => Promise<unknown>, onOk: () => void) => {
@@ -457,6 +461,19 @@ export function SecurityScreen() {
             foot="No integration behind them"
           />
         </div>
+
+        {/* --- Trusted owner decisions (real proposal/receipt flow) ----- */}
+        <PendingApprovalsPanel
+          proposals={permissionProposals}
+          busy={busy}
+          onDecide={(proposalId, decisionId, decision) =>
+            run('owner-decision', () =>
+              actions.decideApproval(proposalId, decisionId, decision), () =>
+              notify({ tone: 'ok', title: 'Decision recorded' })
+            )
+          }
+          onDecided={() => pendingApprovals.refetch()}
+        />
 
         {/* --- Approvals ---------------------------------------------- */}
         <div className="grid grid--2">

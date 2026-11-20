@@ -5,7 +5,7 @@ import {
   type InternalAxiosRequestConfig,
 } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import apiClient, { assistantService, goalService, taskService } from './api';
+import apiClient, { approvalService, assistantService, goalService, taskService } from './api';
 
 /**
  * The control token the request interceptor attaches. The response
@@ -73,6 +73,53 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('trusted owner approval service', () => {
+  afterEach(() => {
+    delete apiClient.defaults.adapter;
+  });
+
+  it('reads pending proposals from the exact backend endpoint', async () => {
+    const seen: string[] = [];
+    apiClient.defaults.adapter = (config) => {
+      seen.push(`${config.method} ${config.url}`);
+      return Promise.resolve({
+        data: { proposals: [] },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      } as unknown as AxiosResponse);
+    };
+    await approvalService.pending();
+    expect(seen).toEqual(['get /approvals/pending']);
+  });
+
+  it('posts approve/deny with a UI-supplied decision id bound into the body', async () => {
+    const bodies: string[] = [];
+    apiClient.defaults.adapter = (config) => {
+      bodies.push(config.data as string);
+      return Promise.resolve({
+        data: {
+          proposal_id: 'p-1', decision_id: 'owner-ui-1', decision: 'approve',
+          status: 'approved', approved: true, allowed: true, reason: '',
+          authorization_issued: false,
+        },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      } as unknown as AxiosResponse);
+    };
+    const result = await approvalService.decide('p-1', 'owner-ui-1', 'approve');
+    expect(result.approved).toBe(true);
+    expect(JSON.parse(bodies[0])).toEqual({
+      proposal_id: 'p-1',
+      decision_id: 'owner-ui-1',
+      decision: 'approve',
+    });
+  });
 });
 
 describe('the axios response interceptor', () => {

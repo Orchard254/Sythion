@@ -185,6 +185,12 @@ export function useBackgroundPolicy() {
   });
 }
 
+export function usePendingApprovals() {
+  return useSource('pending-approvals', api.approvalService.pending, {
+    refetchInterval: 15_000,
+  });
+}
+
 export function useRemoteActions() {
   return useSource('remote-actions', () => api.remoteActionService.list(20), {
     refetchInterval: 15_000,
@@ -368,6 +374,14 @@ export function useActions() {
       ) {
         if (!live) throw new Error('Not connected to a Sythion backend.');
         return api.agentService.setDeviceTrust(deviceId, trustLevel);
+      },
+      async decideApproval(
+        proposalId: string,
+        decisionId: string,
+        decision: 'approve' | 'deny',
+      ) {
+        if (!live) throw new Error('Not connected to a Sythion backend.');
+        return api.approvalService.decide(proposalId, decisionId, decision);
       },
       async approveSkillProposal(id: string | number) {
         if (!live) throw new Error('Not connected to a Sythion backend.');
