@@ -42,7 +42,11 @@ export function PhoneRelayScreen() {
   }, []);
 
   const appendMessage = useCallback((message: RelayMessage) => {
-    setMessages((old) => [...old, message]);
+    // Deduplicate by durable sequence id. A frame can be re-delivered across a
+    // transport switch or reconnect; showing it twice would be misleading.
+    setMessages((old) => (
+      old.some((m) => m.id === message.id) ? old : [...old, message]
+    ));
   }, []);
 
   const handleFrame = useCallback((frame: RelaySocketFrame) => {
@@ -76,9 +80,9 @@ export function PhoneRelayScreen() {
     const next = await relayService.poll(opened.session_id, deviceId, token, lastId.current);
     if (next.length) {
       lastId.current = next[next.length - 1].id;
-      setMessages((old) => [...old, ...next]);
+      next.forEach(appendMessage);
     }
-  }, [deviceId, token]);
+  }, [deviceId, token, appendMessage]);
 
   const connect = async () => {
     setError('');
@@ -112,12 +116,12 @@ export function PhoneRelayScreen() {
       void relayService.poll(sid, deviceId, token, lastId.current).then((next) => {
         if (next.length) {
           lastId.current = next[next.length - 1].id;
-          setMessages((old) => [...old, ...next]);
+          next.forEach(appendMessage);
         }
       }).catch((err) => setError(String(err)));
     }, 3000);
     return () => clearInterval(timer);
-  }, [connected, transport, deviceId, token]);
+  }, [connected, transport, deviceId, token, appendMessage]);
 
   useEffect(() => () => {
     socketRef.current?.close();
@@ -146,7 +150,7 @@ export function PhoneRelayScreen() {
         const next = await relayService.poll(sessionRef.current, deviceId, token, lastId.current);
         if (next.length) {
           lastId.current = next[next.length - 1].id;
-          setMessages((old) => [...old, ...next]);
+          next.forEach(appendMessage);
         }
       }
     } catch (err) {

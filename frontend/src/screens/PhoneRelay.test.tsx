@@ -333,6 +333,34 @@ describe('PhoneRelayScreen', () => {
     expect(rendered).not.toContain(seeded);
   });
 
+  it('deduplicates re-delivered message frames by sequence', async () => {
+    const socket = fakeSocket();
+    vi.mocked(openDeviceRelaySocket).mockResolvedValue(socket);
+    let view!: ReturnType<typeof create>;
+    await act(async () => { view = create(<PhoneRelayScreen />); });
+    const inputs = view.root.findAllByType('input');
+    await act(async () => {
+      inputs[0].props.onChange({ target: { value: 'dev_1' } });
+      inputs[1].props.onChange({ target: { value: 'secret-token' } });
+    });
+    await act(async () => { click(view, 'Connect').props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+    const handlers = vi.mocked(openDeviceRelaySocket).mock.calls[0][2] as RelaySocketHandlers;
+    await act(async () => { handlers.onOpen!(); });
+    await act(async () => { await Promise.resolve(); });
+
+    const frame = {
+      type: 'message' as const, sequence: 42, role: 'synth' as const,
+      kind: 'text', text: 'Only once', authorized: false as const,
+    };
+    await act(async () => { handlers.onFrame(frame); });
+    await act(async () => { handlers.onFrame(frame); }); // re-delivery
+    await act(async () => { await Promise.resolve(); });
+
+    const rendered = JSON.stringify(view.toJSON());
+    expect(rendered.split('Only once').length - 1).toBe(1);
+  });
+
   it('never renders an approval control', () => {
     const view = create(<PhoneRelayScreen />);
     const labels = view.root.findAllByType('button').map((b) => b.children.join(''));
