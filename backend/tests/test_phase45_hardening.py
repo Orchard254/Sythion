@@ -229,6 +229,26 @@ class TestWakeRecovery:
         db_session.expire_all()
         assert manager.get_goal(goal.id).last_served_at is not None
 
+        # A wake resolved through drain_durable must NOT leave a ghost key in
+        # the in-flight set (the queue path never ran to discard it).
+        assert worker._queued_keys == set()
+
+        # A later same-key submit must reach the DB, not short-circuit at the
+        # pre-filter. Spy on submit_wake to prove it was actually invoked.
+        calls = []
+        original_submit_wake = MainAgentService.submit_wake
+
+        def _spy(self, *args, **kwargs):
+            calls.append(kwargs.get("wake_key"))
+            return original_submit_wake(self, *args, **kwargs)
+
+        monkeypatch.setattr(MainAgentService, "submit_wake", _spy)
+        again = worker.submit("user.request", wake_key="saturated",
+                              trigger_reference=goal.id)
+        assert again == "saturated"
+        assert calls == ["saturated"]  # reached submit_wake, not pre-filtered
+        assert worker._queued_keys == set()  # deduplicated -> no new ghost
+
 
 class _FakeDBManager:
     """Independent sessions over the SAME shared in-memory connection."""

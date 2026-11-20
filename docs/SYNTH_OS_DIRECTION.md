@@ -48,6 +48,14 @@ packages, memory, objectives and device status; goals with evidence and
 blockers; durable wakes; an owner-gated bounded wake; read-only recovery review
 packets; and a versioned authority-free reasoning contract.
 
+**Wake in-flight key invariant (2026-11-21):** `_queued_keys` tracks only wakes
+with real queued/in-flight work. A key is discarded in `_process`'s `finally`,
+which covers both the queue path and `drain_durable`, so a wake resolved after
+queue saturation leaves no permanent "ghost" key that would block every later
+`submit()` for that key. A DB-deduplicated submission adds no key at all (there
+may be no PENDING row to resolve). Regression assertions live in the
+saturated-queue scenario of `test_phase45_hardening.py`.
+
 **Bounded-wake recurrence invariant (2026-11-21):** every cycle of the
 owner-gated bounded wake loop submits a distinct durable wake key
 (`goal.wake:{goal}:{uuid}`). `submit_wake` deduplicates on key existence

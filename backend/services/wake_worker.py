@@ -227,11 +227,17 @@ class WakeWorker:
         finally:
             session.close()
 
+        if deduplicated:
+            # An existing row already represents this wake (it may even be
+            # terminal). Tracking the key here would leave a permanent ghost
+            # in _queued_keys that short-circuits every later submit() for it.
+            return key
         self._queued_keys.add(key)
-        if not deduplicated and self._queue.qsize() < self._max_queue:
+        if self._queue.qsize() < self._max_queue:
             self._queue.put_nowait({"wake_key": key})
-        # Duplicate or saturated: either way the PENDING row exists and will
-        # be drained durably. Nothing is lost.
+        # Enqueued (optimal) or saturated: either way the PENDING row is the
+        # source of truth and is drained durably if the queue drops it. The
+        # key is cleared in _process's finally when the wake is resolved.
         return key
 
     def submit_task_terminal(self, task_id: str, state: str) -> Optional[str]:
@@ -256,7 +262,6 @@ class WakeWorker:
             except Exception as exc:  # pragma: no cover - never kill the worker
                 logger.exception("Wake processing failed: %s", exc)
             finally:
-                self._queued_keys.discard(item.get("wake_key"))
                 self._queue.task_done()
 
     async def drain_durable(self, limit: int = 10) -> int:
@@ -360,6 +365,11 @@ class WakeWorker:
             )
         finally:
             session.close()
+            # The wake is resolved (claimed/completed/skipped, or already gone).
+            # Clear the in-flight key on BOTH paths — queue-driven _run and
+            # drain_durable — otherwise a saturated wake leaves a permanent
+            # ghost key that blocks every later submit() with the same key.
+            self._queued_keys.discard(item.get("wake_key"))
 
 
 # Process-wide registration (composition-root style, like api.dependencies).
