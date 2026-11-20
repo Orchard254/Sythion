@@ -171,6 +171,30 @@ describe('briefActions', () => {
     expect(briefStatusSummary(calm).needsDecision).toBe(0);
   });
 
+  it('counts decision-owing heads-up item kinds, not just section keys', () => {
+    const brief = parseRelayBrief('briefing', JSON.stringify({
+      headline: 'Heads up — 4 item(s) need your attention.', has_blockers: true,
+      items: [
+        { kind: 'task_needs_input', title: 'A task is waiting', reason: 'Which file?', suggested_action: 'Answer', authority: 'none', approved: false },
+        { kind: 'task_held', title: 'A task is held', reason: 'state: interrupted', suggested_action: 'Review', authority: 'none', approved: false },
+        { kind: 'goal_step_blocked', title: 'A goal step is blocked', reason: 'no permission', suggested_action: 'Review', authority: 'none', approved: false },
+        { kind: 'permission_awaiting', title: 'A permission request', reason: 'file_create', suggested_action: 'Review', authority: 'none', approved: false },
+      ],
+      note: 'Not an approval.',
+    }))!;
+    expect(briefStatusSummary(brief).needsDecision).toBe(4);
+  });
+
+  it('does not count the agent_not_active heads-up item as an owner decision', () => {
+    const brief = parseRelayBrief('briefing', JSON.stringify({
+      headline: 'Heads up.', has_blockers: true,
+      items: [{ kind: 'agent_not_active', title: 'Background work is paused', reason: 'state: paused', suggested_action: 'Resume', authority: 'none', approved: false }],
+      note: '',
+    }))!;
+    // Agent state is a status item, not a pending decision (matches desktop Overview).
+    expect(briefStatusSummary(brief).needsDecision).toBe(0);
+  });
+
   it('maps an agent_not_active heads-up item to agent status', () => {
     const text = JSON.stringify({
       headline: 'Heads up.', has_blockers: true,

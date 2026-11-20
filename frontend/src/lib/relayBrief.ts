@@ -26,8 +26,16 @@ export interface BriefStatusSummary {
   needsDecision: number;
 }
 
-/** Row kinds whose lines represent an owner decision still owed. */
-const DECISION_KEYS = new Set(['reconciliation', 'blockers', 'permission_awaiting']);
+/** Row kinds whose lines represent an owner decision still owed.
+ *
+ * Morning-brief sections use `reconciliation`/`blockers`/`permission_awaiting`.
+ * A heads-up briefing stores each item under its own kind, so those kinds are
+ * included too — otherwise a phone heads-up would undercount decisions owed.
+ */
+const DECISION_KEYS = new Set([
+  'reconciliation', 'blockers', 'permission_awaiting',
+  'task_needs_input', 'task_held', 'goal_step_blocked',
+]);
 
 /**
  * Extract a compact, read-only status summary from the brief's structured rows.
