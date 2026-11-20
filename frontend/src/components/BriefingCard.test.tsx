@@ -53,6 +53,20 @@ describe('BriefingCard', () => {
     expect(onNavigate).toHaveBeenCalledWith('overview');
   });
 
+  it('links agent_not_active items to the System agent-status panel', () => {
+    const onNavigate = vi.fn();
+    const withAgent = {
+      ...briefing,
+      items: [{ ...briefing.items[0], kind: 'agent_not_active' }],
+    };
+    const view = create(<BriefingCard briefing={withAgent} onNavigate={onNavigate} />);
+    const agent = view.root.findAllByType('button')
+      .find((b) => b.children.some((c) => typeof c === 'string' && c === 'View agent status'));
+    expect(agent).toBeDefined();
+    agent!.props.onClick();
+    expect(onNavigate).toHaveBeenCalledWith('system');
+  });
+
   it('links pending approvals to the Security approvals panel', () => {
     const onNavigate = vi.fn();
     const withPermission = {

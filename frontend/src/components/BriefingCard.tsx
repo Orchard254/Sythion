@@ -24,6 +24,7 @@ export function BriefingCard({ briefing, onNavigate }: Props) {
   const hasPermissionItem = briefing.items.some((i) => i.kind === 'permission_awaiting');
   const hasReconciliationItem = briefing.items.some((i) =>
     i.kind === 'task_held' || i.kind === 'task_needs_input' || i.kind === 'goal_step_blocked');
+  const hasAgentItem = briefing.items.some((i) => i.kind === 'agent_not_active');
 
   return (
     <section className="notice notice--warn" role="status" aria-label="Heads up" data-testid="briefing-card">
@@ -51,6 +52,12 @@ export function BriefingCard({ briefing, onNavigate }: Props) {
           <Button size="sm" variant="ghost" icon="chevronRight"
             onClick={() => navigate('security')}>
             Open approvals
+          </Button>
+        )}
+        {hasAgentItem && (
+          <Button size="sm" variant="ghost" icon="chevronRight"
+            onClick={() => navigate('system')}>
+            View agent status
           </Button>
         )}
       </div>
