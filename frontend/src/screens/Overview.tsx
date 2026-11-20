@@ -36,7 +36,9 @@ import { useAppStore } from '../store/appStore';
 import { useNavStore } from '../store/navStore';
 import type { RouteId } from '../lib/routes';
 import { AUTONOMY_MODES, capabilityCounts, deriveAuthorization, deriveAutonomy } from '../lib/autonomy';
-import { countDecisionsDue, describeDecisionsDue } from '../lib/decisionCounts';
+import {
+  countDecisionsDue, decisionDestination, describeDecisionsDue,
+} from '../lib/decisionCounts';
 import {
   AGENT_STATE_TONE,
   HEALTH_TONE,
@@ -222,7 +224,7 @@ export function OverviewScreen() {
             value={decisionsDue}
             tone={decisionsDue > 0 ? 'accent' : undefined}
             foot={describeDecisionsDue(decisionInputs)}
-            onClick={() => navigate('security')}
+            onClick={() => navigate(decisionDestination(decisionInputs))}
           />
           <Stat
             label="Capabilities online"
