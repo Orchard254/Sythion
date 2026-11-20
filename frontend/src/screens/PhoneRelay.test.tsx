@@ -1,22 +1,41 @@
-import { create } from 'react-test-renderer';
+import { act, create } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PhoneRelayScreen } from './PhoneRelay';
 import { relayService } from '../services/api';
+import { openDeviceRelaySocket, type RelaySocketHandlers, type RelaySocketLike } from '../services/deviceRelaySocket';
 
 vi.mock('../services/api', () => ({
   relayService: {
-    open: vi.fn(),
-    poll: vi.fn(),
-    send: vi.fn(),
-    close: vi.fn(),
+    open: vi.fn(), poll: vi.fn(), send: vi.fn(), close: vi.fn(),
   },
 }));
 
+vi.mock('../services/deviceRelaySocket', () => ({
+  openDeviceRelaySocket: vi.fn(),
+  sendRelayText: vi.fn(),
+  buildDeviceRelayWsUrl: vi.fn(),
+}));
+
 const opened = {
-  session_id: 'rs_test',
-  device_id: 'dev_1',
-  status: 'open',
-  expires_at: null,
+  session_id: 'rs_test', device_id: 'dev_1', status: 'open', expires_at: null,
+};
+
+function fakeSocket(): RelaySocketLike {
+  return {
+    onopen: null, onmessage: null, onclose: null, onerror: null,
+    send: vi.fn(), close: vi.fn(),
+  };
+}
+
+const allText = (view: ReturnType<typeof create>): string =>
+  view.root.findAllByType('span').map((b) =>
+    b.children.filter((c) => typeof c === 'string').join('')).join(' ');
+
+const click = (view: ReturnType<typeof create>, label: string) => {
+  const button = view.root.findAllByType('button')
+    .find((b) => b.children.join('') === label);
+  expect(button).toBeDefined();
+  return button!;
 };
 
 describe('PhoneRelayScreen', () => {
@@ -29,23 +48,65 @@ describe('PhoneRelayScreen', () => {
 
   it('renders the first-party, non-authorizing notice', () => {
     const view = create(<PhoneRelayScreen />);
-    expect(JSON.stringify(view.toJSON())).toContain('No third party');
-    expect(JSON.stringify(view.toJSON())).toContain('cannot approve actions');
+    const rendered = JSON.stringify(view.toJSON());
+    expect(rendered).toContain('No third party');
+    expect(rendered).toContain('cannot approve actions');
+    expect(rendered).toContain('WebSocket');
   });
 
-  it('opens a session with the device credential', async () => {
-    const view = create(<PhoneRelayScreen />);
-    const inputs = view.root.findAllByType('input');
-    const connectButton = view.root.findAllByType('button')
-      .find((b) => b.children.join('') === 'Connect');
-    expect(connectButton).toBeDefined();
+  it('connects over WSS and renders real-time sequenced replies', async () => {
+    const socket = fakeSocket();
+    vi.mocked(openDeviceRelaySocket).mockResolvedValue(socket);
+    let view!: ReturnType<typeof create>;
+    await act(async () => { view = create(<PhoneRelayScreen />); });
 
-    await vi.waitFor(() => {
+    const inputs = view.root.findAllByType('input');
+    await act(async () => {
       inputs[0].props.onChange({ target: { value: 'dev_1' } });
       inputs[1].props.onChange({ target: { value: 'secret-token' } });
-      connectButton?.props.onClick();
     });
-    // The credential input must never be rendered as plain text.
-    expect(inputs[1].props.type).toBe('password');
+    await act(async () => { click(view, 'Connect').props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(openDeviceRelaySocket).toHaveBeenCalledWith('dev_1', 'secret-token', expect.any(Object));
+    const handlers = vi.mocked(openDeviceRelaySocket).mock.calls[0][2] as RelaySocketHandlers;
+
+    await act(async () => { handlers.onOpen!(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(allText(view)).toContain('Connected via WS');
+
+    await act(async () => {
+      handlers.onFrame({
+        type: 'message', sequence: 7, role: 'synth', kind: 'text',
+        text: 'Hello from Synth.', authorized: false,
+      });
+    });
+    await act(async () => { await Promise.resolve(); });
+    const rendered = JSON.stringify(view.toJSON());
+    expect(rendered).toContain('Hello from Synth.');
+    expect(rendered).toContain('synth');
+  });
+
+  it('falls back to HTTP polling when WSS is unavailable', async () => {
+    vi.mocked(openDeviceRelaySocket).mockRejectedValue(new Error('no websocket'));
+    let view!: ReturnType<typeof create>;
+    await act(async () => { view = create(<PhoneRelayScreen />); });
+    const inputs = view.root.findAllByType('input');
+    await act(async () => {
+      inputs[0].props.onChange({ target: { value: 'dev_1' } });
+      inputs[1].props.onChange({ target: { value: 'secret-token' } });
+    });
+    await act(async () => { click(view, 'Connect').props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(relayService.open).toHaveBeenCalledWith('dev_1', 'secret-token');
+    expect(allText(view)).toContain('Connected via HTTP');
+  });
+
+  it('never renders an approval control', () => {
+    const view = create(<PhoneRelayScreen />);
+    const labels = view.root.findAllByType('button').map((b) => b.children.join(''));
+    expect(labels).not.toContain('Approve');
   });
 });
