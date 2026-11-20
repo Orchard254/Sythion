@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Icon } from '../components/icons';
 import { CommandComposer } from '../components/CommandComposer';
 import { TaskDetailDrawer } from '../components/TaskDetailDrawer';
+import { RelayLagNotice } from '../components/RelayLagNotice';
 import {
   Badge,
   Bar,
@@ -27,6 +28,7 @@ import {
   useHealth,
   useObjectives,
   usePendingApprovals,
+  useRelayAcks,
   useSkillProposals,
   useUncertainRemoteActions,
   useTasks,
@@ -75,6 +77,7 @@ export function OverviewScreen() {
   const toolProposals = useToolProposals();
   const pendingApprovalsApi = usePendingApprovals();
   const uncertainActions = useUncertainRemoteActions();
+  const relayAcks = useRelayAcks();
   const delegations = useDelegations();
   const activity = useAgentActivity();
   const actions = useActions();
@@ -254,6 +257,8 @@ export function OverviewScreen() {
             onClick={() => navigate('security')}
           />
         </div>
+
+        <RelayLagNotice summary={relayAcks.data ?? null} onView={navigate} />
 
         {/* ---- Main workspace ----------------------------------------- */}
         <div className="grid grid--main">
