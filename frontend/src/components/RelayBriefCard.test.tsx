@@ -55,6 +55,25 @@ describe('RelayBriefCard', () => {
     expect(view.root.findAllByType('button')).toHaveLength(0);
   });
 
+  it('renders a read-only receipts badge with the ack high-water mark', () => {
+    const withReceipts = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [
+        { key: 'receipts', title: 'Delivery receipts',
+          lines: ['session rs_1: acked through #12', 'session rs_2: acked through #7'] },
+      ],
+      note: '',
+    }))!;
+    const view = create(<RelayBriefCard brief={withReceipts} />);
+    expect(view.root.findByProps({ 'data-testid': 'relay-brief-status' })).toBeDefined();
+    const text = view.root.findAllByType('span').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join('')).join(' ');
+    expect(text).toContain('receipts: 2');
+    expect(text).toContain('through #12');
+    // Status is read-only; no action buttons without a handler.
+    expect(view.root.findAllByType('button')).toHaveLength(0);
+  });
+
   it('renders no status strip when no status or decision sections exist', () => {
     const calm: StructuredBrief = {
       kind: 'morning_brief',

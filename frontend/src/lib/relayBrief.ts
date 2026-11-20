@@ -24,6 +24,8 @@ export interface BriefStatusSummary {
   agentState: string | null;
   deviceTrust: string[];
   needsDecision: number;
+  receiptSessions: number;
+  receiptHighWater: number | null;
 }
 
 /** Row kinds whose lines represent an owner decision still owed.
@@ -46,6 +48,8 @@ export function briefStatusSummary(brief: StructuredBrief): BriefStatusSummary {
   let health: string | null = null;
   let agentState: string | null = null;
   let needsDecision = 0;
+  let receiptSessions = 0;
+  let receiptHighWater: number | null = null;
   const deviceTrust: string[] = [];
 
   for (const row of brief.rows) {
@@ -61,6 +65,19 @@ export function briefStatusSummary(brief: StructuredBrief): BriefStatusSummary {
         const trust = part.match(/trust=([a-z_]+)/i);
         if (trust) deviceTrust.push(trust[1].toLowerCase());
       }
+    } else if (row.key === 'receipts') {
+      // Each line looks like "session rs_1: acked through #12". The empty
+      // marker ("No delivery receipts recorded.") yields no matches.
+      for (const part of row.detail.split('·')) {
+        const trimmed = part.trim();
+        if (!trimmed || EMPTY_MARKERS.some((m) => trimmed.includes(m))) continue;
+        const match = trimmed.match(/acked through #(\d+)/i);
+        if (match) {
+          receiptSessions += 1;
+          const seq = Number(match[1]);
+          receiptHighWater = receiptHighWater === null ? seq : Math.max(receiptHighWater, seq);
+        }
+      }
     }
     // Count decision rows, but only their real lines — "empty" marker lines
     // are not decisions and must not inflate the count.
@@ -71,7 +88,7 @@ export function briefStatusSummary(brief: StructuredBrief): BriefStatusSummary {
       }).length;
     }
   }
-  return { health, agentState, deviceTrust, needsDecision };
+  return { health, agentState, deviceTrust, needsDecision, receiptSessions, receiptHighWater };
 }
 
 /** Sections that need owner attention and where to handle them on the phone. */

@@ -149,6 +149,8 @@ describe('briefActions', () => {
       agentState: 'paused',
       deviceTrust: ['trusted', 'observed'],
       needsDecision: 0,
+      receiptSessions: 0,
+      receiptHighWater: null,
     });
   });
 
@@ -160,7 +162,30 @@ describe('briefActions', () => {
     }))!;
     expect(briefStatusSummary(brief)).toEqual({
       health: null, agentState: null, deviceTrust: [], needsDecision: 0,
+      receiptSessions: 0, receiptHighWater: null,
     });
+  });
+
+  it('summarizes receipt sessions and the ack high-water mark', () => {
+    const brief = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [
+        { key: 'receipts', title: 'Delivery receipts',
+          lines: ['session rs_1: acked through #12', 'session rs_2: acked through #7'] },
+      ],
+      note: '',
+    }))!;
+    const summary = briefStatusSummary(brief);
+    expect(summary.receiptSessions).toBe(2);
+    expect(summary.receiptHighWater).toBe(12);
+
+    const empty = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [{ key: 'receipts', title: 'Delivery receipts', lines: ['No delivery receipts recorded.'] }],
+      note: '',
+    }))!;
+    expect(briefStatusSummary(empty).receiptSessions).toBe(0);
+    expect(briefStatusSummary(empty).receiptHighWater).toBeNull();
   });
 
   it('counts decision rows but not empty markers or non-decision rows', () => {
