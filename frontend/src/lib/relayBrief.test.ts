@@ -130,6 +130,7 @@ describe('briefActions', () => {
       health: 'DEGRADED',
       agentState: 'paused',
       deviceTrust: ['trusted', 'observed'],
+      needsDecision: 0,
     });
   });
 
@@ -140,8 +141,34 @@ describe('briefActions', () => {
       note: '',
     }))!;
     expect(briefStatusSummary(brief)).toEqual({
-      health: null, agentState: null, deviceTrust: [],
+      health: null, agentState: null, deviceTrust: [], needsDecision: 0,
     });
+  });
+
+  it('counts decision rows but not empty markers or non-decision rows', () => {
+    const brief = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [
+        { key: 'reconciliation', title: 'Needs reconciliation',
+          lines: ['Uncertain action ra_1: outcome unknown', 'Uncertain action ra_2: lost connection'] },
+        { key: 'blockers', title: 'Needs your attention', lines: ['A task is waiting: Which file?'] },
+        { key: 'permission_awaiting', title: 'Approval', lines: ['file_create awaiting decision'] },
+        { key: 'devices', title: 'Registered devices', lines: ['dev_1'] },
+      ],
+      note: '',
+    }))!;
+    // 2 reconciliation + 1 blocker + 1 permission = 4; devices is not a decision.
+    expect(briefStatusSummary(brief).needsDecision).toBe(4);
+
+    const calm = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [
+        { key: 'reconciliation', title: 'Needs reconciliation', lines: ['Nothing needs reconciliation.'] },
+        { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
+      ],
+      note: '',
+    }))!;
+    expect(briefStatusSummary(calm).needsDecision).toBe(0);
   });
 
   it('maps an agent_not_active heads-up item to agent status', () => {

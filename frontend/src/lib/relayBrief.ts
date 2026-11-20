@@ -23,7 +23,11 @@ export interface BriefStatusSummary {
   health: string | null;
   agentState: string | null;
   deviceTrust: string[];
+  needsDecision: number;
 }
+
+/** Row kinds whose lines represent an owner decision still owed. */
+const DECISION_KEYS = new Set(['reconciliation', 'blockers', 'permission_awaiting']);
 
 /**
  * Extract a compact, read-only status summary from the brief's structured rows.
@@ -33,6 +37,7 @@ export interface BriefStatusSummary {
 export function briefStatusSummary(brief: StructuredBrief): BriefStatusSummary {
   let health: string | null = null;
   let agentState: string | null = null;
+  let needsDecision = 0;
   const deviceTrust: string[] = [];
 
   for (const row of brief.rows) {
@@ -49,8 +54,16 @@ export function briefStatusSummary(brief: StructuredBrief): BriefStatusSummary {
         if (trust) deviceTrust.push(trust[1].toLowerCase());
       }
     }
+    // Count decision rows, but only their real lines — "empty" marker lines
+    // are not decisions and must not inflate the count.
+    if (DECISION_KEYS.has(row.key)) {
+      needsDecision += row.detail.split('·').filter((line) => {
+        const trimmed = line.trim();
+        return trimmed.length > 0 && !EMPTY_MARKERS.some((m) => trimmed.includes(m));
+      }).length;
+    }
   }
-  return { health, agentState, deviceTrust };
+  return { health, agentState, deviceTrust, needsDecision };
 }
 
 /** Sections that need owner attention and where to handle them on the phone. */

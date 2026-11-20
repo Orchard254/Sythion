@@ -18,7 +18,8 @@ interface Props {
 export function RelayBriefCard({ brief, onAction }: Props) {
   const actions = onAction ? briefActions(brief) : [];
   const status = briefStatusSummary(brief);
-  const hasStatus = status.health !== null || status.agentState !== null || status.deviceTrust.length > 0;
+  const hasStatus = status.health !== null || status.agentState !== null
+    || status.deviceTrust.length > 0 || status.needsDecision > 0;
   return (
     <div className="stack stack--tight" data-testid="relay-brief-card">
       <div className="row row--wrap" style={{ gap: 8 }}>
@@ -36,6 +37,9 @@ export function RelayBriefCard({ brief, onAction }: Props) {
           {status.deviceTrust.map((trust, index) => (
             <Badge key={`${trust}:${index}`} tone="info">device: {trust}</Badge>
           ))}
+          {status.needsDecision > 0 && (
+            <Badge tone="warn">decisions: {status.needsDecision}</Badge>
+          )}
         </div>
       )}
       {brief.rows.map((row, index) => (

@@ -44,8 +44,25 @@ describe('RelayBriefCard', () => {
     expect(view.root.findAllByType('button')).toHaveLength(0);
   });
 
-  it('renders no status strip when no status sections exist', () => {
+  it('renders a read-only decisions badge for decision rows', () => {
     const view = create(<RelayBriefCard brief={brief} />);
+    const status = view.root.findByProps({ 'data-testid': 'relay-brief-status' });
+    expect(status).toBeDefined();
+    const statusText = view.root.findAllByType('span').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join('')).join(' ');
+    expect(statusText).toContain('decisions: 1');
+    // The badge is read-only: no action buttons without a handler.
+    expect(view.root.findAllByType('button')).toHaveLength(0);
+  });
+
+  it('renders no status strip when no status or decision sections exist', () => {
+    const calm: StructuredBrief = {
+      kind: 'morning_brief',
+      headline: 'Good morning.',
+      rows: [{ key: 'goals', label: 'Goals finished', detail: 'Ship report' }],
+      note: '',
+    };
+    const view = create(<RelayBriefCard brief={calm} />);
     expect(view.root.findAllByProps({ 'data-testid': 'relay-brief-status' })).toHaveLength(0);
   });
 
