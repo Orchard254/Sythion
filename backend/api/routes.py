@@ -3052,8 +3052,18 @@ async def remove_device_grant(
 
 
 def _remote_device_or_401(request: Request, db, capability: str) -> str:
-    """Authenticate a remote device and check one capability. Returns device_id."""
+    """Gate every /api/v1/remote/* endpoint.
+
+    The shell-owned device-channel config can disable the HTTP relay entirely;
+    when disabled the endpoint refuses with 503 before any device auth is even
+    attempted. Only then is the device credential and explicit grant checked.
+    """
+    from backend.core.handshake import read_device_channel_config
     from backend.services.remote_access import check_access, verify_device_credential
+
+    config = read_device_channel_config()
+    if not (config["enabled"] and config["relay_enabled"]):
+        raise HTTPException(status_code=503, detail="device relay channel disabled")
 
     device_id = request.headers.get("X-Sythion-Device-Id", "")
     token = request.headers.get("X-Sythion-Device-Token", "")
@@ -3154,16 +3164,9 @@ async def remote_create_goal(request: Request, db: Session = Depends(get_db)):
     """
     from pydantic import ValidationError as PydanticValidationError
 
-    from backend.services.remote_access import check_access, verify_device_credential
     from backend.runtime.events import DbEventLedger
 
-    device_id = request.headers.get("X-Sythion-Device-Id", "")
-    token = request.headers.get("X-Sythion-Device-Token", "")
-    if not device_id or not verify_device_credential(db, device_id, token):
-        raise HTTPException(status_code=401, detail="invalid device credential")
-    allowed, reason = check_access(db, device_id, "goals.submit")
-    if not allowed:
-        raise HTTPException(status_code=403, detail=f"remote access denied: {reason}")
+    device_id = _remote_device_or_401(request, db, "goals.submit")
 
     try:
         data = await request.json()
@@ -3227,19 +3230,7 @@ async def remote_turn(request: Request, db: Session = Depends(get_db)):
     ``conversation.write`` grant at a sufficient trust level. A rejected device
     never reaches the reasoning boundary. The response is non-authorizing.
     """
-    from backend.services.remote_access import (
-        check_access, verify_device_credential,
-    )
-
-    device_id = request.headers.get("X-Sythion-Device-Id", "")
-    token = request.headers.get("X-Sythion-Device-Token", "")
-    if not device_id or not verify_device_credential(db, device_id, token):
-        raise HTTPException(status_code=401, detail="invalid device credential")
-
-    allowed, reason = check_access(db, device_id, "conversation.write")
-    if not allowed:
-        raise HTTPException(
-            status_code=403, detail=f"remote access denied: {reason}")
+    device_id = _remote_device_or_401(request, db, "conversation.write")
 
     data = await request.json()
     if not isinstance(data, dict):
