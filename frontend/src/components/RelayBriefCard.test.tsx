@@ -74,6 +74,25 @@ describe('RelayBriefCard', () => {
     expect(view.root.findAllByType('button')).toHaveLength(0);
   });
 
+  it('renders a warn badge for unacked lag without any controls', () => {
+    const lagging = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [
+        { key: 'receipts', title: 'Delivery receipts',
+          lines: ['session rs_1: acked through #12 · 3 unacked',
+                  'session rs_2: acked through #7 · 2 unacked'] },
+      ],
+      note: '',
+    }))!;
+    const view = create(<RelayBriefCard brief={lagging} />);
+    expect(view.root.findByProps({ 'data-testid': 'relay-brief-status' })).toBeDefined();
+    const text = view.root.findAllByType('span').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join('')).join(' ');
+    expect(text).toContain('5 unacked');
+    // The lag badge is read-only; no action buttons without a handler.
+    expect(view.root.findAllByType('button')).toHaveLength(0);
+  });
+
   it('renders no status strip when no status or decision sections exist', () => {
     const calm: StructuredBrief = {
       kind: 'morning_brief',

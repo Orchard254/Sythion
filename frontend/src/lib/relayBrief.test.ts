@@ -151,6 +151,7 @@ describe('briefActions', () => {
       needsDecision: 0,
       receiptSessions: 0,
       receiptHighWater: null,
+      receiptUnacked: 0,
     });
   });
 
@@ -162,7 +163,7 @@ describe('briefActions', () => {
     }))!;
     expect(briefStatusSummary(brief)).toEqual({
       health: null, agentState: null, deviceTrust: [], needsDecision: 0,
-      receiptSessions: 0, receiptHighWater: null,
+      receiptSessions: 0, receiptHighWater: null, receiptUnacked: 0,
     });
   });
 
@@ -186,6 +187,23 @@ describe('briefActions', () => {
     }))!;
     expect(briefStatusSummary(empty).receiptSessions).toBe(0);
     expect(briefStatusSummary(empty).receiptHighWater).toBeNull();
+  });
+
+  it('sums unacked lag markers across lagging receipt sessions', () => {
+    const brief = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [
+        { key: 'receipts', title: 'Delivery receipts',
+          lines: ['session rs_1: acked through #12 · 3 unacked',
+                  'session rs_2: acked through #7 · 2 unacked',
+                  'session rs_3: acked through #4'] },
+      ],
+      note: '',
+    }))!;
+    const summary = briefStatusSummary(brief);
+    expect(summary.receiptSessions).toBe(3);
+    expect(summary.receiptHighWater).toBe(12);
+    expect(summary.receiptUnacked).toBe(5);
   });
 
   it('counts decision rows but not empty markers or non-decision rows', () => {

@@ -26,6 +26,7 @@ export interface BriefStatusSummary {
   needsDecision: number;
   receiptSessions: number;
   receiptHighWater: number | null;
+  receiptUnacked: number;
 }
 
 /** Row kinds whose lines represent an owner decision still owed.
@@ -50,6 +51,7 @@ export function briefStatusSummary(brief: StructuredBrief): BriefStatusSummary {
   let needsDecision = 0;
   let receiptSessions = 0;
   let receiptHighWater: number | null = null;
+  let receiptUnacked = 0;
   const deviceTrust: string[] = [];
 
   for (const row of brief.rows) {
@@ -66,8 +68,9 @@ export function briefStatusSummary(brief: StructuredBrief): BriefStatusSummary {
         if (trust) deviceTrust.push(trust[1].toLowerCase());
       }
     } else if (row.key === 'receipts') {
-      // Each line looks like "session rs_1: acked through #12". The empty
-      // marker ("No delivery receipts recorded.") yields no matches.
+      // Lines look like "session rs_1: acked through #12" and, when lagging,
+      // "N unacked". The empty marker ("No delivery receipts recorded.") yields
+      // no matches. A lagging session's two parts are counted independently.
       for (const part of row.detail.split('·')) {
         const trimmed = part.trim();
         if (!trimmed || EMPTY_MARKERS.some((m) => trimmed.includes(m))) continue;
@@ -77,6 +80,8 @@ export function briefStatusSummary(brief: StructuredBrief): BriefStatusSummary {
           const seq = Number(match[1]);
           receiptHighWater = receiptHighWater === null ? seq : Math.max(receiptHighWater, seq);
         }
+        const lag = trimmed.match(/(\d+)\s+unacked/i);
+        if (lag) receiptUnacked += Number(lag[1]);
       }
     }
     // Count decision rows, but only their real lines — "empty" marker lines
@@ -88,7 +93,10 @@ export function briefStatusSummary(brief: StructuredBrief): BriefStatusSummary {
       }).length;
     }
   }
-  return { health, agentState, deviceTrust, needsDecision, receiptSessions, receiptHighWater };
+  return {
+    health, agentState, deviceTrust, needsDecision,
+    receiptSessions, receiptHighWater, receiptUnacked,
+  };
 }
 
 /** Sections that need owner attention and where to handle them on the phone. */
