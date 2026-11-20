@@ -130,7 +130,7 @@ export function PhoneRelayScreen() {
       if (transport === 'ws' && socketRef.current) {
         sendRelayText(socketRef.current, text, key);
       } else if (sessionRef.current) {
-        await relayService.send(sessionRef.current, deviceId, token, text);
+        await relayService.send(sessionRef.current, deviceId, token, text, key);
         const next = await relayService.poll(sessionRef.current, deviceId, token, lastId.current);
         if (next.length) {
           lastId.current = next[next.length - 1].id;

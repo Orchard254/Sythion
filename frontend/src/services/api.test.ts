@@ -7,7 +7,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import apiClient, {
   approvalService, assistantService, deviceAccessService, deviceCapabilityService,
-  goalService, reconciliationService, taskService,
+  goalService, reconciliationService, relayService, taskService,
 } from './api';
 
 /**
@@ -102,6 +102,42 @@ describe('device access service', () => {
       'put /devices/dev_1/grants/conversation.write',
       'delete /devices/dev_1/grants/conversation.write',
     ]);
+  });
+});
+
+describe('relay send service', () => {
+  afterEach(() => {
+    delete apiClient.defaults.adapter;
+  });
+
+  it('carries the UI-supplied idempotency key in the HTTP fallback send', async () => {
+    const bodies: string[] = [];
+    const headers: unknown[] = [];
+    apiClient.defaults.adapter = (config) => {
+      bodies.push(config.data as string);
+      headers.push(config.headers);
+      return Promise.resolve({
+        data: { posted: {}, reply: {}, action_state: 'completed' },
+        status: 200, statusText: 'OK', headers: {}, config,
+      } as unknown as AxiosResponse);
+    };
+    await relayService.send('rs_1', 'dev_1', 'tok', 'hello', 'phone-key-1');
+    expect(bodies).toHaveLength(1);
+    expect(JSON.parse(bodies[0])).toEqual({
+      text: 'hello', idempotency_key: 'phone-key-1',
+    });
+  });
+
+  it('omits the key when none is supplied', async () => {
+    const bodies: string[] = [];
+    apiClient.defaults.adapter = (config) => {
+      bodies.push(config.data as string);
+      return Promise.resolve({
+        data: {}, status: 200, statusText: 'OK', headers: {}, config,
+      } as unknown as AxiosResponse);
+    };
+    await relayService.send('rs_1', 'dev_1', 'tok', 'hello');
+    expect(JSON.parse(bodies[0])).toEqual({ text: 'hello' });
   });
 });
 

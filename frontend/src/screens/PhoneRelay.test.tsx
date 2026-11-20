@@ -185,6 +185,34 @@ describe('PhoneRelayScreen', () => {
     expect(allText(view)).toContain('Connected via HTTP');
   });
 
+  it('sends over the HTTP fallback with the UI-generated idempotency key', async () => {
+    vi.mocked(openDeviceRelaySocket).mockRejectedValue(new Error('no websocket'));
+    let view!: ReturnType<typeof create>;
+    await act(async () => { view = create(<PhoneRelayScreen />); });
+    const inputs = view.root.findAllByType('input');
+    await act(async () => {
+      inputs[0].props.onChange({ target: { value: 'dev_1' } });
+      inputs[1].props.onChange({ target: { value: 'secret-token' } });
+    });
+    await act(async () => { click(view, 'Connect').props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    const messageInput = view.root.findAllByType('input').find(
+      (i) => i.props['aria-label'] === 'Message Synth')!;
+    await act(async () => { messageInput.props.onChange({ target: { value: 'hello http' } }); });
+    await act(async () => { click(view, 'Send').props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(relayService.send).toHaveBeenCalledTimes(1);
+    const [sid, device, token, text, key] = vi.mocked(relayService.send).mock.calls[0];
+    expect(sid).toBe('rs_test');
+    expect(device).toBe('dev_1');
+    expect(token).toBe('secret-token');
+    expect(text).toBe('hello http');
+    expect(key).toMatch(/^phone-/);
+  });
+
   it('never renders an approval control', () => {
     const view = create(<PhoneRelayScreen />);
     const labels = view.root.findAllByType('button').map((b) => b.children.join(''));

@@ -3119,6 +3119,11 @@ async def post_relay_message(
     from backend.services.relay import enqueue_reply, post_message, session_belongs_to
     from backend.runtime.events import DbEventLedger
 
+    from backend.services.remote_action_tracking import (
+        complete_remote_action, fail_remote_action, request_idempotency_key,
+        start_remote_action,
+    )
+
     device_id = _remote_device_or_401(request, db, "conversation.write")
     if not session_belongs_to(db, session_id, device_id):
         raise HTTPException(status_code=404, detail="session not found")
@@ -3127,17 +3132,45 @@ async def post_relay_message(
     if not isinstance(text, str) or not text.strip():
         raise HTTPException(status_code=400, detail="text is required")
 
-    posted = post_message(db, session_id, text)
-    result = await ConversationTurnEngine(ModelClient()).run_turn(text)
-    if isinstance(result, dict):
-        answer = result.get("assistant_text", "") or ""
-    else:
-        answer = getattr(result, "assistant_text", "") or ""
-    reply = enqueue_reply(db, session_id, answer)
-    DbEventLedger(db).append_event(
-        "device-registry", "device.relay_message", {"device_id": device_id})
+    # Same durable lifecycle as the WSS send path: the UI-supplied key makes
+    # retries deduplicate instead of replaying an uncertain effect.
+    action = start_remote_action(
+        db, device_id, request_idempotency_key(data))
+    if action.get("terminal_replay"):
+        raise HTTPException(
+            status_code=409, detail="remote action outcome is unresolved; not replayed")
     db.commit()
-    return {"posted": posted, "reply": reply, "authorized": False}
+    try:
+        posted = post_message(db, session_id, text)
+        result = await ConversationTurnEngine(ModelClient()).run_turn(text)
+        if isinstance(result, dict):
+            answer = result.get("assistant_text", "") or ""
+        else:
+            answer = getattr(result, "assistant_text", "") or ""
+        reply = enqueue_reply(db, session_id, answer)
+        sequence = DbEventLedger(db).append_event(
+            "device-registry", "device.relay_message",
+            {"device_id": device_id, "action_id": action["action_id"]},
+        )
+        finished = complete_remote_action(
+            db, action["action_id"],
+            f"relay-message:{reply['id']}:event:{sequence}",
+        )
+        db.commit()
+        return {
+            "posted": posted, "reply": reply,
+            "action_id": action["action_id"],
+            "action_state": finished["state"],
+            "authorized": False,
+        }
+    except Exception as exc:
+        db.rollback()
+        fail_remote_action(
+            db, action["action_id"],
+            f"relay_http_send_failed:{type(exc).__name__}", uncertain=True,
+        )
+        db.commit()
+        raise HTTPException(status_code=502, detail="relay outcome is uncertain; not retried")
 
 
 @router.delete("/remote/sessions/{session_id}")

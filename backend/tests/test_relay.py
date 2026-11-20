@@ -199,6 +199,41 @@ def test_other_device_cannot_access_session(test_client, test_db):
     assert response.status_code == 404
 
 
+def test_http_send_deduplicates_by_idempotency_key(test_client, test_db, monkeypatch):
+    from backend.models.database import RemoteAction
+    from backend.tests.test_assistant_turn_api import FakeEngine
+
+    monkeypatch.setattr(
+        "backend.services.conversation_turn_engine.ConversationTurnEngine",
+        FakeEngine,
+    )
+    monkeypatch.setattr(
+        "backend.services.conversation_runtime.ModelClient",
+        lambda *a, **k: object(),
+    )
+    device_id = _device(test_db)
+    headers = _headers(test_db, device_id)
+    sid = test_client.post("/api/v1/remote/sessions", headers=headers).json()["session_id"]
+    body = {"text": "hello", "idempotency_key": "phone-http-1"}
+
+    first = test_client.post(
+        f"/api/v1/remote/sessions/{sid}/messages", json=body, headers=headers)
+    assert first.status_code == 200
+    assert first.json()["action_state"] == "completed"
+    action_id = first.json()["action_id"]
+
+    # Reusing the same key on a resolved action is refused, not replayed.
+    replay = test_client.post(
+        f"/api/v1/remote/sessions/{sid}/messages", json=body, headers=headers)
+    assert replay.status_code == 409
+    assert "not replayed" in replay.json()["detail"]
+
+    matches = test_db.query(RemoteAction).filter_by(
+        idempotency_key="phone-http-1").all()
+    assert len(matches) == 1
+    assert matches[0].action_id == action_id
+
+
 def test_messages_are_durable(test_db):
     device_id = _device(test_db)
     sid = open_session(test_db, device_id)["session_id"]

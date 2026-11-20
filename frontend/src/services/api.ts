@@ -559,10 +559,11 @@ export const relayService = {
 
   send: async (
     sessionId: string, deviceId: string, token: string, text: string,
+    idempotencyKey?: string,
   ) => {
     const response = await apiClient.post(
       `/remote/sessions/${sessionId}/messages`,
-      { text },
+      { text, ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}) },
       {
         headers: {
           'X-Sythion-Device-Id': deviceId,
