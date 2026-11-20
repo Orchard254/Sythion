@@ -2,7 +2,7 @@ import { act, create } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PhoneRelayScreen } from './PhoneRelay';
 import { relayService } from '../services/api';
-import { openDeviceRelaySocket, sendRelayText, type RelaySocketHandlers, type RelaySocketLike } from '../services/deviceRelaySocket';
+import { openDeviceRelaySocket, sendRelayAck, sendRelayText, type RelaySocketHandlers, type RelaySocketLike } from '../services/deviceRelaySocket';
 
 vi.mock('../services/api', () => ({
   relayService: {
@@ -13,6 +13,7 @@ vi.mock('../services/api', () => ({
 vi.mock('../services/deviceRelaySocket', () => ({
   openDeviceRelaySocket: vi.fn(),
   sendRelayText: vi.fn(),
+  sendRelayAck: vi.fn(),
   buildDeviceRelayWsUrl: vi.fn(),
 }));
 
@@ -359,6 +360,36 @@ describe('PhoneRelayScreen', () => {
 
     const rendered = JSON.stringify(view.toJSON());
     expect(rendered.split('Only once').length - 1).toBe(1);
+  });
+
+  it('acks each received sequenced message exactly once', async () => {
+    const socket = fakeSocket();
+    vi.mocked(openDeviceRelaySocket).mockResolvedValue(socket);
+    let view!: ReturnType<typeof create>;
+    await act(async () => { view = create(<PhoneRelayScreen />); });
+    const inputs = view.root.findAllByType('input');
+    await act(async () => {
+      inputs[0].props.onChange({ target: { value: 'dev_1' } });
+      inputs[1].props.onChange({ target: { value: 'secret-token' } });
+    });
+    await act(async () => { click(view, 'Connect').props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+    const handlers = vi.mocked(openDeviceRelaySocket).mock.calls[0][2] as RelaySocketHandlers;
+    await act(async () => { handlers.onOpen!(); });
+
+    const frame = (sequence: number) => ({
+      type: 'message' as const, sequence, role: 'synth' as const,
+      kind: 'text', text: `msg ${sequence}`, authorized: false as const,
+    });
+    await act(async () => { handlers.onFrame(frame(7)); });
+    await act(async () => { handlers.onFrame(frame(8)); });
+    await act(async () => { handlers.onFrame(frame(7)); }); // re-delivery of 7
+
+    expect(sendRelayAck).toHaveBeenCalledTimes(2);
+    expect(sendRelayAck).toHaveBeenCalledWith(socket, 7);
+    expect(sendRelayAck).toHaveBeenCalledWith(socket, 8);
+    // The session frame (sequence 0) is not a message and must not be acked.
+    expect(sendRelayAck).not.toHaveBeenCalledWith(socket, 0);
   });
 
   it('never renders an approval control', () => {

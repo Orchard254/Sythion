@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { relayService } from '../services/api';
 import {
-  openDeviceRelaySocket, sendRelayText,
+  openDeviceRelaySocket, sendRelayAck, sendRelayText,
   type RelaySocketFrame, type RelaySocketLike,
 } from '../services/deviceRelaySocket';
 import { Badge, Button, Notice, Panel } from '../components/ui';
@@ -39,6 +39,9 @@ export function PhoneRelayScreen() {
   const sessionRef = useRef<string | null>(null);
   const lastId = useRef(0);
   const pendingKey = useRef<string | null>(null);
+  // Sequences already acknowledged over the current socket, so a re-delivered
+  // frame isn't acked twice (the server is idempotent too, but this avoids noise).
+  const ackedRef = useRef<Set<number>>(new Set());
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const manualDisconnectRef = useRef(false);
@@ -80,6 +83,12 @@ export function PhoneRelayScreen() {
         id: frame.sequence, role: frame.role, kind: frame.kind,
         text: frame.text, created_at: '',
       });
+      // Confirm delivery so the Core records a durable relay ack. Dedupe by
+      // sequence; HTTP fallback has no socket and cannot emit WS ack frames.
+      if (!ackedRef.current.has(frame.sequence)) {
+        ackedRef.current.add(frame.sequence);
+        if (socketRef.current) sendRelayAck(socketRef.current, frame.sequence);
+      }
       return;
     }
     if (frame.type === 'accepted') {
@@ -174,6 +183,7 @@ export function PhoneRelayScreen() {
     setMessages([]);
     setTracked(null);
     pendingKey.current = null;
+    ackedRef.current = new Set();
     manualDisconnectRef.current = false;
     reconnectAttemptsRef.current = 0;
     clearReconnectTimer();

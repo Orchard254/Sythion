@@ -74,3 +74,12 @@ export function sendRelayText(socket: RelaySocketLike, text: string, idempotency
     ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
   }));
 }
+
+/**
+ * Acknowledge one sequenced relay message as delivered. The Core records this
+ * as durable delivery evidence (never authority/proof of an effect). Sending is
+ * idempotent on the server per (session_id, sequence), so re-acks are harmless.
+ */
+export function sendRelayAck(socket: RelaySocketLike, sequence: number): void {
+  socket.send(JSON.stringify({ type: 'ack', sequence }));
+}

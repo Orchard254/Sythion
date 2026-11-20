@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  buildDeviceRelayWsUrl, openDeviceRelaySocket, sendRelayText,
+  buildDeviceRelayWsUrl, openDeviceRelaySocket, sendRelayAck, sendRelayText,
   type RelaySocketLike,
 } from './deviceRelaySocket';
 
@@ -51,6 +51,14 @@ describe('deviceRelaySocket', () => {
     await openDeviceRelaySocket('dev_1', 'tok', { onFrame: vi.fn(), onError }, () => socket);
     socket.onmessage!({ data: 'not json' });
     expect(onError).toHaveBeenCalledWith('invalid frame from relay');
+  });
+
+  it('sends an ack frame for a received sequence', () => {
+    const socket = fakeSocket();
+    sendRelayAck(socket, 42);
+    expect(JSON.parse((socket.send as ReturnType<typeof vi.fn>).mock.calls[0][0])).toEqual({
+      type: 'ack', sequence: 42,
+    });
   });
 
   it('sends text as a send frame with an optional idempotency key', () => {
