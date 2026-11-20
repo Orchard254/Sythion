@@ -48,6 +48,14 @@ packages, memory, objectives and device status; goals with evidence and
 blockers; durable wakes; an owner-gated bounded wake; read-only recovery review
 packets; and a versioned authority-free reasoning contract.
 
+**Model-selection evidence invariant (2026-11-21):** after capability and
+availability filtering, and when the configured primary is not a candidate,
+`ModelSelector.select` picks the best-evaluated model by walking the ranking
+that `ModelEvaluator.compare` already sorted (pass_rate → avg_score → attempts
+→ model_id). Iterating raw candidate order instead let a worse-evaluated model
+with positive evidence beat a strictly better one while the audit still claimed
+"highest evaluated evidence." Regression test in `test_phase6_model_selection.py`.
+
 **Purge detach invariant (2026-11-21):** a complete-record purge detaches every
 durable reference to the deleted task, including `PlanStep.linked_task_id` and
 `PlanStep.evidence_task_id`. These were left dangling (SQLite does not enforce

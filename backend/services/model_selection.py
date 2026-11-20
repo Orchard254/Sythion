@@ -413,13 +413,16 @@ class ModelSelector:
 
         # 3./4./5. evidence-based ranking for the task class.
         comparison = self.evaluator.compare(candidates, requirements.task_class)
-        ranking = {r["model_id"]: r for r in comparison["ranking"]}
-        best = None
-        for model_id in candidates:
-            ranking_entry = ranking.get(model_id)
-            if ranking_entry and (ranking_entry["pass_rate"] or 0) > 0:
-                best = model_id
-                break
+        # Walk the already-sorted ranking (pass_rate desc → avg_score desc →
+        # attempts asc → model_id), NOT the original candidate order. Picking
+        # the first positive-evidence model in candidate order passed over a
+        # strictly better-evaluated model and contradicted the documented
+        # policy and the "highest evaluated evidence" audit reason.
+        best = next(
+            (entry["model_id"] for entry in comparison["ranking"]
+             if (entry["pass_rate"] or 0) > 0),
+            None,
+        )
         if best is None:
             # No positive evidence anywhere: fall back to stable registry
             # order (first candidate), flagged as unverified.

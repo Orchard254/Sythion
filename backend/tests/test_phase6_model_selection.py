@@ -250,6 +250,24 @@ class TestSelection:
         assert result.selected == "strong"
         assert "highest evaluated evidence" in result.reason
 
+    def test_best_evaluated_model_wins_even_when_worse_is_ordered_first(self, db_session, monkeypatch):
+        """Both candidates have positive evidence; the strictly better model
+        must win even when the worse one comes first in candidate order.
+        """
+        selector, _ = self._selector(db_session, monkeypatch, selected="retired")
+        # "weak": 1 pass + 1 fail -> pass_rate 0.5
+        self._seed_eval(db_session, "weak", "simple_reasoning", True, 0.6)
+        self._seed_eval(db_session, "weak", "simple_reasoning", False, 0.4)
+        # "strong": 1 pass, 0 fail -> pass_rate 1.0
+        self._seed_eval(db_session, "strong", "simple_reasoning", True, 1.0)
+
+        result = selector.select(
+            requirements_for_task_class("simple_reasoning"),
+            available_models=["weak", "strong"],  # worse is first
+        )
+        assert result.selected == "strong"
+        assert "highest evaluated evidence" in result.reason
+
     def test_deterministic_tie_break_by_model_id(self, db_session, monkeypatch):
         selector, _ = self._selector(db_session, monkeypatch, selected="zzz")
         # no evidence anywhere → stable first candidate by id
