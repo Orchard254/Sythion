@@ -88,7 +88,12 @@ def _to_dict(row: RelayAck) -> dict[str, Any]:
 def ack_summary(
     db: Session, *, session_id: str | None = None, limit: int = 50,
 ) -> dict[str, Any]:
-    """Read-only owner view: per-session high-water marks plus recent acks."""
+    """Read-only owner view: per-session high-water marks plus recent acks.
+
+    Sessions are derived from durable messages, so a device that has never
+    acknowledged anything still appears with highest_ack=0 and all its messages
+    counted as unacked.
+    """
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
 
@@ -97,15 +102,23 @@ def ack_summary(
         query = query.filter(RelayAck.session_id == session_id)
     recent = query.order_by(RelayAck.created_at.desc(), RelayAck.id.desc()).limit(limit).all()
 
-    high_water = db.query(
-        RelayAck.session_id, func.max(RelayAck.sequence),
-    )
+    # Derive sessions from durable messages, not from acks: a device that has
+    # acknowledged nothing still has frames waiting, and must be flagged. Every
+    # ack references a real message in its session, so message sessions are a
+    # superset of ack sessions.
+    message_sessions = db.query(RelayMessage.session_id).distinct()
     if session_id:
-        high_water = high_water.filter(RelayAck.session_id == session_id)
+        message_sessions = message_sessions.filter(RelayMessage.session_id == session_id)
+    session_ids = [row[0] for row in message_sessions.all()]
+
+    # Highest ack per session (0 when the device has never acknowledged).
+    ack_high = dict(db.query(
+        RelayAck.session_id, func.max(RelayAck.sequence),
+    ).group_by(RelayAck.session_id).all())
 
     marks: list[dict[str, Any]] = []
-    for sid, seq in high_water.group_by(RelayAck.session_id).all():
-        highest = int(seq)
+    for sid in session_ids:
+        highest = int(ack_high.get(sid, 0))
         # Latest sequenced message in this session, and how many messages sit
         # beyond the ack high-water mark. Counting rows (rather than blindly
         # subtracting ids) stays correct when global ids interleave sessions.
@@ -122,6 +135,7 @@ def ack_summary(
             "latest_message": latest,
             "unacked": int(unacked),
         })
+    marks.sort(key=lambda m: m["session_id"])
 
     return {
         "acks": [_to_dict(row) for row in recent],

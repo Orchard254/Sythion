@@ -127,6 +127,23 @@ def test_brief_reports_durable_delivery_receipts(test_db):
     assert f"acked through #{msg['id']}" in joined
 
 
+def test_brief_receipts_flag_never_acking_session(test_db):
+    from backend.services.device_registry import register_local_device
+    from backend.services.relay import open_session
+
+    device = register_local_device(test_db, now=NOW)
+    session = open_session(test_db, device["device_id"])
+    test_db.commit()
+
+    brief = build_morning_brief(test_db, now=NOW)
+    section = next(s for s in brief["sections"] if s["key"] == "receipts")
+    joined = " ".join(section["lines"])
+    # A session with messages but no acks is now surfaced as fully unacked.
+    assert session["session_id"] in joined
+    assert "acked through #0" in joined
+    assert "unacked" in joined
+
+
 def test_brief_receipts_report_unacked_lag(test_db):
     from backend.services.device_registry import register_local_device
     from backend.services.relay import open_session, post_message

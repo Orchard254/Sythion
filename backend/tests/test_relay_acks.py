@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from backend.models.database import RelayAck
+from backend.models.database import RelayAck, RelaySession
 from backend.services.device_registry import register_local_device
 from backend.services.relay import open_session, post_message
 from backend.services.relay_acks import AckError, ack_summary, record_ack
@@ -102,6 +102,33 @@ def test_ack_summary_computes_per_session_unacked_counts(test_db):
     caught_up = ack_summary(test_db, session_id=sid)
     assert caught_up["unacked_total"] == 0
     assert next(m for m in caught_up["sessions"] if m["session_id"] == sid)["unacked"] == 0
+
+
+def test_ack_summary_flags_session_with_messages_but_no_acks(test_db):
+    device_id, sid = _device_and_session(test_db)
+    m1 = post_message(test_db, sid, "one")
+    m2 = post_message(test_db, sid, "two")
+    post_message(test_db, sid, "three")
+    test_db.commit()
+    # No acks at all for this session.
+
+    from backend.models.database import RelayMessage
+
+    message_count = test_db.query(RelayMessage).filter_by(session_id=sid).count()
+    assert message_count >= 3  # 3 posted + seeded morning brief
+
+    summary = ack_summary(test_db)
+    mark = next(m for m in summary["sessions"] if m["session_id"] == sid)
+    assert mark["highest_ack"] == 0
+    assert mark["latest_message"] == m2["id"] + 1
+    assert mark["unacked"] == message_count  # no acks -> every message unacked
+    assert summary["unacked_total"] >= message_count
+
+    # An empty session (no messages) must not create a phantom mark.
+    empty_session = RelaySession(id="rs_empty", device_id=device_id, status="open")
+    test_db.add(empty_session)
+    test_db.commit()
+    assert all(m["session_id"] != "rs_empty" for m in ack_summary(test_db)["sessions"])
 
 
 def test_ack_summary_rejects_bad_limit(test_db):
