@@ -437,6 +437,30 @@ export const agentService = {
   },
 };
 
+/** Owner device access management: credentials and capability grants.
+ *  These are explicit owner actions; a device can never widen its own access. */
+export const deviceAccessService = {
+  issueCredential: async (deviceId: string): Promise<{ device_id: string; token: string }> => {
+    const response = await apiClient.post(`/devices/${deviceId}/credential`);
+    return response.data;
+  },
+
+  revokeCredential: async (deviceId: string): Promise<{ device_id: string; revoked: boolean }> => {
+    const response = await apiClient.delete(`/devices/${deviceId}/credential`);
+    return response.data;
+  },
+
+  addGrant: async (deviceId: string, capability: string) => {
+    const response = await apiClient.put(`/devices/${deviceId}/grants/${capability}`);
+    return response.data;
+  },
+
+  removeGrant: async (deviceId: string, capability: string) => {
+    const response = await apiClient.delete(`/devices/${deviceId}/grants/${capability}`);
+    return response.data;
+  },
+};
+
 /** Per-device capability discovery (read-only, never grants). */
 export const deviceCapabilityService = {
   get: async (deviceId: string): Promise<import('../types').DeviceCapabilities> => {

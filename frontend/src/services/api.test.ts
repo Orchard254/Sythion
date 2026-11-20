@@ -6,8 +6,8 @@ import {
 } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import apiClient, {
-  approvalService, assistantService, deviceCapabilityService, goalService,
-  reconciliationService, taskService,
+  approvalService, assistantService, deviceAccessService, deviceCapabilityService,
+  goalService, reconciliationService, taskService,
 } from './api';
 
 /**
@@ -76,6 +76,33 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('device access service', () => {
+  afterEach(() => {
+    delete apiClient.defaults.adapter;
+  });
+
+  it('uses the exact credential and grant endpoints', async () => {
+    const seen: string[] = [];
+    apiClient.defaults.adapter = (config) => {
+      seen.push(`${config.method} ${config.url}`);
+      return Promise.resolve({
+        data: { device_id: 'dev_1', token: 't', revoked: true, granted: true },
+        status: 200, statusText: 'OK', headers: {}, config,
+      } as unknown as AxiosResponse);
+    };
+    await deviceAccessService.issueCredential('dev_1');
+    await deviceAccessService.revokeCredential('dev_1');
+    await deviceAccessService.addGrant('dev_1', 'conversation.write');
+    await deviceAccessService.removeGrant('dev_1', 'conversation.write');
+    expect(seen).toEqual([
+      'post /devices/dev_1/credential',
+      'delete /devices/dev_1/credential',
+      'put /devices/dev_1/grants/conversation.write',
+      'delete /devices/dev_1/grants/conversation.write',
+    ]);
+  });
 });
 
 describe('device capability discovery service', () => {

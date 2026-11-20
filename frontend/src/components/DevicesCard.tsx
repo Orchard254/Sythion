@@ -4,6 +4,7 @@ import type {
   DeviceCapability, DeviceCapabilities, RegisteredDevice,
 } from '../types';
 import { deviceCapabilityService } from '../services/api';
+import { DeviceAccessControls } from './DeviceAccessControls';
 
 const TRUST_TONE = {
   observed: 'idle',
@@ -35,6 +36,7 @@ interface Props {
 export function DevicesCard({ devices, onTrustChange, loadCapabilities }: Props) {
   const load = loadCapabilities ?? deviceCapabilityService.get;
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [accessDevice, setAccessDevice] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<Record<string, DeviceCapability[]>>({});
   const [error, setError] = useState('');
 
@@ -47,6 +49,20 @@ export function DevicesCard({ devices, onTrustChange, loadCapabilities }: Props)
     );
     return () => { active = false; };
   }, [expanded, load, capabilities]);
+
+  const reload = (deviceId: string) => {
+    setCapabilities((old) => {
+      const next = { ...old };
+      delete next[deviceId];
+      return next;
+    });
+    if (expanded === deviceId) {
+      load(deviceId).then(
+        (result) => setCapabilities((old) => ({ ...old, [deviceId]: result.capabilities })),
+        (err) => setError(String(err)),
+      );
+    }
+  };
 
   return (
     <Panel title="Devices" hint="Endpoints Synth knows about">
@@ -92,6 +108,23 @@ export function DevicesCard({ devices, onTrustChange, loadCapabilities }: Props)
               >
                 {expanded === device.device_id ? 'Hide capabilities' : 'Show capabilities'}
               </button>
+
+              <button
+                type="button"
+                className="stat stat--clickable"
+                data-testid={`access-toggle-${device.device_id}`}
+                onClick={() => setAccessDevice(accessDevice === device.device_id ? null : device.device_id)}
+              >
+                {accessDevice === device.device_id ? 'Hide access controls' : 'Manage access'}
+              </button>
+
+              {accessDevice === device.device_id && (
+                <DeviceAccessControls
+                  deviceId={device.device_id}
+                  capabilities={capabilities[device.device_id] ?? []}
+                  onChanged={() => reload(device.device_id)}
+                />
+              )}
 
               {expanded === device.device_id && (
                 <div className="stack stack--tight" data-testid="device-capabilities">
