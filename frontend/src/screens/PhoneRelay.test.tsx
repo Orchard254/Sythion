@@ -259,6 +259,42 @@ describe('PhoneRelayScreen', () => {
     expect(key).toMatch(/^phone-/);
   });
 
+  it('surfaces tracked state and Reconcile from the HTTP fallback response', async () => {
+    vi.mocked(openDeviceRelaySocket).mockRejectedValue(new Error('no websocket'));
+    vi.mocked(relayService.send).mockResolvedValue({
+      posted: { id: 4 }, reply: { id: 5 }, action_state: 'uncertain',
+      action_id: 'ra_http', authorized: false,
+    });
+    let view!: ReturnType<typeof create>;
+    await act(async () => { view = create(<PhoneRelayScreen />); });
+    const inputs = view.root.findAllByType('input');
+    await act(async () => {
+      inputs[0].props.onChange({ target: { value: 'dev_1' } });
+      inputs[1].props.onChange({ target: { value: 'secret-token' } });
+    });
+    await act(async () => { click(view, 'Connect').props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    const messageInput = view.root.findAllByType('input').find(
+      (i) => i.props['aria-label'] === 'Message Synth')!;
+    await act(async () => { messageInput.props.onChange({ target: { value: 'hello' } }); });
+    await act(async () => { click(view, 'Send').props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+
+    const badge = view.root.findByProps({ 'data-testid': 'relay-tracked-action' });
+    expect(badge).toBeDefined();
+    const text = view.root.findAllByType('span').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join('')).join(' ');
+    expect(text).toContain('uncertain');
+    expect(text).toContain('reply #5');
+    const reconcile = view.root.findAllByType('button')
+      .find((b) => b.children.some((c) => typeof c === 'string' && c === 'Reconcile'));
+    expect(reconcile).toBeDefined();
+    reconcile!.props.onClick();
+    expect(setRoute).toHaveBeenCalledWith('overview');
+  });
+
   it('renders a seeded morning_brief frame as a structured card, not raw JSON', async () => {
     const socket = fakeSocket();
     vi.mocked(openDeviceRelaySocket).mockResolvedValue(socket);

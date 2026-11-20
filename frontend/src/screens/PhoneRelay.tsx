@@ -134,7 +134,15 @@ export function PhoneRelayScreen() {
       if (transport === 'ws' && socketRef.current) {
         sendRelayText(socketRef.current, text, key);
       } else if (sessionRef.current) {
-        await relayService.send(sessionRef.current, deviceId, token, text, key);
+        const sent = await relayService.send(sessionRef.current, deviceId, token, text, key);
+        // The HTTP backend returns the tracked action state and reply; surface
+        // it exactly like the WSS 'accepted' frame so both transports agree.
+        if (sent && typeof sent.action_state === 'string' && sent.reply) {
+          setTracked({
+            replySequence: Number(sent.reply.id) || 0,
+            actionState: sent.action_state,
+          });
+        }
         const next = await relayService.poll(sessionRef.current, deviceId, token, lastId.current);
         if (next.length) {
           lastId.current = next[next.length - 1].id;
