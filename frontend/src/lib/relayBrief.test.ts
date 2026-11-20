@@ -152,6 +152,7 @@ describe('briefActions', () => {
       receiptSessions: 0,
       receiptHighWater: null,
       receiptUnacked: 0,
+      receiptFallbackOnly: false,
     });
   });
 
@@ -164,6 +165,7 @@ describe('briefActions', () => {
     expect(briefStatusSummary(brief)).toEqual({
       health: null, agentState: null, deviceTrust: [], needsDecision: 0,
       receiptSessions: 0, receiptHighWater: null, receiptUnacked: 0,
+      receiptFallbackOnly: false,
     });
   });
 
@@ -202,6 +204,7 @@ describe('briefActions', () => {
     expect(summary.receiptSessions).toBe(0);
     expect(summary.receiptHighWater).toBeNull();
     expect(summary.receiptUnacked).toBe(0);
+    expect(summary.receiptFallbackOnly).toBe(true);
   });
 
   it('counts only real WSS receipts when a fallback session is also present', () => {
@@ -219,6 +222,17 @@ describe('briefActions', () => {
     const summary = briefStatusSummary(brief);
     expect(summary.receiptSessions).toBe(1);
     expect(summary.receiptHighWater).toBe(9);
+    // A real WSS receipt is present, so this is not "fallback only".
+    expect(summary.receiptFallbackOnly).toBe(false);
+  });
+
+  it('is not fallback-only when there are no receipt lines at all', () => {
+    const brief = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [{ key: 'goals', title: 'Goals', lines: ['Ship report'] }],
+      note: '',
+    }))!;
+    expect(briefStatusSummary(brief).receiptFallbackOnly).toBe(false);
   });
 
   it('sums unacked lag markers across lagging receipt sessions', () => {

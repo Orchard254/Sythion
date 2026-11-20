@@ -93,6 +93,25 @@ describe('RelayBriefCard', () => {
     expect(view.root.findAllByType('button')).toHaveLength(0);
   });
 
+  it('explains a fallback-only receipts section instead of showing nothing', () => {
+    const fallback = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [
+        { key: 'receipts', title: 'Delivery receipts',
+          lines: ['session rs_1: acked through #0 · HTTP fallback (acks unavailable)'] },
+      ],
+      note: '',
+    }))!;
+    const view = create(<RelayBriefCard brief={fallback} />);
+    expect(view.root.findByProps({ 'data-testid': 'relay-brief-status' })).toBeDefined();
+    const text = view.root.findAllByType('span').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join('')).join(' ');
+    expect(text).toContain('HTTP fallback · acks unavailable');
+    // No receipt-count badge and no controls.
+    expect(text).not.toContain('receipts:');
+    expect(view.root.findAllByType('button')).toHaveLength(0);
+  });
+
   it('renders no status strip when no status or decision sections exist', () => {
     const calm: StructuredBrief = {
       kind: 'morning_brief',

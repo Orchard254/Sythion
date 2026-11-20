@@ -20,7 +20,8 @@ export function RelayBriefCard({ brief, onAction }: Props) {
   const status = briefStatusSummary(brief);
   const hasStatus = status.health !== null || status.agentState !== null
     || status.deviceTrust.length > 0 || status.needsDecision > 0
-    || status.receiptSessions > 0 || status.receiptUnacked > 0;
+    || status.receiptSessions > 0 || status.receiptUnacked > 0
+    || status.receiptFallbackOnly;
   return (
     <div className="stack stack--tight" data-testid="relay-brief-card">
       <div className="row row--wrap" style={{ gap: 8 }}>
@@ -49,6 +50,9 @@ export function RelayBriefCard({ brief, onAction }: Props) {
           )}
           {status.receiptUnacked > 0 && (
             <Badge tone="warn">{status.receiptUnacked} unacked</Badge>
+          )}
+          {status.receiptFallbackOnly && (
+            <Badge tone="idle">HTTP fallback · acks unavailable</Badge>
           )}
         </div>
       )}

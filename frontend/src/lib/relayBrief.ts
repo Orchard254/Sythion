@@ -27,6 +27,8 @@ export interface BriefStatusSummary {
   receiptSessions: number;
   receiptHighWater: number | null;
   receiptUnacked: number;
+  /** True when the receipts section has fallback lines but no real acks. */
+  receiptFallbackOnly: boolean;
 }
 
 /** Row kinds whose lines represent an owner decision still owed.
@@ -52,6 +54,7 @@ export function briefStatusSummary(brief: StructuredBrief): BriefStatusSummary {
   let receiptSessions = 0;
   let receiptHighWater: number | null = null;
   let receiptUnacked = 0;
+  let receiptFallbackLines = 0;
   const deviceTrust: string[] = [];
 
   for (const row of brief.rows) {
@@ -81,7 +84,9 @@ export function briefStatusSummary(brief: StructuredBrief): BriefStatusSummary {
         if (match) {
           const isFallback = HTTP_FALLBACK_MARKER.test(trimmed)
             || HTTP_FALLBACK_MARKER.test(parts[i + 1] ?? '');
-          if (!isFallback) {
+          if (isFallback) {
+            receiptFallbackLines += 1;
+          } else {
             receiptSessions += 1;
             const seq = Number(match[1]);
             receiptHighWater = receiptHighWater === null ? seq : Math.max(receiptHighWater, seq);
@@ -103,6 +108,9 @@ export function briefStatusSummary(brief: StructuredBrief): BriefStatusSummary {
   return {
     health, agentState, deviceTrust, needsDecision,
     receiptSessions, receiptHighWater, receiptUnacked,
+    // Only fallback lines existed (no real acks) — surface an explanation so
+    // the owner does not just see "no receipts" with no reason.
+    receiptFallbackOnly: receiptFallbackLines > 0 && receiptSessions === 0,
   };
 }
 
