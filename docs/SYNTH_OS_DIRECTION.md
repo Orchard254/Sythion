@@ -48,6 +48,14 @@ packages, memory, objectives and device status; goals with evidence and
 blockers; durable wakes; an owner-gated bounded wake; read-only recovery review
 packets; and a versioned authority-free reasoning contract.
 
+**Personal-context framing invariant (2026-11-21):** the
+`BEGIN PERSONAL CONTEXT (data)` / `END PERSONAL CONTEXT` guards must both
+survive the 24-line bound in `render()`. The END guard was appended last and
+sliced away whenever the body filled the budget, so subsequent KNOWN context
+(e.g. GOAL_CONTEXT from the cognitive pipeline) was absorbed into the untrusted
+data region. The final line slot is now reserved for the terminator. Regression
+test in `test_phase7_memory.py`.
+
 **Voice recording honesty invariant (2026-11-21):** when the owner enables the
 recording setting, `SegmentResult.audio_bytes_deleted=False` must mean the raw
 PCM was actually retained on the session (`recorded_audio`), with

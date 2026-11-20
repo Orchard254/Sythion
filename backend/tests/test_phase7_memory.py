@@ -331,6 +331,31 @@ class TestMemoryAsData:
         assert "concise answers" in c1["rendered"]
         assert any(g["title"] == "Learn piano" for g in c1["active_goals"])
 
+    def test_personal_context_keeps_end_guard_when_body_fills_budget(self, db_session):
+        """The END guard must survive truncation even when the data body fills
+        the total line budget; otherwise later KNOWN context is absorbed into
+        the untrusted-data region and sections are silently dropped.
+        """
+        from backend.services.personal_context import PersonalContextBuilder
+
+        manager = GoalManagerHelper(db_session)
+        manager.create_goal("Ship the report")
+        svc = MemoryService(db_session)
+        for i in range(6):
+            svc.create(key=f"pref_{i}", value=f"preference {i}", kind="PREFERENCE",
+                       source_type="USER_EXPLICIT")
+            svc.create(key=f"instr_{i}", value=f"instruction {i}", kind="INSTRUCTION",
+                       source_type="USER_EXPLICIT")
+            svc.create(key=f"fact_{i}", value=f"fact {i}", kind="FACT",
+                       source_type="USER_EXPLICIT")
+
+        rendered = PersonalContextBuilder(db_session).build(query="")["rendered"]
+        lines = rendered.splitlines()
+        assert len(lines) <= 24  # still bounded
+        assert lines[0] == "BEGIN PERSONAL CONTEXT (data):"
+        assert lines[-1] == "END PERSONAL CONTEXT"
+        assert "Active goals:" in rendered
+
     def test_memory_cannot_mark_goal_completed(self, db_session):
         """Even a memory claiming goal completion changes nothing."""
         from backend.models.database import GoalPlan  # noqa: F401

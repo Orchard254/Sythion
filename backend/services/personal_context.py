@@ -99,5 +99,8 @@ def render(context: Dict[str, Any]) -> str:
         lines.append("Low-confidence assumptions (treat skeptically):")
         for a in context["assumptions_low_confidence"]:
             lines.append(f"- {a['key'].replace('_', ' ')}")
-    lines.append("END PERSONAL CONTEXT")
-    return "\n".join(lines[:MAX_TOTAL_LINES])
+    # Reserve the final line slot for the terminator. Appending END last and
+    # then slicing every line to MAX_TOTAL_LINES dropped the guard whenever the
+    # body filled the budget, so subsequent KNOWN context was swallowed into
+    # the untrusted-data region and later sections silently disappeared.
+    return "\n".join(lines[:MAX_TOTAL_LINES - 1] + ["END PERSONAL CONTEXT"])
