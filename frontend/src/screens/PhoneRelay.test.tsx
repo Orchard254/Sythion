@@ -213,6 +213,44 @@ describe('PhoneRelayScreen', () => {
     expect(key).toMatch(/^phone-/);
   });
 
+  it('renders a seeded morning_brief frame as a structured card, not raw JSON', async () => {
+    const socket = fakeSocket();
+    vi.mocked(openDeviceRelaySocket).mockResolvedValue(socket);
+    let view!: ReturnType<typeof create>;
+    await act(async () => { view = create(<PhoneRelayScreen />); });
+    const inputs = view.root.findAllByType('input');
+    await act(async () => {
+      inputs[0].props.onChange({ target: { value: 'dev_1' } });
+      inputs[1].props.onChange({ target: { value: 'secret-token' } });
+    });
+    await act(async () => { click(view, 'Connect').props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+    const handlers = vi.mocked(openDeviceRelaySocket).mock.calls[0][2] as RelaySocketHandlers;
+    await act(async () => { handlers.onOpen!(); });
+    await act(async () => { await Promise.resolve(); });
+
+    const seeded = JSON.stringify({
+      date: '2026-11-20', headline: 'Good morning.',
+      sections: [{ key: 'goals', title: 'Goals finished', lines: ['Ship the report'] }],
+      note: 'Read-only brief.',
+    });
+    await act(async () => {
+      handlers.onFrame({
+        type: 'message', sequence: 1, role: 'synth', kind: 'morning_brief',
+        text: seeded, authorized: false,
+      });
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(view.root.findByProps({ 'data-testid': 'relay-brief-card' })).toBeDefined();
+    const rendered = JSON.stringify(view.toJSON());
+    expect(rendered).toContain('Good morning.');
+    expect(rendered).toContain('Goals finished');
+    expect(rendered).toContain('Ship the report');
+    // Raw JSON text must not be shown verbatim.
+    expect(rendered).not.toContain(seeded);
+  });
+
   it('never renders an approval control', () => {
     const view = create(<PhoneRelayScreen />);
     const labels = view.root.findAllByType('button').map((b) => b.children.join(''));

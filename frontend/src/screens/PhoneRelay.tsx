@@ -5,6 +5,8 @@ import {
   type RelaySocketFrame, type RelaySocketLike,
 } from '../services/deviceRelaySocket';
 import { Badge, Button, Notice, Panel } from '../components/ui';
+import { RelayBriefCard } from '../components/RelayBriefCard';
+import { parseRelayBrief } from '../lib/relayBrief';
 import type { RelayMessage } from '../types';
 
 /**
@@ -185,12 +187,17 @@ export function PhoneRelayScreen() {
         <Panel title="Conversation">
           <div className="relay__messages" data-testid="relay-messages">
             {messages.length === 0 && <p className="t-faint">No messages yet.</p>}
-            {messages.map((message) => (
-              <div key={message.id} className={`relay__message relay__message--${message.role}`}>
-                <span className="relay__role">{message.role}</span>
-                <span>{message.text}</span>
-              </div>
-            ))}
+            {messages.map((message) => {
+              const brief = parseRelayBrief(message.kind, message.text);
+              return (
+                <div key={message.id} className={`relay__message relay__message--${message.role}`}>
+                  <span className="relay__role">{message.role}</span>
+                  {brief
+                    ? <RelayBriefCard brief={brief} />
+                    : <span>{message.text}</span>}
+                </div>
+              );
+            })}
           </div>
           {tracked && (
             <div className="row row--wrap" style={{ gap: 8, marginTop: 8 }}
