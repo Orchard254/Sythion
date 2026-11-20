@@ -93,6 +93,12 @@ briefing layer is being built first because it is the user-facing foundation.
   clears a blocker, or approves anything). Evidence: `test_morning_brief.py`
   (13 passed incl. uncertain-action + pending-approval and empty cases),
   affected set 125 passed / 7 skipped (36s).
+
+  **Recent device actions in the brief (2026-11-20):** a `Recent device actions`
+  section reports the latest lifecycle states from `RemoteActionManager.list_recent`
+  (read-only; a state here is never a decision or authority). Evidence:
+  `test_morning_brief.py` (15 passed incl. populated/empty cases), affected set
+  104 passed / 7 skipped (17s).
 - **Stage 2 — device registry (implemented 2026-11-20):** `RegisteredDevice`
   records a stable, non-reversible local id, name, kind, first/last seen and
   capability domains. `backend/services/device_registry.py` upserts this machine
