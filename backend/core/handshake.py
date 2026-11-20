@@ -24,6 +24,8 @@ from typing import Dict, Optional
 from .storage import data_dir, handshake_path
 
 TOKEN_FILE_NAME = "token.json"
+DEVICE_CHANNEL_FILE_NAME = "device_channel.json"
+DEVICE_CHANNEL_VERSION = 1
 
 
 def token_file_path() -> str:
@@ -86,6 +88,77 @@ def read_handshake() -> Optional[Dict[str, object]]:
         return payload
     except (OSError, ValueError):
         return None
+
+
+def device_channel_config_path() -> str:
+    """Return the shell-written device-channel config path in the profile dir."""
+    return os.path.join(data_dir(), DEVICE_CHANNEL_FILE_NAME)
+
+
+def default_device_channel_config() -> Dict[str, object]:
+    """Current behavior when the shell has not written a config yet."""
+    return {
+        "version": DEVICE_CHANNEL_VERSION,
+        "enabled": True,
+        "relay_enabled": True,
+        "ws_enabled": True,
+    }
+
+
+def read_device_channel_config() -> Dict[str, object]:
+    """Read and validate the shell's private device-channel config.
+
+    Missing file -> current default (enabled) for backward compatibility.
+    Corrupt or invalid file -> fail closed (all channels disabled). This config
+    can only disable channels; it never widens the loopback boundary.
+    """
+    path = device_channel_config_path()
+    if not os.path.exists(path):
+        return default_device_channel_config()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, ValueError):
+        return _disabled_device_channel_config()
+    if not isinstance(payload, dict):
+        return _disabled_device_channel_config()
+    expected = {"version", "enabled", "relay_enabled", "ws_enabled"}
+    if set(payload) != expected or payload.get("version") != DEVICE_CHANNEL_VERSION:
+        return _disabled_device_channel_config()
+    if not all(isinstance(payload[key], bool) for key in
+               ("enabled", "relay_enabled", "ws_enabled")):
+        return _disabled_device_channel_config()
+    return dict(payload)
+
+
+def _disabled_device_channel_config() -> Dict[str, object]:
+    return {
+        "version": DEVICE_CHANNEL_VERSION,
+        "enabled": False,
+        "relay_enabled": False,
+        "ws_enabled": False,
+    }
+
+
+def write_device_channel_config(
+    enabled: bool, relay_enabled: bool, ws_enabled: bool,
+) -> Dict[str, object]:
+    """Persist a validated config. Owner/shell only; never called by a device."""
+    for name, value in (
+        ("enabled", enabled), ("relay_enabled", relay_enabled),
+        ("ws_enabled", ws_enabled),
+    ):
+        if not isinstance(value, bool):
+            raise ValueError(f"{name} must be a boolean")
+    payload = {
+        "version": DEVICE_CHANNEL_VERSION,
+        "enabled": enabled,
+        "relay_enabled": relay_enabled,
+        "ws_enabled": ws_enabled,
+    }
+    data_dir()
+    _write_private(device_channel_config_path(), json.dumps(payload))
+    return payload
 
 
 def _write_private(path: str, content: str) -> None:

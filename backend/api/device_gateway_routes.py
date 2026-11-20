@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
 from backend.core.device_scope import device_query_credentials
+from backend.core.handshake import read_device_channel_config
 from backend.models.database import get_db
 from backend.services.relay import (
     close_session,
@@ -45,6 +46,11 @@ async def device_relay_ws(websocket: WebSocket, db: Session = Depends(get_db)):
     frames. Nothing here invokes a model or grants authority: a send is only a
     durable owner message; orchestration/verification is a later stage.
     """
+    config = read_device_channel_config()
+    if not (config["enabled"] and config["ws_enabled"] and config["relay_enabled"]):
+        await websocket.close(code=1008, reason="device channel disabled")
+        return
+
     device_id, token = device_query_credentials(websocket.scope)
 
     if not verify_device_credential(db, device_id, token):

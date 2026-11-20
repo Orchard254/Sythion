@@ -78,6 +78,22 @@ def test_control_boundary_is_unchanged(test_client, test_db):
             test_client.headers["X-Control-Token"] = saved
 
 
+def test_ws_rejects_when_shell_disables_channel(test_client, test_db, monkeypatch):
+    import backend.core.handshake as handshake
+
+    import backend.api.device_gateway_routes as gateway
+
+    device_id, token = _device(test_db)
+    disabled = {"version": 1, "enabled": False,
+                "relay_enabled": False, "ws_enabled": False}
+    monkeypatch.setattr(handshake, "read_device_channel_config", lambda: disabled)
+    monkeypatch.setattr(gateway, "read_device_channel_config", lambda: disabled)
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with test_client.websocket_connect(_ws_url(device_id, token)):
+            pass
+    assert exc.value.code == 1008
+
+
 def test_ws_rejects_invalid_credential(test_client, test_db):
     device_id, _ = _device(test_db)
     with pytest.raises(WebSocketDisconnect) as exc:

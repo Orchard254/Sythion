@@ -460,7 +460,7 @@ fn is_reparse_point(path: &Path) -> bool {
     }
 }
 
-fn safe_storage_path(path: &Path) -> Result<(), String> {
+pub(crate) fn safe_storage_path(path: &Path) -> Result<(), String> {
     for ancestor in path.ancestors() {
         if is_reparse_point(ancestor) {
             return Err(format!("refusing reparse point in storage path: {}", ancestor.display()));

@@ -1,9 +1,11 @@
 // Prevents an extra console window in release builds on Windows.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod device_channel;
 mod native_attestation;
 mod sidecar;
 
+use std::path::PathBuf;
 use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -17,6 +19,8 @@ pub struct AppState {
     pub child: Mutex<Option<Child>>,
     /// Launcher-generated handshake token for validating sidecar handshake.
     pub launch_token: Mutex<Option<String>>,
+    /// Resolved profile directory, shared with device-channel config commands.
+    pub profile_dir: Mutex<Option<PathBuf>>,
     /// Windows Job Object handle (as a raw pointer-sized integer) used for
     /// sidecar lifetime containment. When the main process dies abruptly the
     /// kernel closes this handle and `KILL_ON_JOB_CLOSE` terminates the
@@ -273,6 +277,33 @@ fn get_bridge_config(state: tauri::State<AppState>) -> Result<sidecar::BridgeCon
         .unwrap()
         .clone()
         .ok_or_else(|| "sidecar_not_ready".to_string())
+}
+
+#[tauri::command]
+fn get_device_channel_config(state: tauri::State<AppState>) -> Result<device_channel::DeviceChannelConfig, String> {
+    let dir = state
+        .profile_dir
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "profile_dir_not_ready".to_string())?;
+    device_channel::read_config(&dir)
+}
+
+#[tauri::command]
+fn set_device_channel_config(
+    state: tauri::State<AppState>,
+    config: device_channel::DeviceChannelConfig,
+) -> Result<device_channel::DeviceChannelConfig, String> {
+    config.validate()?;
+    let dir = state
+        .profile_dir
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "profile_dir_not_ready".to_string())?;
+    device_channel::write_config(&dir, &config)?;
+    device_channel::read_config(&dir)
 }
 
 fn global_shortcut_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
@@ -631,9 +662,16 @@ fn main() {
         bridge: Mutex::new(None),
         child: Mutex::new(None),
         launch_token: Mutex::new(None),
+        profile_dir: Mutex::new(Some(profile_dir.clone())),
         #[cfg(windows)]
         job: Mutex::new(None),
     };
+
+    // Ensure the private device-channel config exists before the sidecar starts.
+    if let Err(e) = device_channel::ensure_config(&profile_dir) {
+        eprintln!("device channel config unavailable: {e}");
+        return;
+    }
 
     // Native attestation key is generated and provisioned BEFORE the sidecar
     // starts. The sidecar reads it once from the user-only-ACL file and deletes
@@ -659,6 +697,8 @@ fn main() {
             get_bridge_config,
             set_companion_hit_regions,
             set_companion_visible,
+            get_device_channel_config,
+            set_device_channel_config,
             native_attestation::verify_native_presence
         ])
         .setup(move |app| {

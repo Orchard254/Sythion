@@ -50,6 +50,20 @@ class DeviceScopeMiddleware:
             await self._reject(scope, send, 403, "Requests must originate from the loopback interface")
             return
 
+        # The shell's private config can disable the channel. It can never
+        # widen the loopback rule above or grant a capability.
+        from backend.core.handshake import read_device_channel_config
+
+        config = read_device_channel_config()
+        if not config["enabled"]:
+            await self._reject(scope, send, 503, "device channel disabled")
+            return
+        if scope["type"] == "websocket" and not (
+            config["ws_enabled"] and config["relay_enabled"]
+        ):
+            await self._reject(scope, send, 503, "device websocket scope disabled")
+            return
+
         if scope["type"] == "websocket":
             device_id, token = device_query_credentials(scope)
         else:
