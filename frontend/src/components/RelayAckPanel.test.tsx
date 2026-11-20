@@ -77,6 +77,8 @@ describe('RelayAckPanel', () => {
     const text = view.root.findAllByType('span').map((b) =>
       b.children.filter((c) => typeof c === 'string').join('')).join(' ');
     expect(text).toContain('HTTP fallback · acks unavailable');
+    // No bogus "acked through #0" for a session that cannot ack.
+    expect(text).not.toContain('acked through #0');
   });
 
   it('never renders a control that could authorize or clear a receipt', () => {
