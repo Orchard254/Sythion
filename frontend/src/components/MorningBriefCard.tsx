@@ -27,6 +27,9 @@ export function MorningBriefCard({ brief, onNavigate }: Props) {
   const hasRegisteredDevices = brief.sections.some(
     (s) => s.key === 'devices' && !s.lines.every((l) => l.includes('No devices have registered')),
   );
+  const hasRecentDeviceActions = brief.sections.some(
+    (s) => s.key === 'device_actions' && !s.lines.every((l) => l.includes('No device actions recorded')),
+  );
 
   return (
     <section className="notice notice--info" role="status" aria-label="Morning brief" data-testid="morning-brief-card">
@@ -41,7 +44,7 @@ export function MorningBriefCard({ brief, onNavigate }: Props) {
           </div>
         ))}
       </div>
-      {(hasReconciliation || hasBlockers || hasRegisteredDevices) && (
+      {(hasReconciliation || hasBlockers || hasRegisteredDevices || hasRecentDeviceActions) && (
         <div className="row row--wrap" style={{ gap: 8 }}>
           <Button size="sm" variant="ghost" icon="chevronRight"
             onClick={() => navigate('overview')}>
@@ -55,6 +58,12 @@ export function MorningBriefCard({ brief, onNavigate }: Props) {
             <Button size="sm" variant="ghost" icon="chevronRight"
               onClick={() => navigate('system')}>
               View devices
+            </Button>
+          )}
+          {hasRecentDeviceActions && (
+            <Button size="sm" variant="ghost" icon="chevronRight"
+              onClick={() => navigate('overview')}>
+              View device actions
             </Button>
           )}
         </div>

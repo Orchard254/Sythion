@@ -92,6 +92,39 @@ describe('MorningBriefCard', () => {
     expect(labels).not.toContain('View devices');
   });
 
+  it('links recent device actions to the Control Center device-actions panel', () => {
+    const onNavigate = vi.fn();
+    const withActions = {
+      ...brief,
+      sections: [
+        { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
+        { key: 'reconciliation', title: 'Needs reconciliation', lines: ['Nothing needs reconciliation.'] },
+        { key: 'device_actions', title: 'Recent device actions',
+          lines: ['ra_1: completed (device dev_1)'] },
+      ],
+    };
+    const view = create(<MorningBriefCard brief={withActions} onNavigate={onNavigate} />);
+    const actions = view.root.findAllByType('button')
+      .find((b) => b.children.some((c) => typeof c === 'string' && c === 'View device actions'));
+    expect(actions).toBeDefined();
+    actions!.props.onClick();
+    expect(onNavigate).toHaveBeenCalledWith('overview');
+  });
+
+  it('does not offer device-actions navigation when no actions are recorded', () => {
+    const withEmpty = {
+      ...brief,
+      sections: [
+        { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
+        { key: 'device_actions', title: 'Recent device actions', lines: ['No device actions recorded.'] },
+      ],
+    };
+    const view = create(<MorningBriefCard brief={withEmpty} />);
+    const labels = view.root.findAllByType('button').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join(''));
+    expect(labels).not.toContain('View device actions');
+  });
+
   it('renders no navigation when there is nothing to review', () => {
     const calm = {
       ...brief,
