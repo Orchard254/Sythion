@@ -1,5 +1,5 @@
-import { create } from 'react-test-renderer';
-import { describe, expect, it } from 'vitest';
+import { act, create } from 'react-test-renderer';
+import { describe, expect, it, vi } from 'vitest';
 import { RemoteActionsPanel } from './RemoteActionsPanel';
 import type { RemoteAction } from '../types';
 
@@ -49,8 +49,63 @@ describe('RemoteActionsPanel', () => {
     expect(items[0].findByType('strong').children.join('')).toBe('ra_uncertain');
   });
 
-  it('never renders a control that could approve or replay an action', () => {
+  it('never renders a control that could approve or replay a non-uncertain action', () => {
     const view = create(<RemoteActionsPanel actions={[action('awaiting_approval')]} />);
     expect(view.root.findAllByType('button')).toHaveLength(0);
+  });
+
+  it('records a reconciliation with a UI-generated decision id for uncertain actions', async () => {
+    const onReconcile = vi.fn().mockResolvedValue(undefined);
+    const onReconciled = vi.fn();
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(
+        <RemoteActionsPanel
+          actions={[action('uncertain', true)]}
+          onReconcile={onReconcile}
+          onReconciled={onReconciled}
+        />,
+      );
+    });
+
+    const reconcileButton = view.root.findAllByType('button')
+      .find((b) => b.children.join('') === 'Reconcile');
+    expect(reconcileButton).toBeDefined();
+    await act(async () => { reconcileButton!.props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+
+    const recordButton = view.root.findAllByType('button')
+      .find((b) => b.children.join('') === 'Record reconciliation');
+    expect(recordButton).toBeDefined();
+    await act(async () => { recordButton!.props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(onReconcile).toHaveBeenCalledTimes(1);
+    const [actionId, decisionId, outcome] = onReconcile.mock.calls[0];
+    expect(actionId).toBe('ra_1');
+    expect(decisionId.startsWith('owner-ui-rec-')).toBe(true);
+    expect(outcome).toBe('effect_not_performed');
+    expect(onReconciled).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces reconciliation errors', async () => {
+    const onReconcile = vi.fn().mockRejectedValue(new Error('REPLAY_REFUSED'));
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(
+        <RemoteActionsPanel
+          actions={[action('uncertain', true)]}
+          onReconcile={onReconcile}
+        />,
+      );
+    });
+    const reconcileButton = view.root.findAllByType('button')
+      .find((b) => b.children.join('') === 'Reconcile');
+    await act(async () => { reconcileButton!.props.onClick(); });
+    const recordButton = view.root.findAllByType('button')
+      .find((b) => b.children.join('') === 'Record reconciliation');
+    await act(async () => { recordButton!.props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(JSON.stringify(view.toJSON())).toContain('REPLAY_REFUSED');
   });
 });

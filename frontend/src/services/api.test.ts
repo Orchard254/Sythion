@@ -5,7 +5,9 @@ import {
   type InternalAxiosRequestConfig,
 } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import apiClient, { approvalService, assistantService, goalService, taskService } from './api';
+import apiClient, {
+  approvalService, assistantService, goalService, reconciliationService, taskService,
+} from './api';
 
 /**
  * The control token the request interceptor attaches. The response
@@ -73,6 +75,48 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('owner reconciliation service', () => {
+  afterEach(() => {
+    delete apiClient.defaults.adapter;
+  });
+
+  it('posts a reconciliation with the UI decision id and new key', async () => {
+    const bodies: string[] = [];
+    apiClient.defaults.adapter = (config) => {
+      bodies.push(config.data as string);
+      return Promise.resolve({
+        data: { action_id: 'ra_1', decision_id: 'owner-ui-rec-1',
+          outcome: 'effect_not_performed', new_action_id: 'ra_fresh',
+          authorized: false, original_state: 'uncertain' },
+        status: 200, statusText: 'OK', headers: {}, config,
+      } as unknown as AxiosResponse);
+    };
+    const result = await reconciliationService.reconcile(
+      'ra_1', 'owner-ui-rec-1', 'effect_not_performed', 'evidence:1', 'fresh-key',
+    );
+    expect(result.new_action_id).toBe('ra_fresh');
+    expect(JSON.parse(bodies[0])).toEqual({
+      decision_id: 'owner-ui-rec-1',
+      outcome: 'effect_not_performed',
+      evidence_ref: 'evidence:1',
+      new_idempotency_key: 'fresh-key',
+    });
+  });
+
+  it('reads reconciliations for one action', async () => {
+    const seen: string[] = [];
+    apiClient.defaults.adapter = (config) => {
+      seen.push(`${config.method} ${config.url}`);
+      return Promise.resolve({
+        data: { action_id: 'ra_1', reconciliations: [] },
+        status: 200, statusText: 'OK', headers: {}, config,
+      } as unknown as AxiosResponse);
+    };
+    await reconciliationService.list('ra_1');
+    expect(seen).toEqual(['get /remote-actions/ra_1/reconciliations']);
+  });
 });
 
 describe('trusted owner approval service', () => {

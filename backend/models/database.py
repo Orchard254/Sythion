@@ -1071,6 +1071,34 @@ class RemoteActionEvent(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class RemoteActionReconciliation(Base):
+    """An owner's reconciliation decision for an uncertain remote action.
+
+    The uncertain action stays terminal and untouched: this record captures
+    what the owner established from independent evidence, and may point at a
+    fresh action created with a NEW idempotency key. It never authorizes a
+    replay of the original uncertain effect.
+    """
+
+    __tablename__ = "remote_action_reconciliations"
+
+    id = Column(String, primary_key=True)
+    action_id = Column(String, nullable=False, index=True)
+    decision_id = Column(String, nullable=False)
+    outcome = Column(String, nullable=False)
+    evidence_ref = Column(String, nullable=True)
+    note = Column(Text, nullable=True)
+    new_action_id = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN ('effect_confirmed','effect_not_performed','abandoned')",
+            name="check_reconciliation_outcome",
+        ),
+    )
+
+
 class DeviceCredential(Base):
     """A per-device bearer credential for remote clients.
 

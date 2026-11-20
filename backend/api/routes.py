@@ -3453,6 +3453,68 @@ async def list_uncertain_remote_actions(request: Request, db: Session = Depends(
     ]}
 
 
+@router.get("/remote-actions/{action_id}/reconciliations")
+async def list_action_reconciliations(
+    action_id: str, request: Request, db: Session = Depends(get_db),
+):
+    """Durable owner reconciliation decisions for one action (read-only)."""
+    _reject_device_auth_for_owner_route(request)
+    from backend.runtime.remote_action_reconciliation import list_reconciliations
+
+    return {"action_id": action_id, "reconciliations": list_reconciliations(db, action_id)}
+
+
+@router.post("/remote-actions/{action_id}/reconcile")
+async def reconcile_remote_action(
+    action_id: str, request: Request, db: Session = Depends(get_db),
+):
+    """Record an owner reconciliation for an uncertain remote action.
+
+    The uncertain action is never revived or replayed. A fresh action is created
+    only when the owner supplies a NEW idempotency key. Owner-only: the loopback
+    control boundary applies and device-channel headers are refused.
+    """
+    _reject_device_auth_for_owner_route(request)
+    from backend.runtime.events import DbEventLedger
+    from backend.runtime.remote_action_reconciliation import (
+        ReconciliationError, reconcile_action,
+    )
+
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="a JSON object is required")
+
+    try:
+        result = reconcile_action(
+            db, action_id,
+            decision_id=data.get("decision_id"),
+            outcome=data.get("outcome"),
+            evidence_ref=data.get("evidence_ref"),
+            note=data.get("note"),
+            new_idempotency_key=data.get("new_idempotency_key"),
+        )
+    except ReconciliationError as exc:
+        status = 400
+        if exc.code == "UNKNOWN_ACTION":
+            status = 404
+        raise HTTPException(status_code=status, detail={"code": exc.code, "message": exc.message})
+
+    DbEventLedger(db).append_event(
+        f"task:{result.get('action_id')}", "remote_action.reconciled",
+        {
+            "action_id": action_id,
+            "decision_id": result["decision_id"],
+            "outcome": result["outcome"],
+            "new_action_id": result["new_action_id"],
+        },
+    )
+    db.commit()
+    return result
+
+
 @router.get("/remote-actions/{action_id}")
 async def get_remote_action(action_id: str, request: Request, db: Session = Depends(get_db)):
     """One action's durable state and immutable event sequence."""

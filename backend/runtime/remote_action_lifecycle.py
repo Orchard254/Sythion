@@ -278,6 +278,24 @@ class RemoteActionManager:
         assert updated is not None
         return updated
 
+    def append_marker(
+        self, action_id: str, label: str, reason: Optional[str] = None,
+        decision_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Append an informational marker without changing lifecycle state.
+
+        Used for auditable events (e.g. reconciliation) on terminal actions.
+        Never a transition: the action's state and version are untouched.
+        """
+        row = self._session.query(RemoteAction).filter(
+            RemoteAction.action_id == action_id).first()
+        if row is None:
+            raise RemoteActionError("UNKNOWN_ACTION", "unknown action")
+        self._append_event(action_id, row.state, f"marker:{label}", reason, decision_id)
+        self._session.flush()
+        marker = self.events(action_id)[-1]
+        return marker
+
     def list_recent(self, *, limit: int = 20) -> List[Dict[str, Any]]:
         """Most recently updated actions for owner visibility (read-only)."""
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
