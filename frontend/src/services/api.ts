@@ -530,6 +530,18 @@ export const remoteActionService = {
   },
 };
 
+/** Owner-visible relay delivery acks (read-only evidence, never authority). */
+export const relayAckService = {
+  summary: async (
+    sessionId?: string, limit = 50,
+  ): Promise<import('../types').RelayAckSummary> => {
+    const response = await apiClient.get('/relay-acks', {
+      params: { ...(sessionId ? { session_id: sessionId } : {}), limit },
+    });
+    return response.data;
+  },
+};
+
 /** First-party relay: a device talks to the Core through a bound session.
  * No third party is involved; the device credential is passed per request. */
 export const relayService = {

@@ -203,6 +203,12 @@ export function useUncertainRemoteActions() {
   });
 }
 
+export function useRelayAcks() {
+  return useSource('relay-acks', () => api.relayAckService.summary(), {
+    refetchInterval: 15_000,
+  });
+}
+
 export function useDevices() {
   return useSource('devices', api.agentService.devices, {
     refetchInterval: 30_000,

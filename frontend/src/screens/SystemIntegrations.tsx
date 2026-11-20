@@ -19,6 +19,7 @@ import {
   useCapabilities,
   useHealth,
   useModels,
+  useRelayAcks,
   useRetentionReceipts,
   useSecrets,
   useSkills,
@@ -28,6 +29,7 @@ import {
 } from '../hooks/useBackend';
 import { dateTime, humanize, relTime } from '../lib/format';
 import { DeviceChannelPanel } from '../components/DeviceChannelPanel';
+import { RelayAckPanel } from '../components/RelayAckPanel';
 
 type Tab = 'runtime' | 'models' | 'capabilities' | 'diagnostics';
 
@@ -66,6 +68,7 @@ export function SystemScreen() {
   const capabilities = useCapabilities();
   const receipts = useRetentionReceipts();
   const assets = useVoiceAssets();
+  const relayAcks = useRelayAcks();
 
   const checks = agentHealth.data?.checks ?? [];
   const receiptList = receipts.data ?? [];
@@ -130,6 +133,7 @@ export function SystemScreen() {
         {tab === 'runtime' && (
           <div className="grid grid--2">
             <DeviceChannelPanel />
+            <RelayAckPanel summary={relayAcks.data ?? null} />
             <Panel
               title="Process"
               icon="server"

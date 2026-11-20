@@ -7,7 +7,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import apiClient, {
   approvalService, assistantService, deviceAccessService, deviceCapabilityService,
-  goalService, reconciliationService, relayService, taskService,
+  goalService, reconciliationService, relayAckService, relayService, taskService,
 } from './api';
 
 /**
@@ -138,6 +138,39 @@ describe('relay send service', () => {
     };
     await relayService.send('rs_1', 'dev_1', 'tok', 'hello');
     expect(JSON.parse(bodies[0])).toEqual({ text: 'hello' });
+  });
+});
+
+describe('relay ack service', () => {
+  afterEach(() => {
+    delete apiClient.defaults.adapter;
+  });
+
+  it('reads the ack summary from the exact endpoint with filters', async () => {
+    const seen: string[] = [];
+    apiClient.defaults.adapter = (config) => {
+      seen.push(`${config.method} ${config.url} ${JSON.stringify(config.params ?? {})}`);
+      return Promise.resolve({
+        data: { acks: [], sessions: [], note: '', authorized: false, approval_issued: false },
+        status: 200, statusText: 'OK', headers: {}, config,
+      } as unknown as AxiosResponse);
+    };
+    const result = await relayAckService.summary('rs_1', 10);
+    expect(result.authorized).toBe(false);
+    expect(seen).toEqual(['get /relay-acks {"session_id":"rs_1","limit":10}']);
+  });
+
+  it('omits the session filter when none is given', async () => {
+    const seen: string[] = [];
+    apiClient.defaults.adapter = (config) => {
+      seen.push(`${config.method} ${config.url} ${JSON.stringify(config.params ?? {})}`);
+      return Promise.resolve({
+        data: { acks: [], sessions: [], note: '', authorized: false, approval_issued: false },
+        status: 200, statusText: 'OK', headers: {}, config,
+      } as unknown as AxiosResponse);
+    };
+    await relayAckService.summary();
+    expect(seen).toEqual(['get /relay-acks {"limit":50}']);
   });
 });
 

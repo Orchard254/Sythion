@@ -561,6 +561,28 @@ export type DataOrigin = 'live' | 'demo';
 
 export type Tone = 'ok' | 'warn' | 'danger' | 'info' | 'idle' | 'accent' | 'plain';
 
+/* --- Relay delivery acknowledgements (read-only evidence) -------------- */
+export interface RelayAck {
+  id: number;
+  session_id: string;
+  device_id: string;
+  sequence: number;
+  created_at: string | null;
+}
+
+export interface RelayAckSession {
+  session_id: string;
+  highest_ack: number;
+}
+
+export interface RelayAckSummary {
+  acks: RelayAck[];
+  sessions: RelayAckSession[];
+  note: string;
+  authorized: false;
+  approval_issued: false;
+}
+
 /* --- Reconciliation history (read-only) -------------------------------- */
 export interface ReconciliationRecord {
   id: string;
