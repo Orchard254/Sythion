@@ -69,16 +69,23 @@ export function briefStatusSummary(brief: StructuredBrief): BriefStatusSummary {
       }
     } else if (row.key === 'receipts') {
       // Lines look like "session rs_1: acked through #12" and, when lagging,
-      // "N unacked". The empty marker ("No delivery receipts recorded.") yields
-      // no matches. A lagging session's two parts are counted independently.
-      for (const part of row.detail.split('·')) {
-        const trimmed = part.trim();
-        if (!trimmed || EMPTY_MARKERS.some((m) => trimmed.includes(m))) continue;
+      // "N unacked". An HTTP fallback line reads "acked through #0 · HTTP
+      // fallback (acks unavailable)" — that session has no real acks and must
+      // NOT inflate receiptSessions. The marker follows the "acked through"
+      // part after a '·' split, so pair them via lookahead.
+      const parts = row.detail.split('·').map((p) => p.trim()).filter(Boolean);
+      for (let i = 0; i < parts.length; i += 1) {
+        const trimmed = parts[i];
+        if (EMPTY_MARKERS.some((m) => trimmed.includes(m))) continue;
         const match = trimmed.match(/acked through #(\d+)/i);
         if (match) {
-          receiptSessions += 1;
-          const seq = Number(match[1]);
-          receiptHighWater = receiptHighWater === null ? seq : Math.max(receiptHighWater, seq);
+          const isFallback = HTTP_FALLBACK_MARKER.test(trimmed)
+            || HTTP_FALLBACK_MARKER.test(parts[i + 1] ?? '');
+          if (!isFallback) {
+            receiptSessions += 1;
+            const seq = Number(match[1]);
+            receiptHighWater = receiptHighWater === null ? seq : Math.max(receiptHighWater, seq);
+          }
         }
         const lag = trimmed.match(/(\d+)\s+unacked/i);
         if (lag) receiptUnacked += Number(lag[1]);
@@ -119,8 +126,12 @@ const ACTIONS: Record<string, BriefAction> = {
 const EMPTY_MARKERS = [
   'Nothing needs reconciliation', 'Nothing is blocked', 'None reported.',
   'No devices have registered', 'No device actions recorded',
-  'No delivery receipts recorded',
+  'No delivery receipts recorded', 'HTTP fallback (acks unavailable)',
 ];
+
+// A session on the HTTP polling fallback cannot emit acks; its "acked through
+// #0" line is not a real receipt and must not be counted.
+const HTTP_FALLBACK_MARKER = /HTTP fallback \(acks unavailable\)/i;
 
 /** Conditional actions: only offered when the section's detail needs attention. */
 const CONDITIONAL: Record<string, { when: (detail: string) => boolean; action: BriefAction }> = {

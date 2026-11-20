@@ -189,6 +189,38 @@ describe('briefActions', () => {
     expect(briefStatusSummary(empty).receiptHighWater).toBeNull();
   });
 
+  it('does not count HTTP fallback lines as receipt-bearing sessions', () => {
+    const brief = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [
+        { key: 'receipts', title: 'Delivery receipts',
+          lines: ['session rs_1: acked through #0 · HTTP fallback (acks unavailable)'] },
+      ],
+      note: '',
+    }))!;
+    const summary = briefStatusSummary(brief);
+    expect(summary.receiptSessions).toBe(0);
+    expect(summary.receiptHighWater).toBeNull();
+    expect(summary.receiptUnacked).toBe(0);
+  });
+
+  it('counts only real WSS receipts when a fallback session is also present', () => {
+    const brief = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [
+        { key: 'receipts', title: 'Delivery receipts',
+          lines: [
+            'session rs_http: acked through #0 · HTTP fallback (acks unavailable)',
+            'session rs_wss: acked through #9',
+          ] },
+      ],
+      note: '',
+    }))!;
+    const summary = briefStatusSummary(brief);
+    expect(summary.receiptSessions).toBe(1);
+    expect(summary.receiptHighWater).toBe(9);
+  });
+
   it('sums unacked lag markers across lagging receipt sessions', () => {
     const brief = parseRelayBrief('morning_brief', JSON.stringify({
       headline: 'Good morning.',
