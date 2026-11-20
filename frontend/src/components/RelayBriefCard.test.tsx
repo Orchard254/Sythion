@@ -163,6 +163,22 @@ describe('RelayBriefCard', () => {
     expect(onAction).toHaveBeenCalledWith('missions');
   });
 
+  it('offers Receipts navigation for a fallback-only brief', () => {
+    const onAction = vi.fn();
+    const fallbackOnly = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [{ key: 'receipts', title: 'Delivery receipts',
+        lines: ['session rs_1: HTTP fallback (acks unavailable)'] }],
+      note: '',
+    }))!;
+    const view = create(<RelayBriefCard brief={fallbackOnly} onAction={onAction} />);
+    const receipts = view.root.findAllByType('button')
+      .find((b) => b.children.some((c) => typeof c === 'string' && c === 'Receipts'));
+    expect(receipts).toBeDefined();
+    receipts!.props.onClick();
+    expect(onAction).toHaveBeenCalledWith('system');
+  });
+
   it('renders diagnostics and agent-status actions for degraded sections', () => {
     const onAction = vi.fn();
     const degraded = parseRelayBrief('morning_brief', JSON.stringify({

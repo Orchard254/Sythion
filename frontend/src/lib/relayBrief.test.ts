@@ -95,6 +95,35 @@ describe('briefActions', () => {
     expect(briefActions(empty)).toEqual([]);
   });
 
+  it('offers Receipts navigation for a fallback-only receipts section', () => {
+    // A device on HTTP fallback cannot ack, but the owner still needs the path
+    // to the receipt panel that explains which sessions are in that state.
+    const fallbackOnly = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [{ key: 'receipts', title: 'Delivery receipts',
+        lines: ['session rs_1: HTTP fallback (acks unavailable)'] }],
+      note: '',
+    }))!;
+    expect(briefActions(fallbackOnly)).toEqual([
+      { label: 'Receipts', route: 'system' },
+    ]);
+  });
+
+  it('offers Receipts navigation for a mixed WSS + fallback receipts section', () => {
+    const mixed = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [{ key: 'receipts', title: 'Delivery receipts',
+        lines: [
+          'session rs_http: HTTP fallback (acks unavailable)',
+          'session rs_wss: acked through #9',
+        ] }],
+      note: '',
+    }))!;
+    expect(briefActions(mixed)).toEqual([
+      { label: 'Receipts', route: 'system' },
+    ]);
+  });
+
   it('offers diagnostics only for a non-healthy system section', () => {
     const detail = 'Overall: DEGRADED. · database: HEALTHY';
     const degraded = parseRelayBrief('morning_brief', JSON.stringify({

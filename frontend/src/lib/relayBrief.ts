@@ -135,7 +135,11 @@ const ACTIONS: Record<string, BriefAction> = {
 const EMPTY_MARKERS = [
   'Nothing needs reconciliation', 'Nothing is blocked', 'None reported.',
   'No devices have registered', 'No device actions recorded',
-  'No delivery receipts recorded', 'HTTP fallback (acks unavailable)',
+  'No delivery receipts recorded',
+  // NOTE: 'HTTP fallback (acks unavailable)' is deliberately NOT an empty
+  // marker. It is meaningful state: a session that cannot ack. Keeping it out
+  // lets briefActions still offer "Receipts" navigation for fallback-only and
+  // mixed briefs, while the dedicated regex below handles the status count.
 ];
 
 // A session on the HTTP polling fallback cannot emit acks. The Core renders it
