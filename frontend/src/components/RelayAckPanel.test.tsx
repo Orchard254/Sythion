@@ -5,8 +5,10 @@ import type { RelayAckSummary } from '../types';
 
 const summary: RelayAckSummary = {
   sessions: [
-    { session_id: 'rs_1', highest_ack: 12, latest_message: 15, unacked: 3 },
-    { session_id: 'rs_2', highest_ack: 7, latest_message: 7, unacked: 0 },
+    { session_id: 'rs_1', highest_ack: 12, latest_message: 15, unacked: 3,
+      ack_mode: 'wss', acks_possible: true, lagging: true },
+    { session_id: 'rs_2', highest_ack: 7, latest_message: 7, unacked: 0,
+      ack_mode: 'wss', acks_possible: true, lagging: false },
   ],
   unacked_total: 3,
   acks: [
@@ -55,10 +57,26 @@ describe('RelayAckPanel', () => {
     const caughtUp: RelayAckSummary = {
       ...summary,
       unacked_total: 0,
-      sessions: summary.sessions.map((s) => ({ ...s, unacked: 0 })),
+      sessions: summary.sessions.map((s) => ({ ...s, unacked: 0, lagging: false })),
     };
     const view = create(<RelayAckPanel summary={caughtUp} />);
     expect(view.root.findAllByProps({ 'data-testid': 'relay-ack-lag' })).toHaveLength(0);
+  });
+
+  it('labels an HTTP fallback session without flagging it as silent', () => {
+    const fallback: RelayAckSummary = {
+      ...summary,
+      unacked_total: 0,
+      sessions: [{
+        session_id: 'rs_http', highest_ack: 0, latest_message: 4, unacked: 4,
+        ack_mode: 'http', acks_possible: false, lagging: false,
+      }],
+    };
+    const view = create(<RelayAckPanel summary={fallback} />);
+    expect(view.root.findAllByProps({ 'data-testid': 'relay-ack-lag' })).toHaveLength(0);
+    const text = view.root.findAllByType('span').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join('')).join(' ');
+    expect(text).toContain('HTTP fallback · acks unavailable');
   });
 
   it('never renders a control that could authorize or clear a receipt', () => {

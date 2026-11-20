@@ -1005,6 +1005,9 @@ class RelaySession(Base):
     id = Column(String, primary_key=True)
     device_id = Column(String, nullable=False, index=True)
     status = Column(String, nullable=False, default="open")
+    # "wss" sessions can emit delivery acks; "http" sessions cannot (HTTP relay
+    # has no ack frame). Used to avoid flagging HTTP fallback as a silent device.
+    transport = Column(String, nullable=False, default="http")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     last_poll_at = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=True)

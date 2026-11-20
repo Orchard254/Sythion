@@ -52,20 +52,25 @@ def _session_row(db: Session, session_id: str):
     return db.query(RelaySession).filter(RelaySession.id == session_id).first()
 
 
-def open_session(db: Session, device_id: str) -> dict[str, Any]:
+def open_session(db: Session, device_id: str, *, transport: str = "http") -> dict[str, Any]:
     """Open a relay session for a device and seed it with current briefings.
 
+    ``transport`` is "wss" for the device-authenticated WebSocket gateway (which
+    can emit delivery acks) or "http" for the polling fallback (which cannot).
     Caller must have already verified the device credential and grant.
     """
     from backend.models.database import RelaySession
     from backend.services.morning_brief import read_morning_brief
     from backend.services.user_briefing import build_user_briefing
 
+    if transport not in ("wss", "http"):
+        raise ValueError("transport must be 'wss' or 'http'")
     now = datetime.utcnow()
     session = RelaySession(
         id=f"rs_{uuid.uuid4().hex[:16]}",
         device_id=device_id,
         status="open",
+        transport=transport,
         created_at=now,
         expires_at=now + timedelta(seconds=_SESSION_TTL_SECONDS),
     )
@@ -83,6 +88,7 @@ def open_session(db: Session, device_id: str) -> dict[str, Any]:
         "session_id": session.id,
         "device_id": session.device_id,
         "status": session.status,
+        "transport": session.transport,
         "expires_at": session.expires_at.isoformat() if session.expires_at else None,
     }
 

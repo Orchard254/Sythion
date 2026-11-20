@@ -34,8 +34,11 @@ export function RelayAckPanel({ summary }: { summary: RelayAckSummary | null }) 
                 <div key={mark.session_id} className="row row--wrap" style={{ gap: 8 }}>
                   <span className="t-mono">{mark.session_id}</span>
                   <Badge tone="info">acked through #{mark.highest_ack}</Badge>
-                  {mark.unacked > 0 && (
+                  {mark.lagging && (
                     <Badge tone="warn">{mark.unacked} unacked</Badge>
+                  )}
+                  {mark.ack_mode === 'http' && mark.unacked > 0 && (
+                    <Badge tone="idle">HTTP fallback · acks unavailable</Badge>
                   )}
                 </div>
               ))}

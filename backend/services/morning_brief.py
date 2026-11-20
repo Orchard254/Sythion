@@ -140,9 +140,11 @@ def build_morning_brief(db: Session, *, now: datetime | None = None) -> dict[str
                 f"session {_bound(m.get('session_id'), 'unknown')}: "
                 f"acked through #{m.get('highest_ack', 0)}"
             )
-            unacked = m.get("unacked", 0)
-            if isinstance(unacked, int) and unacked > 0:
-                line += f" · {unacked} unacked"
+            if m.get("lagging"):
+                line += f" · {m.get('unacked', 0)} unacked"
+            elif m.get("ack_mode") == "http" and m.get("unacked", 0) > 0:
+                # HTTP fallback cannot emit acks; do not present it as silent.
+                line += " · HTTP fallback (acks unavailable)"
             receipt_lines.append(line)
         if not receipt_lines:
             receipt_lines = ["No delivery receipts recorded."]

@@ -575,6 +575,9 @@ export interface RelayAckSession {
   highest_ack: number;
   latest_message: number;
   unacked: number;
+  ack_mode: 'wss' | 'http';
+  acks_possible: boolean;
+  lagging: boolean;
 }
 
 export interface RelayAckSummary {

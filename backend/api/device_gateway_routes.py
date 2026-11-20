@@ -66,7 +66,8 @@ async def device_relay_ws(websocket: WebSocket, db: Session = Depends(get_db)):
         await websocket.close(code=1008, reason=f"device access denied: {reason}")
         return
 
-    session = open_session(db, device_id)
+    # A WSS session can emit delivery acks (unlike the HTTP polling fallback).
+    session = open_session(db, device_id, transport="wss")
     db.commit()
     last_sent = 0
     last_ack = 0

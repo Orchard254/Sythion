@@ -15,11 +15,19 @@ export interface RelayLagSignal {
 export function relayLagSignal(summary: RelayAckSummary | null): RelayLagSignal {
   if (!summary) return { lagging: false, unacked: 0, laggingSessions: 0 };
   const sessions = Array.isArray(summary.sessions) ? summary.sessions : [];
-  const laggingSessions = sessions.filter((s) => s.unacked > 0).length;
-  // Prefer the backend's total; fall back to summing sessions if absent.
+  // Use the backend's explicit per-session lagging flag when present; older
+  // payloads without it fall back to unacked > 0. HTTP fallback sessions have
+  // acks_possible=false and must never be counted as a silent device.
+  const isLagging = (s: { unacked: number; lagging?: boolean; acks_possible?: boolean }) =>
+    typeof s.lagging === 'boolean'
+      ? s.lagging
+      : s.unacked > 0 && s.acks_possible !== false;
+  const laggingSessions = sessions.filter(isLagging).length;
+  // Prefer the backend's total (which already excludes non-ack-capable
+  // sessions); fall back to summing only lagging sessions if absent.
   const unacked = typeof summary.unacked_total === 'number'
     ? summary.unacked_total
-    : sessions.reduce((sum, s) => sum + (s.unacked > 0 ? s.unacked : 0), 0);
+    : sessions.reduce((sum, s) => sum + (isLagging(s) ? s.unacked : 0), 0);
   return { lagging: unacked > 0 || laggingSessions > 0, unacked, laggingSessions };
 }
 

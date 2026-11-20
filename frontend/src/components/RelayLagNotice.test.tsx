@@ -6,8 +6,10 @@ import type { RelayAckSummary } from '../types';
 const lagging: RelayAckSummary = {
   acks: [],
   sessions: [
-    { session_id: 'rs_1', highest_ack: 5, latest_message: 8, unacked: 3 },
-    { session_id: 'rs_2', highest_ack: 5, latest_message: 6, unacked: 1 },
+    { session_id: 'rs_1', highest_ack: 5, latest_message: 8, unacked: 3,
+      ack_mode: 'wss', acks_possible: true, lagging: true },
+    { session_id: 'rs_2', highest_ack: 5, latest_message: 6, unacked: 1,
+      ack_mode: 'wss', acks_possible: true, lagging: true },
   ],
   unacked_total: 4,
   note: '',

@@ -132,16 +132,32 @@ def test_brief_receipts_flag_never_acking_session(test_db):
     from backend.services.relay import open_session
 
     device = register_local_device(test_db, now=NOW)
-    session = open_session(test_db, device["device_id"])
+    session = open_session(test_db, device["device_id"], transport="wss")
     test_db.commit()
 
     brief = build_morning_brief(test_db, now=NOW)
     section = next(s for s in brief["sections"] if s["key"] == "receipts")
     joined = " ".join(section["lines"])
-    # A session with messages but no acks is now surfaced as fully unacked.
+    # A WSS session with messages but no acks is a silent device -> flagged.
     assert session["session_id"] in joined
     assert "acked through #0" in joined
     assert "unacked" in joined
+
+
+def test_brief_receipts_do_not_flag_http_fallback(test_db):
+    from backend.services.device_registry import register_local_device
+    from backend.services.relay import open_session
+
+    device = register_local_device(test_db, now=NOW)
+    session = open_session(test_db, device["device_id"], transport="http")
+    test_db.commit()
+
+    brief = build_morning_brief(test_db, now=NOW)
+    section = next(s for s in brief["sections"] if s["key"] == "receipts")
+    joined = " ".join(section["lines"])
+    assert session["session_id"] in joined
+    assert "HTTP fallback (acks unavailable)" in joined
+    assert "unacked" not in joined
 
 
 def test_brief_receipts_report_unacked_lag(test_db):
