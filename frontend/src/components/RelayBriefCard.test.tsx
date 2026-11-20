@@ -112,6 +112,28 @@ describe('RelayBriefCard', () => {
     expect(view.root.findAllByType('button')).toHaveLength(0);
   });
 
+  it('shows the fallback count even alongside real WSS receipts', () => {
+    const mixed = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [
+        { key: 'receipts', title: 'Delivery receipts',
+          lines: [
+            'session rs_http: HTTP fallback (acks unavailable)',
+            'session rs_wss: acked through #9',
+          ] },
+      ],
+      note: '',
+    }))!;
+    const view = create(<RelayBriefCard brief={mixed} />);
+    const text = view.root.findAllByType('span').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join('')).join(' ');
+    expect(text).toContain('receipts: 1');
+    expect(text).toContain('1 on HTTP fallback');
+    // The fallback-only explanation must not appear when real receipts exist.
+    expect(text).not.toContain('HTTP fallback · acks unavailable');
+    expect(view.root.findAllByType('button')).toHaveLength(0);
+  });
+
   it('renders no status strip when no status or decision sections exist', () => {
     const calm: StructuredBrief = {
       kind: 'morning_brief',

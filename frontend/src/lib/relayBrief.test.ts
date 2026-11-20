@@ -152,6 +152,7 @@ describe('briefActions', () => {
       receiptSessions: 0,
       receiptHighWater: null,
       receiptUnacked: 0,
+      receiptFallbackLines: 0,
       receiptFallbackOnly: false,
     });
   });
@@ -165,7 +166,7 @@ describe('briefActions', () => {
     expect(briefStatusSummary(brief)).toEqual({
       health: null, agentState: null, deviceTrust: [], needsDecision: 0,
       receiptSessions: 0, receiptHighWater: null, receiptUnacked: 0,
-      receiptFallbackOnly: false,
+      receiptFallbackLines: 0, receiptFallbackOnly: false,
     });
   });
 
@@ -204,6 +205,7 @@ describe('briefActions', () => {
     expect(summary.receiptSessions).toBe(0);
     expect(summary.receiptHighWater).toBeNull();
     expect(summary.receiptUnacked).toBe(0);
+    expect(summary.receiptFallbackLines).toBe(1);
     expect(summary.receiptFallbackOnly).toBe(true);
   });
 
@@ -222,7 +224,8 @@ describe('briefActions', () => {
     const summary = briefStatusSummary(brief);
     expect(summary.receiptSessions).toBe(1);
     expect(summary.receiptHighWater).toBe(9);
-    // A real WSS receipt is present, so this is not "fallback only".
+    // The fallback line is still counted even alongside a real WSS receipt.
+    expect(summary.receiptFallbackLines).toBe(1);
     expect(summary.receiptFallbackOnly).toBe(false);
   });
 

@@ -27,6 +27,8 @@ export interface BriefStatusSummary {
   receiptSessions: number;
   receiptHighWater: number | null;
   receiptUnacked: number;
+  /** Number of sessions on HTTP fallback (which cannot emit acks). */
+  receiptFallbackLines: number;
   /** True when the receipts section has fallback lines but no real acks. */
   receiptFallbackOnly: boolean;
 }
@@ -104,6 +106,9 @@ export function briefStatusSummary(brief: StructuredBrief): BriefStatusSummary {
   return {
     health, agentState, deviceTrust, needsDecision,
     receiptSessions, receiptHighWater, receiptUnacked,
+    // Count fallback sessions even alongside real WSS receipts, so a mixed
+    // brief cannot hide that some devices cannot ack.
+    receiptFallbackLines,
     // Only fallback lines existed (no real acks) — surface an explanation so
     // the owner does not just see "no receipts" with no reason.
     receiptFallbackOnly: receiptFallbackLines > 0 && receiptSessions === 0,
