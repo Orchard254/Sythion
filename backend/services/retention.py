@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from backend.models.database import (
     ConversationTurn, ConversationExchange, ConversationTaskAssociation, TaskDecisionWindow,
     DiscussionContextMembership,
+    PlanStep,
     ProposedSkill,
     PurgeReceipt,
     Task,
@@ -92,6 +93,17 @@ def _delete_complete_record(db: Session, task: Task, reason: str) -> Dict[str, A
         # all discussion-context memberships/contexts intact.
         db.query(ConversationTurn).filter_by(task_id=task.id).update(
             {"task_id": None}, synchronize_session=False
+        )
+        # Plan steps can point at this task as the step that executed it and/or
+        # the evidence task proving an outcome. Null only the matching column
+        # (a step may reference two different tasks). Leaving these dangling
+        # would make goal execution binding, restart policy, work preview and
+        # reasoning continuity read a purged task as still present.
+        db.query(PlanStep).filter_by(linked_task_id=task.id).update(
+            {"linked_task_id": None}, synchronize_session=False
+        )
+        db.query(PlanStep).filter_by(evidence_task_id=task.id).update(
+            {"evidence_task_id": None}, synchronize_session=False
         )
         db.query(TaskEvent).filter_by(task_id=task.id).delete(synchronize_session=False)
         db.delete(task)

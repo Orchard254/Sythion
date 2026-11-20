@@ -106,6 +106,45 @@ class TestCompleteRecordPurge:
         assert db_session.query(Task).filter_by(id="t-old").first() is None
         assert db_session.query(TaskEvent).filter_by(task_id="t-old").count() == 0
 
+    def test_purge_detaches_plan_step_task_references(self, db_session):
+        """Purging a task must null PlanStep task FKs, not leave dangling refs.
+
+        Plan steps reference tasks as execution/evidence proof; a purged task
+        left behind would be read as still present by goal execution binding,
+        restart policy, work preview and reasoning continuity.
+        """
+        from backend.models.database import Objective, PlanStep
+
+        _task(db_session, "t-purged")
+        _task(db_session, "t-kept")
+        db_session.add(Objective(id="obj-purge", title="Purge refs", status="active"))
+        db_session.commit()
+
+        db_session.add_all([
+            PlanStep(objective_id="obj-purge", step_key="both", step_order=1,
+                     description="both refs to purged", status="completed",
+                     linked_task_id="t-purged", evidence_task_id="t-purged"),
+            PlanStep(objective_id="obj-purge", step_key="linked", step_order=2,
+                     description="only linked ref", status="completed",
+                     linked_task_id="t-purged", evidence_task_id=None),
+            PlanStep(objective_id="obj-purge", step_key="other", step_order=3,
+                     description="ref to unrelated task", status="completed",
+                     linked_task_id="t-kept", evidence_task_id="t-kept"),
+        ])
+        db_session.commit()
+
+        assert purge_task(db_session, "t-purged") is not None
+
+        steps = {s.step_key: s for s in db_session.query(PlanStep).all()}
+        assert set(steps) == {"both", "linked", "other"}  # the steps survive
+        assert steps["both"].linked_task_id is None
+        assert steps["both"].evidence_task_id is None
+        assert steps["linked"].linked_task_id is None
+        assert steps["linked"].evidence_task_id is None
+        # Selective: a step that references a different task keeps both refs.
+        assert steps["other"].linked_task_id == "t-kept"
+        assert steps["other"].evidence_task_id == "t-kept"
+
     def test_purge_unknown_task_returns_none(self, db_session):
         assert purge_task(db_session, "does-not-exist") is None
 

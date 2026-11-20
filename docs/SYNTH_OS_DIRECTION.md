@@ -48,6 +48,14 @@ packages, memory, objectives and device status; goals with evidence and
 blockers; durable wakes; an owner-gated bounded wake; read-only recovery review
 packets; and a versioned authority-free reasoning contract.
 
+**Purge detach invariant (2026-11-21):** a complete-record purge detaches every
+durable reference to the deleted task, including `PlanStep.linked_task_id` and
+`PlanStep.evidence_task_id`. These were left dangling (SQLite does not enforce
+the FK here), so goal execution binding, restart policy, work preview and
+reasoning continuity could read a purged task as still present. Only the columns
+matching the purged task are nulled — a step's reference to a different task is
+preserved. Regression test in `test_retention.py`.
+
 **Goal-completion authority invariant (2026-11-21):** the
 `verify-criteria` endpoint records owner criteria verification but delegates
 any completion to `GoalManager.complete_goal`. It never writes `status` itself.
