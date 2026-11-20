@@ -77,6 +77,43 @@ describe('briefActions', () => {
     expect(briefActions(parseRelayBrief('morning_brief', text)!)).toEqual([]);
   });
 
+  it('offers diagnostics only for a non-healthy system section', () => {
+    const detail = 'Overall: DEGRADED. · database: HEALTHY';
+    const degraded = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [{ key: 'system', title: 'Local health', lines: [detail] }],
+      note: '',
+    }))!;
+    expect(briefActions(degraded)).toEqual([
+      { label: 'Diagnostics', route: 'system' },
+    ]);
+
+    const healthy = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [{ key: 'system', title: 'Local health', lines: ['Overall: HEALTHY.'] }],
+      note: '',
+    }))!;
+    expect(briefActions(healthy)).toEqual([]);
+  });
+
+  it('offers agent status only for a non-active agent section', () => {
+    const paused = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [{ key: 'agent', title: 'Synth', lines: ['State: paused.'] }],
+      note: '',
+    }))!;
+    expect(briefActions(paused)).toEqual([
+      { label: 'Agent status', route: 'system' },
+    ]);
+
+    const active = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [{ key: 'agent', title: 'Synth', lines: ['State: active.'] }],
+      note: '',
+    }))!;
+    expect(briefActions(active)).toEqual([]);
+  });
+
   it('maps a permission_awaiting heads-up item to approvals', () => {
     const text = JSON.stringify({
       headline: 'Heads up.', has_blockers: true,

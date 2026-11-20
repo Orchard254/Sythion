@@ -38,22 +38,42 @@ const EMPTY_MARKERS = [
   'No devices have registered', 'No device actions recorded',
 ];
 
+/** Conditional actions: only offered when the section's detail needs attention. */
+const CONDITIONAL: Record<string, { when: (detail: string) => boolean; action: BriefAction }> = {
+  system: {
+    when: (detail) => /DEGRADED|UNAVAILABLE|UNKNOWN|unavailable/i.test(detail),
+    action: { label: 'Diagnostics', route: 'system' },
+  },
+  agent: {
+    when: (detail) => /State:\s*(paused|degraded|shutdown|unknown)|not been initialized/i.test(detail),
+    action: { label: 'Agent status', route: 'system' },
+  },
+};
+
 /**
  * Derive distinct owner actions from a structured brief. A section marked with
- * an "empty" line is not actionable. This is read-only navigation metadata:
- * it never approves, grants, or clears anything.
+ * an "empty" line is not actionable, and conditional sections (health, agent)
+ * only produce an action when their detail actually needs attention. This is
+ * read-only navigation metadata: it never approves, grants, or clears anything.
  */
 export function briefActions(brief: StructuredBrief): BriefAction[] {
   const out: BriefAction[] = [];
   const seen = new Set<string>();
-  for (const row of brief.rows) {
-    const action = ACTIONS[row.key];
-    if (!action) continue;
-    if (EMPTY_MARKERS.some((marker) => row.detail.includes(marker))) continue;
+  const push = (action: BriefAction) => {
     const id = `${action.label}:${action.route}`;
-    if (seen.has(id)) continue;
+    if (seen.has(id)) return;
     seen.add(id);
     out.push(action);
+  };
+  for (const row of brief.rows) {
+    if (EMPTY_MARKERS.some((marker) => row.detail.includes(marker))) continue;
+    const action = ACTIONS[row.key];
+    if (action) {
+      push(action);
+      continue;
+    }
+    const conditional = CONDITIONAL[row.key];
+    if (conditional && conditional.when(row.detail)) push(conditional.action);
   }
   return out;
 }

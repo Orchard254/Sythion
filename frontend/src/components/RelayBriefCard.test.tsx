@@ -41,6 +41,24 @@ describe('RelayBriefCard', () => {
     expect(onAction).toHaveBeenCalledWith('missions');
   });
 
+  it('renders diagnostics and agent-status actions for degraded sections', () => {
+    const onAction = vi.fn();
+    const degraded = parseRelayBrief('morning_brief', JSON.stringify({
+      headline: 'Good morning.',
+      sections: [
+        { key: 'system', title: 'Local health', lines: ['Overall: DEGRADED.'] },
+        { key: 'agent', title: 'Synth', lines: ['State: paused.'] },
+      ],
+      note: '',
+    }))!;
+    const view = create(<RelayBriefCard brief={degraded} onAction={onAction} />);
+    const labels = view.root.findAllByType('button').map((b) =>
+      b.children.filter((c) => typeof c === 'string').join(''));
+    expect(labels).toEqual(['Diagnostics', 'Agent status']);
+    view.root.findAllByType('button').forEach((b) => b.props.onClick());
+    expect(onAction).toHaveBeenCalledWith('system');
+  });
+
   it('renders no actions for a calm parsed brief', () => {
     const calm = parseRelayBrief('morning_brief', JSON.stringify({
       headline: 'Good morning.',
