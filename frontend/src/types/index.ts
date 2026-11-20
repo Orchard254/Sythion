@@ -573,11 +573,14 @@ export interface RelayAck {
 export interface RelayAckSession {
   session_id: string;
   highest_ack: number;
+  latest_message: number;
+  unacked: number;
 }
 
 export interface RelayAckSummary {
   acks: RelayAck[];
   sessions: RelayAckSession[];
+  unacked_total: number;
   note: string;
   authorized: false;
   approval_issued: false;

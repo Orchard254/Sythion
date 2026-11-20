@@ -127,6 +127,28 @@ def test_brief_reports_durable_delivery_receipts(test_db):
     assert f"acked through #{msg['id']}" in joined
 
 
+def test_brief_receipts_report_unacked_lag(test_db):
+    from backend.services.device_registry import register_local_device
+    from backend.services.relay import open_session, post_message
+    from backend.services.relay_acks import record_ack
+
+    device = register_local_device(test_db, now=NOW)
+    device_id = device["device_id"]
+    session = open_session(test_db, device_id)
+    m1 = post_message(test_db, session["session_id"], "one")
+    post_message(test_db, session["session_id"], "two")
+    post_message(test_db, session["session_id"], "three")
+    test_db.commit()
+    record_ack(test_db, session_id=session["session_id"],
+               device_id=device_id, sequence=m1["id"])
+    test_db.commit()
+
+    brief = build_morning_brief(test_db, now=NOW)
+    section = next(s for s in brief["sections"] if s["key"] == "receipts")
+    joined = " ".join(section["lines"])
+    assert "2 unacked" in joined
+
+
 def test_brief_delivery_receipts_empty_is_explicit(test_db):
     brief = build_morning_brief(test_db, now=NOW)
     section = next(s for s in brief["sections"] if s["key"] == "receipts")

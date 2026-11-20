@@ -134,11 +134,18 @@ def build_morning_brief(db: Session, *, now: datetime | None = None) -> dict[str
         from backend.services.relay_acks import ack_summary
 
         marks = ack_summary(db, limit=_MAX_LINES)["sessions"]
-        receipt_lines = [
-            f"session {_bound(m.get('session_id'), 'unknown')}: "
-            f"acked through #{m.get('highest_ack', 0)}"
-            for m in marks[:_MAX_LINES]
-        ] or ["No delivery receipts recorded."]
+        receipt_lines = []
+        for m in marks[:_MAX_LINES]:
+            line = (
+                f"session {_bound(m.get('session_id'), 'unknown')}: "
+                f"acked through #{m.get('highest_ack', 0)}"
+            )
+            unacked = m.get("unacked", 0)
+            if isinstance(unacked, int) and unacked > 0:
+                line += f" · {unacked} unacked"
+            receipt_lines.append(line)
+        if not receipt_lines:
+            receipt_lines = ["No delivery receipts recorded."]
     except Exception as exc:  # pragma: no cover - best-effort observation
         receipt_lines = [f"Delivery receipts unavailable: {_bound(str(exc), 'error')}."]
 

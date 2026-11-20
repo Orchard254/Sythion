@@ -151,12 +151,14 @@ describe('relay ack service', () => {
     apiClient.defaults.adapter = (config) => {
       seen.push(`${config.method} ${config.url} ${JSON.stringify(config.params ?? {})}`);
       return Promise.resolve({
-        data: { acks: [], sessions: [], note: '', authorized: false, approval_issued: false },
+        data: { acks: [], sessions: [], unacked_total: 0,
+          note: '', authorized: false, approval_issued: false },
         status: 200, statusText: 'OK', headers: {}, config,
       } as unknown as AxiosResponse);
     };
     const result = await relayAckService.summary('rs_1', 10);
     expect(result.authorized).toBe(false);
+    expect(result.unacked_total).toBe(0);
     expect(seen).toEqual(['get /relay-acks {"session_id":"rs_1","limit":10}']);
   });
 

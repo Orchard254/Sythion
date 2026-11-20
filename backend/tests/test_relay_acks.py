@@ -78,6 +78,32 @@ def test_ack_summary_reports_high_water_and_is_non_authorizing(test_db):
     assert {a["sequence"] for a in summary["acks"]} == {m1["id"], m2["id"]}
 
 
+def test_ack_summary_computes_per_session_unacked_counts(test_db):
+    device_id, sid = _device_and_session(test_db)
+    m1 = post_message(test_db, sid, "one")
+    m2 = post_message(test_db, sid, "two")
+    m3 = post_message(test_db, sid, "three")
+    test_db.commit()
+    # Only the first message is acked; two remain unacked.
+    record_ack(test_db, session_id=sid, device_id=device_id, sequence=m1["id"])
+    test_db.commit()
+
+    summary = ack_summary(test_db, session_id=sid)
+    mark = next(m for m in summary["sessions"] if m["session_id"] == sid)
+    assert mark["highest_ack"] == m1["id"]
+    assert mark["latest_message"] == m3["id"]
+    assert mark["unacked"] == 2
+    assert summary["unacked_total"] == 2
+
+    # Acking the rest clears the lag.
+    record_ack(test_db, session_id=sid, device_id=device_id, sequence=m2["id"])
+    record_ack(test_db, session_id=sid, device_id=device_id, sequence=m3["id"])
+    test_db.commit()
+    caught_up = ack_summary(test_db, session_id=sid)
+    assert caught_up["unacked_total"] == 0
+    assert next(m for m in caught_up["sessions"] if m["session_id"] == sid)["unacked"] == 0
+
+
 def test_ack_summary_rejects_bad_limit(test_db):
     try:
         ack_summary(test_db, limit=0)

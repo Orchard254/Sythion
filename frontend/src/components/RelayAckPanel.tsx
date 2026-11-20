@@ -11,6 +11,7 @@ import type { RelayAckSummary } from '../types';
 export function RelayAckPanel({ summary }: { summary: RelayAckSummary | null }) {
   const sessions = summary?.sessions ?? [];
   const acks = summary?.acks ?? [];
+  const unackedTotal = summary?.unacked_total ?? 0;
 
   return (
     <Panel title="Delivery receipts" hint="Which sequenced frames devices confirmed receiving">
@@ -21,6 +22,11 @@ export function RelayAckPanel({ summary }: { summary: RelayAckSummary | null }) 
         />
       ) : (
         <div className="stack stack--tight" data-testid="relay-ack-panel">
+          {unackedTotal > 0 && (
+            <div data-testid="relay-ack-lag">
+              <Badge tone="warn">{unackedTotal} unacked across all sessions</Badge>
+            </div>
+          )}
           {sessions.length > 0 && (
             <div className="stack stack--tight">
               <span className="field__label">Per-session high-water marks</span>
@@ -28,6 +34,9 @@ export function RelayAckPanel({ summary }: { summary: RelayAckSummary | null }) 
                 <div key={mark.session_id} className="row row--wrap" style={{ gap: 8 }}>
                   <span className="t-mono">{mark.session_id}</span>
                   <Badge tone="info">acked through #{mark.highest_ack}</Badge>
+                  {mark.unacked > 0 && (
+                    <Badge tone="warn">{mark.unacked} unacked</Badge>
+                  )}
                 </div>
               ))}
             </div>

@@ -102,14 +102,31 @@ def ack_summary(
     )
     if session_id:
         high_water = high_water.filter(RelayAck.session_id == session_id)
-    marks = [
-        {"session_id": sid, "highest_ack": int(seq)}
-        for sid, seq in high_water.group_by(RelayAck.session_id).all()
-    ]
+
+    marks: list[dict[str, Any]] = []
+    for sid, seq in high_water.group_by(RelayAck.session_id).all():
+        highest = int(seq)
+        # Latest sequenced message in this session, and how many messages sit
+        # beyond the ack high-water mark. Counting rows (rather than blindly
+        # subtracting ids) stays correct when global ids interleave sessions.
+        latest = db.query(func.max(RelayMessage.id)).filter(
+            RelayMessage.session_id == sid).scalar()
+        latest = int(latest) if latest is not None else 0
+        unacked = db.query(func.count(RelayMessage.id)).filter(
+            RelayMessage.session_id == sid,
+            RelayMessage.id > highest,
+        ).scalar() or 0
+        marks.append({
+            "session_id": sid,
+            "highest_ack": highest,
+            "latest_message": latest,
+            "unacked": int(unacked),
+        })
 
     return {
         "acks": [_to_dict(row) for row in recent],
         "sessions": marks,
+        "unacked_total": sum(m["unacked"] for m in marks),
         "note": (
             "Read-only delivery evidence. An ack does not grant authority, "
             "prove an external effect, or authorize any action."

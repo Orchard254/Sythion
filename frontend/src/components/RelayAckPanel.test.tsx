@@ -5,9 +5,10 @@ import type { RelayAckSummary } from '../types';
 
 const summary: RelayAckSummary = {
   sessions: [
-    { session_id: 'rs_1', highest_ack: 12 },
-    { session_id: 'rs_2', highest_ack: 7 },
+    { session_id: 'rs_1', highest_ack: 12, latest_message: 15, unacked: 3 },
+    { session_id: 'rs_2', highest_ack: 7, latest_message: 7, unacked: 0 },
   ],
+  unacked_total: 3,
   acks: [
     { id: 1, session_id: 'rs_1', device_id: 'dev_1', sequence: 12,
       created_at: '2026-11-20T08:00:00' },
@@ -40,6 +41,24 @@ describe('RelayAckPanel', () => {
     expect(text).toContain('dev_1');
     expect(text).toContain('phone_1');
     expect(JSON.stringify(view.toJSON())).toContain('grants no authority');
+  });
+
+  it('renders a lagging-receipt signal when some frames are unacked', () => {
+    const view = create(<RelayAckPanel summary={summary} />);
+    expect(view.root.findByProps({ 'data-testid': 'relay-ack-lag' })).toBeDefined();
+    const text = textOf(view);
+    expect(text).toContain('3 unacked across all sessions');
+    expect(text).toContain('3 unacked'); // per-session badge
+  });
+
+  it('omits the lag signal when every session is caught up', () => {
+    const caughtUp: RelayAckSummary = {
+      ...summary,
+      unacked_total: 0,
+      sessions: summary.sessions.map((s) => ({ ...s, unacked: 0 })),
+    };
+    const view = create(<RelayAckPanel summary={caughtUp} />);
+    expect(view.root.findAllByProps({ 'data-testid': 'relay-ack-lag' })).toHaveLength(0);
   });
 
   it('never renders a control that could authorize or clear a receipt', () => {
