@@ -2481,14 +2481,22 @@ async def verify_objective_criteria(objective_id: str, db: Session = Depends(get
         raise HTTPException(status_code=400, detail="Objective has no completion criteria to verify")
     objective.criteria_verified = True
     objective.updated_at = datetime.utcnow()
-    # If all steps are already complete, auto-complete the objective
-    remaining = (
-        db.query(PlanStep)
-        .filter(PlanStep.objective_id == objective.id, PlanStep.status.in_(tuple({"pending", "in_progress", "blocked"} | {"failed"})))
-        .count()
-    )
-    if remaining == 0:
-        objective.status = "completed"
+    # Delegate completion to the GoalManager state machine. Its canonical open
+    # states include "ready" and "running" (a freshly planned or executing
+    # step), and it enforces the transition table, emits the goal.completed
+    # ledger event and captures the goal outcome. The previous hand-rolled
+    # check omitted "ready"/"running" and wrote objective.status directly, so
+    # a goal with an unstarted or actively running step could be forged to
+    # "completed" over HTTP. Criteria verification still stands when the goal
+    # is not yet eligible.
+    from backend.services.goal_manager import GoalManager
+
+    try:
+        GoalManager(db).complete_goal(objective_id)
+    except ValueError:
+        # Steps still open / transition not permitted — this is the normal
+        # "criteria verified, work outstanding" path, not an error.
+        pass
     db.commit()
     db.refresh(objective)
     return _objective_to_response(objective)

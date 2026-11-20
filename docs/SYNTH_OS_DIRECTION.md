@@ -48,6 +48,16 @@ packages, memory, objectives and device status; goals with evidence and
 blockers; durable wakes; an owner-gated bounded wake; read-only recovery review
 packets; and a versioned authority-free reasoning contract.
 
+**Goal-completion authority invariant (2026-11-21):** the
+`verify-criteria` endpoint records owner criteria verification but delegates
+any completion to `GoalManager.complete_goal`. It never writes `status` itself.
+Previously it counted only `pending/in_progress/blocked/failed` steps (omitting
+the canonical `ready`/`running` open states) and set `completed` directly, so a
+goal with an unstarted or actively running step could be forged to completed
+over HTTP with no `goal.completed` ledger event or outcome capture. Regression
+tests in `test_goals_api.py` cover both the forged-completion refusal and the
+audited happy path.
+
 **Wake in-flight key invariant (2026-11-21):** `_queued_keys` tracks only wakes
 with real queued/in-flight work. A key is discarded in `_process`'s `finally`,
 which covers both the queue path and `drain_durable`, so a wake resolved after

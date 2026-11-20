@@ -115,6 +115,48 @@ class TestGoalsApiContract:
         r = client.patch(f"/api/v1/objectives/{goal_id}", json={"status": "completed"})
         assert r.status_code in (400, 409)
 
+    @staticmethod
+    def _goal_with_criteria(client):
+        created = client.post("/api/v1/goals", json={
+            "title": "Criteria goal",
+            "purpose": "verify-criteria contract",
+            "completion_criteria": "All work verified.",
+            "steps": [{"key": "first", "description": "do first"}],
+        })
+        assert created.status_code == 200
+        return created.json()["goal"]["id"]
+
+    def test_verify_criteria_cannot_forge_completion_with_ready_step(self, client, db_session):
+        """A fresh plan's first step is 'ready' — verifying criteria must not
+        complete the goal. The canonical open-state set includes ready/running.
+        """
+        goal_id = self._goal_with_criteria(client)
+        step = db_session.query(PlanStep).filter_by(objective_id=goal_id).one()
+        assert step.status == "ready"  # sanity: nothing has run
+
+        result = client.post(f"/api/v1/objectives/{goal_id}/verify-criteria")
+        assert result.status_code == 200
+        body = result.json()
+        assert body["status"] == "active"
+        assert body["criteria_verified"] is True
+        assert db_session.query(TaskEvent).filter_by(
+            task_id=f"goal:{goal_id}", event_type="goal.completed").count() == 0
+
+    def test_verify_criteria_completes_only_when_steps_done(self, client, db_session):
+        """Happy path: all steps completed -> completion via the state machine,
+        including the goal.completed ledger event.
+        """
+        goal_id = self._goal_with_criteria(client)
+        step = db_session.query(PlanStep).filter_by(objective_id=goal_id).one()
+        step.status = "completed"
+        db_session.commit()
+
+        result = client.post(f"/api/v1/objectives/{goal_id}/verify-criteria")
+        assert result.status_code == 200
+        assert result.json()["status"] == "completed"
+        assert db_session.query(TaskEvent).filter_by(
+            task_id=f"goal:{goal_id}", event_type="goal.completed").count() == 1
+
     def test_advance_on_paused_goal_starts_nothing(self, client):
         goal_id = _create_goal(client).json()["goal"]["id"]
         client.post(f"/api/v1/goals/{goal_id}/pause")
