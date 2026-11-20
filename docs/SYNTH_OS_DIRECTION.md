@@ -48,6 +48,14 @@ packages, memory, objectives and device status; goals with evidence and
 blockers; durable wakes; an owner-gated bounded wake; read-only recovery review
 packets; and a versioned authority-free reasoning contract.
 
+**Voice recording honesty invariant (2026-11-21):** when the owner enables the
+recording setting, `SegmentResult.audio_bytes_deleted=False` must mean the raw
+PCM was actually retained on the session (`recorded_audio`), with
+`recorded_bytes` reflecting its real size. Previously the flag and byte counter
+were set while the audio was discarded when the local went out of scope. Retained
+audio is still hard-deleted at session end, so the privacy contract holds.
+Regression test in `test_voice_pipeline.py`.
+
 **Reasoning-accounting invariant (2026-11-21):** `dispatch_reasoning` records a
 model as started only AFTER the durable "started" receipt is persisted. If that
 receipt fails, no provider call happens, so `model_calls` must not increment,

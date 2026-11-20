@@ -66,8 +66,10 @@ class VoiceSessionState:
     segment_counter: int = 0
     recording_enabled: bool = False
     raw_bytes_retained: int = 0
-    # Bytes retained solely because recording is enabled (for reporting).
+    # Raw PCM actually retained because recording is enabled (in-memory only,
+    # hard-deleted at session end). recorded_bytes is its total size.
     recorded_bytes: int = 0
+    recorded_audio: List[bytes] = field(default_factory=list)
 
 
 class VADEngine(Protocol):
@@ -433,6 +435,7 @@ class VoiceSessionManager:
         session.pending_frame_buffer = b""
         session.raw_bytes_retained = 0
         session.recorded_bytes = 0
+        session.recorded_audio = []  # hard-delete any opt-in retained audio
         with self._lock:
             should_reset = not self._sessions
         if should_reset:
@@ -517,9 +520,13 @@ class VoiceSessionManager:
         stt_available = self._stt.available()
         text = self._stt.transcribe(audio, session.sample_rate) if stt_available else ""
         with self._lock:
-            # Privacy: raw audio is deleted after transcription unless recording.
+            # Privacy: raw audio is deleted after transcription unless the owner
+            # enabled recording, in which case it is actually retained on the
+            # session (and hard-deleted at session end). Reporting
+            # audio_bytes_deleted=False without retaining the bytes was a lie.
             if session.recording_enabled:
                 session.recorded_bytes += len(audio)
+                session.recorded_audio.append(audio)
                 audio_deleted = False
             else:
                 audio = b""

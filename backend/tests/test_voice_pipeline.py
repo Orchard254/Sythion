@@ -199,17 +199,28 @@ class TestRawAudioLifecycle:
         session = manager.get_session(sid)
         assert session.recorded_bytes > 0
         assert session.pending_audio == b""
+        # The flag is honest: the raw bytes really are retained on the session.
+        assert len(session.recorded_audio) == 1
+        assert session.recorded_audio[0]
+        assert sum(len(audio) for audio in session.recorded_audio) == session.recorded_bytes
 
     def test_end_session_hard_deletes_raw_audio_even_when_recording(self):
         manager, sid, _ = _make_manager([], recording=True)
         manager.feed_pcm(sid, _frame() * 5)
 
-        # Manually seed some buffered audio to prove end() wipes it.
-        manager.get_session(sid).pending_audio = _frame() * 10
+        # Manually seed some buffered and opt-in retained audio to prove end()
+        # wipes all of it.
+        session = manager.get_session(sid)
+        session.pending_audio = _frame() * 10
+        session.recorded_audio = [_frame() * 4]
+        session.recorded_bytes = len(session.recorded_audio[0])
 
         manager.end_session(sid)
 
         assert manager.get_session(sid) is None
+        assert session.pending_audio == b""
+        assert session.recorded_audio == []
+        assert session.recorded_bytes == 0
 
     def test_unknown_session_is_noop(self):
         manager, _, _ = _make_manager([])
