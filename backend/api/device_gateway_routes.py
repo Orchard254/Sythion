@@ -21,6 +21,7 @@ from backend.core.handshake import read_device_channel_config
 from backend.models.database import get_db
 from backend.services.relay import (
     close_session,
+    enqueue_reply,
     open_session,
     poll_messages,
     post_message,
@@ -43,8 +44,10 @@ async def device_relay_ws(websocket: WebSocket, db: Session = Depends(get_db)):
 
     Frames from the server carry a monotonically increasing ``sequence`` (the
     durable RelayMessage id). The client may send ``ack``, ``poll`` or ``send``
-    frames. Nothing here invokes a model or grants authority: a send is only a
-    durable owner message; orchestration/verification is a later stage.
+    frames. A ``send`` runs the same turn contract as the HTTP remote paths:
+    it stores the owner message, generates a durable Synth reply, records an
+    audited event, and completes the tracked lifecycle with evidence. Nothing
+    here grants authority or approval.
     """
     config = read_device_channel_config()
     if not (config["enabled"] and config["ws_enabled"] and config["relay_enabled"]):
@@ -131,17 +134,39 @@ async def device_relay_ws(websocket: WebSocket, db: Session = Depends(get_db)):
                     continue
                 db.commit()
                 try:
+                    # Same turn/reply contract as POST /remote/turns and
+                    # POST /remote/sessions/{id}/messages: a durable owner
+                    # message, a real Synth reply, and an audited event.
+                    from backend.services.conversation_turn_engine import ConversationTurnEngine
+                    from backend.services.conversation_runtime import ModelClient
+                    from backend.runtime.events import DbEventLedger
+
                     posted = post_message(db, session["session_id"], text)
+                    result = await ConversationTurnEngine(ModelClient()).run_turn(text)
+                    if isinstance(result, dict):
+                        answer = result.get("assistant_text", "") or ""
+                    else:
+                        answer = getattr(result, "assistant_text", "") or ""
+                    reply = enqueue_reply(db, session["session_id"], answer)
+                    sequence = DbEventLedger(db).append_event(
+                        "device-registry", "device.relay_message",
+                        {"device_id": device_id, "action_id": action["action_id"]},
+                    )
                     finished = complete_remote_action(
-                        db, action["action_id"], f"relay-message:{posted['id']}")
+                        db, action["action_id"],
+                        f"relay-message:{reply['id']}:event:{sequence}",
+                    )
                     db.commit()
                     await websocket.send_text(json.dumps({
                         "type": "accepted",
                         "sequence": int(posted["id"]),
+                        "reply_sequence": int(reply["id"]),
                         "action_id": action["action_id"],
                         "action_state": finished["state"],
                         "authorized": False,
                     }))
+                    # Deliver the reply immediately as a sequenced frame.
+                    await push_new_messages()
                 except Exception as exc:
                     db.rollback()
                     fail_remote_action(

@@ -108,7 +108,17 @@ def test_remote_goal_is_tracked_to_verified_completion(test_client, test_db):
     assert action.idempotency_key == "goal-1"
 
 
-def test_ws_send_is_tracked_to_verified_completion(test_client, test_db):
+def test_ws_send_is_tracked_to_verified_completion(test_client, test_db, monkeypatch):
+    from backend.tests.test_assistant_turn_api import FakeEngine
+
+    monkeypatch.setattr(
+        "backend.services.conversation_turn_engine.ConversationTurnEngine",
+        FakeEngine,
+    )
+    monkeypatch.setattr(
+        "backend.services.conversation_runtime.ModelClient",
+        lambda *a, **k: object(),
+    )
     device_id, token = _device(test_db, "trusted", "conversation.write")
     headers = _headers(device_id, token)
     url = (
@@ -125,11 +135,17 @@ def test_ws_send_is_tracked_to_verified_completion(test_client, test_db):
         accepted = json.loads(ws.receive_text())
         assert accepted["type"] == "accepted"
         assert accepted["action_state"] == COMPLETED
+        assert "reply_sequence" in accepted
         action_id = accepted["action_id"]
+        ws.receive_text()  # owner message
+        reply = json.loads(ws.receive_text())
+        assert reply["role"] == "synth"
+        assert reply["text"] == "Hello from Synth."
 
     action = test_db.query(RemoteAction).filter_by(action_id=action_id).one()
     assert action.state == COMPLETED
     assert action.evidence_ref.startswith("relay-message:")
+    assert "event:" in action.evidence_ref
     assert action.idempotency_key == "ws-send-1"
 
 

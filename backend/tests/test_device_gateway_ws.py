@@ -110,7 +110,21 @@ def test_ws_rejects_missing_grant(test_client, test_db):
     assert exc.value.code == 1008
 
 
-def test_ws_open_poll_and_send(test_client, test_db):
+def _stub_engine(monkeypatch):
+    from backend.tests.test_assistant_turn_api import FakeEngine
+
+    monkeypatch.setattr(
+        "backend.services.conversation_turn_engine.ConversationTurnEngine",
+        FakeEngine,
+    )
+    monkeypatch.setattr(
+        "backend.services.conversation_runtime.ModelClient",
+        lambda *a, **k: object(),
+    )
+
+
+def test_ws_open_poll_and_send(test_client, test_db, monkeypatch):
+    _stub_engine(monkeypatch)
     device_id, token = _device(test_db)
     test_db.add(Task(
         id="t-1", original_request="request",
@@ -140,12 +154,94 @@ def test_ws_open_poll_and_send(test_client, test_db):
         assert accepted["type"] == "accepted"
         assert accepted["authorized"] is False
         assert accepted["sequence"] > morning["sequence"]
+        assert accepted["reply_sequence"] > accepted["sequence"]
+        assert accepted["action_state"] == "completed"
 
-        ws.send_text(json.dumps({"type": "poll"}))
+        # The send path pushes the owner message and the durable Synth reply.
         owner_message = json.loads(ws.receive_text())
         assert owner_message["role"] == "owner"
         assert owner_message["text"] == "hello from phone"
         assert owner_message["sequence"] == accepted["sequence"]
+
+        reply = json.loads(ws.receive_text())
+        assert reply["role"] == "synth"
+        assert reply["kind"] == "text"
+        assert reply["text"] == "Hello from Synth."
+        assert reply["sequence"] == accepted["reply_sequence"]
+
+        # A poll cannot create new durable messages; verify by DB rather than
+        # blocking on a socket frame that is intentionally never sent.
+        from backend.models.database import RelayMessage
+
+        before = test_db.query(RelayMessage).filter_by(
+            session_id=session["session_id"]).count()
+        ws.send_text(json.dumps({"type": "poll"}))
+        ws.send_text(json.dumps({"type": "ack", "sequence": reply["sequence"]}))
+        test_db.expire_all()
+        after = test_db.query(RelayMessage).filter_by(
+            session_id=session["session_id"]).count()
+        assert after == before
+
+
+def test_ws_send_records_reply_evidence_and_event(test_client, test_db, monkeypatch):
+    from backend.models.database import RemoteAction, RelayMessage, TaskEvent
+
+    _stub_engine(monkeypatch)
+    device_id, token = _device(test_db)
+    with test_client.websocket_connect(_ws_url(device_id, token)) as ws:
+        ws.receive_text()  # session
+        ws.receive_text()  # morning brief
+        ws.send_text(json.dumps({"type": "send", "text": "ping"}))
+        accepted = json.loads(ws.receive_text())
+        ws.receive_text()  # owner message
+        ws.receive_text()  # synth reply
+
+    action = test_db.query(RemoteAction).filter_by(
+        action_id=accepted["action_id"]).one()
+    assert action.state == "completed"
+    assert action.evidence_ref.startswith("relay-message:")
+    assert "event:" in action.evidence_ref
+
+    reply = test_db.query(RelayMessage).filter_by(
+        id=accepted["reply_sequence"]).one()
+    assert reply.role == "synth"
+    assert reply.text == "Hello from Synth."
+
+    events = [e.event_type for e in test_db.query(TaskEvent)
+              .filter(TaskEvent.event_type == "device.relay_message").all()]
+    assert events == ["device.relay_message"]
+
+
+def test_ws_send_failure_is_recorded_uncertain(test_client, test_db, monkeypatch):
+    from backend.models.database import RemoteAction
+
+    class FailingEngine:
+        def __init__(self, *a, **k):
+            pass
+
+        async def run_turn(self, *a, **k):
+            raise RuntimeError("provider failed")
+
+    monkeypatch.setattr(
+        "backend.services.conversation_turn_engine.ConversationTurnEngine",
+        FailingEngine,
+    )
+    monkeypatch.setattr(
+        "backend.services.conversation_runtime.ModelClient",
+        lambda *a, **k: object(),
+    )
+    device_id, token = _device(test_db)
+    with test_client.websocket_connect(_ws_url(device_id, token)) as ws:
+        ws.receive_text()  # session
+        ws.receive_text()  # morning brief
+        ws.send_text(json.dumps({"type": "send", "text": "ping"}))
+        error = json.loads(ws.receive_text())
+        assert error["type"] == "error"
+        assert error["reason"] == "send_recorded_uncertain"
+
+    action = test_db.query(RemoteAction).filter_by(
+        action_id=error["action_id"]).one()
+    assert action.state == "uncertain"
 
 
 def test_ws_rejects_bad_frames_without_closing(test_client, test_db):

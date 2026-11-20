@@ -67,6 +67,8 @@ repository on 2026-11-20 and are committed to `master`:
 
   **Control Center UI implemented 2026-11-20:** `DeviceChannelPanel` in the System & Integrations runtime tab reads/writes config through `services/deviceChannel.ts` (Tauri commands; browser fallback fails closed). Evidence: `deviceChannel.test.ts` (4), `DeviceChannelPanel.test.tsx` (3), affected frontend set 25 passed, `tsc --noEmit` exit 0.
 
+  **WS reply contract implemented 2026-11-20:** the `/device/relay/ws` `send` path now runs the same turn contract as the HTTP remote paths — it stores the owner message, generates a durable Synth reply via `ConversationTurnEngine`, appends an audited `device.relay_message` event, completes the tracked lifecycle with evidence bound to the reply id and event sequence, and pushes the reply as a sequenced frame (`reply_sequence`). Failures after execution are recorded uncertain, never replayed. Evidence: `test_device_gateway_ws.py` (10 passed), affected set 90 passed / 7 skipped (10s).
+
   **HTTP relay gating implemented 2026-11-20:** the shell switch now gates the HTTP relay too. `_remote_device_or_401` reads the config first and returns 503 when `enabled` or `relay_enabled` is false; `/remote/turns` and `/remote/goals` were refactored from duplicate inline auth to use that single gate, so every `/api/v1/remote/*` endpoint is covered. `ws_enabled` affects only `/device/*`. Evidence: `test_remote_relay_gate.py` (5 passed: both disable flags across all remote endpoint families, gate-before-credential, WS flag independence, corrupt config fail-closed); affected set 123 passed / 7 skipped (16s).
 
 ## 6. Locked decisions (from the owner's proposal)
