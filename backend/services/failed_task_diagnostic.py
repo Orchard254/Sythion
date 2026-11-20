@@ -544,6 +544,11 @@ async def diagnose_failed_task(
             except Exception:
                 pass
             logger.warning("Diagnostic commit failed for task %s: %s", task_id, exc)
+            # The rollback undid the task.diagnostic event, so nothing was
+            # persisted. Returning the diagnosis here would claim success for
+            # unpersisted work and hide the failure — report honest
+            # unavailability instead, as the entry-point contract promises.
+            return "Diagnostic unavailable: could not persist the diagnostic."
 
         return diagnosis
     except Exception as exc:

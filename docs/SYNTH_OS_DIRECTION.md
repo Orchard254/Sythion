@@ -48,6 +48,13 @@ packages, memory, objectives and device status; goals with evidence and
 blockers; durable wakes; an owner-gated bounded wake; read-only recovery review
 packets; and a versioned authority-free reasoning contract.
 
+**Diagnostic persistence honesty invariant (2026-11-21):**
+`diagnose_failed_task` returns honest unavailability when the persistence
+commit fails — the rollback removes the `task.diagnostic` evidence event, so
+returning the diagnosis text would claim success for unpersisted work and hide
+the failure. Regression test in `test_failed_task_diagnostic.py` forces the
+final commit to fail after the model call.
+
 **Personal-context framing invariant (2026-11-21):** the
 `BEGIN PERSONAL CONTEXT (data)` / `END PERSONAL CONTEXT` guards must both
 survive the 24-line bound in `render()`. The END guard was appended last and

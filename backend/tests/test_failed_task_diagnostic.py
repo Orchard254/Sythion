@@ -59,6 +59,48 @@ async def test_failed_task_diagnostic_persists_once(test_db):
 
 
 @pytest.mark.asyncio
+async def test_diagnostic_commit_failure_reports_unavailable(test_db, monkeypatch):
+    """A failed persistence commit must not return the diagnosis as if it were
+    saved — the rollback removes the evidence event, claiming success hides it.
+    """
+    task = Task(
+        id="ft-commit",
+        original_request="do thing",
+        state=TaskState.FAILED.value,
+        terminal_reason="BOOM",
+    )
+    test_db.add(task)
+    test_db.commit()
+    _associate_task(test_db, "ft-commit")
+
+    state = {"armed": False}
+    real_commit = test_db.commit
+
+    def flaky_commit():
+        if state["armed"]:
+            raise RuntimeError("disk full")
+        return real_commit()
+
+    monkeypatch.setattr(test_db, "commit", flaky_commit)
+
+    calls = {"count": 0}
+
+    async def fake_model(messages):
+        calls["count"] += 1
+        state["armed"] = True  # arm failure for the diagnostic's final commit
+        return {"message": {"content": "The requested file was missing; check the path."}}
+
+    result = await diagnose_failed_task(test_db, "ft-commit", model_call_fn=fake_model)
+
+    assert calls["count"] == 1
+    assert "unavailable" in (result or "").lower()
+    assert "check the path" not in (result or "").lower()
+    # The rollback removed the diagnostic event, so nothing was persisted.
+    events = test_db.query(TaskEvent).filter_by(task_id="ft-commit").all()
+    assert not any(e.event_type == "task.diagnostic" for e in events)
+
+
+@pytest.mark.asyncio
 async def test_failed_task_diagnostic_unavailable_without_model(test_db):
     task = Task(
         id="ft2",
