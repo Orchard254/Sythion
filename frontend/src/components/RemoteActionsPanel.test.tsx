@@ -1,7 +1,7 @@
 import { act, create } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { RemoteActionsPanel } from './RemoteActionsPanel';
-import type { RemoteAction } from '../types';
+import type { ReconciliationRecord, RemoteAction } from '../types';
 
 const action = (state: RemoteAction['state'], uncertain = false, id = 'ra_1'): RemoteAction => ({
   action_id: id,
@@ -49,9 +49,11 @@ describe('RemoteActionsPanel', () => {
     expect(items[0].findByType('strong').children.join('')).toBe('ra_uncertain');
   });
 
-  it('never renders a control that could approve or replay a non-uncertain action', () => {
+  it('never renders a reconcile control for a non-uncertain action', () => {
     const view = create(<RemoteActionsPanel actions={[action('awaiting_approval')]} />);
-    expect(view.root.findAllByType('button')).toHaveLength(0);
+    const labels = view.root.findAllByType('button').map((b) => b.children.join(''));
+    expect(labels).not.toContain('Reconcile');
+    expect(labels).not.toContain('Record reconciliation');
   });
 
   it('records a reconciliation with a UI-generated decision id for uncertain actions', async () => {
@@ -107,5 +109,53 @@ describe('RemoteActionsPanel', () => {
     await act(async () => { recordButton!.props.onClick(); });
     await act(async () => { await Promise.resolve(); });
     expect(JSON.stringify(view.toJSON())).toContain('REPLAY_REFUSED');
+  });
+
+  it('loads and renders reconciliation history read-only', async () => {
+    const record: ReconciliationRecord = {
+      id: 'rec_1',
+      action_id: 'ra_1',
+      decision_id: 'owner-ui-rec-1',
+      outcome: 'effect_not_performed',
+      evidence_ref: 'evidence:checked',
+      note: 'verified in target system',
+      new_action_id: 'ra_fresh',
+      created_at: '2026-11-20T09:00:00',
+    };
+    const loadHistory = vi.fn().mockResolvedValue([record]);
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(
+        <RemoteActionsPanel actions={[action('uncertain', true)]} loadHistory={loadHistory} />,
+      );
+    });
+
+    const toggle = view.root.findByProps({ 'data-testid': 'history-toggle-ra_1' });
+    await act(async () => { toggle.props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(loadHistory).toHaveBeenCalledWith('ra_1');
+    const rendered = JSON.stringify(view.toJSON());
+    expect(rendered).toContain('effect_not_performed');
+    expect(rendered).toContain('owner-ui-rec-1');
+    expect(rendered).toContain('evidence:checked');
+    expect(rendered).toContain('verified in target system');
+    expect(rendered).toContain('ra_fresh');
+  });
+
+  it('shows an explicit empty state in history', async () => {
+    const loadHistory = vi.fn().mockResolvedValue([]);
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(
+        <RemoteActionsPanel actions={[action('completed')]} loadHistory={loadHistory} />,
+      );
+    });
+    const toggle = view.root.findByProps({ 'data-testid': 'history-toggle-ra_1' });
+    await act(async () => { toggle.props.onClick(); });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(JSON.stringify(view.toJSON())).toContain('No reconciliations');
   });
 });

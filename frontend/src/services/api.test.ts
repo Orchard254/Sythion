@@ -159,12 +159,20 @@ describe('owner reconciliation service', () => {
     apiClient.defaults.adapter = (config) => {
       seen.push(`${config.method} ${config.url}`);
       return Promise.resolve({
-        data: { action_id: 'ra_1', reconciliations: [] },
+        data: {
+          action_id: 'ra_1',
+          reconciliations: [{
+            id: 'rec_1', action_id: 'ra_1', decision_id: 'owner-ui-rec-1',
+            outcome: 'effect_not_performed', evidence_ref: null, note: null,
+            new_action_id: null, created_at: '2026-11-20T09:00:00',
+          }],
+        },
         status: 200, statusText: 'OK', headers: {}, config,
       } as unknown as AxiosResponse);
     };
-    await reconciliationService.list('ra_1');
+    const result = await reconciliationService.list('ra_1');
     expect(seen).toEqual(['get /remote-actions/ra_1/reconciliations']);
+    expect(result.reconciliations[0].decision_id).toBe('owner-ui-rec-1');
   });
 });
 

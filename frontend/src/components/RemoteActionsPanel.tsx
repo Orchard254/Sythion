@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Badge, Button, EmptyState, Notice, Panel } from './ui';
-import type { RemoteAction } from '../types';
+import type { ReconciliationRecord, RemoteAction } from '../types';
 import { reconciliationService } from '../services/api';
 
 const STATE_TONE = {
@@ -33,6 +33,8 @@ interface Props {
     evidenceRef?: string, newIdempotencyKey?: string,
   ) => Promise<unknown>;
   onReconciled?: () => void;
+  /** Injectable for tests; defaults to the read-only reconciliation history API. */
+  loadHistory?: (actionId: string) => Promise<ReconciliationRecord[]>;
 }
 
 /**
@@ -42,13 +44,30 @@ interface Props {
  * an explicit owner action bound to a UI-generated decision id; it never
  * revives or replays the uncertain effect.
  */
-export function RemoteActionsPanel({ actions, onReconcile, onReconciled }: Props) {
+export function RemoteActionsPanel({ actions, onReconcile, onReconciled, loadHistory }: Props) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [historyFor, setHistoryFor] = useState<string | null>(null);
+  const [history, setHistory] = useState<Record<string, ReconciliationRecord[]>>({});
   const [outcome, setOutcome] = useState<Outcome>('effect_not_performed');
   const [evidence, setEvidence] = useState('');
   const [newKey, setNewKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  const fetchHistory = loadHistory ?? (async (actionId: string) => {
+    const result = await reconciliationService.list(actionId);
+    return result.reconciliations ?? [];
+  });
+
+  useEffect(() => {
+    if (!historyFor || history[historyFor]) return;
+    let active = true;
+    fetchHistory(historyFor).then(
+      (records) => { if (active) setHistory((old) => ({ ...old, [historyFor]: records })); },
+      (err) => { if (active) setError(String(err)); },
+    );
+    return () => { active = false; };
+  }, [historyFor, history, fetchHistory]);
 
   const ordered = [...actions].sort((a, b) => {
     if (a.uncertain !== b.uncertain) return a.uncertain ? -1 : 1;
@@ -70,6 +89,17 @@ export function RemoteActionsPanel({ actions, onReconcile, onReconciled }: Props
       setExpanded(null);
       setEvidence('');
       setNewKey('');
+      setHistory((old) => {
+        const next = { ...old };
+        delete next[actionId];
+        return next;
+      });
+      if (historyFor === actionId) {
+        fetchHistory(actionId).then(
+          (records) => setHistory((old) => ({ ...old, [actionId]: records })),
+          () => { /* history is read-only; ignore refresh failure */ },
+        );
+      }
       onReconciled?.();
     } catch (err) {
       setError(String(err));
@@ -99,6 +129,44 @@ export function RemoteActionsPanel({ actions, onReconcile, onReconciled }: Props
               {action.reason && <span>{action.reason}</span>}
               {action.evidence_ref && (
                 <span className="t-faint">Evidence: {action.evidence_ref}</span>
+              )}
+
+              <button
+                type="button"
+                className="stat stat--clickable"
+                data-testid={`history-toggle-${action.action_id}`}
+                onClick={() => setHistoryFor(historyFor === action.action_id ? null : action.action_id)}
+              >
+                {historyFor === action.action_id ? 'Hide history' : 'View reconciliation history'}
+              </button>
+
+              {historyFor === action.action_id && (
+                <div className="stack stack--tight" data-testid="reconciliation-history">
+                  {!history[action.action_id] ? (
+                    <span className="t-faint">Loading history…</span>
+                  ) : history[action.action_id].length === 0 ? (
+                    <EmptyState title="No reconciliations" description="No decisions recorded for this action." />
+                  ) : (
+                    history[action.action_id].map((record) => (
+                      <div key={record.id} className="stack stack--tight">
+                        <div className="row row--wrap" style={{ gap: 8 }}>
+                          <Badge tone="info">{record.outcome}</Badge>
+                          <span className="t-mono t-faint">{record.decision_id}</span>
+                        </div>
+                        {record.evidence_ref && (
+                          <span className="t-faint">Evidence: {record.evidence_ref}</span>
+                        )}
+                        {record.note && <span>{record.note}</span>}
+                        {record.new_action_id && (
+                          <span className="t-faint">Fresh action: {record.new_action_id}</span>
+                        )}
+                        {record.created_at && (
+                          <span className="t-faint">{record.created_at}</span>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
               )}
 
               {action.uncertain && (

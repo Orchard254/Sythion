@@ -561,6 +561,18 @@ export type DataOrigin = 'live' | 'demo';
 
 export type Tone = 'ok' | 'warn' | 'danger' | 'info' | 'idle' | 'accent' | 'plain';
 
+/* --- Reconciliation history (read-only) -------------------------------- */
+export interface ReconciliationRecord {
+  id: string;
+  action_id: string;
+  decision_id: string;
+  outcome: 'effect_confirmed' | 'effect_not_performed' | 'abandoned';
+  evidence_ref: string | null;
+  note: string | null;
+  new_action_id: string | null;
+  created_at: string | null;
+}
+
 /* --- Trusted owner approvals (control boundary only) ------------------- */
 export interface PendingApproval {
   proposal_id: string;
