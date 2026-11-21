@@ -48,6 +48,8 @@ packages, memory, objectives and device status; goals with evidence and
 blockers; durable wakes; an owner-gated bounded wake; read-only recovery review
 packets; and a versioned authority-free reasoning contract.
 
+**Discovery attribution invariant (2026-11-21):** when only `unresolved_task_proof_count > 0` and every canonical source is intact, discovery reports `reason="unresolved_task_proof"` — not `"unresolved_canonical_source"`, which falsely blamed complete sources. The consumer's reason allowlist carries the new value. Regression test in `test_grounded_discussion_discovery.py`.
+
 **Reasoning in-flight accounting invariant (2026-11-21):** the completion-phase
 counterpart to the start-receipt fix — when the `response_received` receipt
 cannot be persisted, `dispatch_reasoning` still balances the in-flight metrics

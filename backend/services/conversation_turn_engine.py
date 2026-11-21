@@ -1052,7 +1052,10 @@ class ConversationTurnEngine:
                 "discovery payload representatives count is inconsistent",
                 reason_code="input",
             )
-        if payload.get("reason") not in {"complete", "unresolved_canonical_source", "payload_budget_exceeded"}:
+        if payload.get("reason") not in {
+            "complete", "unresolved_canonical_source", "unresolved_task_proof",
+            "payload_budget_exceeded",
+        }:
             raise ConversationTurnValidationError(
                 "discovery payload reason is invalid", reason_code="input"
             )

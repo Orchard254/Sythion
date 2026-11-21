@@ -518,7 +518,9 @@ def read_session_discussion_discovery(
         )
         reason = "complete" if complete else (
             "unresolved_canonical_source"
-            if (unresolved_discussion_count > 0 or unresolved_task_proof_count > 0)
+            if unresolved_discussion_count > 0
+            else "unresolved_task_proof"
+            if unresolved_task_proof_count > 0
             else "payload_budget_exceeded"
         )
         candidate_ids = tuple(r.discussion_id for r in reps_list)
@@ -554,7 +556,9 @@ def read_session_discussion_discovery(
         )
         final_reason = "complete" if discovery_complete else (
             "unresolved_canonical_source"
-            if (unresolved_discussion_count > 0 or unresolved_task_proof_count > 0)
+            if unresolved_discussion_count > 0
+            else "unresolved_task_proof"
+            if unresolved_task_proof_count > 0
             else "payload_budget_exceeded"
         )
         final_payload = {

@@ -455,6 +455,31 @@ def test_linkless_task_bound_discussion_lacks_task_proof(db):
     assert "disc-linkless-taskbound" not in by_id
 
 
+def test_task_proof_only_unresolved_has_distinct_reason(db):
+    """When only the task proof is unresolved and every canonical source is
+    intact, the reason must not blame the canonical source.
+    """
+    import json
+
+    session, _ = db
+    sid = "session-taskproof-only"
+    eid = "exchange-taskproof"
+    ut, at = 11, 12
+    _seed_exchange(session, sid, eid, ut, at)
+    did = _make_discussion(session, sid, "taskbound", eid, ut, at)
+    # Bind the discussion to a task WITHOUT an exact task association: the
+    # canonical source (link/exchange/turns) is intact, only task proof fails.
+    session.query(DiscussionRow).filter_by(discussion_id=did).one().task_id = "task-no-proof"
+    session.flush()
+
+    result = read_session_discussion_discovery(session, sid, max_payload_bytes=1_000_000)
+    assert result.unresolved_discussion_count == 0
+    assert result.unresolved_task_proof_count == 1
+    assert result.discovery_complete is False
+    assert result.reason == "unresolved_task_proof"
+    assert json.loads(result.payload_json)["reason"] == "unresolved_task_proof"
+
+
 def test_mixed_valid_and_linkless_preserves_counts_and_blocks_complete(db):
     session, _ = db
     sid = "session-mixed-linkless"
