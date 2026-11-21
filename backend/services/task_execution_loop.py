@@ -105,6 +105,51 @@ class TaskExecutionLoop:
         self.post_task_pipeline = PostTaskPipeline(db_session, task_runner, tool_executor)
 
     @staticmethod
+    def _build_spin_recovery_context(params: Dict[str, Any], events: List[Dict[str, Any]]) -> str:
+        """Build a directive that breaks a read-only re-query spin.
+
+        The model keeps proposing an identical successful read-only tool (e.g.
+        ``system_file_roots``) because a prompt rule says to query before acting,
+        and it never advances to the tool that actually answers the request.
+        The verified result is already in the ledger. Feed that result back with
+        an explicit instruction to stop re-querying, call the tool that produces
+        the answer, and then complete. This keeps model judgment (it still must
+        call the answer tool and report the result) and never fabricates a
+        completion from a capability-discovery tool's output.
+
+        Pure function: no I/O, no state.
+        """
+        tool_name = params.get("tool_name", "that tool") if isinstance(params, dict) else "that tool"
+        result_text = ""
+        for event in reversed(events or []):
+            if event.get("event_type") != "tool.executed":
+                continue
+            data = event.get("event_data", {})
+            if data.get("tool_name") != tool_name or not data.get("success"):
+                continue
+            summary = data.get("model_summary")
+            if summary is None:
+                summary = data.get("output")
+            if isinstance(summary, (dict, list)):
+                summary = json.dumps(summary, ensure_ascii=False, default=str)
+            result_text = str(summary or "")[:800]
+            break
+        obtained = (
+            f"\nYou already obtained this verified result from `{tool_name}`:\n{result_text}\n"
+            if result_text else ""
+        )
+        return (
+            f"You have already called `{tool_name}` successfully and its result is recorded. "
+            f"Do NOT call `{tool_name}` again — repeating the identical read-only query changes nothing "
+            f"and is blocked.{obtained}"
+            "Use that result to advance the request: call the tool that actually produces the requested "
+            "information (for example `file_read` for a file request, with the path from the user's "
+            "message and no invented max_bytes), and then call `complete_task` with the answer. "
+            "If you already have the final answer, call `complete_task` now. Never repeat an identical "
+            "read-only query again."
+        )
+
+    @staticmethod
     def _build_repair_context(code: str, message: str) -> str:
         """Build actionable repair guidance for a model decision error.
 
@@ -380,9 +425,14 @@ class TaskExecutionLoop:
                     if not self.instruction_revision.claim(task_id, snapshot.revision):
                         self.model_engine.pop_pending_tool_calls()
                         continue
-                    # Budget exhaustion is terminal: fail honestly, never repair.
+                    # Budget exhaustion is terminal. If a verified read result
+                    # already answers the request, complete from that evidence;
+                    # otherwise fail honestly, never repair.
                     logger.warning(f"Task {task_id} exceeded budget {e.code}: {e.message}")
-                    await self._fail_task(task_id, code=e.code, message=e.message)
+                    if not await self._try_complete_from_verified_evidence(
+                        task_id, f"{e.code}: {e.message}"
+                    ):
+                        await self._fail_task(task_id, code=e.code, message=e.message)
                     break
                 except ModelDecisionError as e:
                     if not self.instruction_revision.claim(task_id, snapshot.revision):
@@ -390,23 +440,26 @@ class TaskExecutionLoop:
                         continue
                     if e.code in self._NON_REPAIRABLE_CODES:
                         # Provider-side (rate limit, cloud outage, retired
-                        # model): fail honestly on the first attempt instead of
-                        # burning repair attempts against a dead provider.
+                        # model): fail honestly on the first attempt. A verified
+                        # read result can still complete evidence-answerable work.
                         logger.warning(
                             f"Non-repairable model failure {e.code}: {e.message}"
                         )
-                        await self._fail_task(task_id, code=e.code, message=e.message)
+                        if not await self._try_complete_from_verified_evidence(
+                            task_id, f"{e.code}: {e.message}"
+                        ):
+                            await self._fail_task(task_id, code=e.code, message=e.message)
                         break
                     repair_attempts += 1
                     budget.record_repair()
                     logger.warning(f"Model decision error (attempt {repair_attempts}): {e.message}")
 
                     if repair_attempts > self.MAX_REPAIR_ATTEMPTS:
-                        await self._fail_task(
-                            task_id,
-                            code=e.code,
-                            message=f"Model failed after {repair_attempts} repair attempts: {e.message}"
+                        reason = (
+                            f"Model failed after {repair_attempts} repair attempts: {e.message}"
                         )
+                        if not await self._try_complete_from_verified_evidence(task_id, reason):
+                            await self._fail_task(task_id, code=e.code, message=reason)
                         break
 
                     # Try again, telling the model what went wrong with actionable instructions
@@ -482,9 +535,15 @@ class TaskExecutionLoop:
                         event_type="action.spin_blocked",
                         event_data=self.guard.blocked_spin_event(params),
                     )
+                    # Deterministic termination path: inject the already-obtained
+                    # verified result plus an explicit advance/complete directive
+                    # into the NEXT model decision, so the model stops re-querying
+                    # and calls the tool that answers the request. repair_context
+                    # is consumed (and cleared) by the next make_decision call.
+                    repair_context = self._build_spin_recovery_context(params, events)
                     logger.warning(
                         f"Blocked repeated spinning action for task {task_id}: "
-                        f"{ExecutionGuard.label(params)}"
+                        f"{ExecutionGuard.label(params)}; injected recovery directive"
                     )
                     continue
 
@@ -801,6 +860,90 @@ class TaskExecutionLoop:
             logger.error(f"Decision execution failed: {e}", exc_info=True)
             return False
     
+    async def _try_complete_from_verified_evidence(
+        self, task_id: str, failure_reason: str
+    ) -> bool:
+        """Complete a task from a verified tool result when the model fails to
+        terminate. This is a deterministic, evidence-backed fallback: it never
+        invents an answer, and it refuses if completion is not permitted.
+
+        It fires only when ALL hold:
+          * completion preconditions pass (no pending action, uncertainty,
+            cancelled state, or failed mutating action);
+          * the ledger has a successful, non-mutating, answer-producing read
+            whose recorded output contains substantive content;
+          * the request is evidence-answerable (a read/inspect/lookup request),
+            not an action the model was supposed to perform.
+
+        The final result is the recorded tool content itself, clearly attributed,
+        so the answer is exactly what the tool verified. Returns True when the
+        task was completed.
+        """
+        if self._completion_precondition_error(task_id) is not None:
+            return False
+        events = self._get_event_history(task_id)
+        task = self.db.query(Task).filter_by(id=task_id).first()
+        original_request = (task.original_request if task else "") or ""
+
+        # Only evidence-answerable requests (read/inspect/lookup/report), never
+        # "do something" action requests the model failed to carry out.
+        req = original_request.lower()
+        action_words = ("create ", "write ", "delete ", "move ", "install ", "uninstall ",
+                        "close ", "launch ", "open ", "set ", "change ", "send ", "update ")
+        if any(req.strip().startswith(w) for w in action_words):
+            return False
+
+        # Most recent successful non-mutating read with substantive recorded
+        # content. Capability-discovery tools (system_file_roots, system_time,
+        # etc.) are excluded: their output cannot answer a content request.
+        discovery_tools = {
+            "system_file_roots", "system_time", "system_battery", "system_disk",
+            "system_capabilities", "network_status", "system_active_window",
+            "window_list", "device_status", "memory_stats", "activity_recall",
+            "app_list", "package_list", "package_search",
+        }
+        for event in reversed(events):
+            if event.get("event_type") != "tool.executed":
+                continue
+            data = event.get("event_data", {})
+            if not data.get("success") or data.get("mutating"):
+                continue
+            tool_name = data.get("tool_name", "")
+            if tool_name in discovery_tools:
+                continue
+            output = data.get("output") or {}
+            if not isinstance(output, dict):
+                continue
+            content = (
+                output.get("content") or output.get("result") or output.get("text")
+                or output.get("page_text") or ""
+            )
+            if not isinstance(content, str) or not content.strip():
+                continue
+            summary = (
+                f"{content.strip()}\n\n"
+                f"[_Completed from verified `{tool_name}` tool output after the model failed "
+                f"to terminate ({failure_reason})._]"
+            )
+            await self.runner.transition_state(
+                task_id=task_id,
+                new_state=TaskState.COMPLETED,
+                event_type="task.completed",
+                event_data={
+                    "summary": summary,
+                    "warnings": [f"evidence_backed_completion: {failure_reason}"],
+                    "completed_at": datetime.utcnow().isoformat(),
+                    "evidence_tool": tool_name,
+                },
+                final_result=summary,
+            )
+            logger.info(
+                "Task %s completed from verified evidence of `%s` after: %s",
+                task_id, tool_name, failure_reason,
+            )
+            return True
+        return False
+
     async def _complete_task(
         self,
         task_id: str,

@@ -16,7 +16,7 @@ import pytest
 from backend.api.schemas import TaskState
 from backend.services.task_runner import TaskRunner
 from backend.services.task_execution_loop import TaskExecutionLoop
-from backend.services.model_engine import DecisionType
+from backend.services.model_engine import DecisionType, ModelDecisionError
 from backend.models.database import TaskEvent
 
 
@@ -171,6 +171,108 @@ async def test_spin_guard_needs_consecutive_identical_proposals(db_session, task
     assert executions["n"] == 4
     assert "action.spin_blocked" not in _event_types(db_session, task.id)
     assert "action.repeat_blocked" not in _event_types(db_session, task.id)
+    await task_runner.release_lease()
+
+
+def test_spin_recovery_context_carries_verified_result_and_completion_directive():
+    """The deterministic termination directive feeds the already-obtained tool
+    result back to the model, tells it to stop re-querying, and to advance with
+    the answer tool then complete_task -- without fabricating a completion."""
+    params = {"tool_name": "system_file_roots", "params": {}}
+    events = [
+        {
+            "event_type": "tool.executed",
+            "event_data": {
+                "tool_name": "system_file_roots",
+                "success": True,
+                "model_summary": "Approved file roots: C:\\Sythion\\sythion",
+                "output": {"approved_roots": ["C:\\Sythion\\sythion"]},
+            },
+        }
+    ]
+    directive = TaskExecutionLoop._build_spin_recovery_context(params, events)
+
+    assert "system_file_roots" in directive
+    assert "Do NOT call `system_file_roots` again" in directive
+    assert "C:\\Sythion\\sythion" in directive          # verified result carried
+    assert "complete_task" in directive                  # explicit completion
+    assert "file_read" in directive                      # advance to answer tool
+    assert "Never repeat an identical read-only query" in directive
+
+
+def test_spin_recovery_context_is_safe_without_a_prior_result():
+    """No verified result => no fabricated answer; only the directive is sent."""
+    directive = TaskExecutionLoop._build_spin_recovery_context(
+        {"tool_name": "system_time", "params": {}}, []
+    )
+    assert "system_time" in directive
+    assert "complete_task" in directive
+    assert "You already obtained" not in directive
+
+
+@pytest.mark.asyncio
+async def test_model_failure_completes_from_verified_read_evidence(db_session, task_runner):
+    """When the model fails to terminate after a successful read, the task
+    completes from the recorded tool output (never a fabricated answer)."""
+    await task_runner.acquire_lease()
+    task = await task_runner.create_task("Read README.md and report its first line")
+    await task_runner.transition_state(task.id, TaskState.RUNNING, "task.execution_started", {})
+
+    loop = TaskExecutionLoop(db_session, task_runner, tool_executor=None)
+    state = {"tool_done": False}
+
+    async def _decision(*args, **kwargs):
+        if not state["tool_done"]:
+            return DecisionType.EXECUTE_TOOL, {
+                "tool_name": "file_read",
+                "params": {"path": "README.md"},
+            }
+        # Model fails to issue complete_task.
+        raise ModelDecisionError(code="CLOUD_ERROR", message="no tool call")
+
+    async def _tool(*args, **kwargs):
+        state["tool_done"] = True
+        # Emulate a successful read whose output is recorded by the runner.
+        event_data = {
+            "tool_name": "file_read",
+            "params": {"path": "README.md"},
+            "success": True,
+            "mutating": False,
+            "model_summary": "README first line",
+            "output": {"content": "# Sythion heading\nrest of file"},
+        }
+        await task_runner.record_event(task.id, "tool.executed", event_data)
+        return True
+
+    loop.model_engine.make_decision = _decision
+    loop._execute_tool = _tool
+
+    await loop.execute_task(task.id)
+
+    task = await task_runner.get_task(task.id)
+    assert task.state == TaskState.COMPLETED.value
+    assert "# Sythion heading" in (task.final_result or "")
+    assert "verified `file_read` tool output" in (task.final_result or "")
+    await task_runner.release_lease()
+
+
+@pytest.mark.asyncio
+async def test_model_failure_does_not_fabricate_completion_without_read_evidence(db_session, task_runner):
+    """No successful read result => the task still fails honestly."""
+    await task_runner.acquire_lease()
+    task = await task_runner.create_task("Read README.md and report its first line")
+    await task_runner.transition_state(task.id, TaskState.RUNNING, "task.execution_started", {})
+
+    loop = TaskExecutionLoop(db_session, task_runner, tool_executor=None)
+
+    async def _decision(*args, **kwargs):
+        raise ModelDecisionError(code="CLOUD_ERROR", message="no tool call")
+
+    loop.model_engine.make_decision = _decision
+    await loop.execute_task(task.id)
+
+    task = await task_runner.get_task(task.id)
+    assert task.state == TaskState.FAILED.value
     await task_runner.release_lease()
 
 
