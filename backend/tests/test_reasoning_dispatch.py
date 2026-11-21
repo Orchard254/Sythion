@@ -396,3 +396,35 @@ async def test_failed_start_receipt_leaves_no_phantom_model_metrics():
     assert report.failed_calls == 0
     assert metrics._started == {}
     metrics.reset()
+
+
+@pytest.mark.asyncio
+async def test_failed_completion_receipt_leaves_no_leaked_started_metrics():
+    """Completion-phase counterpart: if the response_received receipt cannot
+    be persisted, the provider already ran but the in-flight metrics must
+    still be balanced — no leaked _started entry and a terminal outcome.
+    """
+    from backend.services.reasoning_journal import ReasoningJournal
+
+    metrics = get_reasoning_metrics()
+    metrics.reset()
+
+    async def recorder(_task_id, event_type, _data):
+        if event_type == "reasoning.response_received":
+            raise RuntimeError("ledger unavailable")
+
+    async def provider():
+        return {"untrusted": True}
+
+    with pytest.raises(ReasoningJournalError, match="event persistence failed"):
+        await dispatch_reasoning(
+            ReasoningJob(ReasoningPurpose.TASK_DECISION, 1, work_id="t"),
+            provider, on_event=ReasoningJournal(recorder),
+        )
+
+    report = metrics.report()
+    assert metrics._started == {}
+    assert report.model_calls == 1
+    assert report.failed_calls == 1  # balanced terminal outcome recorded
+    assert report.model_responses == 0
+    metrics.reset()

@@ -48,6 +48,14 @@ packages, memory, objectives and device status; goals with evidence and
 blockers; durable wakes; an owner-gated bounded wake; read-only recovery review
 packets; and a versioned authority-free reasoning contract.
 
+**Reasoning in-flight accounting invariant (2026-11-21):** the completion-phase
+counterpart to the start-receipt fix — when the `response_received` receipt
+cannot be persisted, `dispatch_reasoning` still balances the in-flight metrics
+(`record_model_outcome(success=False)`), so `_started` cannot leak and every
+`model_calls` increment has a terminal outcome. The durable ledger stays
+honestly unresolved for review; no response receipt is fabricated. Regression
+test in `test_reasoning_dispatch.py`.
+
 **Receipt chronology invariant (2026-11-21):** `audit_reasoning_receipts`
 validates receipt metadata BEFORE sequence numbers, so a malformed high-sequence
 event rejected for bad metadata cannot advance the watermark and falsely flag

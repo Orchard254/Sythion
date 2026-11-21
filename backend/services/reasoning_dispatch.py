@@ -636,9 +636,23 @@ async def dispatch_reasoning(
             raise
 
         # Persist the fact that the provider returned before its untrusted
-        # response can be parsed or used by the caller.
-        if on_event is not None:
-            await _record_phase(on_event, job, "response_received")
+        # response can be parsed or used by the caller. A failed completion
+        # receipt is outside the provider-call try/except, so it must balance
+        # the in-flight metrics here: otherwise _started leaks forever, no
+        # terminal outcome is recorded, and the effectiveness report shows a
+        # call with no result. The durable ledger honestly stays unresolved
+        # for review — we do not fabricate a response_received receipt.
+        try:
+            if on_event is not None:
+                await _record_phase(on_event, job, "response_received")
+        except Exception:
+            metrics.record_model_outcome(job, success=False)
+            if on_event is not None:
+                try:
+                    await _record_phase(on_event, job, "failed")
+                except Exception:
+                    pass
+            raise
         tokens = 0
         if isinstance(result, dict):
             usage = result.get("usage")
