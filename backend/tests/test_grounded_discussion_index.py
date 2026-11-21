@@ -373,6 +373,47 @@ def test_uncertain_provider_result_transition_and_no_provider_call(db_session):
     assert row.error_code == "provider_timeout"
 
 
+def test_successful_transition_clears_stale_error_code(db_session):
+    """A row that failed then completed must not still carry the old error."""
+    from backend.services.grounded_discussion_index import DiscussionIndexStateRow
+
+    sid = "session-index"
+    set_current_session_id(sid)
+    setup_exchange(db_session, sid)
+    mgr = DiscussionIndexManager(db_session, db=db_session)
+    state, _ = mgr.receive(sid, "exchange-1", 11, 12, input_digest="recovered")
+    mgr.transition(state.idempotency_key, INDEX_STATUS_IN_PROGRESS, commit=False)
+    mgr.transition(state.idempotency_key, INDEX_STATUS_UNCERTAIN,
+                   error_code="provider_timeout", commit=False)
+    mgr.transition(state.idempotency_key, INDEX_STATUS_COMPLETE,
+                   result_json={"indexed": 2}, commit=True)
+
+    row = db_session.query(DiscussionIndexStateRow).one()
+    assert row.status == INDEX_STATUS_COMPLETE
+    assert row.result_json is not None
+    assert row.error_code is None
+
+
+def test_error_transition_clears_stale_result_json(db_session):
+    """Symmetrically, a later failure must not keep an earlier result payload."""
+    from backend.services.grounded_discussion_index import DiscussionIndexStateRow
+
+    sid = "session-index"
+    set_current_session_id(sid)
+    setup_exchange(db_session, sid)
+    mgr = DiscussionIndexManager(db_session, db=db_session)
+    state, _ = mgr.receive(sid, "exchange-1", 11, 12, input_digest="re-failed")
+    mgr.transition(state.idempotency_key, INDEX_STATUS_COMPLETE,
+                   result_json={"indexed": 1}, commit=False)
+    mgr.transition(state.idempotency_key, INDEX_STATUS_UNCERTAIN,
+                   error_code="retry_failed", commit=True)
+
+    row = db_session.query(DiscussionIndexStateRow).one()
+    assert row.status == INDEX_STATUS_UNCERTAIN
+    assert row.error_code == "retry_failed"
+    assert row.result_json is None
+
+
 def test_unlinked_existing_correction_does_not_fabricate_event_or_link(db_session):
     sid = "session-index"
     set_current_session_id(sid)

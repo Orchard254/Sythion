@@ -48,6 +48,13 @@ packages, memory, objectives and device status; goals with evidence and
 blockers; durable wakes; an owner-gated bounded wake; read-only recovery review
 packets; and a versioned authority-free reasoning contract.
 
+**Index-state self-consistency invariant (2026-11-21):**
+`DiscussionIndexManager.transition` never leaves a COMPLETE/INSUFFICIENT row
+with a stale `error_code`, nor an error row with a stale `result_json`. A fresh
+result clears the prior error, a fresh error clears the prior result, and
+terminal-success states force-clear errors. Regression tests in
+`test_grounded_discussion_index.py`.
+
 **Discussion-context read invariant (2026-11-21):** named-context readers
 return one row per distinct context — the membership whose exchange is newest
 by `created_at` — and `limit` bounds contexts, not membership rows. A thread

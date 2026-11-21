@@ -418,11 +418,18 @@ class DiscussionIndexManager:
                     result_json, sort_keys=True, separators=(",", ":")
                 )
             )
+            # A fresh successful result supersedes any earlier error.
+            row.error_code = None
         if error_code is not None:
             row.error_code = str(error_code)
+            # A fresh error supersedes any earlier result payload.
+            row.result_json = None
         row.updated_at = self._now()
         if status in (INDEX_STATUS_COMPLETE, INDEX_STATUS_INSUFFICIENT):
             row.completed_at = self._now()
+            # A terminal-success state must never carry a stale error, even
+            # when the caller did not supply a result payload.
+            row.error_code = None
         if commit:
             self._session.commit()
         else:
