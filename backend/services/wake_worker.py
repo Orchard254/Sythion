@@ -62,6 +62,11 @@ class WakeWorker:
         self._bounded_task: Optional[asyncio.Task] = None
         self._bounded_scheduler: Optional[BoundedWakeScheduler] = None
         self._bounded_session = None
+        # The bounded loop may span many fresh BoundedWakeScheduler windows, so
+        # its stop signal and last fatal error live on the worker, not on a
+        # single (replaced) scheduler instance.
+        self._stop: Optional[asyncio.Event] = None
+        self._last_fatal_error: Optional[str] = None
         # Opt-in observability sink. The worker remains event-driven by default;
         # a scheduler supplied here is already subscribed to the shared bus.
         self.reasoning_scheduler = reasoning_scheduler
@@ -79,6 +84,26 @@ class WakeWorker:
     def bounded_loop_running(self) -> bool:
         return self._bounded_task is not None and not self._bounded_task.done()
 
+    def last_fatal_error(self) -> Optional[str]:
+        """Last fatal error of the bounded loop, or None when none occurred."""
+        return self._last_fatal_error
+
+    def _bounded_owner_enabled(self) -> bool:
+        """Re-read BOTH real owner switches from persisted state before rearm.
+
+        Mirrors ``apply_owner_policy``: the time switch and the background
+        switch must both be on. Never grants execution authority itself — the
+        single ``may_execute_background`` gate still runs in ``_process``.
+        """
+        from backend.services.main_agent import MainAgentService
+
+        session = self._db_manager.new_session()
+        try:
+            svc = MainAgentService(session)
+            return bool(svc.background_enabled() and svc.bounded_wake_enabled())
+        finally:
+            session.close()
+
     def start_bounded_loop(self, policy: WakePolicy) -> bool:
         """Start the bounded loop only for an explicitly enabled policy.
 
@@ -93,8 +118,11 @@ class WakeWorker:
             raise TypeError("policy must be a WakePolicy")
         if not policy.enabled or self.bounded_loop_running():
             return False
-        # Selector and wake handler are built inside the background task so the
-        # DB session is created and used on the same event-loop thread.
+        # Fresh signal + error state for each loop lifetime. Selector and wake
+        # handler are built inside the background task so the DB session is
+        # created and used on the same event-loop thread.
+        self._stop = asyncio.Event()
+        self._last_fatal_error = None
         self._bounded_scheduler = BoundedWakeScheduler()
         self._bounded_task = asyncio.create_task(
             self._run_bounded_loop(policy), name="sythion-bounded-wake-loop"
@@ -112,6 +140,11 @@ class WakeWorker:
         self._bounded_session = session
         selector = RunnableGoalSelector(session)
 
+        # A fatal failure raised while submitting a wake is recorded here. The
+        # stock BoundedWakeScheduler swallows handler Exceptions into failed
+        # cycles, so the rearm loop inspects this marker to decide to stop.
+        fatal: list = []
+
         async def wake_handler(goal_id: str) -> None:
             # Submits a NORMAL durable wake. Execution still goes through
             # _process -> may_execute_background -> protected runtime.
@@ -120,28 +153,81 @@ class WakeWorker:
             # regardless of the row's status), so cycles 2..N would create no
             # PENDING row and the goal would never be re-woken. The UUID suffix
             # is unique across process restarts too, since the DB is durable.
-            self.submit(
-                "goal.wake",
-                trigger_reference=goal_id,
-                wake_key=f"goal.wake:{goal_id}:{uuid.uuid4().hex}",
-            )
+            try:
+                self.submit(
+                    "goal.wake",
+                    trigger_reference=goal_id,
+                    wake_key=f"goal.wake:{goal_id}:{uuid.uuid4().hex}",
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                fatal.append(str(exc) or repr(exc))
+                # End this window promptly; the rearm loop sees ``fatal`` and
+                # will not open another window. Do not re-raise: the scheduler
+                # would just swallow it as a failed cycle.
+                sched = self._bounded_scheduler
+                if sched is not None:
+                    sched.stop()
 
+        total_cycles = 0
+        rearm_count = 0
         try:
-            report = await self._bounded_scheduler.run(selector, wake_handler, policy)
-            logger.info(
-                "Bounded wake loop finished: cycles=%d idle=%d work=%d failed=%d",
-                report.cycles, report.idle_cycles, report.work_cycles,
-                report.failed_cycles,
-            )
+            while True:
+                if self._stop is not None and self._stop.is_set():
+                    break
+
+                # A fresh scheduler gives a fresh, still-bounded cycle window.
+                # Per-window cap (WakePolicy.max_cycles) is never raised here.
+                scheduler = BoundedWakeScheduler()
+                self._bounded_scheduler = scheduler
+                report = await scheduler.run(selector, wake_handler, policy)
+                total_cycles += report.cycles
+
+                logger.info(
+                    "Bounded wake window complete: window_cycles=%d idle=%d "
+                    "work=%d failed=%d total_cycles=%d rearm_count=%d",
+                    report.cycles, report.idle_cycles, report.work_cycles,
+                    report.failed_cycles, total_cycles, rearm_count,
+                )
+
+                if fatal:
+                    self._last_fatal_error = fatal[0]
+                    logger.error(
+                        "Bounded wake fatal error; stopping rearm: %s", fatal[0]
+                    )
+                    break
+                if (self._stop is not None and self._stop.is_set()) or report.stopped:
+                    break
+
+                # Normal budget exhaustion: re-arm only while the policy and
+                # BOTH real owner switches still say "on". This is a new window
+                # with the same bounded cap — never an unbounded loop.
+                if not policy.enabled or not self._bounded_owner_enabled():
+                    logger.info(
+                        "Bounded wake loop stopping: owner switches disabled "
+                        "(total_cycles=%d)", total_cycles,
+                    )
+                    break
+                rearm_count += 1
+                logger.info(
+                    "Re-arming bounded wake window #%d (total_cycles=%d)",
+                    rearm_count, total_cycles,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # pragma: no cover - never kill the process
+            self._last_fatal_error = str(exc) or repr(exc)
             logger.exception("Bounded wake loop failed: %s", exc)
         finally:
             session.close()
             self._bounded_session = None
 
     def stop_bounded_loop(self) -> None:
+        # Set the persistent signal so the rearm loop stops between windows,
+        # and stop the current scheduler so the inner window breaks promptly.
+        if self._stop is not None:
+            self._stop.set()
         if self._bounded_scheduler is not None:
             self._bounded_scheduler.stop()
         if self._bounded_task is not None and not self._bounded_task.done():
