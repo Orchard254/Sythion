@@ -48,6 +48,12 @@ packages, memory, objectives and device status; goals with evidence and
 blockers; durable wakes; an owner-gated bounded wake; read-only recovery review
 packets; and a versioned authority-free reasoning contract.
 
+**Token accounting invariant (2026-11-21):** reasoning usage is counted once,
+preferring `total_tokens` and otherwise summing a single provider breakdown —
+never summing `total_tokens` together with `prompt_tokens`/`completion_tokens`,
+which are alternate representations of the same usage. Parity with
+`model_selection._usage_tokens`. Regression test in `test_reasoning_dispatch.py`.
+
 **Discovery attribution invariant (2026-11-21):** when only `unresolved_task_proof_count > 0` and every canonical source is intact, discovery reports `reason="unresolved_task_proof"` — not `"unresolved_canonical_source"`, which falsely blamed complete sources. The consumer's reason allowlist carries the new value. Regression test in `test_grounded_discussion_discovery.py`.
 
 **Reasoning in-flight accounting invariant (2026-11-21):** the completion-phase

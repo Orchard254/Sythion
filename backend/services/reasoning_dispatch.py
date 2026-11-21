@@ -541,6 +541,32 @@ def as_text_result(
     )
 
 
+def _usage_tokens(result: Any) -> int:
+    """Count tokens once, preferring the provider's total.
+
+    OpenAI-compatible responses carry total_tokens AND the prompt/completion
+    breakdown simultaneously; summing all keys triple-counts the same usage.
+    Mirror the canonical rule in model_selection._usage_tokens: prefer the
+    total, else sum a single breakdown pair, never both representations.
+    """
+    if not isinstance(result, dict):
+        return 0
+    usage = result.get("usage")
+    if not isinstance(usage, dict):
+        return 0
+
+    def _positive_int(value):
+        return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+    total = _positive_int(usage.get("total_tokens"))
+    if total:
+        return total
+    ollama = _positive_int(usage.get("prompt_eval_count")) + _positive_int(usage.get("eval_count"))
+    if ollama:
+        return ollama
+    return _positive_int(usage.get("prompt_tokens")) + _positive_int(usage.get("completion_tokens"))
+
+
 async def _record_phase(on_event, job, phase):
     try:
         await on_event(job, phase)
@@ -653,15 +679,7 @@ async def dispatch_reasoning(
                 except Exception:
                     pass
             raise
-        tokens = 0
-        if isinstance(result, dict):
-            usage = result.get("usage")
-            if isinstance(usage, dict):
-                for key in ("total_tokens", "prompt_eval_count", "eval_count",
-                            "prompt_tokens", "completion_tokens"):
-                    value = usage.get(key)
-                    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-                        tokens += value
+        tokens = _usage_tokens(result)
         metrics.record_model_outcome(job, success=True, tokens=tokens)
         return result
     finally:

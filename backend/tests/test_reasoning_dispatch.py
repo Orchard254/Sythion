@@ -368,6 +368,29 @@ async def test_null_result_remains_untrusted_for_caller_validation():
 
 
 @pytest.mark.asyncio
+async def test_mixed_usage_counts_tokens_once():
+    """OpenAI-compatible responses carry total_tokens AND the breakdown at
+    once; count the real usage once, not the sum of all representations.
+    """
+    metrics = get_reasoning_metrics()
+    metrics.reset()
+
+    async def model():
+        return {"untrusted": True, "usage": {
+            "total_tokens": 7, "prompt_tokens": 3, "completion_tokens": 4,
+        }}
+
+    result = await dispatch_reasoning(
+        ReasoningJob(ReasoningPurpose.TASK_DECISION, 1, work_id="t-tokens"), model)
+    assert result["untrusted"] is True
+    report = metrics.report()
+    assert report.model_calls == 1
+    assert report.model_responses == 1
+    assert report.total_tokens == 7  # NOT 14
+    metrics.reset()
+
+
+@pytest.mark.asyncio
 async def test_failed_start_receipt_leaves_no_phantom_model_metrics():
     """A start-receipt persistence failure must not count a model call or leak
     an _started entry — no provider was invoked, so the effectiveness report
