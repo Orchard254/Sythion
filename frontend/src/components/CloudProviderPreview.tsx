@@ -27,7 +27,7 @@ function previewFailure(error: unknown): string {
   if (status === 400) return 'Sythion rejected the provider or model selection. Verify the exact provider and model ID.';
   if (status === 403) return 'Sythion blocked the local request (403). Check the desktop connection and trusted app origin.';
   if (status === 404) return 'This cloud setup endpoint is not available in the connected Sythion backend.';
-  if (status === 500) return 'Sythion could not complete the local operation (500). Check sidecar.err.log for the backend error; do not share API keys.';
+  if (status === 500) return 'Sythion could not complete this local operation. No change was made; do not share API keys.';
   if (status === 429) return 'Cloud rate limit or capacity reached. Do not retry repeatedly; check your provider quota.';
   if (status === 401) return 'Sythion rejected this request. Recheck the local app connection.';
   // A 409 is reconciled internally by the caller (re-read status / re-stage).
