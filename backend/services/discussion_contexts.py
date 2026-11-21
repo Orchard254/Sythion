@@ -9,6 +9,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
+from sqlalchemy import and_, func
+
 from backend.models.database import (
     ConversationExchange, ConversationTaskAssociation, ConversationTurn,
     DiscussionContext, DiscussionContextMembership, Task,
@@ -167,6 +169,40 @@ def _normalize_limit(limit: int) -> int:
     return limit
 
 
+def _newest_memberships(db, session_id: str):
+    """One representative membership per context: its newest exchange.
+
+    A named context can accrue many memberships (follow-ups and task
+    instructions join the source exchange's context). Exchange ids are random
+    UUIDs, so the old reader's ``exchange_id.asc()`` ordering was arbitrary and
+    its membership-level LIMIT silently dropped the freshest corrections. Pick
+    the newest membership by exchange ``created_at`` (with an id tie-breaker)
+    so each context contributes exactly one row — the latest state of the
+    thread — and ``limit`` bounds contexts, not memberships.
+    """
+    return (
+        db.query(
+            DiscussionContextMembership.context_id.label("context_id"),
+            DiscussionContextMembership.exchange_id.label("exchange_id"),
+            DiscussionContextMembership.user_turn_id.label("user_turn_id"),
+            DiscussionContextMembership.assistant_turn_id.label("assistant_turn_id"),
+            func.row_number().over(
+                partition_by=DiscussionContextMembership.context_id,
+                order_by=(
+                    ConversationExchange.created_at.desc(),
+                    ConversationExchange.id.desc(),
+                ),
+            ).label("rn"),
+        )
+        .join(
+            ConversationExchange,
+            ConversationExchange.id == DiscussionContextMembership.exchange_id,
+        )
+        .filter(ConversationExchange.session_id == session_id)
+        .subquery()
+    )
+
+
 def read_session_discussion_contexts(
     db, session_id: str, *, limit: int = 20
 ) -> tuple[NamedDiscussionContext, ...]:
@@ -176,6 +212,7 @@ def read_session_discussion_contexts(
     session_id = session_id.strip()
     limit = _normalize_limit(limit)
     with db.no_autoflush:
+        newest = _newest_memberships(db, session_id)
         rows = (
             db.query(
                 DiscussionContext.id.label("context_id"),
@@ -183,9 +220,9 @@ def read_session_discussion_contexts(
                 DiscussionContext.name,
                 DiscussionContext.name_source,
                 DiscussionContext.created_at,
-                DiscussionContextMembership.exchange_id,
-                DiscussionContextMembership.user_turn_id,
-                DiscussionContextMembership.assistant_turn_id,
+                newest.c.exchange_id.label("exchange_id"),
+                newest.c.user_turn_id.label("user_turn_id"),
+                newest.c.assistant_turn_id.label("assistant_turn_id"),
                 ConversationExchange.user_text.label("exchange_user_text"),
                 ConversationExchange.assistant_text.label("exchange_assistant_text"),
                 ConversationExchange.session_id.label("exchange_session_id"),
@@ -197,21 +234,20 @@ def read_session_discussion_contexts(
                 Task.final_result,
             )
             .select_from(DiscussionContext)
-            .join(DiscussionContextMembership, DiscussionContextMembership.context_id == DiscussionContext.id)
-            .join(ConversationExchange, ConversationExchange.id == DiscussionContextMembership.exchange_id)
+            .join(newest, and_(newest.c.context_id == DiscussionContext.id, newest.c.rn == 1))
+            .join(ConversationExchange, ConversationExchange.id == newest.c.exchange_id)
             .outerjoin(
                 ConversationTaskAssociation,
-                (ConversationTaskAssociation.exchange_id == DiscussionContextMembership.exchange_id)
-                & (ConversationTaskAssociation.user_turn_id == DiscussionContextMembership.user_turn_id)
-                & (ConversationTaskAssociation.assistant_turn_id == DiscussionContextMembership.assistant_turn_id),
+                (ConversationTaskAssociation.exchange_id == newest.c.exchange_id)
+                & (ConversationTaskAssociation.user_turn_id == newest.c.user_turn_id)
+                & (ConversationTaskAssociation.assistant_turn_id == newest.c.assistant_turn_id),
             )
             .outerjoin(Task, Task.id == ConversationTaskAssociation.task_id)
             .filter(
                 DiscussionContext.session_id == session_id,
                 ConversationExchange.session_id == session_id,
             )
-            .order_by(DiscussionContext.created_at.desc(), DiscussionContext.id.desc(),
-                      DiscussionContextMembership.exchange_id.asc())
+            .order_by(DiscussionContext.created_at.desc(), DiscussionContext.id.desc())
             .limit(limit)
             .all()
         )
@@ -245,18 +281,14 @@ list_named_discussion_contexts = read_session_discussion_contexts
 read_named_contexts = read_session_discussion_contexts
 
 
-from dataclasses import dataclass
-from sqlalchemy import func
-
-
 @dataclass(frozen=True)
 class DiscussionContextCoverage:
     """Exact scope metadata for a canonical discussion-context read.
 
-    available_count is the total number of eligible same-session context
-    exchanges counted in the same SQL statement before LIMIT. It is a
-    scope/freshness signal, not a target identity or an available older
-    correction.
+    available_count is the number of eligible DISTINCT same-session contexts
+    counted in the same SQL statement before LIMIT (a multi-membership thread
+    counts once). It is a scope/freshness signal, not a target identity or an
+    available older correction.
     """
     available_count: int
     returned_count: int
@@ -285,6 +317,7 @@ def read_session_discussion_contexts_with_coverage(db, session_id, *, limit=20):
     limit = _normalize_limit(limit)
 
     with db.no_autoflush:
+        newest = _newest_memberships(db, session_id)
         rows = (
             db.query(
                 DiscussionContext.id.label("context_id"),
@@ -292,9 +325,9 @@ def read_session_discussion_contexts_with_coverage(db, session_id, *, limit=20):
                 DiscussionContext.name,
                 DiscussionContext.name_source,
                 DiscussionContext.created_at,
-                DiscussionContextMembership.exchange_id,
-                DiscussionContextMembership.user_turn_id,
-                DiscussionContextMembership.assistant_turn_id,
+                newest.c.exchange_id.label("exchange_id"),
+                newest.c.user_turn_id.label("user_turn_id"),
+                newest.c.assistant_turn_id.label("assistant_turn_id"),
                 ConversationExchange.user_text.label("exchange_user_text"),
                 ConversationExchange.assistant_text.label("exchange_assistant_text"),
                 ConversationExchange.session_id.label("exchange_session_id"),
@@ -307,21 +340,20 @@ def read_session_discussion_contexts_with_coverage(db, session_id, *, limit=20):
                 func.count().over().label("eligible_total"),
             )
             .select_from(DiscussionContext)
-            .join(DiscussionContextMembership, DiscussionContextMembership.context_id == DiscussionContext.id)
-            .join(ConversationExchange, ConversationExchange.id == DiscussionContextMembership.exchange_id)
+            .join(newest, and_(newest.c.context_id == DiscussionContext.id, newest.c.rn == 1))
+            .join(ConversationExchange, ConversationExchange.id == newest.c.exchange_id)
             .outerjoin(
                 ConversationTaskAssociation,
-                (ConversationTaskAssociation.exchange_id == DiscussionContextMembership.exchange_id)
-                & (ConversationTaskAssociation.user_turn_id == DiscussionContextMembership.user_turn_id)
-                & (ConversationTaskAssociation.assistant_turn_id == DiscussionContextMembership.assistant_turn_id),
+                (ConversationTaskAssociation.exchange_id == newest.c.exchange_id)
+                & (ConversationTaskAssociation.user_turn_id == newest.c.user_turn_id)
+                & (ConversationTaskAssociation.assistant_turn_id == newest.c.assistant_turn_id),
             )
             .outerjoin(Task, Task.id == ConversationTaskAssociation.task_id)
             .filter(
                 DiscussionContext.session_id == session_id,
                 ConversationExchange.session_id == session_id,
             )
-            .order_by(DiscussionContext.created_at.desc(), DiscussionContext.id.desc(),
-                      DiscussionContextMembership.exchange_id.asc())
+            .order_by(DiscussionContext.created_at.desc(), DiscussionContext.id.desc())
             .limit(limit)
             .all()
         )

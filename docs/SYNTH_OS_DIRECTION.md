@@ -48,6 +48,14 @@ packages, memory, objectives and device status; goals with evidence and
 blockers; durable wakes; an owner-gated bounded wake; read-only recovery review
 packets; and a versioned authority-free reasoning contract.
 
+**Discussion-context read invariant (2026-11-21):** named-context readers
+return one row per distinct context — the membership whose exchange is newest
+by `created_at` — and `limit` bounds contexts, not membership rows. A thread
+that accrued follow-ups/instructions previously produced one row per membership
+ordered by random UUID, so with many memberships the freshest correction was
+silently excluded and coverage counted memberships as contexts. Regression test
+in `test_discussion_contexts.py`.
+
 **Diagnostic persistence honesty invariant (2026-11-21):**
 `diagnose_failed_task` returns honest unavailability when the persistence
 commit fails — the rollback removes the `task.diagnostic` evidence event, so

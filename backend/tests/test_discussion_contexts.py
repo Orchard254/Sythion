@@ -450,3 +450,48 @@ async def test_context_read_does_not_flush_unsaved_user_edits(db, monkeypatch):
         assert read_exchange_context(db, runtime.session_id, original.exchange_id) == identity
     assert context.name == "User's unsaved context name" and context in db.dirty
     db.rollback()
+
+
+def test_multi_membership_reader_keeps_newest_exchange_and_context_count(db):
+    """One named thread with many memberships must contribute one row — its
+    newest exchange — and coverage must count contexts, not membership rows.
+    Exchange ids are random UUIDs, so ordering by id drops the freshest answer.
+    """
+    from backend.services.discussion_contexts import (
+        read_session_discussion_contexts,
+        read_session_discussion_contexts_with_coverage,
+    )
+
+    sid = "thread-session"
+    db.add(DiscussionContext(
+        id="thread-ctx", session_id=sid, name="Thread",
+        name_source="initial_request_excerpt", created_at=datetime.utcnow(),
+    ))
+    base = datetime(2026, 1, 1, 12, 0, 0)
+    for i in range(5):
+        # Newest exchange ('conv-e') sorts LAST by exchange_id ascending.
+        exchange_id = f"conv-{chr(ord('a') + i)}"
+        db.add(ConversationTurn(id=100 + i * 2, session_id=sid, role="user",
+                                summary=f"user {i}"))
+        db.add(ConversationTurn(id=101 + i * 2, session_id=sid, role="assistant",
+                                summary=f"assistant {i}"))
+        db.add(ConversationExchange(
+            id=exchange_id, session_id=sid, user_text=f"user {i}",
+            assistant_text=f"answer {i}", created_at=base + timedelta(minutes=i),
+        ))
+        db.add(DiscussionContextMembership(
+            exchange_id=exchange_id, context_id="thread-ctx",
+            user_turn_id=100 + i * 2, assistant_turn_id=101 + i * 2,
+        ))
+    db.commit()
+
+    rows = read_session_discussion_contexts(db, sid, limit=3)
+    assert len(rows) == 1  # one row per context, not per membership
+    assert rows[0].exchange_id == "conv-e"  # newest by created_at
+
+    contexts, coverage = read_session_discussion_contexts_with_coverage(db, sid, limit=3)
+    assert len(contexts) == 1
+    assert contexts[0].exchange_id == "conv-e"
+    assert coverage.available_count == 1  # one context, not five memberships
+    assert coverage.returned_count == 1
+    assert coverage.omitted_count == 0
