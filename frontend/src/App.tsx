@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SythionMark } from './components/icons';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
-import { Button, Notice, Panel } from './components/ui';
+import { Notice, Panel } from './components/ui';
 import { AssistantScreen } from './screens/Assistant';
 import { AutomationsScreen } from './screens/Automations';
 import { MemoryScreen } from './screens/Memory';
@@ -79,7 +79,7 @@ function ScreenFor({ route }: { route: RouteId }) {
 }
 
 function AppContent() {
-  const { isInitialized, isBridgeReady, retry } = useAppInit();
+  const { isInitialized, isBridgeReady } = useAppInit();
   const isConnected = useAppStore((s) => s.isConnected);
   const error = useAppStore((s) => s.error);
   const setConnectedStore = useAppStore((s) => s.setConnected);
@@ -231,8 +231,9 @@ function AppContent() {
           <div className="stack" style={{ alignItems: 'center', gap: 14, maxWidth: 340 }}>
             <SythionMark size={40} />
             <div style={{ textAlign: 'center' }}>
-              <div className="t-title">Connecting to Sythion</div>
-              <div className="t-muted">Resolving the local runtime bridge…</div>
+              <div className="t-title">Checking connection…</div>
+              <div className="t-muted">Sythion is resolving its local runtime bridge.</div>
+              <div className="t-muted">It keeps checking on its own — no action is needed.</div>
             </div>
             <div className="bar bar--indeterminate" style={{ maxWidth: 200 }}>
               <div className="bar__fill" />
@@ -283,31 +284,29 @@ function AppContent() {
               <SythionMark size={34} />
               <div>
                 <h1 className="screen-head__title" style={{ fontSize: 19 }}>
-                  Sythion backend unreachable
+                  Sythion is still unreachable
                 </h1>
                 <p className="t-muted" style={{ margin: '3px 0 0' }}>
-                  Start the local backend to see live state.
-                </p>              </div>
+                  The local runtime did not respond during startup.
+                </p>
+              </div>
             </div>
 
             <Notice tone="danger" icon="alert">
-              <span>{error || 'No response from the Sythion sidecar.'}</span>
+              <span>{error || 'No response from the Sythion runtime.'}</span>
             </Notice>
 
-            <Panel title="What you can do" icon="info">
+            <Panel title="Connection status" icon="info">
               <div className="stack stack--tight">
                 <span className="t-muted">
-                  <strong className="t-body" style={{ color: 'var(--text-0)' }}>
-                    Start the backend
-                  </strong>{' '}
-                  — run <span className="t-mono">start_sythion.cmd</span> from the project root, or{' '}
-                  <span className="t-mono">python -m uvicorn backend.main:app</span>.
+                  Sythion is checking quietly in the background and will reconnect on its own if the
+                  runtime becomes available. Your settings and data are unchanged.
                 </span>
-              </div>
-              <div className="row" style={{ gap: 8, marginTop: 14 }}>
-                <Button variant="primary" icon="refresh" onClick={() => void retry()}>
-                  Retry connection
-                </Button>
+                <span className="t-muted">
+                  If it stays unreachable, the startup log records why:{' '}
+                  <span className="t-mono">sidecar.err.log</span> or{' '}
+                  <span className="t-mono">sythion-shell.log</span> in the Sythion profile.
+                </span>
               </div>
             </Panel>
           </div>

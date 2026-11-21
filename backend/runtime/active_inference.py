@@ -14,12 +14,15 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 from dataclasses import dataclass
 from typing import Any, Dict
 
 from backend.core import profile
+
+logger = logging.getLogger(__name__)
 
 _VERSION = 1
 _CLOUD_MODEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,179}\Z")
@@ -92,6 +95,31 @@ def get_active_inference_selection() -> ActiveInferenceSelection:
 
 
 _PENDING_ACTIVATION_KEY = "pending_inference_selection"
+# Ollama operations use a SEPARATE key so the credential-bound cloud pending
+# record format stays untouched. Damaged/ambiguous records fail closed.
+_PENDING_OLLAMA_KEY = "pending_ollama_selection"
+_PENDING_OLLAMA_KINDS = ("activate", "restore", "select")
+
+
+def clear_pending_selections() -> Dict[str, Any]:
+    """Profile patch that clears every queued activation, of either kind.
+
+    Direct activation/restore paths merge this into their own profile write so
+    a superseded queued choice cannot fire later on top of the new selection.
+    Only keys that actually exist are included: this keeps an unconfigured
+    profile byte-for-byte unchanged, which downstream consumers rely on.
+    """
+    try:
+        state = profile.load_profile()
+    except Exception:
+        # A profile we cannot read cannot be safely written either; include both
+        # keys so a caller that ignores the read error still clears the records.
+        return {_PENDING_ACTIVATION_KEY: None, _PENDING_OLLAMA_KEY: None}
+    return {
+        key: None
+        for key in (_PENDING_ACTIVATION_KEY, _PENDING_OLLAMA_KEY)
+        if key in state
+    }
 
 
 def _build_verified_binding(db: Any, provider_id: str, model_id: str) -> Dict[str, Any]:
@@ -140,7 +168,9 @@ def activate_verified_cloud_selection(db: Any, provider_id: str, model_id: str) 
     try:
         profile.save_profile({
             "active_inference_selection": binding,
-            _PENDING_ACTIVATION_KEY: None,  # clear any pending choice
+            # Clear superseded queued choices of either kind: the owner just
+            # made a direct, current cloud selection.
+            **clear_pending_selections(),
         })
     except Exception:
         raise ActiveInferenceUnavailable("Could not save active provider") from None
@@ -176,22 +206,155 @@ def queue_pending_activation(db: Any, provider_id: str, model_id: str) -> None:
     """
     binding = _build_verified_binding(db, provider_id, model_id)
     try:
-        profile.save_profile({_PENDING_ACTIVATION_KEY: binding})
+        profile.save_profile({
+            _PENDING_ACTIVATION_KEY: binding,
+            # The latest owner choice wins: drop any queued Ollama operation.
+            _PENDING_OLLAMA_KEY: None,
+        })
     except Exception:
         raise ActiveInferenceUnavailable("Could not schedule active provider") from None
 
 
-def maybe_apply_pending_activation(db: Any) -> bool:
-    """Apply a queued model choice once no task can hold the old binding.
+def _valid_pending_ollama(raw: Any) -> bool:
+    """Fail-closed validation of a queued Ollama operation record."""
+    return (
+        isinstance(raw, dict)
+        and set(raw) == {"version", "model_id", "kind"}
+        and type(raw.get("version")) is int
+        and raw["version"] == _VERSION
+        and raw.get("kind") in _PENDING_OLLAMA_KINDS
+        and type(raw.get("model_id")) is str
+        and _CLOUD_MODEL_PATTERN.fullmatch(raw["model_id"]) is not None
+    )
 
-    Called from the task terminal transition. Returns True when a pending
-    choice was promoted. Fails closed: a damaged pending record is ignored and
-    a still-in-flight task defers the switch rather than breaking its binding.
+
+def queue_pending_ollama_activation(
+    db: Any, *, model_id: str, kind: str,
+) -> None:
+    """Hold an Ollama selection to apply automatically when idle.
+
+    All verification (catalog membership and, for ``activate``, the
+    authenticated chat proof) already happened in the request handler. This
+    only persists the intended target; it never mutates active state.
+
+    ``restore`` keeps the current selected model and only returns the active
+    sentinel to Ollama; ``select`` records an unverified choice; ``activate``
+    records a verified one.
     """
-    raw = profile.load_profile().get(_PENDING_ACTIVATION_KEY)
-    if not isinstance(raw, dict) or set(raw) != {
+    if (type(model_id) is not str
+            or _CLOUD_MODEL_PATTERN.fullmatch(model_id) is None
+            or kind not in _PENDING_OLLAMA_KINDS):
+        raise ActiveInferenceUnavailable("Invalid Ollama selection")
+    record = {"version": _VERSION, "model_id": model_id, "kind": kind}
+    try:
+        profile.save_profile({
+            _PENDING_OLLAMA_KEY: record,
+            # The latest owner choice wins across providers as well.
+            _PENDING_ACTIVATION_KEY: None,
+        })
+    except Exception:
+        raise ActiveInferenceUnavailable("Could not schedule Ollama selection") from None
+
+
+def _refresh_live_ollama_model(model_id: str) -> None:
+    """Point the shared Ollama adapter at an applied model (best effort)."""
+    try:
+        from backend.adapters.ollama_adapter import get_adapter
+        adapter = get_adapter()
+        if adapter is not None:
+            adapter.selected_model = model_id
+            adapter._capability_profile = None
+    except Exception:
+        # The persisted profile is authoritative; a live-refresh failure must
+        # never turn an applied selection into a failed one.
+        logger.warning("Could not refresh the live Ollama model selection", exc_info=True)
+
+
+def _apply_pending_ollama(db: Any, raw: Dict[str, Any]) -> bool:
+    """Commit an already-verified Ollama choice; mirror the immediate path.
+
+    Returns False (leaving active state untouched) on a damaged record or a
+    failed/unstable commit. Keeps the pending record on failure so a later
+    terminal transition can retry instead of silently losing the owner's choice.
+    """
+    from backend.core.config import resolve_selected_model
+    from backend.core.settings_store import get_setting, set_setting
+
+    kind, model_id = raw["kind"], raw["model_id"]
+    if kind == "restore":
+        try:
+            profile.save_profile({
+                "active_inference_selection": {
+                    "version": 1, "provider_id": "ollama-cloud",
+                },
+                **clear_pending_selections(),
+            })
+        except Exception:
+            return False
+        _refresh_live_ollama_model(model_id)
+        return True
+
+    previous_profile = profile.load_profile_strict()
+    previous_selection = previous_profile.get("active_inference_selection")
+    previous_model = previous_profile.get("selected_model", "")
+    previous_verified = get_setting(db, "ollama_inference_verified_model")
+    try:
+        patch: Dict[str, Any] = {"selected_model": model_id, **clear_pending_selections()}
+        if kind == "activate":
+            patch["active_inference_selection"] = {
+                "version": 1, "provider_id": "ollama-cloud",
+            }
+            set_setting(db, "ollama_inference_verified_model", model_id)
+        else:  # "select" — unverified; mirror the onboarding/models path.
+            set_setting(db, "ollama_inference_verified_model", "")
+        profile.save_profile(patch)
+        db.commit()
+        if resolve_selected_model() != model_id:
+            raise ValueError("Selected model overridden by runtime configuration")
+    except Exception:
+        try:
+            db.rollback()
+            profile.save_profile({
+                "selected_model": previous_model,
+                "active_inference_selection": previous_selection
+                    if previous_selection is not None else {
+                        "version": 1, "provider_id": "ollama-cloud",
+                    },
+                # Keep the choice queued so a later terminal transition retries.
+                _PENDING_OLLAMA_KEY: raw,
+            })
+            if previous_verified is not None:
+                set_setting(db, "ollama_inference_verified_model", previous_verified)
+                db.commit()
+        except Exception:
+            logger.error("Deferred Ollama selection restoration failed", exc_info=True)
+        return False
+    _refresh_live_ollama_model(model_id)
+    return True
+
+
+def maybe_apply_pending_activation(db: Any) -> bool:
+    """Apply queued model choices once no task can hold the old binding.
+
+    Called from the task terminal transition. Handles both a credential-bound
+    cloud selection and the Ollama restore/select/activate operations, each
+    under its own key. Returns True when a pending choice was promoted. Fails
+    closed: damaged or ambiguous records are ignored and a still-in-flight
+    task defers the switch rather than breaking its binding.
+    """
+    state = profile.load_profile()
+    cloud_raw = state.get(_PENDING_ACTIVATION_KEY)
+    ollama_raw = state.get(_PENDING_OLLAMA_KEY)
+    cloud_ok = isinstance(cloud_raw, dict) and set(cloud_raw) == {
         "version", "provider_id", "model_id", "nonce", "mac",
-    }:
+    }
+    ollama_ok = _valid_pending_ollama(ollama_raw)
+    if not cloud_ok and not ollama_ok:
+        return False
+    # Two queued choices cannot both represent the owner's intent. Only our own
+    # code writes these keys and it always clears the other kind, so this means
+    # external damage — refuse to guess which one to apply.
+    if cloud_ok and ollama_ok:
         return False
     try:
         from backend.models.database import Task
@@ -201,11 +364,13 @@ def maybe_apply_pending_activation(db: Any) -> bool:
                     .first())
         if blocking is not None:
             return False
-        profile.save_profile({
-            "active_inference_selection": raw,
-            _PENDING_ACTIVATION_KEY: None,
-        })
-        return True
+        if cloud_ok:
+            profile.save_profile({
+                "active_inference_selection": cloud_raw,
+                _PENDING_ACTIVATION_KEY: None,
+            })
+            return True
+        return _apply_pending_ollama(db, ollama_raw)
     except Exception:
         return False
 

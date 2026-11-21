@@ -14,18 +14,25 @@ const PROVIDERS: { id: CloudPreviewProviderId; label: string }[] = [
   { id: 'groq', label: 'Groq' },
 ];
 
+function responseStatus(error: unknown): number | null {
+  const response = error && typeof error === 'object' && 'response' in error
+    ? error.response : null;
+  return response && typeof response === 'object' && 'status' in response &&
+    typeof response.status === 'number' ? response.status : null;
+}
+
 /** Do not reflect unknown provider text, upstream errors or credentials. */
 function previewFailure(error: unknown): string {
-  const status = error && typeof error === 'object' &&
-    'response' in error && error.response && typeof error.response === 'object' &&
-    'status' in error.response ? error.response.status : null;
+  const status = responseStatus(error);
   if (status === 400) return 'Sythion rejected the provider or model selection. Verify the exact provider and model ID.';
   if (status === 403) return 'Sythion blocked the local request (403). Check the desktop connection and trusted app origin.';
-  if (status === 404) return 'This cloud setup endpoint is not available in the running Sythion backend. Restart the updated desktop app.';
+  if (status === 404) return 'This cloud setup endpoint is not available in the connected Sythion backend.';
   if (status === 500) return 'Sythion could not complete the local operation (500). Check sidecar.err.log for the backend error; do not share API keys.';
   if (status === 429) return 'Cloud rate limit or capacity reached. Do not retry repeatedly; check your provider quota.';
   if (status === 401) return 'Sythion rejected this request. Recheck the local app connection.';
-  if (status === 409) return 'The candidate or credential is not ready. Save the key, stage this exact model and try again.';
+  // A 409 is reconciled internally by the caller (re-read status / re-stage).
+  // This is only the fallback when that read-only reconciliation also failed.
+  if (status === 409) return 'The staged cloud candidate or its credential changed while it was being checked, and the current setup could not be re-read.';
   if (status === 422) return 'The model did not demonstrate the required function call. It remains inactive.';
   const safeDetail = error && typeof error === 'object' &&
     'response' in error && error.response && typeof error.response === 'object' &&
@@ -123,6 +130,38 @@ export function CloudProviderPreview({
     setError('');
   };
 
+  /** A 409 means the staged candidate or its proof changed underneath us.
+   * Re-read the read-only status and restore the exact candidate internally;
+   * never re-run a quota-using probe or chat. Returns false if even the
+   * read-only reconciliation was unavailable. */
+  const reconcileAfterConflict = async (): Promise<boolean> => {
+    try {
+      const latest = await cloudPreviewService.status();
+      setStatus(latest);
+      const candidate = latest.staged;
+      if (candidate.provider_id && PROVIDERS.some((p) => p.id === candidate.provider_id) &&
+          typeof candidate.model_id === 'string' && candidate.model_id) {
+        setProvider(candidate.provider_id);
+        setModel(candidate.model_id);
+        setStaged({ provider_id: candidate.provider_id, model_id: candidate.model_id });
+      }
+      const intended = { provider_id: provider, model_id: model.trim() };
+      if (intended.model_id && !(latest.staged.provider_id === intended.provider_id &&
+          latest.staged.model_id === intended.model_id)) {
+        await cloudPreviewService.stage(intended);
+        setStaged(intended);
+      }
+      // One-use authorizations cannot survive a changed candidate.
+      setConsent(false);
+      setProbePassed(false);
+      setChatConsent(false);
+      setChatAnswer(null);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const perform = async (action: () => Promise<void>) => {
     setError('');
     setNotice('');
@@ -130,7 +169,14 @@ export function CloudProviderPreview({
     try {
       await action();
     } catch (caught) {
-      setError(previewFailure(caught));
+      if (responseStatus(caught) === 409) {
+        const reconciled = await reconcileAfterConflict();
+        setError(reconciled
+          ? 'The staged cloud candidate changed while it was being checked. I re-read the current status and restored the candidate; nothing was sent to the provider.'
+          : previewFailure(caught));
+      } else {
+        setError(previewFailure(caught));
+      }
     } finally {
       setBusy(false);
     }

@@ -28,6 +28,7 @@ import {
   useVoiceAssets,
 } from '../hooks/useBackend';
 import { dateTime, humanize, relTime } from '../lib/format';
+import { CLOUD_PROVIDER_LABELS } from '../services/api';
 import { DeviceChannelPanel } from '../components/DeviceChannelPanel';
 import { RelayAckPanel } from '../components/RelayAckPanel';
 
@@ -291,7 +292,8 @@ export function SystemScreen() {
                 <div className="list">
                   {(models.data ?? []).map((m, i) => {
                     const id = String(m.id ?? m.model ?? m.name ?? `model-${i}`);
-                    const selected = health.data?.selected_model === id || settings.data?.selected_model === id;
+                    const selected = health.data?.active_model_id === id ||
+                      health.data?.selected_model === id || settings.data?.selected_model === id;
                     return (
                       <div className="list__row" key={id}>
                         <Rail tone={selected ? 'accent' : 'idle'} />
@@ -331,8 +333,22 @@ export function SystemScreen() {
                         ? `${secrets.data?.configured.length} secret(s) stored`
                         : 'none configured',
                   },
-                  { k: 'Provider', v: health.data?.cloud_configured ? 'configured' : 'not configured' },
-                  { k: 'Selected model', v: health.data?.selected_model || settings.data?.selected_model || '—' },
+                  {
+                    k: 'Active AI provider',
+                    v: health.data?.active_provider_id
+                      ? `${CLOUD_PROVIDER_LABELS[health.data.active_provider_id as keyof typeof CLOUD_PROVIDER_LABELS]
+                          || health.data.active_provider_id}`
+                      : 'unavailable',
+                  },
+                  { k: 'Active AI model', v: health.data?.active_model_id || '—' },
+                  {
+                    k: 'Local provider',
+                    v: health.data?.cloud_configured ? 'healthy' : 'unavailable',
+                  },
+                  {
+                    k: 'Local model',
+                    v: health.data?.selected_model || settings.data?.selected_model || '—',
+                  },
                   { k: 'Base URL', v: settings.data?.ollama_cloud_base_url ?? '—' },
                 ]}
               />

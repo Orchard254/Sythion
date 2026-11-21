@@ -27,6 +27,19 @@ import type { SkillProposal } from '../types';
 
 const isPending = (p: SkillProposal) => p.status === 'proposed' || p.status === 'pending_review';
 
+/** A decision may be lost to a brief transport blip, so retry a bounded number
+ * of times. A clear backend refusal (4xx) is a real answer and is shown at once.
+ * The bound prevents an unbounded resend of a decision that may have landed. */
+const REVIEW_ATTEMPTS = 3;
+
+function isTransientReviewError(error: unknown): boolean {
+  const response = error && typeof error === 'object' && 'response' in error
+    ? (error as { response?: unknown }).response : null;
+  if (!response || typeof response !== 'object' || !('status' in response)) return true;
+  const status = (response as { status?: unknown }).status;
+  return typeof status === 'number' && status >= 500;
+}
+
 export function AutomationsScreen() {
   const background = useBackgroundPolicy();
   const skills = useSkills();
@@ -233,12 +246,25 @@ function ProposalDrawer({ proposal, refresh, onClose }: { proposal: SkillProposa
     setBusy(true);
     setError('');
     try {
-      if (decision === 'approve') await actions.approveSkillProposal(proposal.id);
-      else await actions.rejectSkillProposal(proposal.id);
+      let lastError: unknown = null;
+      for (let attempt = 0; attempt < REVIEW_ATTEMPTS; attempt++) {
+        try {
+          if (decision === 'approve') await actions.approveSkillProposal(proposal.id);
+          else await actions.rejectSkillProposal(proposal.id);
+          lastError = null;
+          break;
+        } catch (err) {
+          lastError = err;
+          if (!isTransientReviewError(err)) break;
+        }
+      }
+      if (lastError) throw lastError;
       refresh();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Review failed. Please try again.');
+      setError(err instanceof Error && err.message
+        ? err.message
+        : 'The review could not be completed. The proposal is unchanged.');
     } finally {
       inFlight.current = false;
       setBusy(false);

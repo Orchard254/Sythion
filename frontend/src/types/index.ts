@@ -109,6 +109,10 @@ export interface HealthStatus {
   database_connected: boolean;
   cloud_configured: boolean;
   selected_model?: string;
+  // ACTIVE reasoning provider/model from the authoritative binding. Distinct
+  // from the local/default provider fields above. Optional for older payloads.
+  active_provider_id?: string;
+  active_model_id?: string;
   // Truthful startup aggregate reported by /health. Optional for older payloads.
   startup_sequence_status?: string;
   startup_status?: string;

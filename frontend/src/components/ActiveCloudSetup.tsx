@@ -6,6 +6,18 @@ import {
 import { GENERIC_MODEL_TEST_FAILURE, modelTestFailureMessage } from '../lib/modelTestFailure';
 import { Button, Notice } from './ui';
 
+/** Saving a key is a local vault write, not a billable provider call, so a
+ * brief transport failure is safe to retry a bounded number of times. A 4xx is
+ * a genuine refusal and is reported immediately. */
+const SAVE_ATTEMPTS = 3;
+
+function responseStatus(error: unknown): number | null {
+  const response = error && typeof error === 'object' && 'response' in error
+    ? error.response : null;
+  return response && typeof response === 'object' && 'status' in response &&
+    typeof response.status === 'number' ? response.status : null;
+}
+
 /** Provider setup embedded in the *existing* Sythion onboarding wizard.
  * No new assistant, navigation lane, or task execution is introduced.
  */
@@ -27,6 +39,10 @@ export function ActiveCloudSetup({
   const [error, setError] = useState('');
   const [verified, setVerified] = useState(false);
   const [notice, setNotice] = useState('');
+  // A recheck is offered only when the outcome depends on a real model or
+  // credential decision. Quota (429) is not such a decision and must not be
+  // presented as a quick re-verification.
+  const [canRecheck, setCanRecheck] = useState(false);
   const inFlight = useRef(false);
   const generation = useRef(0);
   const mounted = useRef(false);
@@ -45,6 +61,7 @@ export function ActiveCloudSetup({
     setModel('');
     setVerified(false);
     setError('');
+    setCanRecheck(false);
     void cloudPreviewService.status().then(async (status) => {
       if (!active || current !== generation.current) return;
       const found = status.providers.some((entry) =>
@@ -72,19 +89,42 @@ export function ActiveCloudSetup({
     inFlight.current = true; setBusy(true); setError('');
     const current = generation.current;
     try {
-      await cloudPreviewService.saveCredential(provider, key.trim());
+      let saved = false;
+      let rejected = false;
+      for (let attempt = 0; attempt < SAVE_ATTEMPTS; attempt++) {
+        try {
+          await cloudPreviewService.saveCredential(provider, key.trim());
+          saved = true;
+          break;
+        } catch (err) {
+          const status = responseStatus(err);
+          if (status !== null && status >= 400 && status < 500) {
+            rejected = true; // A genuine refusal; retrying cannot fix it.
+            break;
+          }
+        }
+      }
       if (!mounted.current || generation.current !== current) return;
+      if (!saved) {
+        setError(rejected
+          ? 'Sythion rejected the key. Enter a valid key for this provider.'
+          : 'The key could not be saved because the backend is unavailable. No key was stored.');
+        return;
+      }
       setKey('');
       const status = await cloudPreviewService.status();
       if (!mounted.current || generation.current !== current) return;
       if (!status.providers.some((entry) =>
         entry.provider_id === provider && entry.credential_configured === true)) {
-        throw new Error('Credential was not saved');
+        setError('Sythion did not confirm the key was stored. No key is active.');
+        return;
       }
       setHasKey(true);
       onConnected?.();
     } catch {
-      if (mounted.current && generation.current === current) setError('Could not save the provider key. Check your account and retry.');
+      if (mounted.current && generation.current === current) {
+        setError('The key could not be saved. No key was stored.');
+      }
     } finally {
       inFlight.current = false;
       if (mounted.current && generation.current === current) setBusy(false);
@@ -95,7 +135,7 @@ export function ActiveCloudSetup({
     if (inFlight.current || !id || !hasKey || !models.some((m) => m.id === id)) return;
     inFlight.current = true;
     const current = generation.current;
-    setBusy(true); setError(''); setNotice(''); setVerified(false); setModel(id);
+    setBusy(true); setError(''); setNotice(''); setVerified(false); setModel(id); setCanRecheck(false);
     try {
       const selection = { provider_id: provider, model_id: id };
       const status = await cloudPreviewService.status();
@@ -155,6 +195,8 @@ export function ActiveCloudSetup({
         ? cause.response : null;
       const status = response && typeof response === 'object' && 'status' in response
         ? response.status : null;
+      // Quota is not a model/credential decision: do not offer a quick recheck.
+      setCanRecheck(status !== 429);
       const body = response && typeof response === 'object' && 'data' in response
         ? response.data : null;
       const detail = body && typeof body === 'object' && 'detail' in body ? body.detail : null;
@@ -167,15 +209,18 @@ export function ActiveCloudSetup({
                  detail === 'Cloud model requires an eligible agentic harness (upstream HTTP 403)') {
         setError('This model requires an eligible agentic application. Choose a different model.');
       } else if (status === 422) {
-        setError('This model did not demonstrate the structured Assistant format or function calling Sythion requires. Choose another model.');
+        setError('This model did not demonstrate the structured Assistant format or function calling Sythion requires. It was not activated; your saved settings are unchanged.');
       } else if (status === 409 && detail && typeof detail === 'string') {
         // Surface the backend's specific, actionable detail (which tasks block
         // and what to do) instead of a vague "review your setup" message.
         setError(detail);
       } else if (status === 409) {
-        setError('Finish or cancel running tasks in Operations, then change the model again.');
+        // In-flight work no longer causes a 409 — it is deferred and applied
+        // automatically. A 409 here means the exact verification/credential
+        // evidence changed, which genuinely needs a fresh verification.
+        setError('Sythion could not confirm this model\'s verification, so it was not activated. Your saved settings are unchanged.');
       } else {
-        setError('Sythion could not verify this model for text and function calling. Choose another model or check provider access.');
+        setError('Sythion could not verify this model for text and function calling, so it was not activated. Your saved settings are unchanged.');
       }
     } finally {
       inFlight.current = false;
@@ -231,7 +276,9 @@ export function ActiveCloudSetup({
       {busy && <p role="status">Checking the selected model…</p>}
       {verified && <Notice tone="info" icon="check">{notice}</Notice>}
       {error && <Notice tone="danger" icon="alert">{error}
-        <Button disabled={busy} onClick={() => void verifyModel(model)}>Retry selected model</Button>
+        {canRecheck && <Button disabled={busy} onClick={() => void verifyModel(model)}>
+          Check again
+        </Button>}
       </Notice>}
     </div>
   );

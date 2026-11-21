@@ -817,6 +817,11 @@ class HealthResponse(BaseModel):
     database_connected: bool
     cloud_configured: bool
     selected_model: str = ""
+    # The ACTIVE reasoning provider/model, from the authoritative credential-bound
+    # binding. Kept separate from the fields above, which describe the local/default
+    # provider. Consumers must use these to report which provider is actually in use.
+    active_provider_id: str = ""
+    active_model_id: str = ""
     # Truthful reflection of the Phase 4.5 startup sequence aggregate.
     # "completed" when every stage succeeded; "failed"/"unknown" otherwise.
     # Consumers must read this instead of assuming full success.

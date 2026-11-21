@@ -219,6 +219,8 @@ describe('setup to first conversation', () => {
     expect(button('Continue').props.disabled).toBe(true);
     mock.speak.mockResolvedValueOnce({ success: false });
     await settle(() => button('Test speaker').props.onClick());
+    // Legitimate owner-input carve-out: audio output is not a retry loop.
+    expect(labels(view.root)).toContain('Check your audio output');
     expect(button('Continue').props.disabled).toBe(true);
     await settle(() => button('Test speaker').props.onClick());
     await settle(() => button('Continue').props.onClick());
@@ -235,5 +237,55 @@ describe('setup to first conversation', () => {
     await settle(() => button('Start conversation').props.onClick());
     expect(complete).not.toHaveBeenCalled();
     expect(button('Start conversation').props.disabled).toBe(true);
+    // A transitive readiness failure must not send the owner back a step.
+    expect(labels(view.root)).not.toContain('Go back and test your model again');
+    expect(labels(view.root)).not.toContain('test your model again');
+  });
+
+  it('self-heals a transient readiness failure during initial load', async () => {
+    act(() => view.unmount());
+    mock.readiness.mockClear();
+    const defaultReadiness = mock.readiness.getMockImplementation()!;
+    mock.readiness.mockRejectedValueOnce(new Error('temporary readiness failure'));
+    vi.useFakeTimers();
+    try {
+      await act(async () => { view = create(<SetupScreen onComplete={complete} />); });
+      expect(labels(view.root)).toContain('Checking your setup');
+      expect(labels(view.root)).not.toContain('Retry when Sythion has connected');
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      for (let i = 0; i < 10; i += 1) {
+        await act(async () => { await Promise.resolve(); });
+      }
+      expect(mock.readiness).toHaveBeenCalledTimes(2);
+      expect(view.root.findAllByProps({ id: 'setup-provider' })).toHaveLength(1);
+      expect(labels(view.root)).not.toContain('Checking your setup');
+    } finally {
+      mock.readiness.mockImplementation(defaultReadiness);
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not retry applying safe settings and drops the try-again wording', async () => {
+    await useConfiguredKey();
+    mock.applySafeSettings.mockResolvedValueOnce({ ok: false });
+    await settle(() => button('Continue').props.onClick());
+    // applySafeSettings mutates consequential state: exactly one attempt.
+    expect(mock.applySafeSettings).toHaveBeenCalledTimes(1);
+    expect(labels(view.root)).toContain('could not apply the guarded permissions');
+    expect(labels(view.root)).not.toContain('Please try again');
+    expect(view.root.findAllByProps({ id: 'setup-cloud-model' })).toHaveLength(1);
+  });
+
+  it('never offers a manual recheck or a try-again handoff', () => {
+    const text = labels(view.root);
+    for (const phrase of [
+      'Could not check setup',
+      'Please try again',
+      'Go back and test your model again',
+      'Recheck connection',
+    ]) {
+      expect(text).not.toContain(phrase);
+    }
   });
 });

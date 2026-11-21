@@ -168,6 +168,38 @@ describe('assistant turns', () => {
     expect(text()).toContain('Older answer');
   });
 
+  it('auto-refetches transiently failing history without asking the owner to retry', async () => {
+    mock.conversations.mockReset();
+    mock.conversations.mockRejectedValueOnce(new Error('history down'));
+    mock.conversations.mockResolvedValue({
+      conversations: [{ id: 'recovered', session_id: 's', user_text: 'Recovered question', assistant_text: 'Recovered answer', created_at: '2026-11-01T00:00:00Z' }],
+      next_cursor: null,
+    });
+
+    await settle(() => { void client.invalidateQueries({ queryKey: ['conversation-history'] }); });
+    await vi.waitFor(() => expect(text()).toContain('Recovered question'), { timeout: 3000 });
+
+    expect(mock.conversations.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(text()).not.toContain('Check the connection and try again');
+    expect(text()).not.toContain('Retry history');
+  });
+
+  it('keeps an honest status and bounded retries when history stays unavailable', async () => {
+    mock.conversations.mockReset();
+    mock.conversations.mockRejectedValue(new Error('history down'));
+
+    await settle(() => { void client.invalidateQueries({ queryKey: ['conversation-history'] }); });
+    await vi.waitFor(() => expect(text()).toContain('Conversation history could not be loaded'), { timeout: 3000 });
+    expect(text()).toContain('automatically');
+    expect(text()).not.toContain('Check the connection and try again');
+    expect(text()).not.toContain('Retry history');
+
+    const callsAfterBatch = mock.conversations.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Retries are bounded: no endless refetch loop while the backend is down.
+    expect(mock.conversations.mock.calls.length).toBeLessThanOrEqual(Math.max(callsAfterBatch, 6));
+  });
+
   it('does not retain a cached reply after its persisted record is removed', async () => {
     mock.turn.mockResolvedValueOnce({ exchange_id: 'conv-1', user_text: 'Hello Synth', assistant_text: 'Saved reply', status: 'completed', background_task_ids: [] });
     mock.conversations.mockResolvedValue({ conversations: [{ id: 'conv-1', session_id: 's', user_text: 'Hello Synth', assistant_text: 'Saved reply', created_at: '2026-10-22T00:00:00Z' }], next_cursor: null });

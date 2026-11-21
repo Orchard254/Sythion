@@ -67,6 +67,8 @@ export function CompanionSurface() {
   const assets = useVoiceAssets();
   const actions = useActions();
   const setTranscriptDraft = useAppStore((s) => s.setTranscriptDraft);
+  const currentDraft = useAppStore((s) => s.transcriptDraft);
+  const live = actions.live;
 
   const [submitting, setSubmitting] = useState(false);
   const [surfaceError, setSurfaceError] = useState<string | null>(null);
@@ -79,6 +81,13 @@ export function CompanionSurface() {
   // unknown transport outcome. Do not automatically retry or mint a second
   // exchange on an exception. A different draft starts a new request.
   const pendingTurnRef = useRef<{ text: string; id: string } | null>(null);
+  // A submission made while the runtime is unreachable is held, not retried:
+  // `assistantTurn` was never called, so it is demonstrably NOT delivered. It is
+  // therefore safe to send exactly once, with the same identity, once the
+  // runtime is reachable again. An exception after dispatch is NOT held — its
+  // outcome is unknown and must never be auto-resent (quota/double-action
+  // safety). See sendNow / the reconnect effect below.
+  const heldTurnRef = useRef<{ text: string; id: string } | null>(null);
 
   // Honour the OS reduced-motion setting. Read once here rather than adding a
   // media-query listener, because the robot's only motion is decorative and a
@@ -95,18 +104,35 @@ export function CompanionSurface() {
   // claims speech is missing once the backend definitively returns false.
   const sttAvailable = assets.data?.stt_installed;
 
-  const onSubmit = useCallback(
-    async (text: string) => {
-      if (!actions.live) {
-        // `live` is false when the backend is unreachable; the message must
-        // say exactly that, not imply some other mode the user never chose.
-        setSurfaceError(
-          'Sythion is not reachable right now, so nothing was sent. Try again when the local runtime is back.'
-        );
-        return;
-      }
+  // Reuse the identity of an identical held or unresolved turn. A different
+  // draft never inherits an identity that may already have been dispatched.
+  const reserveTurn = useCallback((text: string): { text: string; id: string } => {
+    const existing = heldTurnRef.current?.text === text
+      ? heldTurnRef.current
+      : pendingTurnRef.current?.text === text
+        ? pendingTurnRef.current
+        : null;
+    if (existing) {
+      // Adopting a held turn for an explicit send means the reconnect effect
+      // must not send it a second time.
+      if (heldTurnRef.current === existing) heldTurnRef.current = null;
+      return existing;
+    }
+    return {
+      text,
+      id: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `companion-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+    };
+  }, []);
+
+  const sendNow = useCallback(
+    async (turn: { text: string; id: string }) => {
+      // A held turn was never dispatched, so it is cleared before the send.
+      if (heldTurnRef.current === turn) heldTurnRef.current = null;
       setSubmitting(true);
       setSurfaceError(null);
+      pendingTurnRef.current = turn;
       try {
         // The backend REQUIRES client_request_id and uses it to deduplicate
         // possible replays. A conversational send must never silently fall
@@ -114,20 +140,15 @@ export function CompanionSurface() {
         if (typeof actions.assistantTurn !== 'function') {
           throw new Error('Conversational transport is unavailable.');
         }
-        const reserved = pendingTurnRef.current?.text === text
-          ? pendingTurnRef.current
-          : {
-              text,
-              id: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-                ? crypto.randomUUID()
-                : `companion-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
-            };
-        pendingTurnRef.current = reserved;
-        const turn = await actions.assistantTurn(text, reserved.id);
+        const sent = await actions.assistantTurn(turn.text, turn.id);
         pendingTurnRef.current = null;
-        const reply = turn?.assistant_text?.trim() ?? '';
+        const reply = sent?.assistant_text?.trim() ?? '';
         setCaption(reply || null);
-        setTranscriptDraft('');
+        // Clear only the draft that was actually sent. If the owner replaced it
+        // while the message was held, keep their newer text.
+        if (currentDraft === turn.text || currentDraft?.trim() === turn.text) {
+          setTranscriptDraft('');
+        }
         setSubmitting(false);
 
         // Spoken reply by default, mirroring the Assistant screen: unavailable
@@ -151,13 +172,44 @@ export function CompanionSurface() {
         // A rejected request is not always proof of non-dispatch. Keep the
         // draft and request identity for an explicit user retry, never make
         // an optimistic "not sent" claim or display raw backend exception text.
-        setSurfaceError('Could not confirm this message. It was not retried automatically. Check the conversation before trying again.');
+        // Never auto-resend this identity: the exchange may already be running.
+        setSurfaceError('Could not confirm this message. It was not retried automatically; check the conversation for it.');
       } finally {
         setSubmitting(false);
       }
     },
-    [actions, setTranscriptDraft]
+    [actions, currentDraft, setTranscriptDraft]
   );
+
+  const onSubmit = useCallback(
+    async (text: string) => {
+      if (!live) {
+        // Nothing was dispatched (assistantTurn was not called), so this draft
+        // is demonstrably unsent. Hold it with a stable identity and send it
+        // automatically when the runtime returns — no instruction to the owner.
+        // The manual send control stays available as a fallback, and the held
+        // state is reported honestly in the capsule's status line.
+        heldTurnRef.current = reserveTurn(text);
+        setSurfaceError(
+          'Sythion is not reachable right now, so nothing was sent. Your message is held and will be sent automatically when Sythion is back.'
+        );
+        return;
+      }
+      await sendNow(reserveTurn(text));
+    },
+    [live, reserveTurn, sendNow]
+  );
+
+  // When the runtime becomes reachable, dispatch the held (never-dispatched)
+  // turn once. The ref is cleared before the send so a re-render cannot send it
+  // twice, and a failure leaves it for an explicit retry only.
+  useEffect(() => {
+    if (!live) return;
+    const held = heldTurnRef.current;
+    if (!held) return;
+    heldTurnRef.current = null;
+    void sendNow(held);
+  }, [live, sendNow]);
 
   /* Publish the interactive rectangles to the native hit-test poller.
    *

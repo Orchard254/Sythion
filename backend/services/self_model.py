@@ -96,7 +96,23 @@ def build_self_model(db_session, tool_executor=None) -> Dict[str, Any]:
     model_registry = ModelRegistry(db_session)
     provider_health = provider.health()
     selected = model_registry.selected_model()
+    # The fields above describe the LOCAL/DEFAULT provider registry. Expose the
+    # authoritative active reasoning binding under distinct names so consumers
+    # never mistake the default provider for the one actually used at runtime.
+    from backend.runtime.active_inference import (
+        get_active_inference_selection, ActiveInferenceUnavailable,
+    )
+    try:
+        _active = get_active_inference_selection()
+        _active_provider_id = _active.provider_id
+        _active_model_id = _active.model_id
+    except ActiveInferenceUnavailable:
+        _active_provider_id = "unavailable"
+        _active_model_id = ""
+
     models_summary = {
+        "active_provider_id": _active_provider_id,
+        "active_model_id": _active_model_id,
         "provider_id": provider.provider_id(),
         "provider_health": provider_health.to_dict(),
         "selected_model": selected.model_id if selected else None,

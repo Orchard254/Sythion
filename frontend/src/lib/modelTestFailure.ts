@@ -4,7 +4,7 @@
  * A provider's account 402 can be nested inside the backend's HTTP 502.
  */
 export const GENERIC_MODEL_TEST_FAILURE =
-  'The model test did not finish. Check your API key and internet connection, then try again or choose another model.';
+  'The model test did not finish, so Sythion did not activate this model. Your saved settings are unchanged.';
 
 export function modelTestFailureMessage(error: unknown): string {
   if (!error || typeof error !== 'object') return GENERIC_MODEL_TEST_FAILURE;

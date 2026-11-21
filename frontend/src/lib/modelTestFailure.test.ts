@@ -22,6 +22,12 @@ describe('bounded inference failure text', () => {
     })).toContain('payment required');
   });
 
+  it('keeps the generic fallback honest without handing verification work back', () => {
+    expect(GENERIC_MODEL_TEST_FAILURE).toContain('did not finish');
+    expect(GENERIC_MODEL_TEST_FAILURE).toContain('did not activate');
+    expect(GENERIC_MODEL_TEST_FAILURE).not.toMatch(/try again|choose another model|check your api key/i);
+  });
+
   it('does not reinterpret other errors or display untrusted provider text', () => {
     for (const error of [
       null,

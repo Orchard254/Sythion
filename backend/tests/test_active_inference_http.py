@@ -278,11 +278,19 @@ def test_rotated_cloud_key_is_not_reinterpreted_as_ollama_readiness(
     assert r.json()["full_ready"] is False
 
 
-def test_changing_ollama_model_in_settings_is_blocked_with_unfinished_tasks(
-    test_client, test_db, isolated,
+def test_changing_ollama_model_is_deferred_while_a_task_runs(
+    test_client, test_db, isolated, monkeypatch,
 ):
-    # Ollama model selection is as consequential as switching to a cloud
-    # provider. Do not mutate the reasoning processor mid-task.
+    """Lazy-user: /onboarding/models also mutates the active Ollama model, so a
+    running task defers it (200 + pending) instead of a cancel/refresh hand-back.
+    """
+    import backend.runtime.model_provider as provider_module
+
+    class Provider:
+        def list_models(self):
+            return [{"name": "ollama/another-model"}]
+
+    monkeypatch.setattr(provider_module, "get_default_provider", lambda: Provider())
     test_db.add(Task(
         id="active-ollama-settings-switch", original_request="In progress",
         state="running",
@@ -291,7 +299,175 @@ def test_changing_ollama_model_in_settings_is_blocked_with_unfinished_tasks(
     response = test_client.post(
         "/api/v1/onboarding/models", json={"model_id": "ollama/another-model"},
     )
-    assert response.status_code == 409
-    assert "running or queued" in response.json()["detail"]
-    assert "Operations" in response.json()["detail"]
-    assert test_client.get(ENDPOINT).json()["provider_id"] == "ollama-cloud"
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["pending"] is True
+    assert body["selected_model"] == "ollama/another-model"
+    assert "automatically" in body["message"]
+    # The live selection is unchanged until work settles.
+    from backend.core import profile
+    assert profile.get_selected_model() != "ollama/another-model"
+
+
+def test_deferred_ollama_model_selection_applies_when_idle(
+    test_client, test_db, isolated, monkeypatch,
+):
+    from backend.runtime.active_inference import maybe_apply_pending_activation
+    import backend.runtime.model_provider as provider_module
+
+    class Provider:
+        def list_models(self):
+            return [{"name": "ollama/another-model"}]
+
+    monkeypatch.setattr(provider_module, "get_default_provider", lambda: Provider())
+    task = Task(id="busy-select", original_request="In progress", state="running")
+    test_db.add(task)
+    test_db.commit()
+    assert test_client.post(
+        "/api/v1/onboarding/models", json={"model_id": "ollama/another-model"},
+    ).json()["pending"] is True
+
+    task.state = "completed"
+    test_db.commit()
+    assert maybe_apply_pending_activation(test_db) is True
+    from backend.core import profile
+    assert profile.get_selected_model() == "ollama/another-model"
+    assert maybe_apply_pending_activation(test_db) is False
+
+
+# --- Deferred Ollama restore (DELETE /inference/active) ---------------------
+
+
+def _active_cloud_with_verified_ollama(test_client, test_db):
+    """Activate a cloud model, then set up a verified local Ollama fallback."""
+    prepare(test_db)
+    assert test_client.post(ENDPOINT, json=BODY).status_code == 200
+    profile.set_selected_model("unit/ollama")
+    secrets.set_secret(secrets.OLLAMA_API_KEY, "inert-ollama-key")
+    set_setting(test_db, "ollama_inference_verified_model", "unit/ollama")
+    test_db.commit()
+
+
+@pytest.mark.parametrize("state", ["created", "running"])
+def test_ollama_restore_deferred_while_task_holds_old_binding(
+    test_client, test_db, isolated, state,
+):
+    """DELETE /inference/active queues the restore instead of returning 409."""
+    from backend.runtime.active_inference import maybe_apply_pending_activation
+
+    _active_cloud_with_verified_ollama(test_client, test_db)
+    task = Task(id="busy-restore", original_request="Existing task", state=state)
+    test_db.add(task)
+    test_db.commit()
+
+    r = test_client.delete(ENDPOINT)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["provider_id"] == "ollama-cloud"
+    assert body["model_id"] == "unit/ollama"
+    assert body["permissions_unchanged"] is True
+    assert body["pending"] is True
+    assert "automatically" in body["message"]
+    # The old cloud binding is still active for now.
+    assert test_client.get(ENDPOINT).json()["provider_id"] == "openrouter"
+
+    # Still busy: no promotion.
+    assert maybe_apply_pending_activation(test_db) is False
+    assert test_client.get(ENDPOINT).json()["provider_id"] == "openrouter"
+
+    task.state = "completed"
+    test_db.commit()
+    assert maybe_apply_pending_activation(test_db) is True
+    active = test_client.get(ENDPOINT).json()
+    assert active["provider_id"] == "ollama-cloud"
+    assert active["model_id"] == "unit/ollama"
+    # Cleared after apply; not applied twice.
+    assert maybe_apply_pending_activation(test_db) is False
+
+
+def test_ollama_restore_does_not_apply_while_another_task_still_runs(
+    test_client, test_db, isolated,
+):
+    from backend.runtime.active_inference import maybe_apply_pending_activation
+
+    _active_cloud_with_verified_ollama(test_client, test_db)
+    finishing = Task(id="finishing", original_request="Existing task", state="running")
+    other = Task(id="other", original_request="Existing task", state="running")
+    test_db.add_all([finishing, other])
+    test_db.commit()
+    assert test_client.delete(ENDPOINT).json()["pending"] is True
+
+    finishing.state = "completed"
+    test_db.commit()
+    assert maybe_apply_pending_activation(test_db) is False
+    assert test_client.get(ENDPOINT).json()["provider_id"] == "openrouter"
+
+
+def test_ollama_restore_immediate_path_unchanged(test_client, test_db, isolated):
+    """With no in-flight task the restore is committed synchronously."""
+    _active_cloud_with_verified_ollama(test_client, test_db)
+    r = test_client.delete(ENDPOINT)
+    assert r.status_code == 200, r.text
+    assert r.json() == {
+        "provider_id": "ollama-cloud", "model_id": "unit/ollama",
+        "permissions_unchanged": True,
+    }
+    assert test_client.get(ENDPOINT).json() == r.json()
+    from backend.runtime.active_inference import maybe_apply_pending_activation
+    assert maybe_apply_pending_activation(test_db) is False
+
+
+# --- Health reports the authoritative active binding ------------------------
+
+
+def test_health_reports_authoritative_active_provider_and_model(
+    test_client, test_db, isolated,
+):
+    prepare(test_db)
+    assert test_client.post(ENDPOINT, json=BODY).status_code == 200
+    active = test_client.get(ENDPOINT).json()
+    health = test_client.get("/api/v1/health")
+    assert health.status_code == 200, health.text
+    body = health.json()
+    assert body["active_provider_id"] == active["provider_id"] == "openrouter"
+    assert body["active_model_id"] == active["model_id"] == "unit/model:free"
+    # Legacy fields still describe the local/default provider.
+    assert "selected_model" in body and "cloud_configured" in body
+
+
+def test_health_active_fields_fail_closed_on_credential_rotation(
+    test_client, test_db, isolated,
+):
+    prepare(test_db)
+    assert test_client.post(ENDPOINT, json=BODY).status_code == 200
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "rotated-key")
+    health = test_client.get("/api/v1/health")
+    assert health.status_code == 200, health.text
+    body = health.json()
+    assert body["active_provider_id"] == "unavailable"
+    assert body["active_model_id"] == ""
+    # The authoritative endpoint stays honestly unavailable too (no crash).
+    assert test_client.get(ENDPOINT).status_code == 409
+    assert "rotated-key" not in health.text
+
+
+def test_registry_and_self_model_expose_authoritative_active_binding(
+    test_client, test_db, isolated,
+):
+    """Other provider/model reporters carry clearly-named active fields while
+    their legacy default-provider fields stay unchanged."""
+    prepare(test_db)
+    assert test_client.post(ENDPOINT, json=BODY).status_code == 200
+
+    registry = test_client.get("/api/v1/models/registry")
+    assert registry.status_code == 200, registry.text
+    assert registry.json()["active_provider_id"] == "openrouter"
+    assert registry.json()["active_model_id"] == "unit/model:free"
+
+    self_model = test_client.get("/api/v1/agent/self-model")
+    assert self_model.status_code == 200, self_model.text
+    models = self_model.json()["models"]
+    assert models["active_provider_id"] == "openrouter"
+    assert models["active_model_id"] == "unit/model:free"
+    # Legacy local-provider fields are still present.
+    assert "provider_id" in models and "selected_model" in models

@@ -8,6 +8,7 @@ model output falls back to a deterministic artifact rather than failing.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import re
@@ -25,6 +26,26 @@ from backend.services.model_selection import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _supports_kwarg(fn: Any, name: str) -> bool:
+    """Whether ``fn`` accepts ``name=...`` according to its signature.
+
+    ``ActiveCompatibleDecisionClient`` and ``OllamaCloudModelClient`` do not
+    take a model identifier: they use the already-bound active selection.
+    Supplying one used to raise a TypeError that the broad handler recorded as
+    a model failure, so every reasoning call silently fell back. ``**kwargs``
+    counts as support for mock-based doubles; uninspectable callables are
+    treated as not supporting the keyword.
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    if name in params:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
 
 MAX_REASONING_CALLS = 2  # cognitive-loop bound
 
@@ -151,23 +172,31 @@ class ReasoningEngine:
 
         prompt = self._build_prompt(state, requirements)
         client = self._client()
+        # The resolved active client binds its own model. Only forward the
+        # selector's choice to clients that actually accept ``model_id``; an
+        # unexpected keyword would be swallowed as a "model unavailable"
+        # fallback and hide the real reasoning result.
+        decide_kwargs = {
+            "messages": prompt,
+            "tools": [],
+            "max_tokens": PARSED_MAX_TOKENS,
+        }
+        if selected_model is not None and _supports_kwarg(client.decide, "model_id"):
+            decide_kwargs["model_id"] = selected_model
         try:
             import asyncio
 
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
-                response = asyncio.run(client.decide(
-                    messages=prompt, tools=[], max_tokens=PARSED_MAX_TOKENS,
-                    model_id=selected_model))
+                response = asyncio.run(client.decide(**decide_kwargs))
             else:
                 import concurrent.futures
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                     response = pool.submit(
                         asyncio.run,
-                        client.decide(messages=prompt, tools=[],
-                                      max_tokens=PARSED_MAX_TOKENS, model_id=selected_model),
+                        client.decide(**decide_kwargs),
                     ).result(timeout=PARSED_TIMEOUT_SECS)
         except Exception as exc:
             logger.warning("Reasoning call failed (%s); deterministic artifact",

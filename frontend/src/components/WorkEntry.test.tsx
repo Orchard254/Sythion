@@ -115,3 +115,84 @@ describe('explicit executable work', () => {
     expect(createTask).not.toHaveBeenCalled();
   });
 });
+
+describe('internal resolution of uncertain work', () => {
+  it('resolves an uncertain create from the backend instead of asking the owner to check', async () => {
+    const lookupTask = vi.fn().mockResolvedValue(task);
+    act(() => {
+      view.update(<WorkEntry text={request} disabled={false} createTask={createTask} onCreated={created} lookupTask={lookupTask} />);
+    });
+    createTask.mockRejectedValueOnce(new Error('PRIVATE BACKEND DETAIL'));
+
+    await click('Create task from message');
+    await click('Confirm create task');
+
+    expect(createTask).toHaveBeenCalledTimes(1);
+    expect(lookupTask).toHaveBeenCalledWith(request);
+    expect(created).toHaveBeenCalledWith(task, request);
+    const json = JSON.stringify(view.toJSON());
+    expect(json).not.toContain('PRIVATE BACKEND DETAIL');
+    expect(json).not.toContain('Check Tasks');
+    expect(json).not.toContain('retrying');
+    expect(store.size).toBe(0);
+  });
+
+  it('stays honest when the backend cannot be queried and does not claim resolution', async () => {
+    const lookupTask = vi.fn().mockRejectedValue(new Error('backend down'));
+    act(() => {
+      view.update(<WorkEntry text={request} disabled={false} createTask={createTask} onCreated={created} lookupTask={lookupTask} />);
+    });
+    createTask.mockRejectedValueOnce(new Error('PRIVATE BACKEND DETAIL'));
+
+    await click('Create task from message');
+    await click('Confirm create task');
+
+    expect(created).not.toHaveBeenCalled();
+    const json = JSON.stringify(view.toJSON());
+    expect(json).toContain('not confirmed');
+    expect(json).not.toContain('PRIVATE BACKEND DETAIL');
+    expect(json).not.toContain('Check Tasks');
+    expect(json).not.toContain('backend down');
+
+    // No auto-resend; an explicit retry reuses the very same identity.
+    const id = createTask.mock.calls[0][2];
+    await click('Confirm create task');
+    expect(createTask).toHaveBeenCalledTimes(2);
+    expect(createTask.mock.calls[1][2]).toBe(id);
+  });
+
+  it('does not ask the owner to review tasks when local identity clearing fails', async () => {
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => { if (value === '') throw new Error('ignored'); store.set(key, value); },
+      removeItem: () => { throw new Error('ignored'); },
+    });
+
+    await click('Create task from message');
+    await click('Confirm create task');
+
+    expect(created).toHaveBeenCalledWith(task, request);
+    const json = JSON.stringify(view.toJSON());
+    expect(json).toContain('Task was recorded');
+    expect(json).not.toContain('Review Tasks');
+    expect(json).not.toContain('review it before retrying');
+  });
+
+  it('resolves a conversation-classified uncertain create without a hand-back', async () => {
+    const conversation = { ...task, id: 'conv-1', interaction_type: 'CONVERSATION', state: 'completed' };
+    const lookupTask = vi.fn().mockResolvedValue(conversation);
+    act(() => {
+      view.update(<WorkEntry text={request} disabled={false} createTask={createTask} onCreated={created} lookupTask={lookupTask} />);
+    });
+    createTask.mockRejectedValueOnce(new Error('PRIVATE BACKEND DETAIL'));
+
+    await click('Create task from message');
+    await click('Confirm create task');
+
+    expect(created).not.toHaveBeenCalled();
+    const json = JSON.stringify(view.toJSON());
+    expect(json).toContain('conversation');
+    expect(json).not.toContain('PRIVATE BACKEND DETAIL');
+    expect(json).not.toContain('retrying');
+  });
+});

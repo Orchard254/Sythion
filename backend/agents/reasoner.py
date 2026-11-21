@@ -35,6 +35,7 @@ Flow:
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import re
@@ -51,6 +52,26 @@ from backend.agents.state import (
 from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _supports_kwarg(fn: Any, name: str) -> bool:
+    """Whether ``fn`` accepts ``name=...`` according to its signature.
+
+    Provider implementations and test doubles disagree on whether a model
+    identifier may be supplied to ``chat``. The active chat provider resolves
+    the model from the bound selection itself; passing an extra keyword would
+    raise a TypeError that a broad handler could mistake for a model failure.
+    ``**kwargs`` counts as support (mock-based doubles rely on it). Unknown or
+    uninspectable callables are treated as NOT supporting the keyword so a
+    call-shape mismatch cannot masquerade as a provider error.
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    if name in params:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 # --------------------------------------------------------------------------- #
@@ -171,8 +192,12 @@ class SpecialistReasoner:
     def _provider(self):
         if self._provider_override is not None:
             return self._provider_override
-        from backend.runtime.model_provider import get_default_provider
-        return get_default_provider()
+        # Honor the verified active binding automatically. This is the same
+        # seam used by the main conversation path; a damaged/cloud selection is
+        # never silently exchanged for the native Ollama default. The active
+        # resolver itself returns the default only for the legacy sentinel.
+        from backend.runtime.active_inference import get_active_chat_provider
+        return get_active_chat_provider()
 
     # -- prompt building ----------------------------------------------------
 
@@ -249,20 +274,20 @@ class SpecialistReasoner:
         provider = self._provider()
         self.model_calls_used += 1
 
-        # Call provider — bounded by config timeout
+        # Call provider — bounded by config timeout. The active provider already
+        # knows the model from its verified binding, so pass the selector's
+        # model only when the concrete client actually accepts that keyword.
+        chat_kwargs = {
+            "max_tokens": int(settings.max_output_tokens or 4000),
+            "timeout": float(settings.decision_timeout_seconds or 60),
+        }
+        if selected_model and _supports_kwarg(provider.chat, "model_id"):
+            chat_kwargs["model_id"] = selected_model
         try:
-            response = await provider.chat(
-                messages,
-                max_tokens=int(settings.max_output_tokens or 4000),
-                timeout=float(settings.decision_timeout_seconds or 60),
-                model_id=selected_model,
-            ) if selected_model else await provider.chat(
-                messages,
-                max_tokens=int(settings.max_output_tokens or 4000),
-                timeout=float(settings.decision_timeout_seconds or 60),
-            )
+            response = await provider.chat(messages, **chat_kwargs)
         except TypeError:
-            # provider.chat may not accept model_id kwarg in some test doubles
+            # An uninspectable/odd provider may still reject the keyword; retry
+            # the bare call before classifying it as a genuine model failure.
             try:
                 response = await provider.chat(messages)
             except Exception as exc:

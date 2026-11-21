@@ -206,6 +206,24 @@ async def health_check(db: Optional[Session] = Depends(get_health_db)):
     """Check system health status."""
     from backend.core.config import resolve_selected_model
 
+    # Authoritative ACTIVE reasoning provider, distinct from the local/default
+    # provider health (cloud_configured) and the Ollama selected_model below,
+    # which are kept unchanged for backwards compatibility. Fail closed on a
+    # damaged or rotated binding instead of guessing from local configuration.
+    from backend.runtime.active_inference import (
+        get_active_inference_selection, ActiveInferenceUnavailable,
+    )
+    try:
+        _active = get_active_inference_selection()
+        _active_provider_id = _active.provider_id
+        _active_model_id = _active.model_id
+        if _active.provider_id == "ollama-cloud" and not _active_model_id:
+            # Same sentinel resolution as GET /inference/active.
+            _active_model_id = resolve_selected_model() or ""
+    except ActiveInferenceUnavailable:
+        _active_provider_id = "unavailable"
+        _active_model_id = ""
+
     # Provider health via the neutral facade (Phase 5)
     from backend.runtime.model_provider import get_default_provider, ModelHealth as _MH
     _h = get_default_provider().health()
@@ -245,6 +263,8 @@ async def health_check(db: Optional[Session] = Depends(get_health_db)):
         database_connected=_database_connected,
         cloud_configured=cloud_ok,
         selected_model=resolve_selected_model() or "",
+        active_provider_id=_active_provider_id,
+        active_model_id=_active_model_id,
         startup_sequence_status=_startup_ss,
         startup_status=_startup_ss,
         startup_overall_status=_startup_projection["startup_overall_status"],
@@ -516,7 +536,11 @@ async def interpret_assistant_message(data: TaskCreate, db: Session = Depends(ge
         return {'kind': kind, 'task_id': target if kind == 'reply' else None}
     except Exception as exc:
         logger.warning('Assistant routing unavailable: %s', type(exc).__name__)
-        raise HTTPException(status_code=503, detail='Could not understand where to send this message. Please try again.') from None
+        # A routing model failure is not safely auto-retried (each retry is a
+        # billable model call). Report the fact; never auto-resend the message.
+        raise HTTPException(
+            status_code=503, detail='Message routing is temporarily unavailable.'
+        ) from None
 
 
 @router.post("/assistant/turns", response_model=AssistantTurnResponse)
@@ -2133,7 +2157,12 @@ def get_task_resume_preflight(task_id: str, db: Session = Depends(get_db)):
     # A revision is valid only as a read-only observation of committed data.
     # Refuse caller-owned pending writes rather than silently autoflush them.
     if db.new or db.dirty or db.deleted:
-        raise HTTPException(status_code=409, detail="Recovery evidence changed; refresh the task")
+        # Caller-owned writes are a hard boundary: autoflushing them to make a
+        # read-only preflight look clean would hide real pending work.
+        raise HTTPException(
+            status_code=409,
+            detail="Recovery evidence has uncommitted writes; no preflight result was returned.",
+        )
     try:
         assessment = read_task_resume_admission(db, task_id)
         binding = read_recovery_review_binding(db, task_id, assessment)
@@ -2142,7 +2171,10 @@ def get_task_resume_preflight(task_id: str, db: Session = Depends(get_db)):
     except (RuntimeError, ValueError) as exc:
         # A concurrent change or incomplete state must not yield a seemingly
         # authoritative review revision. Keep internal details private.
-        raise HTTPException(status_code=409, detail="Recovery evidence changed; refresh the task") from exc
+        raise HTTPException(
+            status_code=409,
+            detail="Recovery evidence could not be read consistently; no preflight result was returned.",
+        ) from exc
     return {
         "task_id": task_id,
         **assessment,
@@ -3840,7 +3872,12 @@ def get_goal_next_work(goal_id: str, db: Session = Depends(get_db)):
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="Goal not found") from exc
     except (RuntimeError, ValueError) as exc:
-        raise HTTPException(status_code=409, detail="Goal work state changed; refresh the goal") from exc
+        # Read-only preview: never hand back a seemingly authoritative revision
+        # built from a state that changed mid-read.
+        raise HTTPException(
+            status_code=409,
+            detail="Goal work state could not be read consistently; no preview was returned.",
+        ) from exc
 
 
 @router.get("/goals/{goal_id}/continuity")
@@ -4055,7 +4092,22 @@ async def model_registry_listing(probe: bool = False, db: Session = Depends(get_
 
     registry = ModelRegistry(db)
     records = registry.list_models(probe=probe)
+    # The record fields below describe the LOCAL/DEFAULT provider's catalog.
+    # Expose the authoritative active reasoning binding separately so consumers
+    # never mistake a default-provider `selected` flag for the active model.
+    from backend.runtime.active_inference import (
+        get_active_inference_selection, ActiveInferenceUnavailable,
+    )
+    try:
+        _active = get_active_inference_selection()
+        _active_provider_id = _active.provider_id
+        _active_model_id = _active.model_id
+    except ActiveInferenceUnavailable:
+        _active_provider_id = "unavailable"
+        _active_model_id = ""
     return {
+        "active_provider_id": _active_provider_id,
+        "active_model_id": _active_model_id,
         "models": [
             {
                 "model_id": r.model_id,
@@ -4560,7 +4612,12 @@ async def list_purge_receipts(db: Session = Depends(get_db)):
 
 @router.get("/settings", response_model=SettingsResponse)
 async def get_settings(db: Session = Depends(get_db)):
-    """Get current application settings (non-secret values only)."""
+    """Get local application configuration (non-secret values only).
+
+    ``selected_model`` here is the local/default Ollama configuration value,
+    NOT the active reasoning provider. Use GET /inference/active (or the
+    ``active_*`` fields on /health) for the authoritative active binding.
+    """
     from backend.core.config import settings
     from backend.core.settings_store import (
         get_settings as load_persisted,
@@ -4941,12 +4998,20 @@ async def activate_inference_provider(
 
 @router.delete("/inference/active")
 async def restore_ollama_inference_provider(db: Session = Depends(get_db)):
-    """Return to Ollama only when its existing verified setup is valid."""
+    """Return to Ollama only when its existing verified setup is valid.
+
+    Lazy-user: if a task still holds the old provider binding, the verified
+    restore is queued and applied automatically from the task terminal
+    transition. The owner is never told to wait, cancel, or retry.
+    """
     from backend.core import profile
     from backend.core.config import resolve_selected_model, settings
     from backend.core.secrets import has_secret, OLLAMA_API_KEY
     from backend.core.settings_store import get_setting
-    _require_idle_provider_switch(db)
+    from backend.runtime.active_inference import (
+        has_in_flight_task, queue_pending_ollama_activation,
+        clear_pending_selections, ActiveInferenceUnavailable,
+    )
     model = resolve_selected_model()
     try:
         eligible = (
@@ -4957,14 +5022,31 @@ async def restore_ollama_inference_provider(db: Session = Depends(get_db)):
     except Exception:
         eligible = False
     if not eligible:
+        # Genuine owner input is missing: a verified Ollama model is required.
         raise HTTPException(
             status_code=409,
             detail="Verify an Ollama model in Settings before switching back",
         )
+    if has_in_flight_task(db):
+        try:
+            queue_pending_ollama_activation(db, model_id=model, kind="restore")
+        except ActiveInferenceUnavailable:
+            raise HTTPException(
+                status_code=503, detail="Could not schedule provider restore"
+            ) from None
+        return {
+            "provider_id": "ollama-cloud", "model_id": model,
+            "permissions_unchanged": True,
+            "pending": True,
+            "message": "Ollama will be restored automatically when current work finishes.",
+        }
     try:
-        profile.save_profile({"active_inference_selection": {
-            "version": 1, "provider_id": "ollama-cloud",
-        }})
+        profile.save_profile({
+            "active_inference_selection": {
+                "version": 1, "provider_id": "ollama-cloud",
+            },
+            **clear_pending_selections(),
+        })
     except Exception:
         raise HTTPException(
             status_code=503, detail="Could not save provider selection"
@@ -5451,7 +5533,11 @@ async def list_models():
 
 @router.get("/onboarding", response_model=OnboardingStatusResponse)
 async def onboarding_status():
-    """Return onboarding status: key configured, selected model, onboarded flag."""
+    """Return Ollama onboarding status (local config), not the active provider.
+
+    ``selected_model`` describes the local Ollama setup alongside its API key;
+    the authoritative active reasoning binding is GET /inference/active.
+    """
     from backend.core.secrets import has_secret, OLLAMA_API_KEY
     from backend.core.config import resolve_selected_model, settings
 
@@ -5482,7 +5568,10 @@ async def activate_verified_ollama_model(
     from backend.adapters.ollama_adapter import get_adapter
     from backend.runtime.model_provider import get_default_provider
 
-    _require_idle_provider_switch(db)
+    # No idle guard here: catalog discovery and the authenticated chat proof
+    # use a per-request temporary override and do NOT touch active state, so
+    # they are safe while a task holds the old binding. The commit below is
+    # deferred instead of returning a 409 when work is in flight.
     model_id = body.model_id
     # The original model resolver allows environment/deployed overrides.
     # An explicit UI switch cannot claim success if those would keep using a
@@ -5527,8 +5616,26 @@ async def activate_verified_ollama_model(
             detail="Ollama model verification failed; previous model was kept",
         ) from None
 
-    # Recheck after the network call: tasks may have been created meanwhile.
-    _require_idle_provider_switch(db)
+    # Tasks may have been created during verification. Defer the commit rather
+    # than handing the owner a 409 they would have to come back and retry.
+    from backend.runtime.active_inference import (
+        has_in_flight_task, queue_pending_ollama_activation,
+        clear_pending_selections, ActiveInferenceUnavailable,
+    )
+    if has_in_flight_task(db):
+        try:
+            queue_pending_ollama_activation(db, model_id=model_id, kind="activate")
+        except ActiveInferenceUnavailable:
+            raise HTTPException(
+                status_code=503,
+                detail="Ollama model selection could not be scheduled; verify active model in Settings",
+            ) from None
+        return {
+            "provider_id": "ollama-cloud", "model_id": model_id,
+            "verified": True, "permissions_unchanged": True,
+            "pending": True,
+            "message": "Verified Ollama model selected; it will activate automatically when current work finishes.",
+        }
     previous_profile = profile.load_profile_strict()
     previous_selection = previous_profile.get("active_inference_selection")
     previous_model = previous_profile.get("selected_model", "")
@@ -5541,6 +5648,8 @@ async def activate_verified_ollama_model(
             "active_inference_selection": {
                 "version": 1, "provider_id": "ollama-cloud",
             },
+            # A direct verified activation supersedes any queued choice.
+            **clear_pending_selections(),
         })
         set_setting(db, "ollama_inference_verified_model", model_id)
         db.commit()
@@ -5583,12 +5692,13 @@ async def select_model(body: ModelSelectRequest, db=Depends(get_db)):
     model it cannot use. Only the non-secret model ID is persisted.
     """
     from backend.core.profile import set_selected_model
+    from backend.core import profile
+    from backend.runtime.active_inference import clear_pending_selections
     from backend.runtime.model_provider import get_default_provider
 
-    # Changing Ollama's selected model affects the production reasoning
-    # client even when an alternative provider is active. Enforce the same
-    # unfinished-task check as cloud provider switches.
-    _require_idle_provider_switch(db)
+    # Changing Ollama's selected model affects the production reasoning client.
+    # Lazy-user: when a task holds the old binding, queue the selection instead
+    # of handing the owner a 409 they would have to retry after work settles.
     provider = get_default_provider()
     # Offload the provider's synchronous discovery facade so it cannot block
     # the event loop (see /models).
@@ -5609,8 +5719,33 @@ async def select_model(body: ModelSelectRequest, db=Depends(get_db)):
             detail=f"Model '{body.model_id}' is not in the authenticated model list",
         )
 
+    # Defer the active mutation (and the verified-model invalidation) while a
+    # task has a model call in flight. The terminal transition applies it.
+    from fastapi.responses import JSONResponse
+    from backend.runtime.active_inference import (
+        has_in_flight_task, queue_pending_ollama_activation,
+        ActiveInferenceUnavailable,
+    )
+    if has_in_flight_task(db):
+        try:
+            queue_pending_ollama_activation(db, model_id=body.model_id, kind="select")
+        except ActiveInferenceUnavailable:
+            raise HTTPException(
+                status_code=503, detail="Model selection could not be scheduled"
+            ) from None
+        # Return a Response directly so the extra lazy-user fields are not
+        # stripped by this endpoint's response_model.
+        return JSONResponse(status_code=200, content={
+            "selected_model": body.model_id,
+            "persisted": True,
+            "pending": True,
+            "message": "Model selected; it will activate automatically when current work finishes.",
+        })
+
     try:
         set_selected_model(body.model_id)
+        # A direct selection supersedes any queued activation of either kind.
+        profile.save_profile(clear_pending_selections())
     except (OSError, UnicodeError, ValueError):
         raise HTTPException(status_code=500, detail="Profile storage unavailable") from None
     try:
@@ -5688,7 +5823,11 @@ async def _validate_ollama_cloud_key(candidate: str, base_url: str) -> None:
     if response.status_code == 403:
         raise HTTPException(status_code=403, detail="Ollama Cloud denied access for this account or key.")
     if response.status_code != 200:
-        raise HTTPException(status_code=503, detail="Ollama Cloud could not check the API key. Try again later.")
+        # External service failure, not an owner-input error: state the fact
+        # without pushing a vague "try again later" hand-back.
+        raise HTTPException(
+            status_code=503, detail="Ollama Cloud could not check the API key right now."
+        )
 
 
 @router.post("/onboarding/credentials/test")
@@ -5956,22 +6095,34 @@ async def setup_safe_settings(db=Depends(get_db)):
 
     from backend.core.settings_store import get_setting, set_setting
 
-    try:
-        retention = get_setting(db, "retention_days")
+    # Idempotent fixed-value writes: one bounded retry self-heals a transient
+    # commit failure instead of handing the owner a "try again" step. A genuine
+    # persistent failure still surfaces as an error after the retry.
+    last_error = None
+    for _attempt in range(2):
         try:
-            valid_retention = int(retention) >= 1
-        except (TypeError, ValueError):
-            valid_retention = False
-        if not valid_retention:
-            set_setting(db, "retention_days", "90")
-        set_setting(db, "setup_safe_initial_config_applied", "true")
-        db.commit()
-    except Exception:
-        db.rollback()
+            retention = get_setting(db, "retention_days")
+            try:
+                valid_retention = int(retention) >= 1
+            except (TypeError, ValueError):
+                valid_retention = False
+            if not valid_retention:
+                set_setting(db, "retention_days", "90")
+            set_setting(db, "setup_safe_initial_config_applied", "true")
+            db.commit()
+            last_error = None
+            break
+        except Exception as exc:
+            last_error = exc
+            try:
+                db.rollback()
+            except Exception:
+                pass
+    if last_error is not None:
         raise HTTPException(
             status_code=500,
-            detail="Safe setup could not be saved. Please try again.",
-        )
+            detail="Safe setup could not be saved.",
+        ) from None
     return {"ok": True}
 
 

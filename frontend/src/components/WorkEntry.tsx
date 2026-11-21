@@ -66,16 +66,31 @@ function clearRequestId(text: string, id: string): boolean {
   }
 }
 
+/** Read-only backend task lookup, used to resolve an uncertain create internally. */
+export type LookupTask = (requestText: string) => Promise<Task | null>;
+
+/** Accept only a real, executable task — never a conversation-shaped record. */
+function isExecutableTask(value: unknown): value is Task {
+  if (!value || typeof value !== 'object') return false;
+  const task = value as Task;
+  if (task.interaction_type?.toUpperCase() === 'CONVERSATION') return false;
+  if (typeof task.id === 'string' && task.id.startsWith('conv-')) return false;
+  return typeof task.id === 'string' && task.id.length > 0 && typeof task.state === 'string';
+}
+
 export function WorkEntry({
   text,
   disabled,
   createTask,
   onCreated,
+  lookupTask,
 }: {
   text: string;
   disabled: boolean;
   createTask: CreateWorkTask;
   onCreated: (task: Task, submittedText: string) => void;
+  /** Optional: when present, an uncertain outcome is checked against the backend. */
+  lookupTask?: LookupTask;
 }) {
   const [candidate, setCandidate] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -96,7 +111,9 @@ export function WorkEntry({
     try {
       id = reserveRequestId(candidate);
     } catch {
-      setFeedback('Task safety storage is unavailable or a previous task is unresolved. Review Tasks before starting another request.');
+      // Fail closed: without a trustworthy identity we cannot guarantee a
+      // single dispatch, so the request is not sent. No hand-back to the owner.
+      setFeedback('Task safety storage is unavailable or a previous task is unresolved, so this request was not sent.');
       setBusy(false);
       busyRef.current = false;
       return;
@@ -112,22 +129,49 @@ export function WorkEntry({
         setConversationOnly(candidate);
         setFeedback(cleared
           ? 'The backend treated this as conversation. No executable task was created. Change the request to specify the work.'
-          : 'No executable task was created. Task safety storage could not be cleared; review it before retrying.');
+          : 'The backend treated this as conversation. No executable task was created, and its local request identity could not be cleared.');
         return;
       }
-      if (!result || typeof result.id !== 'string' || !result.id ||
-          typeof result.state !== 'string') {
+      if (!isExecutableTask(result)) {
         throw new Error('Task creation response is missing required evidence.');
       }
       const cleared = clearRequestId(candidate, id);
       setCandidate(null);
       setFeedback(cleared ? null :
-        'Task was recorded, but its local request identity could not be cleared. Review Tasks before making another request.');
+        'Task was recorded. Its local request identity could not be cleared, so a duplicate submission is guarded for this page session.');
       onCreated(result, candidate);
     } catch {
-      // A failed HTTP exchange or lost connection can be an unknown outcome.
-      // Never automatically retry or generate another id for the same text.
-      setFeedback('Task outcome is not confirmed. Check Tasks before explicitly retrying. The same request identity will be reused.');
+      // A failed HTTP exchange or lost connection can be an unknown outcome:
+      // it may already have reached the backend. Never auto-resend. Ask the
+      // backend itself (read-only) to resolve the uncertainty when we can, and
+      // stay honest when we cannot — never hand the check back to the owner.
+      let recorded: Task | null = null;
+      if (lookupTask) {
+        try {
+          recorded = await lookupTask(candidate);
+        } catch {
+          recorded = null; // backend could not be queried: do not claim resolution
+        }
+      }
+      if (recorded && isExecutableTask(recorded)) {
+        const cleared = clearRequestId(candidate, id);
+        setCandidate(null);
+        setFeedback(cleared ? null :
+          'The backend confirmed this work was recorded. Its local request identity could not be cleared, so a duplicate submission is guarded for this page session.');
+        onCreated(recorded, candidate);
+        return;
+      }
+      if (recorded && !isExecutableTask(recorded)) {
+        const cleared = clearRequestId(candidate, id);
+        setConversationOnly(candidate);
+        setFeedback(cleared
+          ? 'The backend shows this request was handled as conversation, not an executable task.'
+          : 'The backend shows this request was handled as conversation, and its local request identity could not be cleared.');
+        return;
+      }
+      setFeedback(lookupTask
+        ? 'Task outcome is not confirmed by the backend, so it was not sent again. The same request identity is kept.'
+        : 'Task outcome is not confirmed. It was not sent again; the same request identity is kept.');
     } finally {
       busyRef.current = false;
       setBusy(false);

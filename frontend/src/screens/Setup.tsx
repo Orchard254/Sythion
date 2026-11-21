@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../store/appStore';
 import { useVoiceCapture } from '../hooks/useVoiceCapture';
 import { canStartChat, canUseModel } from '../lib/setupReadiness';
@@ -15,6 +15,11 @@ interface SetupProps {
   onCloudConversationOnly?: () => void;
 }
 
+/** Read-only readiness checks are safe to poll; they never bill quota or mutate state. */
+const READINESS_RETRY_MS = 2_000;
+const READINESS_CONFIRM_ATTEMPTS = 6;
+const READINESS_CONFIRM_MS = 1_000;
+
 export function SetupScreen({ onComplete }: SetupProps) {
   const [step, setStep] = useState(0);
   const [provider, setProvider] = useState<CloudPreviewProviderId>('ollama-cloud');
@@ -29,8 +34,30 @@ export function SetupScreen({ onComplete }: SetupProps) {
   const [voiceVerified, setVoiceVerified] = useState(false);
   const voiceCapture = useVoiceCapture();
 
+  const mounted = useRef(true);
+  const wakePendingSleep = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      // Release any in-flight self-healing wait so no timer survives unmount.
+      wakePendingSleep.current?.();
+      wakePendingSleep.current = null;
+    };
+  }, []);
+
+  const sleep = (ms: number) => new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      wakePendingSleep.current = null;
+      resolve();
+    }, ms);
+    wakePendingSleep.current = () => { clearTimeout(timer); resolve(); };
+  });
+
   const refresh = useCallback(async () => {
     const report = await setupService.readiness();
+    if (!mounted.current) return report;
     setReadiness(report);
     if (report.selected_model && report.active_provider_id === provider) {
       setSelectedModel(report.selected_model);
@@ -38,26 +65,63 @@ export function SetupScreen({ onComplete }: SetupProps) {
     return report;
   }, [provider]);
 
+  /** Poll a read-only readiness check internally instead of asking the owner to retry. */
+  const confirmReadiness = useCallback(async (isReady: (report: SetupReadiness) => boolean) => {
+    let last: SetupReadiness | null = null;
+    for (let i = 0; i < READINESS_CONFIRM_ATTEMPTS; i += 1) {
+      try {
+        const report = await refresh();
+        last = report;
+        if (isReady(report)) return report;
+      } catch {
+        // Transient backend hiccup; keep checking on the owner's behalf.
+      }
+      if (i < READINESS_CONFIRM_ATTEMPTS - 1) await sleep(READINESS_CONFIRM_MS);
+    }
+    return last;
+  }, [refresh]);
+
   useEffect(() => {
     let cancelled = false;
-    void setupService.readiness().then((report) => {
-      if (cancelled) return;
-      setReadiness(report);
-      if (isCloudPreviewProviderId(report.active_provider_id)) {
-        setProvider(report.active_provider_id);
+    let failures = 0;
+
+    async function load() {
+      try {
+        const report = await setupService.readiness();
+        if (cancelled) return;
+        setReadiness(report);
+        if (isCloudPreviewProviderId(report.active_provider_id)) {
+          setProvider(report.active_provider_id);
+        }
+        setSelectedModel(report.selected_model || '');
+        setError(null);
+        setLoading(false);
+        return;
+      } catch {
+        if (cancelled) return;
+        failures += 1;
+        if (failures === 1) {
+          // Keep the self-healing "Checking your setup…" state visible; a
+          // transient readiness failure is not the owner's job to retry.
+          setMessage('Sythion is still checking its setup. It will retry automatically.');
+        }
+        await sleep(READINESS_RETRY_MS);
+        if (!cancelled) void load();
       }
-      setSelectedModel(report.selected_model || '');
-    }).catch(() => {
-      if (!cancelled) setError('Could not check setup. Retry when Sythion has connected.');
-    }).finally(() => { if (!cancelled) setLoading(false); });
+    }
+
+    void load();
     return () => { cancelled = true; };
   }, []);
 
   const run = async (action: () => Promise<void>, failureHint?: string) => {
     setError(null); setMessage(null); setBusy(true);
     try { await action(); }
-    catch (e) { setError(failureHint || (e instanceof Error ? e.message : 'That step did not finish. Please try again.')); }
-    finally { setBusy(false); }
+    catch (e) {
+      if (!mounted.current) return;
+      setError(failureHint || (e instanceof Error ? e.message : 'That step did not finish. Your setup is unchanged.'));
+    }
+    finally { if (mounted.current) setBusy(false); }
   };
 
   const testMicrophone = () => run(async () => {
@@ -82,9 +146,12 @@ export function SetupScreen({ onComplete }: SetupProps) {
 
   const finish = () => run(async () => {
     // Recheck the backend on entry; UI state and old local preferences cannot
-    // establish that credentials or inference still work.
-    const report = await refresh();
-    if (!canStartChat(report)) throw new Error('The connection needs attention. Go back and test your model again.');
+    // establish that credentials or inference still work. Transitive failures
+    // are checked internally rather than sending the owner back a step.
+    const report = await confirmReadiness(canStartChat);
+    if (!report || !canStartChat(report)) {
+      throw new Error('Sythion could not confirm the connection is ready yet. Your setup is unchanged.');
+    }
     if (replyMode === 'voice' && (!ttsVerified || !report.checks.tts_voice_ok)) {
       throw new Error('Test the speaker first, or choose text replies.');
     }
@@ -153,9 +220,11 @@ export function SetupScreen({ onComplete }: SetupProps) {
                 <Button disabled={busy} onClick={() => { setError(null); setMessage(null); setStep(0); }}>Back</Button>
                 <Button variant="primary" disabled={busy || !selectedModelReady} onClick={() => void run(async () => {
                   const result = await setupService.applySafeSettings();
-                  if (result?.ok !== true) throw new Error('Safe setup could not be applied. Please try again.');
-                  const report = await refresh();
-                  if (!canStartChat(report)) throw new Error('Guarded permissions and history retention are not ready yet.');
+                  if (result?.ok !== true) throw new Error('Sythion could not apply the guarded permissions and history retention yet.');
+                  // This call mutates consequential state, so it is deliberately
+                  // single-shot. Only the read-only confirmation is retried.
+                  const report = await confirmReadiness((r) => canStartChat(r));
+                  if (!report || !canStartChat(report)) throw new Error('Guarded permissions and history retention are not ready yet.');
                   setStep(2);
                 })}>Continue</Button>
                 </div>
@@ -192,7 +261,6 @@ export function SetupScreen({ onComplete }: SetupProps) {
                 <div className="row" style={{ gap: 8 }}><Button disabled={busy} onClick={() => { setError(null); setStep(2); }}>Back</Button><Button variant="primary" disabled={busy || !canStartChat(readiness)} onClick={() => void finish()}>Start conversation</Button></div>
               </div>
             </Panel>}
-            <Button variant="subtle" disabled={busy} onClick={() => void run(async () => { await refresh(); })}>Recheck connection</Button>
           </>}
           {busy && <p role="status">Working… please keep Sythion open.</p>}
         </div>

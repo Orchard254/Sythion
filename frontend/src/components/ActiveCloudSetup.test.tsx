@@ -10,6 +10,7 @@ const PENDING_MESSAGE =
 const mock = vi.hoisted(() => ({
   status: vi.fn(),
   modelCatalog: vi.fn(),
+  saveCredential: vi.fn(),
   stage: vi.fn(),
   chat: vi.fn(),
   probe: vi.fn(),
@@ -21,7 +22,7 @@ vi.mock('../services/api', async (importOriginal) => ({
   cloudPreviewService: {
     status: mock.status,
     modelCatalog: mock.modelCatalog,
-    saveCredential: vi.fn(),
+    saveCredential: mock.saveCredential,
     stage: mock.stage,
     chat: mock.chat,
     probe: mock.probe,
@@ -111,4 +112,59 @@ it('does not claim success when the activated identity does not match the select
 
   expect(onVerified).not.toHaveBeenCalled();
   expect(text()).toContain('could not verify');
+});
+
+it('self-retries a transient key save and does not hand work back to the owner', async () => {
+  await settle(() => view.unmount());
+  mock.saveCredential
+    .mockRejectedValueOnce({ response: { status: 503 } })
+    .mockRejectedValueOnce({ response: { status: 503 } })
+    .mockResolvedValue(undefined);
+  const connected = vi.fn();
+  await settle(() => {
+    view = create(<ActiveCloudSetup provider={PROVIDER} phase="connect" onConnected={connected} />);
+  });
+  await settle(() => view.root.findByProps({ id: 'setup-cloud-key' })
+    .props.onChange({ target: { value: 'inert-test-key' } }));
+  await settle(() => view.root.findAllByType('button')
+    .find((n) => JSON.stringify(n.children).includes('Connect and save key'))!.props.onClick());
+  expect(mock.saveCredential).toHaveBeenCalledTimes(3);
+  expect(connected).toHaveBeenCalledTimes(1);
+  expect(text()).not.toContain('Check your account and retry');
+  expect(text()).not.toContain('inert-test-key');
+});
+
+it('reports a genuine key rejection without retrying or giving a vague retry instruction', async () => {
+  await settle(() => view.unmount());
+  mock.saveCredential.mockRejectedValueOnce({
+    response: { status: 422, data: { detail: 'invalid key' } },
+  });
+  await settle(() => {
+    view = create(<ActiveCloudSetup provider={PROVIDER} phase="connect" />);
+  });
+  await settle(() => view.root.findByProps({ id: 'setup-cloud-key' })
+    .props.onChange({ target: { value: 'inert-test-key' } }));
+  await settle(() => view.root.findAllByType('button')
+    .find((n) => JSON.stringify(n.children).includes('Connect and save key'))!.props.onClick());
+  expect(mock.saveCredential).toHaveBeenCalledTimes(1);
+  expect(text()).toContain('Sythion rejected the key');
+  expect(text()).not.toContain('Check your account and retry');
+});
+
+it('does not offer a recheck for a quota outcome', async () => {
+  mock.activate.mockRejectedValueOnce({ response: { status: 429 } });
+
+  await chooseModel();
+
+  expect(text()).toContain('quota or capacity');
+  expect(text()).not.toContain('Check again');
+});
+
+it('offers a self-healing Check again when a real model decision is required', async () => {
+  mock.activate.mockRejectedValueOnce({ response: { status: 422 } });
+
+  await chooseModel();
+
+  expect(text()).toContain('Check again');
+  expect(text()).not.toContain('Retry selected model');
 });

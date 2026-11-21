@@ -84,12 +84,56 @@ def test_inactive_or_unlisted_candidate_never_mutates_selected_model(
     assert configured.selected_model == "previous/model"
 
 
-def test_unfinished_task_blocks_ollama_switch_without_provider_request(
-    test_client, test_db, configured, monkeypatch,
+def test_unfinished_task_defers_ollama_switch_without_mutating_active_state(
+    test_client, test_db, configured,
 ):
+    """Lazy-user: verified candidate requested during in-flight work is queued
+    with 200 + pending; no 409 and no cancel/refresh hand-back."""
     test_db.add(Task(id="busy", original_request="In flight", state="running"))
     test_db.commit()
     response = test_client.post(URL, json={"model_id": "next/model"})
-    assert response.status_code == 409
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["pending"] is True
+    assert body["verified"] is True
+    assert "automatically" in body["message"]
+    # Active state is still the OLD verified model.
     assert profile.get_selected_model() == "previous/model"
     assert configured.selected_model == "previous/model"
+    assert get_setting(test_db, "ollama_inference_verified_model") == "previous/model"
+    assert test_client.get("/api/v1/inference/active").json()["model_id"] == "previous/model"
+
+
+def test_deferred_ollama_activation_not_applied_while_task_still_running(
+    test_client, test_db, configured,
+):
+    from backend.runtime.active_inference import maybe_apply_pending_activation
+
+    test_db.add(Task(id="busy", original_request="In flight", state="running"))
+    test_db.commit()
+    assert test_client.post(URL, json={"model_id": "next/model"}).json()["pending"] is True
+    assert maybe_apply_pending_activation(test_db) is False
+    assert profile.get_selected_model() == "previous/model"
+    assert get_setting(test_db, "ollama_inference_verified_model") == "previous/model"
+
+
+def test_deferred_ollama_activation_applies_when_idle_and_clears_pending(
+    test_client, test_db, configured,
+):
+    from backend.runtime.active_inference import maybe_apply_pending_activation
+
+    task = Task(id="busy", original_request="In flight", state="running")
+    test_db.add(task)
+    test_db.commit()
+    assert test_client.post(URL, json={"model_id": "next/model"}).json()["pending"] is True
+
+    task.state = "completed"
+    test_db.commit()
+    assert maybe_apply_pending_activation(test_db) is True
+    assert profile.get_selected_model() == "next/model"
+    assert configured.selected_model == "next/model"
+    assert configured._capability_profile is None
+    assert get_setting(test_db, "ollama_inference_verified_model") == "next/model"
+    assert test_client.get("/api/v1/inference/active").json()["model_id"] == "next/model"
+    # Not applied twice.
+    assert maybe_apply_pending_activation(test_db) is False

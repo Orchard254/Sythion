@@ -12,7 +12,11 @@ const healthRef = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('./hooks/useAppInit', () => ({ useAppInit: () => ({ isInitialized: true, retry: vi.fn() }) }));
+const initRef = vi.hoisted(() => ({ isInitialized: true }));
+
+vi.mock('./hooks/useAppInit', () => ({
+  useAppInit: () => ({ isInitialized: initRef.isInitialized, isBridgeReady: true, retry: vi.fn() }),
+}));
 vi.mock('./hooks/useBackend', () => ({
   useHealth: () => healthRef.current,
   useAgent: () => ({}),
@@ -35,6 +39,7 @@ describe('connection gating', () => {
   let view: ReactTestRenderer;
 
   beforeEach(() => {
+    initRef.isInitialized = true;
     healthRef.current = { isError: false, data: {}, dataUpdatedAt: Date.now(), error: null };
     useAppStore.setState({ isConnected: true, error: null, notifications: [], unreadNotifications: 0 });
     vi.stubGlobal('document', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
@@ -48,15 +53,31 @@ describe('connection gating', () => {
   it('stays connected on a healthy check (existing behavior)', async () => {
     await act(async () => { view = create(<App />); });
     expect(useAppStore.getState().isConnected).toBe(true);
-    expect(JSON.stringify(view.toJSON())).not.toContain('Sythion backend unreachable');
+    expect(JSON.stringify(view.toJSON())).not.toContain('Sythion is still unreachable');
   });
 
-  it('drops the gate and shows the offline screen when a health check fails', async () => {
+  it('drops the gate and shows an honest self-healing state when a health check fails', async () => {
     await act(async () => { view = create(<App />); });
     healthRef.current = { isError: true, data: undefined, dataUpdatedAt: 0, error: new Error('backend health failed') };
     await act(async () => { view.update(<App />); });
     expect(useAppStore.getState().isConnected).toBe(false);
-    expect(JSON.stringify(view.toJSON())).toContain('Sythion backend unreachable');
+    const text = JSON.stringify(view.toJSON());
+    expect(text).toContain('Sythion is still unreachable');
+    expect(text).toContain('checking quietly in the background');
+    // The owner is never told to launch the backend or to retry by hand.
+    expect(text).not.toContain('Start the local backend');
+    expect(text).not.toContain('start_sythion.cmd');
+    expect(text).not.toContain('Retry connection');
+  });
+
+  it('shows a self-healing checking state while the bridge is resolving', async () => {
+    initRef.isInitialized = false;
+    await act(async () => { view = create(<App />); });
+    const text = JSON.stringify(view.toJSON());
+    expect(text).toContain('Checking connection');
+    expect(text).toContain('keeps checking on its own');
+    expect(text).not.toContain('Retry connection');
+    expect(text).not.toContain('start_sythion.cmd');
   });
 
   it('recovers the gate when a later health check succeeds', async () => {
@@ -68,7 +89,7 @@ describe('connection gating', () => {
     healthRef.current = { isError: false, data: { status: 'healthy' }, dataUpdatedAt: Date.now(), error: null };
     await act(async () => { view.update(<App />); });
     expect(useAppStore.getState().isConnected).toBe(true);
-    expect(JSON.stringify(view.toJSON())).not.toContain('Sythion backend unreachable');
+    expect(JSON.stringify(view.toJSON())).not.toContain('Sythion is still unreachable');
   });
 
   it('does not drop the gate for a successful but degraded check (partial degradation)', async () => {
@@ -76,7 +97,7 @@ describe('connection gating', () => {
     healthRef.current = { isError: false, data: { status: 'degraded', startup_sequence_status: 'degraded' }, dataUpdatedAt: Date.now(), error: null };
     await act(async () => { view.update(<App />); });
     expect(useAppStore.getState().isConnected).toBe(true);
-    expect(JSON.stringify(view.toJSON())).not.toContain('Sythion backend unreachable');
+    expect(JSON.stringify(view.toJSON())).not.toContain('Sythion is still unreachable');
   });
 
 });

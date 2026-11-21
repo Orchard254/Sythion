@@ -50,6 +50,7 @@ export function AssistantScreen() {
   const [unconfirmedSchedulingTaskIds, setUnconfirmedSchedulingTaskIds] = useState<string[] | null>(null);
   const [composerStorageCompromised, setComposerStorageCompromised] = useState(false);
   const [recoveredTasks, setRecoveredTasks] = useState<Task[]>([]);
+  const [historyRetryExhausted, setHistoryRetryExhausted] = useState(false);
 
   const queryClient = useQueryClient();
   const [replyMode] = useState<'text' | 'voice'>(() => localStorage.getItem('sythion.replyMode') === 'text' ? 'text' : 'voice');
@@ -115,6 +116,32 @@ useLayoutEffect(() => {
     staleTime: 10_000,
     retry: 1,
   });
+
+  // History loading is transient: resolve it ourselves instead of asking the
+  // owner to retry. A bounded batch of refetches runs while connected; a
+  // reconnect starts a fresh batch. The disclosure that reloading may reopen
+  // the previous request (below) is a real limitation, not a hand-back.
+  useEffect(() => {
+    if (!isConnected) {
+      setHistoryRetryExhausted(false);
+      return;
+    }
+    if (!conversationQuery.isError) return;
+    let cancelled = false;
+    setHistoryRetryExhausted(false);
+    const refetch = conversationQuery.refetch;
+    void (async () => {
+      for (let attempt = 0; attempt < 3 && !cancelled; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+        if (cancelled) return;
+        const result = await refetch();
+        if (result.isSuccess) return;
+      }
+      if (!cancelled) setHistoryRetryExhausted(true);
+    })();
+    return () => { cancelled = true; };
+  }, [isConnected, conversationQuery.isError, conversationQuery.refetch]);
+
   const { data: recentResponses = [] } = useQuery<Task[]>({
     queryKey: ['conversation-responses'],
     queryFn: async () => [],
@@ -401,9 +428,10 @@ useLayoutEffect(() => {
         <div className="chat chat--assistant">
               <div className="chat__scroll" ref={scrollRef}>
                 {conversationQuery.isError && (
-                  <div role="alert">
-                    <p>Conversation history could not be loaded. Check the connection and try again.</p>
-                    <Button size="sm" variant="subtle" onClick={() => void conversationQuery.refetch()}>Retry history</Button>
+                  <div role="status" aria-live="polite">
+                    <p>{historyRetryExhausted
+                      ? 'Conversation history could not be loaded. It will be retried automatically when the connection is restored.'
+                      : 'Conversation history could not be loaded. Retrying automatically…'}</p>
                   </div>
                 )}
                 {conversationQuery.isLoading && <p role="status">Loading conversation history…</p>}
@@ -709,6 +737,21 @@ useLayoutEffect(() => {
                   text={transcriptDraft}
                   disabled={submitting || captureBusy || isListening || !actions.live}
                   createTask={actions.createTask}
+                  lookupTask={(requestText) => {
+                    // Read-only reconciliation against the real task list. The
+                    // backend does not expose idempotency keys on Task, so an
+                    // exact original_request match is the strongest available
+                    // evidence; the most recent match is the best candidate.
+                    if (typeof taskService?.list !== 'function') return Promise.resolve(null);
+                    return taskService.list().then((list) => {
+                      if (!Array.isArray(list)) return null;
+                      const matches = list.filter((item) =>
+                        item && typeof item.id === 'string' && item.original_request === requestText);
+                      if (!matches.length) return null;
+                      return matches.reduce((latest, item) =>
+                        String(item.created_at ?? '') > String(latest.created_at ?? '') ? item : latest);
+                    });
+                  }}
                   onCreated={(task, submittedText) => {
                     // The task can be running already: show its actual persisted
                     // state, never call a "start" route a second time.

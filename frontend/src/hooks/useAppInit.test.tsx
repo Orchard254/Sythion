@@ -7,7 +7,7 @@ import React from 'react';
 import { act, create } from 'react-test-renderer';
 import type { ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useAppInit } from './useAppInit';
+import { BRIDGE_TIMEOUT_MS, QUIET_RECHECK_MS, useAppInit } from './useAppInit';
 import { useAppStore } from '../store/appStore';
 import type { Task } from '../types';
 
@@ -318,6 +318,38 @@ describe('useAppInit expanded deterministic guards', () => {
       expect(configureBridge).not.toHaveBeenCalled();
       expect(healthCheck).not.toHaveBeenCalled();
       expect(taskList).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('polls at least as long as the shell handshake window', () => {
+    // src-tauri/src/sidecar.rs gives the sidecar 90s to publish its handshake.
+    expect(BRIDGE_TIMEOUT_MS).toBeGreaterThanOrEqual(90_000);
+  });
+
+  it('self-heals a transient bridge failure without a manual retry', async () => {
+    vi.useFakeTimers();
+    try {
+      resolveBridgeConfig
+        .mockRejectedValueOnce(new Error('bridge down'))
+        .mockResolvedValue({ baseUrl: '/api/v1', controlToken: '' });
+      await act(async () => { view = create(<Harness />); });
+      for (let i = 0; i < 8; i += 1) {
+        await act(async () => { await Promise.resolve(); });
+      }
+      expect(useAppStore.getState().isConnected).toBe(false);
+      expect(useAppStore.getState().error).toBe('bridge down');
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(QUIET_RECHECK_MS); });
+      for (let i = 0; i < 8; i += 1) {
+        await act(async () => { await Promise.resolve(); });
+      }
+
+      // The background probe recovered the runtime on its own.
+      expect(useAppStore.getState().isConnected).toBe(true);
+      expect(useAppStore.getState().error).toBeNull();
+      expect(configureBridge).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
