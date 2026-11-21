@@ -1211,3 +1211,23 @@ async def test_malformed_retry_prompt_explicitly_forbids_unvalidated_action_clai
     assert "in the assistant_text string and use an empty commands array" in retry_system
     assert '{"assistant_text":"Your answer here.","commands":[]}' in retry_system
     assert prose not in retry_system
+
+
+@pytest.mark.asyncio
+async def test_insufficient_discovery_notice_travels_via_status_text():
+    """An insufficient-discovery notice is a system status, not an answer."""
+
+    class FakeModelNoCall:
+        async def chat(self, messages, **kwargs):
+            raise AssertionError("no model call expected")
+
+    engine = ConversationTurnEngine(
+        FakeModelNoCall(), read_only_discussion_recall=True
+    )
+    result = await engine.run("hi", [], [])
+
+    assert result.assistant_text == ""
+    assert result["assistant_text"] == ""
+    assert result.status_text == ConversationTurnEngine._INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT
+    assert result["status_text"] == result.status_text
+    assert result.commands == []

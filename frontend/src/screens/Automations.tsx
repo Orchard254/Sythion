@@ -12,7 +12,16 @@ import {
   ScreenHead,
   Stat,
 } from '../components/ui';
-import { useActions, useAgentActivity, useBackgroundPolicy, useSkills, useSkillProposals } from '../hooks/useBackend';
+import {
+  useActions,
+  useAgentActivity,
+  useBackgroundPolicy,
+  useCapabilities,
+  useCapabilityConsistency,
+  useSkills,
+  useSkillProposals,
+  useTools,
+} from '../hooks/useBackend';
 import { humanize, relTime } from '../lib/format';
 import type { SkillProposal } from '../types';
 
@@ -93,6 +102,9 @@ export function AutomationsScreen() {
   const skills = useSkills();
   const proposals = useSkillProposals();
   const activity = useAgentActivity();
+  const capabilities = useCapabilities();
+  const capabilityConsistency = useCapabilityConsistency();
+  const tools = useTools();
 
   const [openProposalId, setOpenProposalId] = useState<string | number | null>(null);
 
@@ -273,7 +285,16 @@ export function AutomationsScreen() {
       {openProposalId !== null && (
         <ProposalDrawer
           proposal={(proposals.data ?? []).find((p) => String(p.id) === String(openProposalId))}
-          refresh={() => { proposals.refetch(); skills.refetch(); }}
+          refresh={() => {
+            // Called only after the decision succeeded (see ProposalDrawer.decide).
+            // Shared query keys refresh the capability/tool/skill panels on the
+            // System screen too, so no registry view is left stale.
+            proposals.refetch();
+            skills.refetch();
+            capabilities.refetch();
+            capabilityConsistency.refetch();
+            tools.refetch();
+          }}
           onClose={() => setOpenProposalId(null)}
         />
       )}

@@ -176,11 +176,13 @@ class Settings(BaseSettings):
     # - model_eval_version pins the deterministic evaluation suite version.
     model_max_attempts: int = 2
 
-    # Skill self-growth (L2): auto-enable a proposal once its verified trace
-    # count reaches this threshold (default 5; 0 or negative restores explicit
-    # owner review of every proposal). Auto-enabling re-validates against the
-    # current read-only tool set and creates a versioned, pinned skill.
-    skill_auto_enable_threshold: int = 5
+    # Skill self-growth (L2): DEPRECATED / disabled. Auto-enabling from a
+    # verified-trace count would authorize enablement with no owner decision
+    # and no durable approval receipt, contradicting the contract that every
+    # skill requires explicit owner review. Proposals now become active only
+    # through POST /skills/proposals/{id}/approve. Kept at 0 (OFF) for config
+    # compatibility; the legacy helper is a no-op regardless of this value.
+    skill_auto_enable_threshold: int = 0
 
     # Phase 9 bounded specialist delegation policy. All caps come from
     # configuration — no specialist recursion (max_specialist_depth = 1),

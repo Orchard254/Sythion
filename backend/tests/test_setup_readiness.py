@@ -40,7 +40,7 @@ class _Provider:
     def health(self):
         return ModelHealth("ollama-cloud", ModelHealth.HEALTHY if self.healthy else ModelHealth.UNAVAILABLE)
 
-    async def chat(self, messages, max_tokens=4000, timeout=300.0):
+    async def chat(self, messages, max_tokens=4000, timeout=300.0, model_id=None):
         if self.inference_error:
             raise self.inference_error
         return {"choices": [{"message": {"content": "OK"}}]}

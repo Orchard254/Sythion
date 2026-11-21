@@ -513,22 +513,62 @@ class TestProposals:
         assert proposal.status == "proposed"
         assert get_enabled_skill_version(db_session, str(proposal.id)) is None
 
-    def test_proposal_auto_enables_at_threshold(self, db_session, executor, monkeypatch):
+    def test_proposal_never_auto_enabled_by_trace_count(
+        self, db_session, executor, monkeypatch
+    ):
+        """Verified traces grow a proposal but never enable it.
+
+        Enablement is an explicit owner decision with a durable receipt. A
+        trace count — even far above any legacy threshold — must not create a
+        live skill. The explicit approval path must still enable it.
+        """
         from backend.core.config import settings
+
+        # Even a permissive legacy threshold must not authorize auto-enable.
         monkeypatch.setattr(settings, "skill_auto_enable_threshold", 3)
+        for tid in ("t1", "t2"):
+            _completed_trace_task(db_session, tid)
+        proposal = maybe_generate_proposal(db_session, "t1", executor)
+        assert proposal.status == "proposed"
+
+        for tid in ("t3", "t4", "t5", "t6"):
+            _completed_trace_task(db_session, tid)
+            maybe_generate_proposal(db_session, tid, executor)
+
+        db_session.refresh(proposal)
+        assert proposal.status == "proposed"
+        assert len(json.loads(proposal.trace_ids)) == 6
+        assert proposal.skill_id is None
+        assert proposal.decided_at is None  # no owner decision / receipt
+        assert get_enabled_skill_version(db_session, str(proposal.id)) is None
+
+        # Explicit owner approval still enables it and records the receipt.
+        skill = approve_proposal(db_session, proposal, executor)
+        assert skill.state == "enabled"
+        enabled = get_enabled_skill_version(db_session, str(skill.id))
+        assert enabled is not None
+        enabled_skill, version = enabled
+        assert len(enabled_skill.versions) == 1
+        assert version.definition_hash  # a pinned, versioned live skill
+        db_session.refresh(proposal)
+        assert proposal.status == "enabled"
+        assert proposal.decided_at is not None
+
+    def test_auto_enable_helper_cannot_enable_by_itself(
+        self, db_session, executor, monkeypatch
+    ):
+        """The legacy auto-enable helper is a no-op even with a low threshold."""
+        from backend.core.config import settings
+
+        monkeypatch.setattr(settings, "skill_auto_enable_threshold", 2)
         _completed_trace_task(db_session, "t1")
         _completed_trace_task(db_session, "t2")
         proposal = maybe_generate_proposal(db_session, "t1", executor)
         assert proposal.status == "proposed"
-
-        _completed_trace_task(db_session, "t3")
-        proposal = maybe_generate_proposal(db_session, "t3", executor)
-        assert proposal.status == "enabled"
-        enabled = get_enabled_skill_version(db_session, str(proposal.id))
-        assert enabled is not None
-        skill, version = enabled
-        assert len(skill.versions) == 1
-        assert version.definition_hash  # a pinned, versioned live skill
+        assert skill_engine._auto_enable_if_ready(db_session, proposal, executor) is None
+        db_session.refresh(proposal)
+        assert proposal.status == "proposed"
+        assert get_enabled_skill_version(db_session, str(proposal.id)) is None
 
     def test_auto_enable_revalidates_against_current_toolset(self, db_session, executor, monkeypatch):
         """A proposal whose tool is no longer allowed is never auto-enabled."""
@@ -772,8 +812,10 @@ class TestProposalSchemaValidation:
         assert errors == []
         assert json.loads(proposal.validation_errors) == []
 
-    def test_auto_enable_succeeds_for_no_input_tool(self, db_session, full_executor, monkeypatch):
-        """Auto-enable promotes a valid no-input proposal once threshold is reached without re-validation failure."""
+    def test_valid_no_input_proposal_waits_for_owner_approval(
+        self, db_session, full_executor, monkeypatch
+    ):
+        """A valid no-input proposal stays proposed until the owner approves it."""
         from backend.core.config import settings
         monkeypatch.setattr(settings, "skill_auto_enable_threshold", 2)
 
@@ -799,9 +841,13 @@ class TestProposalSchemaValidation:
 
         proposal = maybe_generate_proposal(db_session, "tae-1", full_executor)
         assert proposal is not None
-        assert proposal.status == "enabled"
+        assert proposal.status == "proposed"
         assert json.loads(proposal.validation_errors) == []
-        enabled = get_enabled_skill_version(db_session, str(proposal.id))
+        assert get_enabled_skill_version(db_session, str(proposal.id)) is None
+
+        skill = approve_proposal(db_session, proposal, full_executor)
+        assert skill.state == "enabled"
+        enabled = get_enabled_skill_version(db_session, str(skill.id))
         assert enabled is not None
 
 

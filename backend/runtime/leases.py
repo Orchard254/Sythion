@@ -31,6 +31,72 @@ def ensure_lease_contract() -> None:
 ensure_lease_contract()
 
 
+def mark_task_interrupted(session: Session, task_id: str) -> None:
+    """Mark a non-terminal task INTERRUPTED when its owner is lost.
+
+    Shared by the stale-lease takeover path in :class:`LeaseManager` and by the
+    periodic maintenance sweep (which detects lost task ownership independently
+    of the runner lease — the heartbeat renews task ownership, not the lease).
+    Idempotent: a task no longer in a live state is left untouched. An active
+    action is recorded as ``action.uncertain`` before the task is interrupted;
+    the sweep never resumes a task — INTERRUPTED is terminal for it.
+    """
+    from backend.api.schemas import TaskState
+
+    task = session.query(Task).filter_by(id=task_id).first()
+    if not (task and task.state in {
+        TaskState.CREATED.value,
+        TaskState.RUNNING.value,
+        TaskState.WAITING_FOR_USER.value,
+    }):
+        return
+
+    from backend.runtime.events import DbEventLedger
+
+    ledger = DbEventLedger(session)
+    if task.active_action_id:
+        ledger.append_event(
+            task_id,
+            "action.uncertain",
+            {"action_id": task.active_action_id, "reason": "runner_crash_or_restart"},
+        )
+    task.state = TaskState.INTERRUPTED.value
+    task.active_action_id = None
+    task.version += 1
+    task.updated_at = datetime.utcnow()
+    ledger.append_event(
+        task_id,
+        "task.interrupted",
+        {
+            "reason": "runner_crash_or_restart",
+            "detected_at": datetime.utcnow().isoformat(),
+            "note": "Task was running when runner lease expired. Resume will re-observe before continuing.",
+        },
+    )
+    session.commit()
+    try:
+        from backend.services.work_state import sync_objective_state_for_task
+    except ImportError:
+        from services.work_state import sync_objective_state_for_task
+
+    try:
+        sync_objective_state_for_task(
+            session,
+            task,
+            event_type="task.interrupted",
+            event_data={
+                "reason": "runner_crash_or_restart",
+                "note": "Task was running when runner lease expired. Resume will re-observe before continuing.",
+            },
+        )
+    except Exception as exc:  # pragma: no cover - projection is best-effort
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Could not sync objective state for interrupted task %s: %s", task_id, exc
+        )
+
+
 class LeaseManager:
     """Exclusive single-runner lease over the profile's execution."""
 
@@ -48,61 +114,8 @@ class LeaseManager:
         return self._current_task_id
 
     def _mark_task_interrupted(self, task_id: str) -> None:
-        """Mark a running task interrupted when a stale lease is taken over."""
-        from backend.api.schemas import TaskState
-
-        task = self._session.query(Task).filter_by(id=task_id).first()
-        if not (task and task.state in {
-            TaskState.CREATED.value,
-            TaskState.RUNNING.value,
-            TaskState.WAITING_FOR_USER.value,
-        }):
-            return
-
-        from backend.runtime.events import DbEventLedger
-
-        ledger = DbEventLedger(self._session)
-        if task.active_action_id:
-            ledger.append_event(
-                task_id,
-                "action.uncertain",
-                {"action_id": task.active_action_id, "reason": "runner_crash_or_restart"},
-            )
-        task.state = TaskState.INTERRUPTED.value
-        task.active_action_id = None
-        task.version += 1
-        task.updated_at = datetime.utcnow()
-        ledger.append_event(
-            task_id,
-            "task.interrupted",
-            {
-                "reason": "runner_crash_or_restart",
-                "detected_at": datetime.utcnow().isoformat(),
-                "note": "Task was running when runner lease expired. Resume will re-observe before continuing.",
-            },
-        )
-        self._session.commit()
-        try:
-            from backend.services.work_state import sync_objective_state_for_task
-        except ImportError:
-            from services.work_state import sync_objective_state_for_task
-
-        try:
-            sync_objective_state_for_task(
-                self._session,
-                task,
-                event_type="task.interrupted",
-                event_data={
-                    "reason": "runner_crash_or_restart",
-                    "note": "Task was running when runner lease expired. Resume will re-observe before continuing.",
-                },
-            )
-        except Exception as exc:  # pragma: no cover - projection is best-effort
-            import logging
-
-            logging.getLogger(__name__).warning(
-                "Could not sync objective state for interrupted task %s: %s", task_id, exc
-            )
+        """Stale-lease takeover hook; delegates to the shared recovery helper."""
+        mark_task_interrupted(self._session, task_id)
 
     async def acquire(self, task_id: Optional[str] = None) -> bool:
         nonce = str(uuid.uuid4())

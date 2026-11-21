@@ -57,6 +57,10 @@ class WakeWorker:
         self._queued_keys: set = set()
         self._task: Optional[asyncio.Task] = None
         self._max_queue = 64
+        # Boot-unique token for application.startup wake keys. agent_id is
+        # durable and AgentWake rows are never deleted, so without this token
+        # the UNIQUE(wake_key) dedup would drop every startup wake after boot #1.
+        self._boot_id = uuid.uuid4().hex
         # Optional owner-gated time-driven loop. The worker stays purely
         # event-driven unless start_bounded_loop() is explicitly called.
         self._bounded_task: Optional[asyncio.Task] = None
@@ -144,9 +148,10 @@ class WakeWorker:
         self._bounded_session = session
         selector = RunnableGoalSelector(session)
 
-        # A fatal failure raised while submitting a wake is recorded here. The
-        # stock BoundedWakeScheduler swallows handler Exceptions into failed
-        # cycles, so the rearm loop inspects this marker to decide to stop.
+        # A fatal failure raised while submitting a wake is recorded here so
+        # the rearm loop can stop. The exception is ALSO re-raised below: the
+        # bounded scheduler counts a re-raised handler exception as a failed
+        # cycle (never successful work), keeping the window metrics truthful.
         fatal: list = []
 
         async def wake_handler(goal_id: str) -> None:
@@ -168,11 +173,12 @@ class WakeWorker:
             except Exception as exc:
                 fatal.append(str(exc) or repr(exc))
                 # End this window promptly; the rearm loop sees ``fatal`` and
-                # will not open another window. Do not re-raise: the scheduler
-                # would just swallow it as a failed cycle.
+                # will not open another window. Re-raise so the scheduler
+                # records this as a failed cycle rather than successful work.
                 sched = self._bounded_scheduler
                 if sched is not None:
                     sched.stop()
+                raise
 
         total_cycles = 0
         rearm_count = 0
@@ -337,9 +343,29 @@ class WakeWorker:
         return self.submit(trigger, trigger_reference=task_id,
                            wake_key=f"{trigger}:{task_id}")
 
+    @property
+    def boot_id(self) -> str:
+        """Token unique to this worker's process boot (for startup wake keys).
+
+        Normally generated in ``__init__``. The lazy fallback keeps the token
+        per-worker even for workers assembled with ``__new__`` in tests.
+        """
+        token = getattr(self, "_boot_id", None)
+        if token is None:
+            token = uuid.uuid4().hex
+            self._boot_id = token
+        return token
+
     def submit_startup(self, agent_id: str) -> Optional[str]:
-        # Unique per process boot: every startup legitimately wakes once.
-        return self.submit("application.startup", trigger_reference=agent_id)
+        # Unique per process boot, not per agent: agent_id is durable and wake
+        # rows are never deleted, so a constant key would silently dedup every
+        # startup wake after boot #1. The boot token keeps repeats within this
+        # process deduped while a fresh boot always wakes exactly once.
+        return self.submit(
+            "application.startup",
+            trigger_reference=agent_id,
+            wake_key=f"application.startup:{agent_id}:{self.boot_id}",
+        )
 
     # ---- consumption ---------------------------------------------------------------
 
@@ -383,6 +409,32 @@ class WakeWorker:
             await self._process(item)
             count += 1
         return count
+
+    def is_processing(self, wake_key: str) -> bool:
+        """Read-only liveness view over in-flight wake keys.
+
+        Used as the CRITICAL guard by the periodic maintenance sweep before it
+        reclaims a stale RUNNING wake. A key present here means this worker
+        still owns the in-process execution (queued or mid-flight), so the
+        sweep must not reclaim it — that would double-execute the wake.
+        """
+        return wake_key in self._queued_keys
+
+    def requeue_reclaimed(self, wake_key: str) -> None:
+        """Re-enqueue a wake that maintenance reclaimed to PENDING.
+
+        Must be called on the event-loop thread, after the reclaim's atomic CAS
+        has committed. ``submit()`` cannot be used here: it deduplicates on
+        wake_key and the durable row still exists, so it would never enqueue.
+        As with ``submit()``, the PENDING row — not the queue — is authoritative:
+        if the bounded queue is saturated, ``drain_durable`` picks the wake up
+        on the next processed item.
+        """
+        if wake_key in self._queued_keys:
+            return  # already queued/in-flight; never enqueue twice
+        self._queued_keys.add(wake_key)
+        if self._queue.qsize() < self._max_queue:
+            self._queue.put_nowait({"wake_key": wake_key})
 
     async def _process(self, item: Dict[str, Any]) -> None:
         session = self._db_manager.new_session()

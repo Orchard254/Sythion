@@ -941,6 +941,11 @@ class AssistantTurnResponse(BaseModel):
     exchange_id: str
     user_text: str
     assistant_text: str
+    # Optional runtime/system status notice (acknowledgements, fail-closed
+    # notices, insufficient-evidence disclosures). Kept separate from the
+    # model's answer so clients can render it as a distinct notice and skip
+    # text-to-speech. ``assistant_text`` is empty whenever this is populated.
+    status_text: str = ""
     status: str
     background_task_ids: List[str] = Field(default_factory=list)
     background_task_scheduling_status: Optional[str] = None

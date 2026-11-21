@@ -229,7 +229,8 @@ async def test_insufficient_discovery_text_does_not_schedule(file_db, monkeypatc
     bg = BackgroundTasks()
     resp = await assistant_turn(req, bg, session, None, svc)
 
-    assert resp.assistant_text == ConversationTurnEngine._INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT
+    assert resp.assistant_text == ""
+    assert resp.status_text == ConversationTurnEngine._INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT
     assert len(bg.tasks) == 0
 
 

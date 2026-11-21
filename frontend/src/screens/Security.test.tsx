@@ -13,6 +13,12 @@ const mock = vi.hoisted(() => ({
   approveSkill: vi.fn(),
   rejectSkill: vi.fn(),
   notify: vi.fn(),
+  toolProposalsRefetch: vi.fn(),
+  skillProposalsRefetch: vi.fn(),
+  capabilitiesRefetch: vi.fn(),
+  consistencyRefetch: vi.fn(),
+  toolsRefetch: vi.fn(),
+  skillsRefetch: vi.fn(),
 }));
 
 vi.mock('../hooks/useBackend', () => {
@@ -20,14 +26,17 @@ vi.mock('../hooks/useBackend', () => {
   return {
     useAgent: () => ({ data: undefined, refetch }),
     useBackgroundPolicy: () => ({ data: undefined, refetch }),
-    useCapabilities: () => ({ data: [], isLoading: false, refetch }),
+    useCapabilities: () => ({ data: [], isLoading: false, refetch: mock.capabilitiesRefetch }),
+    useCapabilityConsistency: () => ({ data: [], isLoading: false, refetch: mock.consistencyRefetch }),
+    useTools: () => ({ data: [], refetch: mock.toolsRefetch }),
+    useSkills: () => ({ data: [], refetch: mock.skillsRefetch }),
     useAgentHealth: () => ({ data: undefined, refetch }),
     useHealth: () => ({ data: undefined, isError: false, refetch }),
     useTasks: () => ({ data: mock.tasks, refetch }),
     useAgentActivity: () => ({ data: undefined, refetch }),
     useMemoryEdges: () => ({ data: [], refetch }),
-    useSkillProposals: () => ({ data: mock.skills, refetch }),
-    useToolProposals: () => ({ data: mock.toolProposals, refetch }),
+    useSkillProposals: () => ({ data: mock.skills, refetch: mock.skillProposalsRefetch }),
+    useToolProposals: () => ({ data: mock.toolProposals, refetch: mock.toolProposalsRefetch }),
     useDevices: () => ({ data: { devices: [] }, refetch }),
     usePendingApprovals: () => ({ data: { proposals: mock.permissions }, refetch }),
     useUncertainRemoteActions: () => ({ data: { actions: mock.uncertain }, refetch }),
@@ -92,6 +101,8 @@ describe('Security screen presentability', () => {
     vi.clearAllMocks();
     mock.approveTool.mockResolvedValue(undefined);
     mock.rejectTool.mockResolvedValue(undefined);
+    mock.approveSkill.mockResolvedValue(undefined);
+    mock.rejectSkill.mockResolvedValue(undefined);
   });
 
   afterEach(() => { act(() => view?.unmount()); });
@@ -133,5 +144,66 @@ describe('Security screen presentability', () => {
     // The summary stat must agree with the header badge.
     const stat = view.root.findAllByProps({ className: 'stat stat--accent' })[0];
     expect(stat.findAllByProps({ className: 'stat__value' })[0].children.join('')).toBe('3');
+  });
+
+  it('refetches the capability, consistency and tools panels after a tool approval', async () => {
+    mock.toolProposals = [toolProposal];
+    await act(async () => { view = create(<SecurityScreen />); });
+    const reviewButton = view.root.findAllByType('button').find((b) => b.children.includes('Review'))!;
+    await act(async () => { reviewButton.props.onClick(); });
+    const detail = view.root.findByProps({ 'data-testid': 'tool-review-7' });
+    const approve = detail.findAllByType('button').find((b) => b.children.includes('Approve tool'))!;
+    await act(async () => { approve.props.onClick(); });
+
+    expect(mock.approveTool).toHaveBeenCalledWith(7);
+    expect(mock.toolProposalsRefetch).toHaveBeenCalled();
+    expect(mock.capabilitiesRefetch).toHaveBeenCalled();
+    expect(mock.consistencyRefetch).toHaveBeenCalled();
+    expect(mock.toolsRefetch).toHaveBeenCalled();
+    expect(mock.skillsRefetch).toHaveBeenCalled();
+  });
+
+  it('refetches the skills panel after a skill approval', async () => {
+    mock.skills = [{ id: 3, name: 'draft skill', status: 'proposed', evidence_count: 2, validation_errors: [] }];
+    await act(async () => { view = create(<SecurityScreen />); });
+    const approve = view.root.findAllByType('button').find((b) => b.children.includes('Approve'))!;
+    expect(approve).toBeTruthy();
+    await act(async () => { approve.props.onClick(); });
+
+    expect(mock.approveSkill).toHaveBeenCalledWith(3);
+    expect(mock.skillProposalsRefetch).toHaveBeenCalled();
+    expect(mock.skillsRefetch).toHaveBeenCalled();
+  });
+
+  it('does not refetch any live panel when a tool decision fails', async () => {
+    mock.toolProposals = [toolProposal];
+    mock.approveTool.mockRejectedValueOnce(new Error('backend refused'));
+    await act(async () => { view = create(<SecurityScreen />); });
+    const reviewButton = view.root.findAllByType('button').find((b) => b.children.includes('Review'))!;
+    await act(async () => { reviewButton.props.onClick(); });
+    const detail = view.root.findByProps({ 'data-testid': 'tool-review-7' });
+    const approve = detail.findAllByType('button').find((b) => b.children.includes('Approve tool'))!;
+    await act(async () => { approve.props.onClick(); });
+
+    expect(mock.approveTool).toHaveBeenCalledWith(7);
+    expect(mock.toolProposalsRefetch).not.toHaveBeenCalled();
+    expect(mock.capabilitiesRefetch).not.toHaveBeenCalled();
+    expect(mock.consistencyRefetch).not.toHaveBeenCalled();
+    expect(mock.toolsRefetch).not.toHaveBeenCalled();
+    expect(mock.skillsRefetch).not.toHaveBeenCalled();
+    expect(mock.notify).toHaveBeenCalledWith(expect.objectContaining({ tone: 'danger' }));
+  });
+
+  it('does not refetch any live panel when a skill decision fails', async () => {
+    mock.skills = [{ id: 3, name: 'draft skill', status: 'proposed', validation_errors: [] }];
+    mock.approveSkill.mockRejectedValueOnce(new Error('backend refused'));
+    await act(async () => { view = create(<SecurityScreen />); });
+    const approve = view.root.findAllByType('button').find((b) => b.children.includes('Approve'))!;
+    await act(async () => { approve.props.onClick(); });
+
+    expect(mock.approveSkill).toHaveBeenCalledWith(3);
+    expect(mock.skillProposalsRefetch).not.toHaveBeenCalled();
+    expect(mock.skillsRefetch).not.toHaveBeenCalled();
+    expect(mock.capabilitiesRefetch).not.toHaveBeenCalled();
   });
 });

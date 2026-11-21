@@ -125,7 +125,11 @@ def test_sufficient_real_evidence_then_shadow_then_owner(db):
     # ACTIVE without owner → fail
     r3 = pstore.promote(pol.id, target_status="ACTIVE", owner_approved=False)
     assert r3["ok"] is False
-    r4 = pstore.promote(pol.id, target_status="ACTIVE", owner_approved=True)
+    from backend.learning.planning_store import PlanningPolicyApprovalReceipts
+    db.refresh(pol)
+    receipt_id = PlanningPolicyApprovalReceipts(db).issue(pol, "ACTIVE", decision_id="owner-rcpt-sufficient-evidence")
+    db.commit()
+    r4 = pstore.promote(pol.id, target_status="ACTIVE", owner_approval_receipt_id=receipt_id)
     assert r4["ok"] is True
     assert r4["policy"].status == "ACTIVE"
     # rollback

@@ -47,6 +47,8 @@ const advancePolls = async (ms: number) => {
 };
 /** The poll reads status every 2500ms (see AIModelsSettings constants). */
 const POLL_MS = 2500;
+/** Extended bounded window: ~75s (30 reads) before the poll gives up. */
+const MAX_POLLS = 30;
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -194,13 +196,52 @@ it('leaves an honest, non-hand-back status when a deferred choice never settles'
       .props.onVerified('groq/new', true));
     expect(mock.active).not.toHaveBeenCalled();
 
-    for (let i = 0; i < 6; i++) await advancePolls(POLL_MS); // each tick schedules the next after its async read
-    expect(mock.active).toHaveBeenCalledTimes(6);
-    expect(text()).toContain('the active model line will update when it settles');
+    for (let i = 0; i < MAX_POLLS; i++) await advancePolls(POLL_MS); // each tick schedules the next after its async read
+    expect(mock.active).toHaveBeenCalledTimes(MAX_POLLS);
+    // The poll kept watching well past the old 6-tick cap before giving up.
+    expect(text()).toContain('still applying the selected model in the background');
+    expect(text()).toContain('next time Settings opens');
+    expect(text()).not.toContain('when it settles'); // no in-session promise we stopped keeping
     expect(text()).toContain('OpenRouter · unit/model:free'); // old model still shown
     expect(text()).not.toContain('Active AI model updated');
     expect(text()).not.toContain('Refresh');
     expect(text()).not.toContain('Reopen');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('keeps polling while pending_activation stays \'ready\' past the old window, then converges', async () => {
+  vi.useFakeTimers();
+  try {
+    await changeProvider('groq');
+    mock.active.mockClear();
+    // The queued choice stays 'ready' through 8 reads (past the old 6-tick
+    // cap), then the field clears with the promoted model on the 9th read.
+    let reads = 0;
+    mock.active.mockImplementation(async () => {
+      reads += 1;
+      if (reads <= 8) return { ...active(), pending_activation: 'ready' };
+      return active('groq', 'groq/new');
+    });
+    await settle(() => view.root.findByType(ActiveCloudSetup)
+      .props.onVerified('groq/new', true));
+    // The immediate pending path must not call status or hand work back.
+    expect(mock.active).not.toHaveBeenCalled();
+    expect(text()).toContain('will activate automatically when current work finishes');
+
+    for (let i = 0; i < 8; i++) await advancePolls(POLL_MS); // still pending past the old cap
+    expect(mock.active).toHaveBeenCalledTimes(8);
+    expect(text()).not.toContain('Active AI model updated');
+    expect(text()).toContain('will activate automatically when current work finishes');
+
+    await advancePolls(POLL_MS); // pending cleared, new model reported
+    expect(mock.active).toHaveBeenCalledTimes(9);
+    expect(text()).toContain('Groq · groq/new');
+    expect(text()).toContain('Active AI model updated');
+    expect(text()).not.toContain('Refresh');
+    expect(text()).not.toContain('Reopen');
+    expect(mock.restore).not.toHaveBeenCalled();
   } finally {
     vi.useRealTimers();
   }
@@ -220,6 +261,8 @@ it('explains a credential-blocked deferred choice instead of repeating the promi
     expect(mock.active).not.toHaveBeenCalled();
 
     for (let i = 0; i < 6; i++) await advancePolls(POLL_MS);
+    // Terminal state stops the poll on the first read that observes it.
+    expect(mock.active).toHaveBeenCalledTimes(1);
     expect(text()).toContain('provider key changed');
     expect(text()).toContain('previous model active');
     expect(text()).not.toContain('will activate automatically');

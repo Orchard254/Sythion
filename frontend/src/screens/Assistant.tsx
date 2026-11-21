@@ -50,6 +50,10 @@ export function AssistantScreen() {
   const [composerStorageCompromised, setComposerStorageCompromised] = useState(false);
   const [recoveredTasks, setRecoveredTasks] = useState<Task[]>([]);
   const [historyRetryExhausted, setHistoryRetryExhausted] = useState(false);
+  // System/acknowledgement text returned in `status_text` is shown here as a
+  // notice, not as a conversation exchange and never through TTS. Each turn
+  // replaces (or clears) the previous notice.
+  const [turnStatusNotice, setTurnStatusNotice] = useState<string | null>(null);
 
   const queryClient = useQueryClient();
   const [replyMode] = useState<'text' | 'voice'>(() => localStorage.getItem('sythion.replyMode') === 'text' ? 'text' : 'voice');
@@ -459,6 +463,14 @@ useLayoutEffect(() => {
           </div>
         )}
 
+        {/* Acknowledgement/system text from a turn is a notice, not a chat
+            exchange. It is never sent to TTS (see the spoken-reply path). */}
+        {turnStatusNotice && (
+          <div className="ac__status-notice" role="status" aria-live="polite">
+            {turnStatusNotice}
+          </div>
+        )}
+
         {composerStorageCompromised && (
           <div className="ac__composer-storage-warning" role="status" aria-live="polite">
             Request identity storage could not be verified as cleared after sending. It will not be reused automatically while this page stays open, but reloading may reopen the previous request; it was not automatically retried or assumed complete.
@@ -534,6 +546,7 @@ useLayoutEffect(() => {
                     };
                     setSubmitting(true);
                     setVoiceError(null);
+                    setTurnStatusNotice(null);
                     const priorUnconfirmedSchedulingTaskIds = unconfirmedSchedulingTaskIds;
                     setUnconfirmedSchedulingTaskIds(null);
                     // Capture the submission time before the request completes so the
@@ -585,28 +598,46 @@ useLayoutEffect(() => {
                       const turnResult = await actions.assistantTurn(text, clientRequestId);
                       const exchangeId = turnResult.exchange_id;
                       setBriefing(turnResult.briefing ?? null);
-                      const mappedTask: Task = {
-                        id: exchangeId,
-                        conversation_id: exchangeId,
-                        interaction_type: 'CONVERSATION',
-                        original_request: turnResult.user_text || text,
-                        final_result: turnResult.assistant_text,
-                        state: turnResult.status === 'failed' || turnResult.status === 'error'
-                          ? 'failed'
-                          : turnResult.status === 'queued'
-                            ? 'queued'
-                            : 'completed',
-                        version: 1,
-                        normalized_goal: null,
-                        active_action_id: null,
-                        pending_question: null,
-                        terminal_reason: null,
-                        created_at: submittedAt,
-                        updated_at: submittedAt,
-                      };
-                      submittedIds.current.add(exchangeId);
-                      await queryClient.cancelQueries({ queryKey: ['conversation-responses'] });
-                      queryClient.setQueryData<Task[]>(['conversation-responses'], (old = []) => [...old.filter((item) => item.id !== mappedTask.id), mappedTask]);
+                      // `status_text` carries system/acknowledgement text. It is
+                      // rendered as a notice and deliberately kept out of both
+                      // the conversation thread and the spoken path: the TTS
+                      // effect only reads `final_result`, which is derived from
+                      // `assistant_text` below, so status text is never spoken.
+                      const statusText = typeof turnResult.status_text === 'string'
+                        ? turnResult.status_text.trim()
+                        : '';
+                      const assistantText = typeof turnResult.assistant_text === 'string'
+                        ? turnResult.assistant_text
+                        : '';
+                      setTurnStatusNotice(statusText || null);
+                      // A status-only turn has no conversational reply. Prefer
+                      // the notice over an empty assistant bubble, which would
+                      // otherwise read as a misleading "Synth is working…" row.
+                      const statusOnlyTurn = statusText.length > 0 && assistantText.trim().length === 0;
+                      if (!statusOnlyTurn) {
+                        const mappedTask: Task = {
+                          id: exchangeId,
+                          conversation_id: exchangeId,
+                          interaction_type: 'CONVERSATION',
+                          original_request: turnResult.user_text || text,
+                          final_result: assistantText,
+                          state: turnResult.status === 'failed' || turnResult.status === 'error'
+                            ? 'failed'
+                            : turnResult.status === 'queued'
+                              ? 'queued'
+                              : 'completed',
+                          version: 1,
+                          normalized_goal: null,
+                          active_action_id: null,
+                          pending_question: null,
+                          terminal_reason: null,
+                          created_at: submittedAt,
+                          updated_at: submittedAt,
+                        };
+                        submittedIds.current.add(exchangeId);
+                        await queryClient.cancelQueries({ queryKey: ['conversation-responses'] });
+                        queryClient.setQueryData<Task[]>(['conversation-responses'], (old = []) => [...old.filter((item) => item.id !== mappedTask.id), mappedTask]);
+                      }
                       void queryClient.invalidateQueries({ queryKey: ['conversation-history'] });
                       const backgroundTaskIds = Array.isArray(turnResult.background_task_ids)
                         ? turnResult.background_task_ids

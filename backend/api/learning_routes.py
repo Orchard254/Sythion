@@ -465,15 +465,46 @@ async def get_planning_policy(policy_id: str, db: Session = Depends(get_db)):
 
 @router.post("/planning/policies/{policy_id}/promote")
 async def promote_planning_policy(policy_id: str, payload: dict, db: Session = Depends(get_db)):
-    """Promote a planning policy through the gate (§17). Owner approval required for ACTIVE."""
+    """Promote a planning policy through the gate (§17).
+
+    ACTIVE requires a verified durable owner-approval receipt (``approval_receipt_id``)
+    or the explicit safe_for_auto_promotion + config opt-in. A body-only
+    ``owner_approved`` flag is NOT authority and never grants promotion.
+    """
     from backend.learning.planning_store import PlanningPolicyStore
     store = PlanningPolicyStore(db)
     target = str(payload.get("target_status") or payload.get("status") or "").strip().upper()
-    # control_token already enforces owner boundary at middleware; additionally require explicit flag
-    owner_approved = bool(payload.get("owner_approved"))
-    result = store.promote(policy_id, target_status=target, owner_approved=owner_approved)
+    # The receipt is a reference to a durable, server-issued owner confirmation.
+    # We never read an approval boolean from the request body.
+    receipt_id = (
+        payload.get("approval_receipt_id")
+        or payload.get("owner_approval_receipt_id")
+        or payload.get("receipt_id")
+    )
+    receipt_id = receipt_id.strip() if isinstance(receipt_id, str) else None
+    result = store.promote(
+        policy_id, target_status=target, owner_approval_receipt_id=receipt_id or None
+    )
     if not result.get("ok"):
-        raise HTTPException(status_code=422, detail=result.get("reason"))
+        reason = result.get("reason") or "promotion rejected"
+        if target == "ACTIVE" and not receipt_id and payload.get("owner_approved"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "owner_approved in the request body is not an approval authority: "
+                    "ACTIVE promotion requires a verified durable owner-approval "
+                    "receipt (approval_receipt_id) or the safe-auto promotion opt-in"
+                ),
+            )
+        if reason in ("owner_approval_required", "owner_approval_receipt_invalid"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "ACTIVE promotion requires a verified durable owner-approval "
+                    f"receipt (approval_receipt_id); {reason}"
+                ),
+            )
+        raise HTTPException(status_code=422, detail=reason)
     pol = result["policy"]
     return {"id": pol.id, "status": pol.status, "policy_version": pol.policy_version}
 

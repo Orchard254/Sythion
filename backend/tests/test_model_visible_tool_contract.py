@@ -57,23 +57,25 @@ async def test_engine_model_visible_never_includes_gui_tools(db_session, tool_ex
 
 @pytest.mark.asyncio
 async def test_system_capabilities_mirror_engine_visibility(db_session, tool_executor, monkeypatch):
-    monkeypatch.setenv("SYTHION_AUTONOMY_LEVEL", "autonomous")
-    engine = ModelDecisionEngine(db_session, tool_executor)
-    engine_visible = {tool["name"] for tool in engine._model_visible_tools()}
-
     caps_tool = SystemCapabilitiesTool()
     result = await caps_tool.execute(SystemCapabilitiesInput())
     assert result.success is True
 
-    autonomous_visible = set(result.data["model_visible_autonomous"])
-    # The engine is the authority and is strictly fail-closed: it never surfaces
-    # a tool outside the inventory's universe, and it additionally withholds
-    # mutating tools the executor cannot auto-dispatch. system_tools.py's static
-    # mirror is an inventory hint, not the visibility authority.
-    assert engine_visible <= autonomous_visible
-    assert not any(name.startswith("gui_") for name in engine_visible)
-    assert "app_launch" not in engine_visible
-    assert "file_write" not in engine_visible
+    for autonomy in ("guarded", "autonomous"):
+        monkeypatch.setenv("SYTHION_AUTONOMY_LEVEL", autonomy)
+        engine = ModelDecisionEngine(db_session, tool_executor)
+        engine_visible = {tool["name"] for tool in engine._model_visible_tools()}
+        reported_visible = set(result.data[f"model_visible_{autonomy}"])
+
+        # The capability report is cited as ground truth in the prompt, so it
+        # must be EXACTLY the set the engine advertises in every autonomy mode:
+        # no over-reporting tools the executor rejects (e.g. objective_create,
+        # system_volume) and no under-reporting tools the engine does expose.
+        # Set equality enforces both directions; a one-way subset is not enough.
+        assert engine_visible == reported_visible
+        assert not any(name.startswith("gui_") for name in engine_visible)
+        assert "app_launch" not in engine_visible
+        assert "file_write" not in engine_visible
 
 
 @pytest.mark.asyncio

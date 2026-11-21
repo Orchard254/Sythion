@@ -165,6 +165,7 @@ async def test_real_engine_injected_indexed_unknown_freshness_is_insufficient_wi
     resp = await assistant_turn(req, bg, session, None, svc)
 
     assert captured["discovery"].discovery_complete is False
-    assert resp.assistant_text == ConversationTurnEngine._INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT
+    assert resp.assistant_text == ""
+    assert resp.status_text == ConversationTurnEngine._INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT
     assert resp.background_task_ids == []
     assert model_calls["chat"] == 0

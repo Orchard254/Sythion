@@ -86,7 +86,11 @@ def _caller_owns_transaction(db) -> bool:
 
 
 async def propose_skill_from_trace(db, task_id: str, tool_executor: Any) -> None:
-    """Best-effort proposal generation after a verified successful task."""
+    """Best-effort proposal generation after a verified successful task.
+
+    This only creates or grows a proposal. It never enables a skill:
+    enablement is an explicit owner decision through the approval route.
+    """
     try:
         from backend.services.skill_engine import maybe_generate_proposal
 

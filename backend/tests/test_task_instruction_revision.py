@@ -393,7 +393,8 @@ async def test_composer_followup_independent_ambiguity_and_races(db, monkeypatch
     assert len(bg.tasks) == (1 if mode == "independent" else 0)
     assert db.query(Task).count() == (2 if mode == "independent" else 1)
     if mode == "append":
-        assert response.assistant_text == (
+        assert response.assistant_text == ""
+        assert response.status_text == (
             "Your instruction was queued for this task and has not yet "
             "been applied. Whether to apply it will be decided at a safe point. "
             "No task was restarted "
@@ -404,7 +405,8 @@ async def test_composer_followup_independent_ambiguity_and_races(db, monkeypatch
         assert not response.background_task_ids
     elif mode in {"busy", "completed_race"}:
         assert response.status == "failed"
-        assert response.assistant_text in {revision.BUSY, revision.CHANGED}
+        assert response.assistant_text == ""
+        assert response.status_text in {revision.BUSY, revision.CHANGED}
         assert not appended_events(db)
     elif mode == "ambiguous":
         assert response.assistant_text == "Which task do you mean?"
@@ -416,7 +418,8 @@ async def test_composer_followup_independent_ambiguity_and_races(db, monkeypatch
         assert db.get(Task, "original").normalized_goal is None
         assert len(response.background_task_ids) == 1
         assert db.get(Task, response.background_task_ids[0]).original_request == human
-        assert response.assistant_text == (
+        assert response.assistant_text == ""
+        assert response.status_text == (
             "Your separate background request was accepted. Existing "
             "tasks were not modified or restarted."
         )

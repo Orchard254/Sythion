@@ -18,6 +18,12 @@ from backend.learning.planning_taxonomy import (
 )
 from backend.models.database import PlanningOutcome, PlanningPolicy, PlanningShadowDecision, PlanningCounterfactual
 from backend.runtime.events import DbEventLedger
+# Durable owner-approval receipts reuse the existing decision-receipt service.
+# Approval is a recorded, server-verified fact — never a caller-supplied boolean.
+from backend.runtime.permission_decision_receipt import (
+    PermissionDecisionReceiptManager,
+    STATUS_APPROVED as RECEIPT_APPROVED,
+)
 
 
 def _planning_strength(n: int) -> str:
@@ -1031,6 +1037,93 @@ class PlanningOutcomeStore:
         }
 
 
+class PlanningPolicyApprovalReceipts:
+    """Durable, server-verified owner approvals for policy promotion.
+
+    ``issue`` records the owner's *second confirmation* as an approved
+    PermissionDecisionReceipt (the existing durable receipt service) and must
+    only be called by a trusted owner boundary. ``verify`` is the sole approval
+    authority consulted by :meth:`PlanningPolicyStore.promote`; promotion never
+    issues its own receipt, so a promoting request cannot approve itself.
+
+    A receipt is bound to the exact policy state at approval time (policy id,
+    target status, current version and evidence summary). Promotion increments
+    the version, so a receipt cannot be replayed for a different/again state.
+    """
+
+    TOOL_NAME = "planning_policy_promotion"
+    ACTION_ID = "planning.policy.promote.active"
+    TASK_VERSION = 1
+    SCHEMA_VERSION = 1
+
+    def __init__(self, session):
+        self.db = session
+        self._mgr = PermissionDecisionReceiptManager(db=session)
+
+    @staticmethod
+    def source_task_id(policy_id: str) -> str:
+        # Namespaced so it can never collide with a live Task id.
+        return f"planning-policy:{policy_id}"
+
+    @staticmethod
+    def digest(policy: PlanningPolicy, target_status: str) -> str:
+        binding = {
+            "policy_id": policy.id,
+            "policy_key": policy.policy_key,
+            "task_class": policy.task_class,
+            "planning_strategy": policy.planning_strategy,
+            "status": policy.status,
+            "policy_version": int(policy.policy_version or 1),
+            "target_status": target_status,
+            "evidence_summary_json": policy.evidence_summary_json or "",
+        }
+        return hashlib.sha256(
+            json.dumps(binding, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    def _binding(self, policy: PlanningPolicy, target_status: str) -> Dict[str, Any]:
+        return {
+            "source_task_id": self.source_task_id(policy.id),
+            "action_id": self.ACTION_ID,
+            "tool_name": self.TOOL_NAME,
+            "task_version": self.TASK_VERSION,
+            "schema_version": self.SCHEMA_VERSION,
+            "proposal_digest": self.digest(policy, target_status),
+        }
+
+    def issue(self, policy: PlanningPolicy, target_status: str = "ACTIVE", decision_id: Optional[str] = None) -> str:
+        """Record one durable owner approval. Call ONLY from a trusted owner boundary."""
+        rid = str(decision_id or uuid.uuid4()).strip()
+        if not rid:
+            raise ValueError("decision_id is required")
+        receipt = self._mgr.approve(decision=RECEIPT_APPROVED, decision_id=rid, **self._binding(policy, target_status))
+        return receipt.decision_id
+
+    def verify(self, policy: PlanningPolicy, target_status: str, decision_id: Optional[str]) -> bool:
+        if not isinstance(decision_id, str) or not decision_id.strip():
+            return False
+        receipt = self._mgr.get(decision_id=decision_id.strip())
+        if receipt is None:
+            return False
+        expected = self._binding(policy, target_status)
+        try:
+            return bool(
+                getattr(receipt, "approved", False)
+                and str(receipt.status) == RECEIPT_APPROVED
+                and str(receipt.decision) == RECEIPT_APPROVED
+                and receipt.decided_at is not None
+                and not str(getattr(receipt, "terminal_reason", "") or "").strip()
+                and str(receipt.source_task_id) == expected["source_task_id"]
+                and str(receipt.action_id) == expected["action_id"]
+                and str(receipt.tool_name) == expected["tool_name"]
+                and int(receipt.task_version) == int(expected["task_version"])
+                and int(receipt.schema_version) == int(expected["schema_version"])
+                and str(receipt.proposal_digest) == expected["proposal_digest"]
+            )
+        except (TypeError, ValueError):
+            return False
+
+
 class PlanningPolicyStore:
     """Promotion / rollback lifecycle (§17-18)."""
 
@@ -1065,7 +1158,21 @@ class PlanningPolicyStore:
         self.db.refresh(pol)
         return pol
 
-    def promote(self, policy_id: str, target_status: str, require_owner_approval: bool = True, owner_approved: bool = False) -> Dict[str, Any]:
+    def promote(
+        self,
+        policy_id: str,
+        target_status: str,
+        require_owner_approval: bool = True,
+        owner_approval_receipt_id: Optional[str] = None,
+        owner_approved: Optional[bool] = None,  # legacy: accepted for compatibility, NOT an approval authority
+    ) -> Dict[str, Any]:
+        """Promote through the gate. ACTIVE requires a verified durable owner-approval
+        receipt or the explicit safe_for_auto_promotion + config opt-in.
+
+        ``owner_approved`` and ``require_owner_approval`` are retained only for
+        call-site compatibility; neither can authorize ACTIVE. A boolean in the
+        promoting request is not evidence of a separate owner confirmation.
+        """
         pol = self.get(policy_id)
         if pol is None:
             return {"ok": False, "reason": "policy_not_found"}
@@ -1114,13 +1221,20 @@ class PlanningPolicyStore:
             return {"ok": False, "reason": f"insufficient_real_verified_successes: have {real_verified}, need {min_verified}"}
         if tgt_idx >= 2 and not ev.get("shadow_validated"):
             return {"ok": False, "reason": "shadow_validation_required"}
+        approval_basis = None
         if target_status == "ACTIVE":
-            if require_owner_approval and not owner_approved:
-                safe_auto = bool(getattr(settings, "planning_safe_auto_promotion", False))
-                if not safe_auto:
-                    return {"ok": False, "reason": "owner_approval_required"}
-                if not ev.get("safe_for_auto_promotion"):
-                    return {"ok": False, "reason": "safe_auto_promotion_not_eligible"}
+            receipt_ok = PlanningPolicyApprovalReceipts(self.db).verify(
+                pol, target_status, owner_approval_receipt_id
+            )
+            safe_auto = bool(getattr(settings, "planning_safe_auto_promotion", False)) and bool(
+                ev.get("safe_for_auto_promotion")
+            )
+            if not (receipt_ok or safe_auto):
+                # A body-only owner_approved flag is never authority (legacy or
+                # otherwise). The HTTP layer turns this into a clear 409/422.
+                reason = "owner_approval_receipt_invalid" if owner_approval_receipt_id else "owner_approval_required"
+                return {"ok": False, "reason": reason}
+            approval_basis = "owner_approval_receipt" if receipt_ok else "safe_auto_promotion"
         prev_status = pol.status
         pol.status = target_status
         pol.promoted_at = datetime.utcnow()
@@ -1132,7 +1246,10 @@ class PlanningPolicyStore:
             "policy_key": pol.policy_key,
             "from": prev_status,
             "to": target_status,
-            "owner_approved": owner_approved,
+            # Reflects the effective authority, never a caller-supplied claim.
+            "owner_approved": approval_basis == "owner_approval_receipt",
+            "approval_basis": approval_basis,
+            "approval_receipt_id": owner_approval_receipt_id if approval_basis == "owner_approval_receipt" else None,
             "real_count": real_count,
             "real_verified": real_verified,
         })

@@ -7,8 +7,8 @@ This module owns the non-runtime part of the skill system:
 - grouping materially similar traces
 - generating declarative proposals
 - accumulating evidence across runs
-- explicit approval / rejection
-- optional auto-promotion once evidence reaches threshold
+- explicit approval / rejection (the ONLY path that enables a skill;
+  a verified-trace count never authorizes enablement)
 
 Execution and pinning stay in `skill_runtime.py` so trusted runtime behavior
 remains separate from growth-oriented intelligence features.
@@ -170,53 +170,24 @@ def _auto_enable_if_ready(
     proposal: ProposedSkill,
     tool_executor: Any,
 ) -> Optional[Skill]:
-    """Promote a proposal to a live skill once its verified trace count reaches threshold."""
-    try:
-        from backend.core.config import settings
-    except ImportError:
-        from core.config import settings
+    """Deprecated no-op: proposals are enabled only by explicit owner approval.
 
-    threshold = getattr(settings, "skill_auto_enable_threshold", 0)
-    if threshold <= 0:
-        return None
-    if proposal.skill_id:
-        return None
+    This helper used to promote a proposal to a live skill as soon as its
+    verified trace count reached ``skill_auto_enable_threshold``. That let a
+    trace count — with no owner decision and no durable approval receipt —
+    authorize enablement, contradicting the documented contract that every
+    skill requires explicit owner review and enablement.
 
-    try:
-        trace_ids = json.loads(proposal.trace_ids) if proposal.trace_ids else []
-    except (json.JSONDecodeError, TypeError):
-        trace_ids = []
-    if len(trace_ids) < threshold:
-        return None
-
-    definition = parse_definition(proposal.definition)
-    validation_errors = validate_definition(definition, allowed_tool_names(tool_executor))
-    if validation_errors:
-        proposal.validation_errors = json.dumps(validation_errors)
-        db.commit()
-        # Verify the validation_errors persisted
-        try:
-            engine = db.bind
-            SessionLocal = sessionmaker(bind=engine)
-            with SessionLocal() as verify_session:
-                proposal_verify = verify_session.query(ProposedSkill).filter_by(id=proposal.id).first()
-                if proposal_verify is None or not proposal_verify.validation_errors:
-                    logger.warning("Verification failed: validation_errors not persisted for proposal %s", proposal.id)
-                    return None
-        except Exception as exc:
-            logger.warning("Verification of validation_errors persistence failed: %s", exc)
-        logger.warning(
-            "Proposal %s not auto-enabled: re-validation failed: %s",
-            proposal.id, "; ".join(validation_errors),
-        )
-        return None
-
-    skill = approve_proposal(db, proposal, tool_executor)
-    logger.info(
-        "Auto-enabled proposal %s as skill %s (%d verified traces)",
-        proposal.id, skill.id, len(trace_ids),
+    Auto-enablement is removed. The function is retained only for import
+    compatibility (``skill_engine`` re-exports it) and always returns ``None``.
+    Use :func:`approve_proposal` — the explicit owner approval route — to
+    enable a proposal.
+    """
+    logger.debug(
+        "Auto-enable disabled: proposal %s stays proposed until explicit owner approval",
+        getattr(proposal, "id", None),
     )
-    return skill
+    return None
 
 
 def _proposal_matches_trace(
@@ -242,7 +213,13 @@ def maybe_generate_proposal(
     task_id: str,
     tool_executor: Any,
 ) -> Optional[ProposedSkill]:
-    """Create or grow a proposed skill from materially similar verified traces."""
+    """Create or grow a proposed skill from materially similar verified traces.
+
+    This only accumulates evidence. It never enables a skill: enablement is an
+    explicit owner decision made through :func:`approve_proposal` (the approval
+    route), which records the approval receipt. A verified-trace count is not
+    authority to enable.
+    """
     task = db.query(Task).filter_by(id=task_id).first()
     if not task or task.state != "completed":
         return None
@@ -287,7 +264,8 @@ def maybe_generate_proposal(
         except Exception as exc:
             logger.warning("Verification of trace_ids persistence failed: %s", exc)
             return None
-        _auto_enable_if_ready(db, prop, tool_executor)
+        # Governance: growth only. Only the explicit owner approval route may
+        # enable a proposal; a trace count never authorizes enablement.
         return prop
     
     similar: List[Task] = []
@@ -343,7 +321,8 @@ def maybe_generate_proposal(
     logger.info(
         "Proposed skill from %d traces: %s (task %s)", len(all_traces), definition.name, task.id
     )
-    _auto_enable_if_ready(db, proposal, tool_executor)
+    # Governance: growth only. Only the explicit owner approval route may
+    # enable a proposal; a trace count never authorizes enablement.
     return proposal
 
 

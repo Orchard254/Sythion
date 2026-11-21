@@ -118,6 +118,7 @@ export function useTaskEvents(taskId: string | null) {
 export function useObjectives() {
   return useSource('objectives', api.objectiveService.list, {
     staleMs: 15_000,
+    refetchInterval: 20_000,
   });
 }
 
@@ -258,12 +259,14 @@ export function useSkills() {
 export function useSkillProposals() {
   return useSource('skill-proposals', api.skillService.proposals, {
     staleMs: 30_000,
+    refetchInterval: 15_000,
   });
 }
 
 export function useToolProposals() {
   return useSource('tool-proposals', api.toolProposalService.list, {
     staleMs: 30_000,
+    refetchInterval: 15_000,
   });
 }
 

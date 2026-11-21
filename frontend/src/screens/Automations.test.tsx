@@ -4,7 +4,13 @@ import { AutomationsScreen } from './Automations';
 import { useAppStore } from '../store/appStore';
 
 const mock = vi.hoisted(() => ({
-  approve: vi.fn(), reject: vi.fn(), proposalsRefetch: vi.fn(), skillsRefetch: vi.fn(),
+  approve: vi.fn(),
+  reject: vi.fn(),
+  proposalsRefetch: vi.fn(),
+  skillsRefetch: vi.fn(),
+  capabilitiesRefetch: vi.fn(),
+  consistencyRefetch: vi.fn(),
+  toolsRefetch: vi.fn(),
   status: 'proposed',
   definition: { name: 'test skill', steps: ['inspect'] } as Record<string, unknown>,
 }));
@@ -13,6 +19,9 @@ vi.mock('../hooks/useBackend', async () => {
   return {
     useBackgroundPolicy: () => ({ data: { enabled: false } }),
     useSkills: () => ({ data: [], refetch: mock.skillsRefetch }),
+    useCapabilities: () => ({ data: [], refetch: mock.capabilitiesRefetch }),
+    useCapabilityConsistency: () => ({ data: [], refetch: mock.consistencyRefetch }),
+    useTools: () => ({ data: [], refetch: mock.toolsRefetch }),
     useSkillProposals: () => ({ data: [{ id: 42, status: mock.status, definition: mock.definition, trace_ids: [1, 2] }], refetch: mock.proposalsRefetch }),
     useAgentActivity: () => ({ data: { wakes: [] } }),
     useActions: () => ({ live: useAppStore((s) => s.isConnected), approveSkillProposal: mock.approve, rejectSkillProposal: mock.reject }),
@@ -33,7 +42,7 @@ beforeEach(() => {
 afterEach(() => { act(() => view.unmount()); vi.unstubAllGlobals(); });
 
 describe('Automations proposal review', () => {
-  it('shows live definition and approves once, refreshing both lists', async () => {
+  it('shows live definition and approves once, refreshing all registry panels', async () => {
     let resolve!: () => void;
     mock.approve.mockImplementation(() => new Promise<void>((r) => { resolve = r; }));
     expect(JSON.stringify(view.toJSON())).toContain('test skill');
@@ -47,6 +56,9 @@ describe('Automations proposal review', () => {
     await act(async () => { resolve(); });
     expect(mock.proposalsRefetch).toHaveBeenCalledOnce();
     expect(mock.skillsRefetch).toHaveBeenCalledOnce();
+    expect(mock.capabilitiesRefetch).toHaveBeenCalledOnce();
+    expect(mock.consistencyRefetch).toHaveBeenCalledOnce();
+    expect(mock.toolsRefetch).toHaveBeenCalledOnce();
   });
 
   it('keeps pending_review visible but does not send unsupported decisions', async () => {
@@ -68,6 +80,10 @@ describe('Automations proposal review', () => {
     expect(mock.reject).toHaveBeenCalledWith(42);
     expect(JSON.stringify(view.toJSON())).toContain('Not authorized');
     expect(mock.proposalsRefetch).not.toHaveBeenCalled();
+    expect(mock.skillsRefetch).not.toHaveBeenCalled();
+    expect(mock.capabilitiesRefetch).not.toHaveBeenCalled();
+    expect(mock.consistencyRefetch).not.toHaveBeenCalled();
+    expect(mock.toolsRefetch).not.toHaveBeenCalled();
   });
 
   it('blocks disconnected and already decided proposals', () => {

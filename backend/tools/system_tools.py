@@ -16,7 +16,12 @@ logger = logging.getLogger(__name__)
 # Import as a package when running as `backend.main`, or as bare modules
 # when tools are loaded directly (tests / scripts run from backend/).
 try:
-    from backend.tools.executor import BaseTool, handle_tool_errors
+    from backend.tools.executor import (
+        BaseTool,
+        handle_tool_errors,
+        is_reviewed_safe_builtin,
+        _safe_automatic_dispatch_metadata,
+    )
     from backend.api.schemas import (
         ToolOutput,
         SystemTimeInput,
@@ -45,7 +50,12 @@ try:
 
 
 except ImportError:
-    from tools.executor import BaseTool, handle_tool_errors
+    from tools.executor import (
+        BaseTool,
+        handle_tool_errors,
+        is_reviewed_safe_builtin,
+        _safe_automatic_dispatch_metadata,
+    )
     from api.schemas import (
         ToolOutput,
         SystemTimeInput,
@@ -91,24 +101,32 @@ def _tool_domain(name: str) -> str:
     return "other"
 
 
-def _model_visible(reqs: Dict[str, Any], autonomy: str) -> bool:
-    """Mirror of model_engine._model_visible_tools: policy-filtered subset."""
+def _model_visible(tool: Any, autonomy: str) -> bool:
+    """Mirror of model_engine._model_visible_tools: policy-filtered subset.
+
+    The engine's visibility check is a single fail-closed predicate: a tool is
+    model-callable only if the executor would also auto-dispatch it, i.e. it is
+    an exact reviewed-safe built-in whose policy requirements permit automatic
+    dispatch.  We reuse the engine/executor helpers directly rather than
+    reimplementing their logic so this capability report cannot drift from the
+    tool set the prompt advertises.  ``autonomy`` is accepted for call-site
+    compatibility but intentionally has no effect, matching the engine (the
+    check never widens with autonomy mode).
+    """
+    reqs = tool.get_policy_requirements()
     if reqs.get("requires_admin"):
         return False
-    if autonomy != "autonomous":
-        if (reqs.get("mutating") or reqs.get("destructive")) and not reqs.get("app_internal"):
-            return False
-        if reqs.get("requires_confirmation"):
-            return False
-        if reqs.get("risk_level") in {"medium", "high"}:
-            return False
     # engine never exposes privacy-, screen-, or UI-automation-sensitive tools,
-    # even in autonomous mode.
+    # in any autonomy mode.
     if (
         reqs.get("privacy_sensitive")
         or reqs.get("requires_screen_access")
         or reqs.get("requires_ui_automation")
     ):
+        return False
+    # Single visibility authority: exactly the tools the executor will
+    # auto-dispatch. Reused verbatim from executor.py (no duplicated logic).
+    if not is_reviewed_safe_builtin(tool) or not _safe_automatic_dispatch_metadata(reqs):
         return False
     return True
 
@@ -837,8 +855,8 @@ class SystemCapabilitiesTool(BaseTool[SystemCapabilitiesInput]):
                 "risk_level": reqs.get("risk_level", "-"),
                 "flags": flags,
                 "model_visible": {
-                    "guarded": _model_visible(reqs, "guarded"),
-                    "autonomous": _model_visible(reqs, "autonomous"),
+                    "guarded": _model_visible(tool, "guarded"),
+                    "autonomous": _model_visible(tool, "autonomous"),
                 },
             })
 

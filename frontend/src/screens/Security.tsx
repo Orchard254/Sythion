@@ -22,11 +22,14 @@ import {
   useAgentHealth,
   useBackgroundPolicy,
   useCapabilities,
+  useCapabilityConsistency,
   useHealth,
   useMemoryEdges,
   usePendingApprovals,
   useSkillProposals,
+  useSkills,
   useTasks,
+  useTools,
   useToolProposals,
   useUncertainRemoteActions,
 } from '../hooks/useBackend';
@@ -56,6 +59,9 @@ export function SecurityScreen() {
   const agent = useAgent();
   const background = useBackgroundPolicy();
   const capabilities = useCapabilities();
+  const capabilityConsistency = useCapabilityConsistency();
+  const tools = useTools();
+  const skills = useSkills();
   const agentHealth = useAgentHealth();
   const health = useHealth();
   const tasks = useTasks();
@@ -122,6 +128,17 @@ export function SecurityScreen() {
     } finally {
       setBusy(null);
     }
+  };
+
+  // A decision changes backend capability/tool/skill state. These queries share
+  // keys with the System screen panels, so refetching here refreshes every
+  // consumer. Call this ONLY after the backend confirmed the decision (from an
+  // onOk handler) so a failed request never disturbs the live panels.
+  const refreshRegistryPanels = () => {
+    capabilities.refetch();
+    capabilityConsistency.refetch();
+    tools.refetch();
+    skills.refetch();
   };
 
   // Once the backend confirms the new value, drop the optimistic mirror so the
@@ -557,6 +574,7 @@ export function SecurityScreen() {
                         onClick={() =>
                           actions.live && p.status === 'proposed' && busy === null && void run(`sk-${p.id}`, () => actions.approveSkillProposal(p.id), () => {
                             skillProposals.refetch();
+                            refreshRegistryPanels();
                             notify({ tone: 'ok', title: 'Proposal approved' });
                           })
                         }
@@ -570,6 +588,7 @@ export function SecurityScreen() {
                         onClick={() =>
                           actions.live && p.status === 'proposed' && busy === null && void run(`sk-${p.id}`, () => actions.rejectSkillProposal(p.id), () => {
                             skillProposals.refetch();
+                            refreshRegistryPanels();
                             notify({ tone: 'ok', title: 'Proposal rejected' });
                           })
                         }
@@ -643,6 +662,7 @@ export function SecurityScreen() {
                                   void run(`tp-approve-${p.id}`, () => actions.approveToolProposal(p.id), () => {
                                     setReviewingTool(null);
                                     toolProposals.refetch();
+                                    refreshRegistryPanels();
                                     notify({ tone: 'ok', title: 'Tool proposal approved' });
                                   })
                                 }
@@ -657,6 +677,7 @@ export function SecurityScreen() {
                                   void run(`tp-reject-${p.id}`, () => actions.rejectToolProposal(p.id), () => {
                                     setReviewingTool(null);
                                     toolProposals.refetch();
+                                    refreshRegistryPanels();
                                     notify({ tone: 'ok', title: 'Tool proposal rejected' });
                                   })
                                 }

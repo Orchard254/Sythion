@@ -264,7 +264,10 @@ def test_promotion_and_rollback(db):
     pol = store.create_observed("goal", PlanningStrategy.DIRECT_PLAN.value, evidence_summary={"sample_count": 10, "shadow_validated": True})
     store.promote(pol.id, target_status="SUPPORTED")
     store.promote(pol.id, target_status="SHADOW_VALIDATED")
-    r = store.promote(pol.id, target_status="ACTIVE", owner_approved=True)
+    from backend.learning.planning_store import PlanningPolicyApprovalReceipts
+    receipt_id = PlanningPolicyApprovalReceipts(db).issue(pol, "ACTIVE", decision_id="owner-rcpt-promote-rollback")
+    db.commit()
+    r = store.promote(pol.id, target_status="ACTIVE", owner_approval_receipt_id=receipt_id)
     assert r["ok"] is True
     assert r["policy"].status == "ACTIVE"
     rb = store.rollback(pol.id, reason="bad policy")
@@ -470,7 +473,10 @@ def test_rollback_always_restores_previous_policy(db):
     pol = store.create_observed("goal", PlanningStrategy.DIRECT_PLAN.value, evidence_summary={"sample_count": 10, "shadow_validated": True})
     store.promote(pol.id, target_status="SUPPORTED")
     store.promote(pol.id, target_status="SHADOW_VALIDATED")
-    pol2 = store.promote(pol.id, target_status="ACTIVE", owner_approved=True)["policy"]
+    from backend.learning.planning_store import PlanningPolicyApprovalReceipts
+    receipt_id = PlanningPolicyApprovalReceipts(db).issue(pol, "ACTIVE", decision_id="owner-rcpt-rb-restore")
+    db.commit()
+    pol2 = store.promote(pol.id, target_status="ACTIVE", owner_approval_receipt_id=receipt_id)["policy"]
     assert pol2.status == "ACTIVE"
     rb = store.rollback(pol.id, reason="rollback test")["policy"]
     assert rb.status == "ROLLED_BACK"

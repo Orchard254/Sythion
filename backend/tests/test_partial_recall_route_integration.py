@@ -252,7 +252,8 @@ async def test_partial_recall_incomplete_index_returns_no_interactive_calls(db_s
 
     assert model_calls["chat"] == 0
     assert resp.background_task_ids == []
-    assert resp.assistant_text == ConversationTurnEngine._INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT
+    assert resp.assistant_text == ""
+    assert resp.status_text == ConversationTurnEngine._INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT
 
 
 @pytest.mark.asyncio
@@ -380,4 +381,5 @@ async def test_partial_recall_failing_discovery_stays_read_only(db_session, monk
 
     assert model_calls["chat"] == 0
     assert resp.background_task_ids == []
-    assert resp.assistant_text == ConversationTurnEngine._INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT
+    assert resp.assistant_text == ""
+    assert resp.status_text == ConversationTurnEngine._INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT

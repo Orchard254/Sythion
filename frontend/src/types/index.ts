@@ -733,6 +733,8 @@ export interface AssistantTurn {
   exchange_id: string;
   user_text: string;
   assistant_text: string;
+  /** System/acknowledgement text. Rendered as a notice, never spoken by TTS. */
+  status_text?: string;
   status: string;
   background_task_ids: string[];
   background_task_scheduling_status?: string | null;

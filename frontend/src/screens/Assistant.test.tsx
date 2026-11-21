@@ -52,6 +52,53 @@ describe('assistant turns', () => {
     expect(text()).toContain('Hi there');
   });
 
+  it('renders status_text as a notice for a status-only turn, never as a bubble or spoken reply', async () => {
+    localStorage.setItem('sythion.replyMode', 'voice');
+    await settle(() => { view.unmount(); view = create(<QueryClientProvider client={client}><AssistantScreen /></QueryClientProvider>); });
+    const statusNotice = 'I have scheduled that for you. No further action is needed.';
+    mock.turn.mockResolvedValueOnce({
+      exchange_id: 'status-only', user_text: 'Hello Synth', assistant_text: '',
+      status_text: statusNotice, status: 'completed', background_task_ids: [],
+    });
+    mock.speak.mockClear();
+    await draft();
+    await send();
+
+    // The acknowledgement appears in the dedicated status/notice area...
+    const notice = view.root.findByProps({ className: 'ac__status-notice' });
+    expect(String(notice.props.children)).toBe(statusNotice);
+
+    // ...but not in an assistant reply bubble, and no empty assistant bubble
+    // is invented for a status-only turn.
+    const bubbles = view.root.findAllByProps({ className: 'msg__bubble' });
+    expect(bubbles.some((node) => String(node.props.children ?? '').includes(statusNotice))).toBe(false);
+    expect(bubbles).toHaveLength(0);
+    expect(view.root.findAllByProps({ className: 'msg msg--agent' })).toHaveLength(0);
+
+    // And it is never handed to TTS, even in voice-reply mode.
+    expect(mock.speak).not.toHaveBeenCalled();
+  });
+
+  it('keeps status_text out of the spoken path when a real reply is also present', async () => {
+    localStorage.setItem('sythion.replyMode', 'voice');
+    await settle(() => { view.unmount(); view = create(<QueryClientProvider client={client}><AssistantScreen /></QueryClientProvider>); });
+    const statusNotice = 'Scheduled in the background.';
+    mock.turn.mockResolvedValueOnce({
+      exchange_id: 'mixed-turn', user_text: 'Hello Synth', assistant_text: 'Here is your answer.',
+      status_text: statusNotice, status: 'completed', background_task_ids: [],
+    });
+    mock.speak.mockClear();
+    await draft();
+    await send();
+
+    expect(view.root.findByProps({ className: 'ac__status-notice' }).props.children).toBe(statusNotice);
+    expect(text()).toContain('Here is your answer.');
+    // TTS speaks only the conversational reply, never the status text.
+    expect(mock.speak).toHaveBeenCalled();
+    expect(mock.speak).toHaveBeenCalledWith('Here is your answer.');
+    expect(mock.speak.mock.calls.flat().some((arg) => String(arg).includes(statusNotice))).toBe(false);
+  });
+
   it('does not create a Sent alert for ordinary completed chat', async () => {
     await draft();
     await send();

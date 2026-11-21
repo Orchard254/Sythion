@@ -79,7 +79,8 @@ class _Provider:
 
         return ModelHealth("ollama-cloud", ModelHealth.HEALTHY)
 
-    async def chat(self, messages, max_tokens=4000, timeout=300.0):
+    async def chat(self, messages, max_tokens=4000, timeout=300.0, model_id=None):
+        self.seen_model_id = model_id
         return self.body
 
 
@@ -335,6 +336,20 @@ def test_the_endpoint_answers_200_for_the_native_shape(monkeypatch):
     assert body["model"] == "m1"
 
 
+def test_the_endpoint_calls_the_exact_model_it_validated(monkeypatch):
+    """Verification must probe the validated model, not the adapter's selected one."""
+    provider = _Provider(NATIVE_BODY)
+    client, previous_token, backend_main = _client(monkeypatch, provider, selected="other-model")
+    try:
+        res = client.post("/api/v1/onboarding/inference", json={"model_id": "m1"})
+        assert res.status_code == 200
+        # list_models reports only "m1", so this also proves validation ran on m1.
+        assert getattr(provider, "seen_model_id", None) == "m1"
+    finally:
+        backend_main.control_token = previous_token
+        app.dependency_overrides.clear()
+
+
 def test_the_endpoint_answers_200_for_the_openai_compatible_shape(monkeypatch):
     """The OpenAI-compatible shape still answers 200."""
     res = _post_inference(monkeypatch, OPENAI_BODY)
@@ -485,7 +500,8 @@ def test_setup_inference_uses_provider_normal_default(monkeypatch):
     class _ProviderUsingItsDefault(_Provider):
         seen_max_tokens = _not_passed
 
-        async def chat(self, messages, max_tokens=_not_passed, timeout=300.0):
+        async def chat(self, messages, max_tokens=_not_passed, timeout=300.0, model_id=None):
+            self.seen_model_id = model_id
             self.seen_max_tokens = max_tokens
             if max_tokens is not _not_passed:
                 return {

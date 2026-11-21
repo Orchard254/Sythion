@@ -38,6 +38,17 @@ ENGINE_STATE = {
 
 
 class FakeEngine:
+    # routes.py routes these system notices through status_text; keep the
+    # constants in sync with ConversationTurnEngine so the fake mirrors it.
+    _INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT = (
+        "I do not have enough verified discussion discovery to identify a relevant "
+        "discussion from the available context. No action was performed."
+    )
+    _INSUFFICIENT_EVIDENCE_ASSISTANT_TEXT = (
+        "I do not have enough exact, structurally complete evidence from the "
+        "selected discussions to answer reliably. No action was performed."
+    )
+
     def __init__(self, model_client=None):
         pass
 
@@ -249,7 +260,8 @@ async def test_command_is_fail_closed_no_side_effect(request, _patch_engine):
 
     assert resp.status == "failed"
     assert resp.background_task_ids == []
-    assert resp.assistant_text == (
+    assert resp.assistant_text == ""
+    assert resp.status_text == (
         "Requested background work or task continuation was not started, "
         "and no task was launched or scheduled."
     )
@@ -313,9 +325,10 @@ async def test_one_start_task_command_dispatches_one_worker(request, _patch_engi
     )
 
     assert resp.status == "completed"
-    assert resp.assistant_text == "Your background request was accepted."
+    assert resp.assistant_text == ""
+    assert resp.status_text == "Your background request was accepted."
     assert resp.scheduling_established is False
-    assert db.query(ConversationExchange).one().assistant_text == resp.assistant_text
+    assert db.query(ConversationExchange).one().assistant_text == resp.status_text
     assert len(resp.background_task_ids) == 1
     assert worker_calls["count"] == 0  # mocked worker is scheduled, not immediately invoked
     assert len(bg.tasks) == 1
@@ -332,7 +345,8 @@ async def test_one_start_task_command_dispatches_one_worker(request, _patch_engi
     db.commit()
     replay_bg = BackgroundTasks()
     replay = await assistant_turn(data, replay_bg, db, None)
-    assert replay.assistant_text == resp.assistant_text
+    assert replay.assistant_text == resp.assistant_text == ""
+    assert replay.status_text == resp.status_text == "Your background request was accepted."
     assert replay.background_task_ids == resp.background_task_ids
     assert replay.scheduling_established is True
     assert not replay_bg.tasks
@@ -381,11 +395,12 @@ async def test_one_answer_clarification_command_dispatches_worker(request, _patc
     )
 
     assert resp.status == "completed"
-    assert resp.assistant_text == (
+    assert resp.assistant_text == ""
+    assert resp.status_text == (
         "Your clarification was received in the conversation. "
         "Its application to the task and task continuation are not confirmed."
     )
-    assert db.query(ConversationExchange).one().assistant_text == resp.assistant_text
+    assert db.query(ConversationExchange).one().assistant_text == resp.status_text
     assert resp.background_task_ids == ["clar-task"]
     assert resp.scheduling_established is False
     assert len(bg.tasks) == 1
@@ -396,7 +411,8 @@ async def test_one_answer_clarification_command_dispatches_worker(request, _patc
     assert db.query(ConversationExchange).count() == 1
     replay_bg = BackgroundTasks()
     replay = await assistant_turn(data, replay_bg, db, None)
-    assert replay.assistant_text == resp.assistant_text
+    assert replay.assistant_text == resp.assistant_text == ""
+    assert replay.status_text == resp.status_text
     assert replay.background_task_ids == resp.background_task_ids
     assert replay.scheduling_established is False
     assert not replay_bg.tasks
@@ -444,7 +460,8 @@ async def test_clarification_crash_after_persistence_replays_receipt_only(reques
 
     replay_bg = BackgroundTasks()
     replay = await assistant_turn(data, replay_bg, db, None)
-    assert replay.assistant_text == (
+    assert replay.assistant_text == ""
+    assert replay.status_text == (
         "Your clarification was received in the conversation. "
         "Its application to the task and task continuation are not confirmed."
     )
@@ -694,7 +711,8 @@ async def test_assistant_turn_transient_retry_leads_to_single_dispatch(request, 
     resp = await assistant_turn(AssistantTurnRequest(client_request_id=f"test-{__import__(chr(117)+chr(117)+chr(105)+chr(100)).uuid4()}", text="start work"), bg, db, None)
 
     assert resp.status == "completed"
-    assert resp.assistant_text == "Your background request was accepted."
+    assert resp.assistant_text == ""
+    assert resp.status_text == "Your background request was accepted."
     assert len(resp.background_task_ids) == 1
     assert len(bg.tasks) == 1
     assert db.query(Task).count() == 1
@@ -901,7 +919,8 @@ async def test_assistant_turn_real_engine_malformed_then_valid_start_task_dispat
     resp = await assistant_turn(AssistantTurnRequest(client_request_id=f"test-{__import__(chr(117)+chr(117)+chr(105)+chr(100)).uuid4()}", text="start work"), bg, db, None)
 
     assert resp.status == "completed"
-    assert resp.assistant_text == "Your background request was accepted."
+    assert resp.assistant_text == ""
+    assert resp.status_text == "Your background request was accepted."
     assert len(resp.background_task_ids) == 1
     assert len(bg.tasks) == 1
     assert db.query(Task).count() == 1
@@ -1167,3 +1186,81 @@ async def test_pure_conversation_turns_persist_full_text_and_chronological_conte
         assert refreshed_db.query(Task).count() == 0
     finally:
         refreshed_db.close()
+
+
+@pytest.mark.asyncio
+async def test_status_notice_uses_status_text_and_leaves_assistant_text_empty(request, _patch_engine):
+    """A runtime/system status notice must not be rendered or spoken as an answer.
+
+    Representative case: more than one requested command fails closed. The
+    honest wording and fail-closed behavior are unchanged; only the response
+    channel moves from ``assistant_text`` to ``status_text``.
+    """
+    db = request.getfixturevalue("test_db")
+    ENGINE_STATE["assistant_text"] = "I started the work."
+    ENGINE_STATE["commands"] = [
+        {"type": "start_task", "request": "first"},
+        {"type": "start_task", "request": "second"},
+    ]
+
+    from fastapi import BackgroundTasks
+
+    bg = BackgroundTasks()
+    resp = await assistant_turn(
+        AssistantTurnRequest(
+            client_request_id=f"test-{__import__('uuid').uuid4()}",
+            text="do two things",
+        ),
+        bg,
+        db,
+        None,
+    )
+
+    assert resp.status == "failed"
+    assert resp.assistant_text == ""
+    assert resp.status_text == (
+        "Requested background work or task continuation was not started, "
+        "and no task was launched or scheduled."
+    )
+    assert resp.background_task_ids == []
+    assert bg.tasks == []
+    assert db.query(Task).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_normal_conversational_answer_uses_assistant_text(request, _patch_engine):
+    """A genuine model answer stays in assistant_text with an empty status_text."""
+    db = request.getfixturevalue("test_db")
+    answer = "Here is a short beginner checklist: variables, then if/else."
+    ENGINE_STATE["assistant_text"] = answer
+    ENGINE_STATE["commands"] = []
+
+    from fastapi import BackgroundTasks
+
+    bg = BackgroundTasks()
+    resp = await assistant_turn(
+        AssistantTurnRequest(
+            client_request_id=f"test-{__import__('uuid').uuid4()}",
+            text="Give me a beginner checklist",
+        ),
+        bg,
+        db,
+        None,
+    )
+
+    assert resp.status == "completed"
+    assert resp.assistant_text == answer
+    assert resp.status_text == ""
+    assert db.query(ConversationExchange).one().assistant_text == answer
+
+
+def test_assistant_turn_response_status_text_is_optional():
+    from backend.api.schemas import AssistantTurnResponse
+
+    resp = AssistantTurnResponse(
+        exchange_id="conv-x",
+        user_text="hi",
+        assistant_text="answer",
+        status="completed",
+    )
+    assert resp.status_text == ""

@@ -3,7 +3,8 @@
 Single authoritative ordering for everything that must happen before the
 API starts serving and before ANY background wake may execute:
 
-    1. task/lease recovery        (interrupted work resolved)
+    1. task/lease recovery        (interrupted work resolved: plan steps,
+                                   delegations, plans, specialist TTLs)
     2. goal migration             (legacy objectives → plan-backed)
     3. main-agent initialization  (identity restored / minted)
     4. wake recovery              (durable PENDING/stale wakes reclaimed)
@@ -36,6 +37,24 @@ def _stage_result(name: str, status: str, detail: Any = None,
     return entry
 
 
+def _best_effort_recovery(db_manager, label: str, runner):
+    """Run one startup recovery on a fresh session; never fatal.
+
+    Mirrors ``TaskOrchestrator.recover_all``'s logging pattern: an exception is
+    logged as a warning and returned as an error string so the caller can record
+    it without aborting the ordered startup sequence. A dedicated session per
+    recovery keeps one failure from poisoning the others' transaction state.
+    """
+    session = db_manager.new_session()
+    try:
+        return runner(session), None
+    except Exception as exc:
+        logger.warning(f"Startup {label} skipped due to error: {exc}")
+        return None, str(exc)
+    finally:
+        session.close()
+
+
 def run_startup_sequence(db_manager) -> Dict[str, Any]:
     """Execute ordered startup steps; failures are logged, never fatal.
 
@@ -55,25 +74,80 @@ def run_startup_sequence(db_manager) -> Dict[str, Any]:
 
     # 1. Task/lease recovery ---------------------------------------------------
     order.append("task_recovery")
-    try:
+    recovery_errors: list[str] = []
+
+    def _goal_recovery(session):
         from backend.services.task_orchestrator import TaskOrchestrator
         from backend.services.planner import Planner
 
-        session = db_manager.new_session()
-        try:
-            orchestrator = TaskOrchestrator(
-                state_store=None, planner=Planner(session)
-            )
-            result["recovery"] = orchestrator.recover_all()
-            if result["recovery"]:
-                logger.info("Startup goal recovery: %s", result["recovery"])
-            _record("task_recovery", STATUS_COMPLETED, detail=result["recovery"])
-        finally:
-            session.close()
-    except Exception as exc:
-        logger.warning(f"Startup goal recovery skipped due to error: {exc}")
+        orchestrator = TaskOrchestrator(state_store=None, planner=Planner(session))
+        return orchestrator.recover_all()
+
+    result["recovery"], error = _best_effort_recovery(
+        db_manager, "goal recovery", _goal_recovery
+    )
+    if error is not None:
+        recovery_errors.append(error)
         result["recovery"] = []
-        _record("task_recovery", STATUS_FAILED, error=str(exc))
+    elif result["recovery"]:
+        logger.info("Startup goal recovery: %s", result["recovery"])
+
+    # The recoveries below close the gap left by recover_all(), which scans plan
+    # steps only and never touches Delegation / DelegationPlan / AgentRecord rows.
+    # Each takes only the DB session, so they run here: after the DB is up and
+    # before agent_init / wake_recovery. Order matters — resolve delegation and
+    # plan state from task evidence FIRST, then expire specialists still RUNNING
+    # past their TTL (expiry must not pre-empt evidence-based recovery). No new
+    # background loops: this is one-shot startup recovery only.
+    def _delegation_recovery(session):
+        from backend.agents.delegation import DelegationService
+
+        return DelegationService(session).recover_delegations()
+
+    result["delegation_recovery"], error = _best_effort_recovery(
+        db_manager, "delegation recovery", _delegation_recovery
+    )
+    if error is not None:
+        recovery_errors.append(error)
+        result["delegation_recovery"] = []
+    elif result["delegation_recovery"]:
+        logger.info("Startup delegation recovery: %s",
+                    result["delegation_recovery"])
+
+    def _plan_recovery(session):
+        from backend.agents.coordination import DelegationPlanService
+
+        return DelegationPlanService(session).recover_plans()
+
+    result["plan_recovery"], error = _best_effort_recovery(
+        db_manager, "plan recovery", _plan_recovery
+    )
+    if error is not None:
+        recovery_errors.append(error)
+        result["plan_recovery"] = {"recovered": 0}
+    elif result["plan_recovery"] and result["plan_recovery"].get("recovered"):
+        logger.info("Startup plan recovery: %s", result["plan_recovery"])
+
+    def _specialist_expiry(session):
+        from backend.agents.service import AgentService
+
+        return AgentService(session).expire_due()
+
+    result["specialist_expiry"], error = _best_effort_recovery(
+        db_manager, "specialist TTL expiry", _specialist_expiry
+    )
+    if error is not None:
+        recovery_errors.append(error)
+        result["specialist_expiry"] = 0
+    elif result["specialist_expiry"]:
+        logger.info("Startup specialist TTL expiry: %s",
+                    result["specialist_expiry"])
+
+    if recovery_errors:
+        _record("task_recovery", STATUS_FAILED,
+                detail=result["recovery"], error="; ".join(recovery_errors))
+    else:
+        _record("task_recovery", STATUS_COMPLETED, detail=result["recovery"])
 
     # 2. Goal migration (legacy sunset) ----------------------------------------
     order.append("goal_migration")

@@ -20,9 +20,11 @@ const isSupported = (value: string): value is AIProvider => value in PROVIDERS;
 /** A deferred ("pending") activation leaves the OLD model active until
  * in-flight work settles. Poll a bounded number of times so the "Active model"
  * line and the notice reflect the real backend state once the switch lands,
- * without ever asking the owner to refresh or reopen anything. */
+ * without ever asking the owner to refresh or reopen anything. The window is
+ * long enough to outlast ordinary in-flight work; GET /inference/active now
+ * reports `pending_activation`, so we can also stop early on a terminal state. */
 const CONFIRM_POLL_INTERVAL_MS = 2500;
-const CONFIRM_POLL_MAX_ATTEMPTS = 6; // ~15s total, first read at ~2.5s
+const CONFIRM_POLL_MAX_ATTEMPTS = 30; // ~75s total; keeps watching while a choice is pending
 
 /** The known-good, tool-capable model with no reasoning-token burn. The quick
  * path verifies it through ActiveCloudSetup's existing proof sequence. */
@@ -111,20 +113,18 @@ export function AIModelsSettings() {
   /** Confirm a previously deferred choice. The FIRST read is deliberately
    * delayed (via setTimeout), so at pending time we do NOT re-check status —
    * the old model is still legitimately active. A bounded poll then watches
-   * until the backend reports the chosen provider/model and we can honestly
-   * update the "Active model" line, or until attempts run out (honest fallback). */
+   * until the backend reports the chosen provider/model (pending cleared) and
+   * we can honestly update the "Active model" line, until it reports a
+   * terminal blocked/damaged state, or until the window is exhausted. */
   const confirmDeferredActivation = (forProvider: AIProvider, modelId: string) => {
     const generation = pollGeneration.current;
     let attempts = 0;
     const tick = () => {
       if (!mounted.current || generation !== pollGeneration.current) return;
       void (async () => {
-        let matched = false;
-        let lastPending: string | undefined;
         try {
           const current = await activeInferenceService.status();
           if (!mounted.current || generation !== pollGeneration.current) return;
-          lastPending = current.pending_activation;
           if (current.provider_id === forProvider && current.model_id === modelId) {
             setActive({
               provider_id: current.provider_id,
@@ -132,25 +132,30 @@ export function AIModelsSettings() {
               permissions_unchanged: true,
             });
             setMessage('Active AI model updated. Sythion keeps its existing assistant and permissions.');
-            matched = true;
+            return; // the pending field has cleared — nothing left to watch
           }
+          const pending = current.pending_activation;
+          if (pending === 'blocked_credential') {
+            setMessage('The verified model is ready, but its provider key changed, so Sythion kept your previous model active. Reconnect the key or select the model again to finish the switch.');
+            return; // terminal: stop polling early with the honest reason
+          }
+          if (pending === 'damaged') {
+            setMessage('Sythion could not finish this model switch, so your previous model is still active. Select the model again to retry.');
+            return; // terminal: stop polling early with the honest reason
+          }
+          // 'ready' / 'blocked_in_flight' (or a transient failure): the queued
+          // choice has not landed yet, so keep waiting within the bound.
         } catch {
           // A transient status failure is not a confirmation; keep polling.
         }
-        if (matched || !mounted.current || generation !== pollGeneration.current) return;
+        if (!mounted.current || generation !== pollGeneration.current) return;
         attempts += 1;
         if (attempts >= CONFIRM_POLL_MAX_ATTEMPTS) {
-          // Never claim success that did not happen, and never hand work back
-          // with a refresh/reopen instruction. The backend now tells us WHY a
-          // verified choice has not landed — surface the honest, actionable
-          // state instead of a vague promise that never resolves.
-          if (lastPending === 'blocked_credential') {
-            setMessage('The verified model is ready, but its provider key changed, so Sythion kept your previous model active. Reconnect the key or select the model again to finish the switch.');
-          } else if (lastPending === 'damaged') {
-            setMessage('Sythion could not finish this model switch, so your previous model is still active. Select the model again to retry.');
-          } else {
-            setMessage('Sythion selected the model; the active model line will update when it settles. Existing permissions are unchanged.');
-          }
+          // The window is over. Be honest: Sythion is still applying the choice
+          // in the background, but we are no longer watching it in this session,
+          // so do NOT promise an in-session update or tell the owner to refresh
+          // or reopen. The line reflects reality the next time Settings opens.
+          setMessage('Sythion is still applying the selected model in the background. The active model line will update the next time Settings opens. Existing permissions are unchanged.');
           return;
         }
         pollTimer.current = setTimeout(tick, CONFIRM_POLL_INTERVAL_MS);

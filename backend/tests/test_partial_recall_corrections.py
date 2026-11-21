@@ -262,4 +262,5 @@ async def test_unresolved_correction_or_insufficient_index_blocks_without_intera
 
     assert model_calls["chat"] == 0
     assert resp.background_task_ids == []
-    assert resp.assistant_text == ConversationTurnEngine._INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT
+    assert resp.assistant_text == ""
+    assert resp.status_text == ConversationTurnEngine._INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT

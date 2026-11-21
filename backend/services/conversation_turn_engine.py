@@ -226,10 +226,20 @@ class DiscussionDiscoveryInput:
 
 
 class ConversationTurnResult(dict):
-    def __init__(self, assistant_text: str, commands: List[dict]):
-        super().__init__(assistant_text=assistant_text, commands=commands)
+    def __init__(self, assistant_text: str, commands: List[dict], status_text: str = ""):
+        super().__init__(
+            assistant_text=assistant_text, commands=commands, status_text=status_text
+        )
         self.assistant_text = assistant_text
         self.commands = commands
+        # Runtime/system notice, never a model answer. Callers surface this in
+        # the response's status_text channel (empty assistant_text).
+        self.status_text = status_text
+
+    @classmethod
+    def status(cls, status_text: str) -> "ConversationTurnResult":
+        """Build a runtime/system status result with no answer and no commands."""
+        return cls("", [], status_text=status_text)
 
 
 class TransientModelAvailabilityError(ConversationModelError):
@@ -291,7 +301,7 @@ class ConversationTurnEngine:
 
         discovery_input = self._coerce_discovery_input(discussion_discovery)
         if self.read_only_discussion_recall and discovery_input is None:
-            return ConversationTurnResult(self._INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT, [])
+            return ConversationTurnResult.status(self._INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT)
         if (
             self.read_only_discussion_recall
             and discovery_input is not None
@@ -515,6 +525,10 @@ class ConversationTurnEngine:
 
         return False
 
+    # Runtime/system notices, not model answers: these are returned through a
+    # ``ConversationTurnResult.status(...)`` and surfaced by the API in the
+    # response's ``status_text`` channel (with an empty ``assistant_text``).
+    # The legacy *_ASSISTANT_TEXT names are kept for caller/test compatibility.
     _INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT = (
         "I do not have enough verified discussion discovery to identify a relevant "
         "discussion from the available context. No action was performed."
@@ -544,8 +558,8 @@ class ConversationTurnEngine:
         discovery_input: DiscussionDiscoveryInput,
     ) -> ConversationTurnResult:
         if not discovery_input.candidate_discussion_ids or not discovery_input.discovery_complete:
-            return ConversationTurnResult(
-                self._INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT, []
+            return ConversationTurnResult.status(
+                self._INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT
             )
 
         turn_rows = []
@@ -652,8 +666,8 @@ class ConversationTurnEngine:
             raise cancelled
 
         if not self._evidence_is_structurally_sufficient(evidence_result):
-            return ConversationTurnResult(
-                self._INSUFFICIENT_EVIDENCE_ASSISTANT_TEXT, []
+            return ConversationTurnResult.status(
+                self._INSUFFICIENT_EVIDENCE_ASSISTANT_TEXT
             )
         if self.call_count >= self.MAX_TOTAL_MODEL_CALLS:
             raise ConversationModelError() from None

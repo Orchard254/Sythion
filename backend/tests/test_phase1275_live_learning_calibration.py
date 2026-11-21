@@ -635,8 +635,12 @@ def test_promotion_requires_real_evidence_and_owner_approval(db):
     assert res3["ok"] is False
     assert "owner_approval_required" in res3["reason"]
 
-    # With explicit owner approval
-    res4 = pstore.promote(policy.id, target_status="ACTIVE", owner_approved=True)
+    # With a verified durable owner-approval receipt
+    from backend.learning.planning_store import PlanningPolicyApprovalReceipts
+    db.refresh(policy)
+    receipt_id = PlanningPolicyApprovalReceipts(db).issue(policy, "ACTIVE", decision_id="owner-rcpt-live-calibration")
+    db.commit()
+    res4 = pstore.promote(policy.id, target_status="ACTIVE", owner_approval_receipt_id=receipt_id)
     assert res4["ok"] is True
     assert res4["policy"].status == "ACTIVE"
 

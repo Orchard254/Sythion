@@ -226,22 +226,27 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Main agent initialization skipped due to error: {exc}")
 
         # Autonomous lazy-user safety net: ONE bounded asyncio background task
-        # promotes a verified pending model activation when no task is genuinely
-        # RUNNING — including when a task stays CREATED forever and the
-        # terminal-transition hook can never fire. The sweeper offloads its sync
-        # DB work with asyncio.to_thread. We deliberately do NOT reuse the wake
-        # worker: that is an explicit, owner-gated durable wake queue, not a
-        # periodic safety sweep, and conflating them would weaken its consent
-        # semantics. Started once per lifespan, cancelled cleanly on shutdown.
+        # for periodic maintenance. It promotes a verified pending model
+        # activation when no task is genuinely RUNNING (including a task stuck
+        # CREATED forever, where the terminal-transition hook cannot fire), and
+        # reclaims wakes/tasks whose durable owner is provably gone. Each
+        # concern is an isolated sub-sweep with its own short-lived session;
+        # sync DB work is offloaded with asyncio.to_thread. We deliberately do
+        # NOT execute maintenance on the wake worker: that is an explicit,
+        # owner-gated durable wake queue, not a periodic safety sweep, and
+        # conflating them would weaken its consent semantics. The worker is
+        # started above, before this task, so wake liveness can be consulted.
+        # Started once per lifespan, cancelled cleanly on shutdown.
         try:
-            from .runtime.active_inference import pending_activation_sweeper
+            from .runtime.maintenance import maintenance_sweeper
+            from .services.wake_worker import get_wake_worker
             pending_sweep_task = asyncio.create_task(
-                pending_activation_sweeper(db_manager),
-                name="sythion-pending-activation-sweep",
+                maintenance_sweeper(db_manager, get_wake_worker()),
+                name="sythion-maintenance-sweep",
             )
-            logger.info("Pending activation sweep started")
+            logger.info("Maintenance sweep started")
         except Exception as exc:
-            logger.warning(f"Pending activation sweep start skipped: {exc}")
+            logger.warning(f"Maintenance sweep start skipped: {exc}")
 
         # Stage 2 of SYNTH_OS_DIRECTION.md: register this machine as a device
         # endpoint. Observation only — re-registering never raises trust and
@@ -351,9 +356,9 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning(f" Wake worker shutdown skipped: {exc}")
 
-        # Stop the single autonomous pending-activation sweep before the DB
-        # manager is torn down. Cancelling this one task is clean and bounded;
-        # if a cycle is mid-flight its to_thread DB work finishes on unwind.
+        # Stop the single autonomous maintenance sweep before the DB manager is
+        # torn down. Cancelling this one task is clean and bounded; if a cycle
+        # is mid-flight its to_thread DB work finishes on unwind.
         try:
             if pending_sweep_task is not None and not pending_sweep_task.done():
                 pending_sweep_task.cancel()
@@ -362,10 +367,10 @@ async def lifespan(app: FastAPI):
                 except asyncio.CancelledError:
                     pass
                 except Exception as exc:
-                    logger.warning(f"Pending activation sweep shutdown error: {exc}")
+                    logger.warning(f"Maintenance sweep shutdown error: {exc}")
             pending_sweep_task = None
         except Exception as exc:
-            logger.warning(f"Pending activation sweep shutdown skipped: {exc}")
+            logger.warning(f"Maintenance sweep shutdown skipped: {exc}")
 
         try:
             from .services.morning_brief_scheduler import stop_morning_brief_scheduler

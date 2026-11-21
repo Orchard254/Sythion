@@ -543,6 +543,75 @@ async def interpret_assistant_message(data: TaskCreate, db: Session = Depends(ge
         ) from None
 
 
+# Runtime/system notices emitted by /assistant/turns. These are not model
+# answers: they travel in the response's ``status_text`` channel (with an empty
+# ``assistant_text``) so the UI can render a distinct notice and skip TTS.
+_ASSISTANT_TURN_MALFORMED_STATUS = (
+    "I could not produce a properly formatted answer this time, so no "
+    "background work was started or changed. This response is "
+    "informative only."
+)
+_ASSISTANT_TURN_FAIL_CLOSED_STATUS = (
+    "Requested background work or task continuation was not started, "
+    "and no task was launched or scheduled."
+)
+_ASSISTANT_TURN_BACKGROUND_ACCEPTED_STATUS = "Your background request was accepted."
+_ASSISTANT_TURN_BACKGROUND_ACCEPTED_NO_MODIFY_STATUS = (
+    "Your separate background request was accepted. Existing "
+    "tasks were not modified or restarted."
+)
+_ASSISTANT_TURN_INSTRUCTION_QUEUED_STATUS = (
+    "Your instruction was queued for this task and has not yet "
+    "been applied. Whether to apply it will be decided at a safe point. "
+    "No task was restarted "
+    "or duplicated, and no action permission was granted."
+)
+_ASSISTANT_TURN_CLARIFICATION_RECEIVED_STATUS = (
+    "Your clarification was received in the conversation. "
+    "Its application to the task and task continuation are not confirmed."
+)
+
+
+def _assistant_turn_known_status_texts() -> frozenset:
+    """Exact runtime notices that may have been persisted as turn text."""
+    from backend.services.conversation_turn_engine import ConversationTurnEngine
+
+    known = {
+        _ASSISTANT_TURN_MALFORMED_STATUS,
+        _ASSISTANT_TURN_FAIL_CLOSED_STATUS,
+        _ASSISTANT_TURN_BACKGROUND_ACCEPTED_STATUS,
+        _ASSISTANT_TURN_BACKGROUND_ACCEPTED_NO_MODIFY_STATUS,
+        _ASSISTANT_TURN_INSTRUCTION_QUEUED_STATUS,
+        _ASSISTANT_TURN_CLARIFICATION_RECEIVED_STATUS,
+    }
+    # The engine class may be substituted in tests; tolerate a missing constant.
+    for name in (
+        "_INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT",
+        "_INSUFFICIENT_EVIDENCE_ASSISTANT_TEXT",
+    ):
+        value = getattr(ConversationTurnEngine, name, None)
+        if isinstance(value, str):
+            known.add(value)
+    return frozenset(known)
+
+
+def _assistant_turn_replay_channels(exchange) -> tuple:
+    """Split a replayed exchange into (assistant_text, status_text).
+
+    A persisted exchange still stores the honest notice as its assistant turn
+    text (the transcript is unchanged). On replay, route the known runtime
+    notices back to ``status_text`` so the response contract is identical on a
+    first send and on a replay. Genuine model answers are returned unchanged.
+    """
+    text = exchange.assistant_text or ""
+    if text in _assistant_turn_known_status_texts():
+        return "", text
+    if (getattr(exchange, "status", None) or "").strip() == "failed":
+        # Fail-closed exchanges only ever carry a system notice, never an answer.
+        return "", text
+    return text, ""
+
+
 @router.post("/assistant/turns", response_model=AssistantTurnResponse)
 async def assistant_turn(
     data: AssistantTurnRequest,
@@ -727,10 +796,14 @@ async def assistant_turn(
                     # Legacy rows without durable structured status are honestly unknown.
                     replay_status = "unknown"
                 _scheduling_status = "established" if scheduling_established else "unknown"
+                _replay_assistant_text, _replay_status_text = _assistant_turn_replay_channels(
+                    existing_exchange
+                )
                 return AssistantTurnResponse(
                     exchange_id=deterministic_exchange_id,
                     user_text=existing_exchange.user_text,
-                    assistant_text=existing_exchange.assistant_text,
+                    assistant_text=_replay_assistant_text,
+                    status_text=_replay_status_text,
                     status=replay_status,
                     background_task_ids=associated_task_ids,
                     background_task_scheduling_status=_scheduling_status,
@@ -998,15 +1071,11 @@ async def assistant_turn(
             and receipt_manager is not None
         ):
             _syntax_status = "unknown"
-            assistant_text = (
-                "I could not produce a properly formatted answer this time, so no "
-                "background work was started or changed. This response is "
-                "informative only."
-            )
+            assistant_text = ""
             try:
                 runtime = ConversationRuntime(db)
                 await runtime._persist_conversation(
-                    user_text, assistant_text, exchange_id, task_id=None, status="completed",
+                    user_text, _ASSISTANT_TURN_MALFORMED_STATUS, exchange_id, task_id=None, status="completed",
                 )
                 receipt_manager.transition(
                     client_request_id,
@@ -1022,7 +1091,8 @@ async def assistant_turn(
             return AssistantTurnResponse(
                 exchange_id=deterministic_exchange_id,
                 user_text=user_text,
-                assistant_text=assistant_text,
+                assistant_text="",
+                status_text=_ASSISTANT_TURN_MALFORMED_STATUS,
                 status="completed",
                 background_task_ids=[],
                 background_task_scheduling_status=_syntax_status,
@@ -1090,15 +1160,11 @@ async def assistant_turn(
         # fails closed so no suspicious content is echoed back.
         if safe_reason == "json_malformed" and getattr(exc, "ordinary_prose", False):
             _syntax_status = "unknown"
-            assistant_text = (
-                "I could not produce a properly formatted answer this time, so no "
-                "background work was started or changed. This response is "
-                "informative only."
-            )
+            assistant_text = ""
             try:
                 runtime = ConversationRuntime(db)
                 await runtime._persist_conversation(
-                    user_text, assistant_text, exchange_id, task_id=None, status="completed"
+                    user_text, _ASSISTANT_TURN_MALFORMED_STATUS, exchange_id, task_id=None, status="completed"
                 )
                 db.commit()
             except Exception:
@@ -1109,7 +1175,8 @@ async def assistant_turn(
             return AssistantTurnResponse(
                 exchange_id=deterministic_exchange_id,
                 user_text=user_text,
-                assistant_text=assistant_text,
+                assistant_text="",
+                status_text=_ASSISTANT_TURN_MALFORMED_STATUS,
                 status="completed",
                 background_task_ids=[],
                 background_task_scheduling_status=_syntax_status,
@@ -1141,6 +1208,11 @@ async def assistant_turn(
     assistant_text = getattr(result, "assistant_text", None)
     if assistant_text is None and isinstance(result, dict):
         assistant_text = result.get("assistant_text")
+    assistant_text = assistant_text or ""
+    # Runtime/system notices travel separately from the model's answer.
+    status_text = getattr(result, "status_text", None) or ""
+    if not status_text and isinstance(result, dict):
+        status_text = result.get("status_text") or ""
     commands = getattr(result, "commands", None)
     if commands is None and isinstance(result, dict):
         commands = result.get("commands", [])
@@ -1156,15 +1228,13 @@ async def assistant_turn(
     created_task_id = None
     conversation_persisted = False
     persisted_conversation = None
-    fail_closed_message = (
-        "Requested background work or task continuation was not started, "
-        "and no task was launched or scheduled."
-    )
+    fail_closed_message = _ASSISTANT_TURN_FAIL_CLOSED_STATUS
 
     if command_requested:
         if not isinstance(commands, list) or len(commands) != 1 or not isinstance(commands[0], dict):
             assistant_failed_closed = True
-            assistant_text = fail_closed_message
+            assistant_text = ""
+            status_text = fail_closed_message
         else:
             command = commands[0]
             command_type = command.get("type")
@@ -1176,12 +1246,11 @@ async def assistant_turn(
                         # Reference resolution is not authority to expand a new
                         # request or replay the initiating task's old request.
                         request_text = user_text
-                        assistant_text = (
-                            "Your separate background request was accepted. Existing "
-                            "tasks were not modified or restarted."
-                        )
+                        assistant_text = ""
+                        status_text = _ASSISTANT_TURN_BACKGROUND_ACCEPTED_NO_MODIFY_STATUS
                     else:
-                        assistant_text = "Your background request was accepted."
+                        assistant_text = ""
+                        status_text = _ASSISTANT_TURN_BACKGROUND_ACCEPTED_STATUS
 
                     from backend.services.task_runner import get_runner
 
@@ -1221,7 +1290,7 @@ async def assistant_turn(
                     try:
                         runtime = ConversationRuntime(db)
                         persisted_conversation = await runtime._persist_conversation(
-                            user_text, assistant_text, exchange_id, task_id=task.id,
+                            user_text, assistant_text or status_text, exchange_id, task_id=task.id,
                             status="completed",
                         )
                         conversation_persisted = True
@@ -1339,17 +1408,14 @@ async def assistant_turn(
                         # turn itself is still persisted by the normal path below.
                         conversation_persisted = False
                         queued_followup = True
-                        assistant_text = (
-                            "Your instruction was queued for this task and has not yet "
-                            "been applied. Whether to apply it will be decided at a safe point. "
-                            "No task was restarted "
-                            "or duplicated, and no action permission was granted."
-                        )
+                        assistant_text = ""
+                        status_text = _ASSISTANT_TURN_INSTRUCTION_QUEUED_STATUS
                     except ValueError as exc:
                         # Ledger receive rejects duplicates / changed bindings;
                         # keep the fail-closed posture instead of overwriting.
                         assistant_failed_closed = True
-                        assistant_text = str(exc)
+                        assistant_text = ""
+                        status_text = str(exc)
 
                 elif command_type == "answer_clarification":
                     target_task_id = str(command["task_id"]).strip()
@@ -1372,15 +1438,13 @@ async def assistant_turn(
                     if task.version != expected_version:
                         raise ValueError("stale clarification target")
 
-                    assistant_text = (
-                        "Your clarification was received in the conversation. "
-                        "Its application to the task and task continuation are not confirmed."
-                    )
+                    assistant_text = ""
+                    status_text = _ASSISTANT_TURN_CLARIFICATION_RECEIVED_STATUS
 
                     # Preserve the existing wait if conversation persistence fails.
                     try:
                         runtime = ConversationRuntime(db)
-                        persisted_conversation = await runtime._persist_conversation(user_text, assistant_text, exchange_id, task_id=target_task_id, status="completed")
+                        persisted_conversation = await runtime._persist_conversation(user_text, assistant_text or status_text, exchange_id, task_id=target_task_id, status="completed")
                         conversation_persisted = True
                     except Exception:
                         if composer_receipt_id is not None and receipt_manager is not None:
@@ -1426,7 +1490,8 @@ async def assistant_turn(
                 raise original_exc
             except ValueError as exc:
                 assistant_failed_closed = True
-                assistant_text = str(exc) if str(exc).strip() else fail_closed_message
+                assistant_text = ""
+                status_text = str(exc) if str(exc).strip() else fail_closed_message
                 if conversation_persisted:
                     try:
                         runtime = ConversationRuntime(db)
@@ -1468,7 +1533,7 @@ async def assistant_turn(
             runtime = ConversationRuntime(db, grounded_discussion_service=grounded_discussion_service)
             persisted_conversation = await runtime._persist_conversation(
                 user_text,
-                assistant_text,
+                assistant_text or status_text,
                 exchange_id,
                 status=request_status,
                 grounded_discussion_service=grounded_discussion_service,
@@ -1512,7 +1577,7 @@ async def assistant_turn(
             and _receipt_resolved
             and persisted_conversation is not None
             and assistant_text
-            not in (
+            and status_text not in (
                 getattr(ConversationTurnEngine, "_INSUFFICIENT_DISCOVERY_ASSISTANT_TEXT", None),
                 getattr(ConversationTurnEngine, "_INSUFFICIENT_EVIDENCE_ASSISTANT_TEXT", None),
             )
@@ -1575,6 +1640,7 @@ async def assistant_turn(
         exchange_id=exchange_id,
         user_text=user_text,
         assistant_text=assistant_text,
+        status_text=status_text,
         status=status,
         background_task_ids=background_task_ids,
         background_task_scheduling_status=_fresh_scheduling_status,
@@ -6068,8 +6134,12 @@ async def onboarding_inference(request: Request, db=Depends(get_db)):
         ids = {m.get("name") or m.get("model") for m in models if isinstance(m, dict)}
         if model_id not in ids:
             raise HTTPException(status_code=400, detail=f"Model '{model_id}' is not available")
+        # Call the EXACT model we just validated against the catalog. Without
+        # model_id the adapter falls back to its currently selected model, so a
+        # reply from a different model could 'verify' this one.
         resp = await provider.chat(
             messages=[{"role": "user", "content": "Reply with OK"}],
+            model_id=model_id,
         )
         text = _extract_inference_text(resp)
         if not str(text).strip():

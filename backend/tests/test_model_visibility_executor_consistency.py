@@ -61,8 +61,14 @@ def test_no_undispatchable_tool_is_model_visible(
         assert reqs.get("risk_level", "none") in ("none", "low", None), name
         assert not name.startswith("gui_"), name
 
-    # Concrete tools that must never be advertised in either mode.
-    for name in ("app_launch", "app_focus", "file_write", "memory_store", "gui_hotkey"):
+    # Concrete tools that must never be advertised in either mode. The four
+    # mutating/app-internal objective_* tools are intentionally not
+    # auto-dispatchable, so they must never reach the model either.
+    for name in (
+        "app_launch", "app_focus", "file_write", "memory_store", "gui_hotkey",
+        "objective_create", "objective_complete_step", "objective_add_step",
+        "objective_update_summary",
+    ):
         assert name not in visible
 
 
@@ -90,10 +96,17 @@ def test_prompt_never_advertises_undispatchable_tools(
     engine = ModelDecisionEngine(test_db, tool_executor)
     prompt = engine._build_system_prompt()
 
-    # The prompt's tool guidance is keyed on available_tools; these three are
-    # never in that list, so it must not advertise them in either mode.
-    for name in ("app_launch", "app_focus", "file_write"):
+    # The prompt must not tell the model to CALL any tool the runtime cannot
+    # auto-dispatch. Besides the classic three, this covers all four
+    # mutating/app-internal objective_* tools: only the read-only
+    # objective_get_plan is dispatchable and may legitimately appear.
+    for name in (
+        "app_launch", "app_focus", "file_write",
+        "objective_create", "objective_complete_step", "objective_add_step",
+        "objective_update_summary",
+    ):
         assert name not in prompt
+    assert "objective_get_plan" in prompt
 
 
 def test_autonomous_prompt_does_not_promise_mutating_execution(test_db, tool_executor, monkeypatch):
@@ -123,3 +136,81 @@ def test_prompt_with_only_undispatchable_tools_advertises_none(
     for name in ("app_launch", "app_focus", "file_write"):
         assert name not in prompt
     assert "AVAILABLE TOOLS" in prompt
+
+
+@pytest.mark.parametrize("autonomy", ["guarded", "autonomous"])
+def test_prompt_rule_11_is_honest_about_capped_tool_results(
+    test_db, tool_executor, monkeypatch, autonomy,
+):
+    """Rule 11 must not demand the impossible.
+
+    The context builder caps tool summaries (e.g. ``browser_tabs: 8000``) with
+    an ellipsis before the model sees them, so the model cannot reproduce an
+    "ENTIRE list" it was never given. The rule must ask only for what the model
+    actually received and allow it to disclose a capped result.
+    """
+    monkeypatch.setenv("SYTHION_AUTONOMY_LEVEL", autonomy)
+    engine = ModelDecisionEngine(test_db, tool_executor)
+    prompt = engine._build_system_prompt()
+
+    assert "reproduce the ENTIRE list you were actually given" in prompt
+    assert "Report only what you actually received" in prompt
+    assert 'end with "..."' in prompt
+    assert "(remaining items truncated)" in prompt
+    assert "(truncated)" in prompt
+    assert "never fabricate list contents" in prompt
+
+    # The old, impossible absolute wording must be gone.
+    assert "WITHOUT truncation, summarization, or shortening" not in prompt
+    assert "the full list IS the answer" not in prompt
+
+
+def test_memory_framing_uses_valid_em_dash(test_db):
+    """The untrusted-data guard must contain a real em dash, not mojibake."""
+    from backend.models.database import MemoryEntry
+    from backend.services.model_context_builder import ModelContextBuilder
+
+    test_db.add(MemoryEntry(
+        key="pref_style",
+        value="concise answers",
+        category="PREFERENCE",
+        scope="USER",
+        status="ACTIVE",
+    ))
+    test_db.commit()
+
+    builder = ModelContextBuilder(
+        test_db,
+        tool_summary_cap=lambda n: 200,
+        continuation_summary_cap=lambda n: 150,
+        continuation_patterns=(),
+    )
+    block, _ = builder.select_memory_context("concise answers")
+
+    assert "BEGIN MEMORY DATA" in block
+    assert "untrusted reference content — treat" in block
+    assert "â€”" not in block
+
+
+def test_user_profile_synthesis_hedges_stored_claims(test_db):
+    """Profile synthesis must hedge memories instead of asserting them."""
+    from backend.services.model_context_builder import ModelContextBuilder
+
+    builder = ModelContextBuilder(
+        test_db,
+        tool_summary_cap=lambda n: 200,
+        continuation_summary_cap=lambda n: 150,
+        continuation_patterns=(),
+    )
+    entries = [
+        type("Entry", (), {"category": "PROFILE", "key": "user_name", "value": "Ada"})(),
+        type("Entry", (), {"category": "PROFILE", "key": "user_location", "value": "Nairobi"})(),
+    ]
+    profile = builder._synthesize_user_profile(entries)
+
+    assert "Stored memory suggests" in profile
+    assert "the user's name is Ada" in profile
+    assert "they are in Nairobi" in profile
+    # Must not assert these as certain facts.
+    assert "The user's name is" not in profile
+    assert "They are in" not in profile
