@@ -78,9 +78,14 @@ def test_model_visible_tools_are_read_only_subset(db_session, full_tool_executor
         assert len(t["description"]) <= 200
 
 
-def test_app_internal_memory_store_is_model_visible(db_session, full_tool_executor):
-    """memory_store mutates only Sythion's own memory, so it stays callable
-    in normal mode; OS mutations remain hidden."""
+def test_app_internal_memory_store_is_not_model_callable(db_session, full_tool_executor):
+    """Model-visible tools are exactly those the executor auto-dispatches.
+
+    memory_store mutates state and is app_internal, so the executor refuses to
+    auto-dispatch it; therefore it must not be advertised as model-callable.
+    memory_recall is read-only and stays visible. This keeps the prompt honest:
+    the model is never told to call a tool the runtime will block.
+    """
     from backend.tools.memory_tools import MemoryStoreTool, MemoryRecallTool
 
     full_tool_executor.register_tool(MemoryStoreTool())
@@ -89,18 +94,18 @@ def test_app_internal_memory_store_is_model_visible(db_session, full_tool_execut
     engine = ModelDecisionEngine(db_session, full_tool_executor)
     visible = {t["name"] for t in engine._model_visible_tools()}
 
-    # memory_store / memory_recall are the assistant's own persistent memory
-    # and are instructed by the system prompt, so they must be callable.
-    assert "memory_store" in visible
     assert "memory_recall" in visible
-
-    # OS/user-state mutations are still never model-visible.
+    # State-changing tools, including app-internal ones, are not auto-dispatched
+    # and so are not model-visible.
+    assert "memory_store" not in visible
     assert "file_write" not in visible
     assert "app_launch" not in visible
 
-    # The system prompt lists memory_store as a directly callable tool.
+    # The prompt must not tell the model to CALL memory_store directly. It may
+    # honestly mention the tool as not model-callable.
     prompt = engine._build_system_prompt()
-    assert "memory_store" in prompt
+    assert "Call `memory_store(" not in prompt
+    assert "not directly model-callable" in prompt
 
 
 def test_app_internal_memory_store_is_skill_visible(db_session, full_tool_executor):
@@ -162,6 +167,22 @@ def test_system_prompt_teaches_access_grants(db_session, full_tool_executor):
     assert "ask the user to add it" in prompt
     assert "Never attempt to bypass the root check" in prompt
     assert "Never guess a root path or a username" in prompt
+
+
+def test_system_prompt_teaches_confirm_explicit_path_once_then_proceed(db_session, full_tool_executor):
+    """A user-supplied explicit path is not a guess: confirm it once with
+    system_file_roots, then go straight to the file operation. This prevents the
+    re-query loop that stalls file tasks, while keeping the fail-closed rule."""
+    engine = ModelDecisionEngine(db_session, full_tool_executor)
+    prompt = engine._build_system_prompt()
+    assert "USER-SUPPLIED path, not a guess" in prompt
+    assert "Call `system_file_roots` ONCE" in prompt
+    assert "proceed directly to the requested file operation" in prompt
+    assert "Do NOT call `system_file_roots` again on every decision" in prompt
+    # Fail-closed is preserved: guessed paths still require confirmation, and
+    # a path outside the granted roots must not be operated on.
+    assert "A path you invent or infer yourself is still a guess" in prompt
+    assert "If the user's explicit path is NOT inside any approved root, do not operate on it" in prompt
 
 
 def test_context_uses_current_state(db_session, full_tool_executor):
