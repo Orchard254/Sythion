@@ -4829,31 +4829,38 @@ async def stage_inference_preview(body: CloudSelectionStageRequest):
 
 
 # This is the *production* reasoning selector, not an inference preview.
-# Provider changes are backend-owned and cannot run while an unfinished task
-# might be using the previous provider. No cloud request occurs here.
+# Provider changes are backend-owned and cannot run while a task has a model
+# call in flight bound to the previous provider: every reasoning call rechecks
+# its HMAC selection binding before and after, so switching mid-call would break
+# that binding. Only states that can have an executing/queued worker are blocked.
+# WAITING_FOR_USER / INTERRUPTED / PAUSED have NO active model call (the worker
+# is idle, lost, or stopped); they must not block a legitimate model change.
+# No cloud request occurs here.
 _ACTIVE_PROVIDER_BLOCKING_TASK_STATES = (
     TaskState.CREATED.value,
     TaskState.RUNNING.value,
-    TaskState.WAITING_FOR_USER.value,
-    TaskState.INTERRUPTED.value,
-    TaskState.PAUSED.value,
 )
 
 
 def _require_idle_provider_switch(db: Session) -> None:
     from backend.models.database import Task
     try:
-        unfinished = (db.query(Task.id)
-                      .filter(Task.state.in_(_ACTIVE_PROVIDER_BLOCKING_TASK_STATES))
-                      .first())
+        blocking = (db.query(Task.id, Task.state)
+                    .filter(Task.state.in_(_ACTIVE_PROVIDER_BLOCKING_TASK_STATES))
+                    .all())
     except Exception:
         raise HTTPException(
             status_code=503, detail="Task state unavailable; provider was not changed"
         ) from None
-    if unfinished is not None:
+    if blocking:
+        states = ", ".join(sorted({row.state for row in blocking}))
         raise HTTPException(
             status_code=409,
-            detail="Finish or cancel unfinished tasks before changing the active model",
+            detail=(
+                f"Cannot change the active model while {len(blocking)} task(s) are "
+                f"running or queued ({states}). Wait for them to finish or cancel "
+                f"them in Operations, then change the model again."
+            ),
         )
 
 
@@ -4894,9 +4901,28 @@ async def activate_inference_provider(
     grant task/tool/OS permissions, create a task, or make a cloud model call.
     """
     from backend.runtime.active_inference import (
-        activate_verified_cloud_selection, ActiveInferenceUnavailable,
+        activate_verified_cloud_selection, has_in_flight_task,
+        queue_pending_activation, ActiveInferenceUnavailable,
     )
-    _require_idle_provider_switch(db)
+    # Lazy-user contract: the owner confirms a verified model once. If a task
+    # currently holds the old provider binding, do NOT make the owner wait,
+    # cancel, or return later — hold the verified choice and apply it
+    # automatically from the task-completion path when work settles.
+    if has_in_flight_task(db):
+        try:
+            queue_pending_activation(db, body.provider_id, body.model_id)
+        except ActiveInferenceUnavailable:
+            raise HTTPException(
+                status_code=409,
+                detail="Model selection failed: select this model and verify text and function calling",
+            ) from None
+        return {
+            "provider_id": body.provider_id,
+            "model_id": body.model_id,
+            "permissions_unchanged": True,
+            "pending": True,
+            "message": "Verified model selected; it will activate automatically when current work finishes.",
+        }
     try:
         selected = activate_verified_cloud_selection(
             db, body.provider_id, body.model_id,

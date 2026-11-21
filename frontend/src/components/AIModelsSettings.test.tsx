@@ -117,13 +117,30 @@ it('uses the same guarded provider picker for Ollama Cloud as for other clouds',
   expect(mock.restore).not.toHaveBeenCalled();
 });
 
-it('does not claim a successful Ollama Cloud switch if verification changes the active model', async () => {
+it('trusts the validated activation result without a redundant status re-check', async () => {
+  // The mismatch guard now lives in ActiveCloudSetup (it validates the
+  // activate() response before firing onVerified). AIModelsSettings therefore
+  // must not re-check status or hand work back to the owner.
   await changeProvider('ollama-cloud');
-  mock.active.mockResolvedValueOnce(active('openrouter', 'unit/model:free'));
+  mock.active.mockClear();
   await settle(() => view.root.findByType(ActiveCloudSetup).props.onVerified('gemma4:31b'));
   expect(mock.restore).not.toHaveBeenCalled();
-  expect(text()).toContain('active model changed');
-  expect(text()).not.toContain('Active AI model updated');
+  expect(mock.active).not.toHaveBeenCalled();
+  expect(text()).toContain('gemma4:31b');
+  expect(text()).toContain('Active AI model updated');
+});
+
+it('defers a pending cloud model without re-checking status or handing work back', async () => {
+  await changeProvider('groq');
+  // The initial mount already read status once; clear so the assertion below
+  // isolates the pending callback's behaviour.
+  mock.active.mockClear();
+  await settle(() => view.root.findByType(ActiveCloudSetup)
+    .props.onVerified('groq/new', true));
+  expect(text()).toContain('will activate automatically when current work finishes');
+  expect(text()).not.toContain('Refresh');
+  expect(text()).not.toContain('Reopen');
+  expect(mock.active).not.toHaveBeenCalled();
 });
 
 it('does not silently default to Ollama when active selection is invalid', async () => {

@@ -9,10 +9,11 @@ vi.mock('../services/api', async (original) => ({
 }));
 
 const candidate = { provider_id: 'openrouter' as const, model_id: 'unit/model:free' };
+const RECHECK_ATTEMPTS = 3;
 let view: ReactTestRenderer;
 let exit: ReturnType<typeof vi.fn>;
 const settle = async (fn: () => void) => {
-  await act(async () => { fn(); for (let i = 0; i < 18; i++) await Promise.resolve(); });
+  await act(async () => { fn(); for (let i = 0; i < 24; i++) await Promise.resolve(); });
 };
 const text = (node: { children: unknown[] }): string =>
   node.children.map((v): string => typeof v === 'string' ? v :
@@ -32,6 +33,10 @@ const status = (verified = true) => ({
   providers: [{ provider_id: 'openrouter', credential_configured: true }],
   ready_for_execution: false,
 });
+const useStatus = (value: ReturnType<typeof status>) => {
+  // Override the default only; keep the call count for bounded-retry assertions.
+  mock.status.mockResolvedValue(value);
+};
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -53,6 +58,8 @@ describe('isolated cloud conversation-only screen', () => {
     expect(text(view.root)).toContain('No tool execution');
     expect(text(view.root)).toContain('they are not saved');
     expect(button('Send text-only message').props.disabled).toBe(true);
+    expect(button('Check again')).toBeTruthy();
+    expect(text(view.root)).not.toContain('Return to setup');
   });
 
   it('sends two conversational turns using only previous in-session context', async () => {
@@ -86,12 +93,30 @@ describe('isolated cloud conversation-only screen', () => {
     expect(fifth[2][1].content).toHaveLength(1200);
   });
 
-  it('blocks sends if text evidence was not current at entry', async () => {
+  it('re-checks stale entry evidence internally, then reports it honestly without sending the owner to setup', async () => {
     await settle(() => view.unmount());
-    mock.status.mockResolvedValueOnce(status(false));
+    mock.status.mockClear();
+    useStatus(status(false));
     await settle(() => { view = create(<CloudConversationOnlyScreen onExit={exit} />); });
-    expect(text(view.root)).toContain('No current cloud text verification');
+    expect(mock.status).toHaveBeenCalledTimes(RECHECK_ATTEMPTS);
+    expect(text(view.root)).toContain('no longer current');
+    expect(text(view.root)).not.toContain('Return to setup');
     expect(button('Send text-only message').props.disabled).toBe(true);
+    expect(mock.conversationTurn).not.toHaveBeenCalled();
+  });
+
+  it('self-heals stale entry evidence on Check again without requiring setup', async () => {
+    await settle(() => view.unmount());
+    useStatus(status(false));
+    await settle(() => { view = create(<CloudConversationOnlyScreen onExit={exit} />); });
+    expect(button('Send text-only message').props.disabled).toBe(true);
+    useStatus(status(true));
+    await settle(() => button('Check again').props.onClick());
+    await typeText('Now verified');
+    expect(text(view.root)).not.toContain('no longer current');
+    expect(text(view.root)).not.toContain('No verified cloud model');
+    expect(button('Send text-only message').props.disabled).toBe(false);
+    expect(exit).not.toHaveBeenCalled();
     expect(mock.conversationTurn).not.toHaveBeenCalled();
   });
 
@@ -108,16 +133,56 @@ describe('isolated cloud conversation-only screen', () => {
     expect(view.root.findByProps({ id: 'cloud-only-message' }).props.value).toBe('Do something');
   });
 
-  it('a changed cloud provider proof stops subsequent requests without retry', async () => {
+  it('a changed cloud proof stops sends without resending, and stays honest if status is still stale', async () => {
     mock.conversationTurn.mockRejectedValueOnce({
       response: { status: 409, data: { detail: 'secret-key-in-provider-response' } },
     });
     await typeText('What next?');
+    useStatus(status(false));
     await settle(() => button('Send text-only message').props.onClick());
-    expect(text(view.root)).toContain('Return to setup and verify again');
+    expect(text(view.root)).toContain('no longer current');
     expect(text(view.root)).not.toContain('secret-key-in-provider-response');
+    expect(text(view.root)).not.toContain('Return to setup');
     expect(button('Send text-only message').props.disabled).toBe(true);
     expect(mock.conversationTurn).toHaveBeenCalledTimes(1);
+    expect(mock.status).toHaveBeenCalledTimes(1 + RECHECK_ATTEMPTS);
+  });
+
+  it('a 409 self-heals by re-checking status and re-enabling Send without a setup trip', async () => {
+    mock.conversationTurn.mockRejectedValueOnce({ response: { status: 409 } });
+    await typeText('What next?');
+    await settle(() => button('Send text-only message').props.onClick());
+    expect(text(view.root)).not.toContain('Return to setup');
+    expect(text(view.root)).not.toContain('no longer current');
+    expect(button('Send text-only message').props.disabled).toBe(false);
+    expect(mock.status).toHaveBeenCalledTimes(2);
+    expect(mock.conversationTurn).toHaveBeenCalledTimes(1);
+    expect(view.root.findByProps({ id: 'cloud-only-message' }).props.value).toBe('What next?');
+  });
+
+  it('asks for a key only when status shows no configured credential', async () => {
+    await settle(() => view.unmount());
+    useStatus({ ...status(true), providers: [
+      { provider_id: 'openrouter', credential_configured: false },
+    ] });
+    await settle(() => { view = create(<CloudConversationOnlyScreen onExit={exit} />); });
+    expect(text(view.root)).toContain('A cloud API key is required');
+    expect(button('Connect a key in setup')).toBeTruthy();
+    expect(button('Send text-only message').props.disabled).toBe(true);
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it('requires owner action only for a rejected key, with a precise message', async () => {
+    mock.conversationTurn.mockRejectedValueOnce({ response: { status: 401 } });
+    await typeText('Hello');
+    await settle(() => button('Send text-only message').props.onClick());
+    expect(text(view.root)).toContain('rejected (HTTP 401)');
+    expect(text(view.root)).toContain('Connect a valid key');
+    expect(text(view.root)).not.toContain('Return to setup');
+    expect(button('Send text-only message').props.disabled).toBe(true);
+    expect(exit).not.toHaveBeenCalled();
+    await settle(() => button('Connect a key in setup').props.onClick());
+    expect(exit).toHaveBeenCalledOnce();
   });
 
   it('rate-limit errors do not trigger repeated model calls', async () => {
@@ -127,8 +192,6 @@ describe('isolated cloud conversation-only screen', () => {
     expect(text(view.root)).toContain('Cloud quota or capacity reached');
     expect(mock.conversationTurn).toHaveBeenCalledTimes(1);
   });
-
-
 
   it('never submits twice when the owner double-clicks before React rerenders', async () => {
     let resolveTurn: (value: unknown) => void = () => {};
@@ -152,13 +215,14 @@ describe('isolated cloud conversation-only screen', () => {
     expect(text(view.root)).toContain('Once only.');
     expect(mock.conversationTurn).toHaveBeenCalledTimes(1);
   });
-  it('exiting returns to setup without saving or submitting any new message', async () => {
-    await settle(() => button('Return to setup').props.onClick());
-    expect(exit).toHaveBeenCalledOnce();
+
+  it('Check again re-checks internally and does not exit', async () => {
+    await settle(() => button('Check again').props.onClick());
+    expect(exit).not.toHaveBeenCalled();
+    expect(mock.status).toHaveBeenCalledTimes(2);
     expect(mock.conversationTurn).not.toHaveBeenCalled();
   });
 });
-
 
 it('reports the specific eligible-agentic-harness restriction without exposing provider data', async () => {
   mock.conversationTurn.mockRejectedValueOnce({ response: { status: 502, data: {

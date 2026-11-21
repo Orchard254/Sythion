@@ -86,20 +86,117 @@ def test_credential_rotation_invalidates_active_runtime_without_fallback(
     assert test_client.post(ENDPOINT, json=BODY).status_code == 409
 
 
-@pytest.mark.parametrize("state", [
-    "created", "running", "waiting_for_user", "paused", "interrupted",
-])
-def test_switch_refused_while_unfinished_tasks_exist(
+@pytest.mark.parametrize("state", ["created", "running"])
+def test_switch_queued_while_a_task_has_a_model_call_in_flight(
     test_client, test_db, isolated, state,
 ):
+    """Lazy-user: a verified choice requested during in-flight work is queued,
+    accepted with 200, and applied automatically later — no 409, no retry."""
     prepare(test_db)
-    test_db.add(Task(id="pending-provider-switch", original_request="Existing task",
-                     state=state))
+    task = Task(id="pending-provider-switch", original_request="Existing task",
+                state=state)
+    test_db.add(task)
     test_db.commit()
     r = test_client.post(ENDPOINT, json=BODY)
-    assert r.status_code == 409
-    assert "unfinished" in r.text
+    assert r.status_code == 200, r.text
+    assert r.json()["pending"] is True
+    assert r.json()["permissions_unchanged"] is True
+    assert "automatically" in r.json()["message"]
+    # The active model still honestly reports the OLD selection for now.
     assert test_client.get(ENDPOINT).json()["provider_id"] == "ollama-cloud"
+
+
+def test_pending_activation_applies_when_work_settles(test_client, test_db, isolated):
+    from backend.runtime.active_inference import maybe_apply_pending_activation
+
+    prepare(test_db)
+    task = Task(id="busy", original_request="Existing task", state="running")
+    test_db.add(task)
+    test_db.commit()
+    assert test_client.post(ENDPOINT, json=BODY).json()["pending"] is True
+
+    # Task reaches a terminal state (no model call can hold the old binding).
+    task.state = "completed"
+    test_db.commit()
+
+    assert maybe_apply_pending_activation(test_db) is True
+    assert test_client.get(ENDPOINT).json() == {**BODY, "permissions_unchanged": True}
+    # Applying clears the pending choice — it is not applied twice.
+    assert maybe_apply_pending_activation(test_db) is False
+
+
+def test_pending_activation_not_applied_while_task_still_running(
+    test_client, test_db, isolated,
+):
+    from backend.runtime.active_inference import maybe_apply_pending_activation
+
+    prepare(test_db)
+    test_db.add(Task(id="still-busy", original_request="Existing task", state="running"))
+    test_db.commit()
+    assert test_client.post(ENDPOINT, json=BODY).json()["pending"] is True
+
+    # A different task is still running: the switch must stay deferred.
+    assert maybe_apply_pending_activation(test_db) is False
+    assert test_client.get(ENDPOINT).json()["provider_id"] == "ollama-cloud"
+
+
+@pytest.mark.asyncio
+async def test_task_terminal_transition_applies_pending_activation(
+    test_client, test_db, isolated, task_runner,
+):
+    """The task_runner terminal hook — not just the helper — promotes a queued
+    choice, so the owner never has to return after work settles."""
+    from backend.api.schemas import TaskState
+
+    prepare(test_db)
+    task = await task_runner.create_task("In-flight task")
+    await task_runner.transition_state(task.id, TaskState.RUNNING, "task.execution_started", {})
+
+    # Owner picks a new verified model while the task holds the old binding.
+    r = test_client.post(ENDPOINT, json=BODY)
+    assert r.status_code == 200 and r.json()["pending"] is True
+    assert test_client.get(ENDPOINT).json()["provider_id"] == "ollama-cloud"
+
+    # The task finishes through the real state machine.
+    await task_runner.transition_state(
+        task.id, TaskState.COMPLETED, "task.execution_completed", {},
+    )
+    assert test_client.get(ENDPOINT).json() == {**BODY, "permissions_unchanged": True}
+
+
+def test_direct_activation_clears_any_pending_choice(test_client, test_db, isolated):
+    from backend.runtime.active_inference import (
+        queue_pending_activation, maybe_apply_pending_activation,
+    )
+
+    prepare(test_db)
+    test_db.add(Task(id="busy", original_request="Existing task", state="running"))
+    test_db.commit()
+    queue_pending_activation(test_db, BODY["provider_id"], BODY["model_id"])
+
+    # An explicit activation (idle path) promotes the choice and clears pending.
+    task = test_db.query(Task).filter_by(id="busy").one()
+    task.state = "completed"
+    test_db.commit()
+    r = test_client.post(ENDPOINT, json=BODY)
+    assert r.status_code == 200, r.text
+    assert "pending" not in r.json()
+    assert test_client.get(ENDPOINT).json() == {**BODY, "permissions_unchanged": True}
+    assert maybe_apply_pending_activation(test_db) is False
+
+
+@pytest.mark.parametrize("state", ["waiting_for_user", "paused", "interrupted"])
+def test_switch_allowed_while_task_has_no_active_model_call(
+    test_client, test_db, isolated, state,
+):
+    """A waiting/paused/interrupted task has no in-flight model call, so it
+    must not silently block a legitimate model change."""
+    prepare(test_db)
+    test_db.add(Task(id="idle-task", original_request="Existing task", state=state))
+    test_db.commit()
+    r = test_client.post(ENDPOINT, json=BODY)
+    assert r.status_code == 200, r.text
+    assert r.json() == {**BODY, "permissions_unchanged": True}
 
 
 def test_cannot_switch_back_to_unverified_ollama(
@@ -195,5 +292,6 @@ def test_changing_ollama_model_in_settings_is_blocked_with_unfinished_tasks(
         "/api/v1/onboarding/models", json={"model_id": "ollama/another-model"},
     )
     assert response.status_code == 409
-    assert "unfinished" in response.text
+    assert "running or queued" in response.json()["detail"]
+    assert "Operations" in response.json()["detail"]
     assert test_client.get(ENDPOINT).json()["provider_id"] == "ollama-cloud"

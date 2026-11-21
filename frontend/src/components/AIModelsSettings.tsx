@@ -27,11 +27,9 @@ export function AIModelsSettings() {
   const [hasKey, setHasKey] = useState<Partial<Record<CloudPreviewProviderId, boolean>>>({});
   const [keyEditor, setKeyEditor] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const mounted = useRef(false);
-  const generation = useRef(0);
   const inFlight = useRef(false);
 
   useEffect(() => {
@@ -71,8 +69,7 @@ export function AIModelsSettings() {
   }, []);
 
   const chooseProvider = (next: AIProvider) => {
-    if (inFlight.current || busy || loading) return;
-    generation.current++;
+    if (inFlight.current || loading) return;
     setProvider(next);
     setError(''); setMessage('');
     setKeyEditor(false);
@@ -85,31 +82,25 @@ export function AIModelsSettings() {
     setError(''); setMessage('');
   };
 
-  const onCloudVerified = (modelId: string) => {
+  const onCloudVerified = (modelId: string, pending?: boolean) => {
     if (!provider) return;
-    const expected = provider;
-    const currentGeneration = generation.current;
-    // Verification is genuinely async: hold the busy guards (picker/key buttons
-    // disabled, status line shown) until the backend confirms the active model.
-    setBusy(true);
-    void activeInferenceService.status().then((current) => {
-      if (!mounted.current || currentGeneration !== generation.current) return;
-      if (current.provider_id !== expected || current.model_id !== modelId ||
-          current.permissions_unchanged !== true) {
-        setError('The active model changed. Refresh Settings to verify its identity.');
-        return;
-      }
-      setActive(current);
-      setMessage('Active AI model updated. Sythion keeps its existing assistant and permissions.');
-    }).catch(() => {
-      if (mounted.current && currentGeneration === generation.current) {
-        setError('Could not confirm the active model. Reopen AI Models to review.');
-      }
-    }).finally(() => {
-      // A newer verification may have superseded this one; only clear the guard
-      // while mounted. The generation ref keeps stale results from overwriting.
-      if (mounted.current) setBusy(false);
-    });
+    setError('');
+    if (pending) {
+      // The backend queued this verified choice because in-flight work still
+      // holds the old provider binding. It will apply automatically when work
+      // settles. Do NOT re-check status now — it legitimately still reports the
+      // old model, and telling the owner to refresh would hand work back to
+      // them. The "Active model" line stays honest until the switch lands.
+      setMessage('Model selected. It will activate automatically when current work finishes. Existing permissions are unchanged.');
+      return;
+    }
+    // ActiveCloudSetup validates the activate() response against the chosen
+    // provider/model/permissions BEFORE calling this callback. That result is
+    // authoritative, so a redundant status() re-check here only produced
+    // stale "refresh/reopen" hand-backs — it is removed. Trust the verified
+    // result and update the displayed selection from what was confirmed.
+    setActive({ provider_id: provider, model_id: modelId, permissions_unchanged: true });
+    setMessage('Active AI model updated. Sythion keeps its existing assistant and permissions.');
   };
 
   return (
@@ -126,14 +117,14 @@ export function AIModelsSettings() {
           </p>
           <label htmlFor="settings-ai-provider">AI provider</label>
           <select id="settings-ai-provider" className="input" value={provider ?? ''}
-            disabled={busy} onChange={(event) => chooseProvider(event.target.value as AIProvider)}>
+            onChange={(event) => chooseProvider(event.target.value as AIProvider)}>
             {!provider && <option value="" disabled>Choose a provider</option>}
             {Object.entries(PROVIDERS).map(([id, label]) =>
               <option key={id} value={id}>{label}</option>)}
           </select>
           {provider && <>
             {hasKey[provider] && !keyEditor &&
-              <Button variant="subtle" disabled={busy} onClick={() => setKeyEditor(true)}>
+              <Button variant="subtle" onClick={() => setKeyEditor(true)}>
                 Change saved API key
               </Button>}
             <ActiveCloudSetup
@@ -145,7 +136,6 @@ export function AIModelsSettings() {
             />
           </>}
         </>}
-        {busy && <p role="status">Checking selected AI model…</p>}
         {message && <Notice tone="info" icon="check">{message}</Notice>}
         {error && <Notice tone="danger" icon="alert">{error}</Notice>}
       </div>

@@ -835,9 +835,13 @@ export const activeInferenceService = {
     const response = await apiClient.get('/inference/active');
     return response.data;
   },
-  activate: async (selection: CloudPreviewSelection): Promise<{ provider_id: string; model_id: string; permissions_unchanged: true }> => {
+  activate: async (selection: CloudPreviewSelection): Promise<{
+    provider_id: string; model_id: string; permissions_unchanged: true;
+    pending?: boolean; message?: string;
+  }> => {
     // No provider HTTP request here: backend requires exact verified text and
-    // synthetic tool evidence, and disallows changes while tasks are unfinished.
+    // synthetic tool evidence. If a task holds the old provider binding, the
+    // choice is queued and applied automatically when work settles (pending).
     const response = await apiClient.post('/inference/active', selection);
     return response.data;
   },

@@ -91,12 +91,12 @@ def get_active_inference_selection() -> ActiveInferenceSelection:
         raise ActiveInferenceUnavailable("Active provider selection unavailable") from None
 
 
-def activate_verified_cloud_selection(db: Any, provider_id: str, model_id: str) -> ActiveInferenceSelection:
-    """Activate after real text AND synthetic function-call evidence is valid.
+_PENDING_ACTIVATION_KEY = "pending_inference_selection"
 
-    This is a local backend-state change; it sends NO inference request,
-    touches no task state and grants no execution permission. Existing previews
-    are deliberately inert until this explicit authenticated operation.
+
+def _build_verified_binding(db: Any, provider_id: str, model_id: str) -> Dict[str, Any]:
+    """Validate the owner's verified choice and build its credential-bound
+    activation record. Pure with respect to active state: it writes nothing.
     """
     _validate_cloud(provider_id, model_id)
     from backend.core.cloud_text_evidence import is_text_evidence_current
@@ -118,20 +118,96 @@ def activate_verified_cloud_selection(db: Any, provider_id: str, model_id: str) 
         raise ActiveInferenceUnavailable("Provider credential unavailable")
 
     nonce = secrets.token_hex(16)
-    binding = {
+    return {
         "version": _VERSION,
         "provider_id": provider_id,
         "model_id": model_id,
         "nonce": nonce,
         "mac": _active_mac(provider_id, model_id, nonce, credential),
     }
+
+
+def activate_verified_cloud_selection(db: Any, provider_id: str, model_id: str) -> ActiveInferenceSelection:
+    """Activate after real text AND synthetic function-call evidence is valid.
+
+    This is a local backend-state change; it sends NO inference request,
+    touches no task state and grants no execution permission. Existing previews
+    are deliberately inert until this explicit authenticated operation.
+    """
+    binding = _build_verified_binding(db, provider_id, model_id)
     # Atomic merge: do not overwrite existing profile fields, Ollama model,
     # separate staged preview or other persisted Sythion configuration.
     try:
-        profile.save_profile({"active_inference_selection": binding})
+        profile.save_profile({
+            "active_inference_selection": binding,
+            _PENDING_ACTIVATION_KEY: None,  # clear any pending choice
+        })
     except Exception:
         raise ActiveInferenceUnavailable("Could not save active provider") from None
     return get_active_inference_selection()
+
+
+def has_in_flight_task(db: Any) -> bool:
+    """Whether a task currently holds a model call bound to the active provider.
+
+    Only CREATED (queued to start) and RUNNING states can have a reasoning call
+    in flight. Waiting/paused/interrupted tasks have no active model call and
+    must not block a legitimate model change.
+    """
+    try:
+        from backend.models.database import Task
+        from backend.api.schemas import TaskState
+        return (db.query(Task.id)
+                .filter(Task.state.in_((TaskState.CREATED.value, TaskState.RUNNING.value)))
+                .first()) is not None
+    except Exception:
+        # Uncertain task state fails closed: treat as in flight so a switch is
+        # deferred rather than applied on top of a possibly-live binding.
+        return True
+
+
+def queue_pending_activation(db: Any, provider_id: str, model_id: str) -> None:
+    """Hold a verified model choice to apply automatically when idle.
+
+    Lazy-user contract: once the owner confirms a verified model, they should
+    not have to return later to retry. If a task has a model call in flight,
+    store the credential-bound binding now (evidence is current at this moment)
+    and let :func:`maybe_apply_pending_activation` promote it when work settles.
+    """
+    binding = _build_verified_binding(db, provider_id, model_id)
+    try:
+        profile.save_profile({_PENDING_ACTIVATION_KEY: binding})
+    except Exception:
+        raise ActiveInferenceUnavailable("Could not schedule active provider") from None
+
+
+def maybe_apply_pending_activation(db: Any) -> bool:
+    """Apply a queued model choice once no task can hold the old binding.
+
+    Called from the task terminal transition. Returns True when a pending
+    choice was promoted. Fails closed: a damaged pending record is ignored and
+    a still-in-flight task defers the switch rather than breaking its binding.
+    """
+    raw = profile.load_profile().get(_PENDING_ACTIVATION_KEY)
+    if not isinstance(raw, dict) or set(raw) != {
+        "version", "provider_id", "model_id", "nonce", "mac",
+    }:
+        return False
+    try:
+        from backend.models.database import Task
+        from backend.api.schemas import TaskState
+        blocking = (db.query(Task.id)
+                    .filter(Task.state.in_((TaskState.CREATED.value, TaskState.RUNNING.value)))
+                    .first())
+        if blocking is not None:
+            return False
+        profile.save_profile({
+            "active_inference_selection": raw,
+            _PENDING_ACTIVATION_KEY: None,
+        })
+        return True
+    except Exception:
+        return False
 
 
 def require_active_selection_unchanged(expected: ActiveInferenceSelection) -> None:

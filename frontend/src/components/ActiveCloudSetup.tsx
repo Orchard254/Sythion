@@ -15,7 +15,7 @@ export function ActiveCloudSetup({
   provider: CloudPreviewProviderId;
   phase: 'connect' | 'model';
   onConnected?: () => void;
-  onVerified?: (modelId: string) => void;
+  onVerified?: (modelId: string, pending?: boolean) => void;
 }) {
   const [hasKey, setHasKey] = useState(false);
   const [key, setKey] = useState('');
@@ -142,8 +142,13 @@ export function ActiveCloudSetup({
         throw new Error('Active provider did not match selection');
       }
       setVerified(true);
-      setNotice('Model selected for Sythion. Existing permissions are unchanged.');
-      onVerified?.(id);
+      // Lazy-user contract: if current work held the old binding, the backend
+      // queues this verified choice and applies it automatically when that work
+      // finishes. Tell the owner plainly that they don't need to come back.
+      setNotice(activated.pending
+        ? (activated.message || 'Model selected. It will activate automatically when current work finishes. Existing permissions are unchanged.')
+        : 'Model selected for Sythion. Existing permissions are unchanged.');
+      onVerified?.(id, activated.pending === true);
     } catch (cause) {
       if (!mounted.current || generation.current !== current) return;
       const response = cause && typeof cause === 'object' && 'response' in cause
@@ -163,8 +168,12 @@ export function ActiveCloudSetup({
         setError('This model requires an eligible agentic application. Choose a different model.');
       } else if (status === 422) {
         setError('This model did not demonstrate the structured Assistant format or function calling Sythion requires. Choose another model.');
+      } else if (status === 409 && detail && typeof detail === 'string') {
+        // Surface the backend's specific, actionable detail (which tasks block
+        // and what to do) instead of a vague "review your setup" message.
+        setError(detail);
       } else if (status === 409) {
-        setError('Model verification changed or Sythion has unfinished tasks. Review your setup.');
+        setError('Finish or cancel running tasks in Operations, then change the model again.');
       } else {
         setError('Sythion could not verify this model for text and function calling. Choose another model or check provider access.');
       }

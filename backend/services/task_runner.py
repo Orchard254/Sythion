@@ -966,6 +966,20 @@ class TaskRunner:
         self.db.commit()
         self.db.refresh(task)
 
+        # Lazy-user contract: a verified model change requested while this task
+        # held the old provider binding is applied automatically now that this
+        # task is terminal. Non-fatal — a scheduling failure must never turn a
+        # completed task into a failure or block its remaining bookkeeping.
+        if new_state in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED):
+            try:
+                from backend.runtime.active_inference import maybe_apply_pending_activation
+                maybe_apply_pending_activation(self.db)
+            except Exception as exc:
+                logger.warning(
+                    "Could not apply a pending active-model change after task %s: %s",
+                    task_id, exc,
+                )
+
         try:
             from backend.services.work_state import sync_objective_state_for_task
         except ImportError:
