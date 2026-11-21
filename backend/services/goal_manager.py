@@ -441,6 +441,30 @@ class GoalManager:
 # Legacy objective migration (Phase 3.5 sunset)                                #
 # ============================================================================ #
 
+def _reconcile_migrated_objective_status(objective, migrated_steps) -> None:
+    """Best-effort: stop a migrated objective from claiming ``completed`` unless
+    its migrated steps genuinely justify it.
+
+    A legacy row can be marked ``completed`` while a recoverable step is remapped
+    to an open state (e.g. an unverified 'completed' claim → PENDING/BLOCKED).
+    Leaving the objective as ``completed`` would contradict its own steps.
+
+    Rule (mirrors ``complete_goal``): only reconcile objectives that currently
+    claim ``completed``. All required (non-cancelled) steps must be genuinely
+    ``completed`` before that claim is trustworthy; otherwise fall back to the
+    canonical open lifecycle status ``active``. Genuine completions (every step
+    completed, which in this migration implies carried evidence) are preserved,
+    and all other lifecycle statuses are left untouched.
+    """
+    if objective.status != "completed":
+        return
+    required = [s for s in migrated_steps if s.status != "cancelled"]
+    not_completed = [s for s in required if s.status != "completed"]
+    if not required or not_completed:
+        objective.status = "active"
+        objective.updated_at = datetime.utcnow()
+
+
 def migrate_legacy_objectives(db, include_empty: bool = False) -> Dict[str, Any]:
     """Deterministically convert unplanned legacy objectives into canonical
     plan-backed goals. IDEMPOTENT: objectives that already contain a
@@ -546,6 +570,22 @@ def migrate_legacy_objectives(db, include_empty: bool = False) -> Dict[str, Any]
                 )[:FAILURE_REASON_CAP]
             # else: leave the plan default (pending/blocked) — recoverable.
             new_step.updated_at = datetime.utcnow()
+
+        # Reconcile the objective's own status with the steps we just migrated:
+        # a legacy "completed" row with remapped-to-open steps must not keep
+        # claiming completion. Best-effort and deterministic; idempotent because
+        # canonical objectives are skipped on subsequent runs.
+        try:
+            _reconcile_migrated_objective_status(
+                objective, list(new_steps.values())
+            )
+        except Exception:  # pragma: no cover - reconciliation is pure; never break migration
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Could not reconcile status for migrated objective %s",
+                objective.id, exc_info=True,
+            )
 
         ledger.append_event(_scope(objective.id), "goal.migrated", {
             "plan_id": plan.id,

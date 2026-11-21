@@ -487,6 +487,7 @@ class MainAgentService:
             claimed_at = wake.claimed_at or wake.started_at or boot_time
             if claimed_at >= boot_time:
                 continue  # belongs to THIS process; still live
+            did_reclaim = False
             if (wake.attempts or 0) >= 5:
                 wake.status = WAKE_FAILED
                 wake.outcome = "reclaim_limit"
@@ -496,8 +497,9 @@ class MainAgentService:
             else:
                 wake.status = WAKE_PENDING
                 reclaimed += 1
+                did_reclaim = True
             self.ledger.append_event(_scope(wake.agent_id),
-                                     "agent.wake.reclaimed" if reclaimed else "agent.wake.failed",
+                                     "agent.wake.reclaimed" if did_reclaim else "agent.wake.failed",
                                      {"wake_key": wake.wake_key,
                                       "attempts": wake.attempts})
         self.db.commit()

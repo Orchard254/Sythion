@@ -22,13 +22,21 @@ async def browser_websocket_endpoint(websocket: WebSocket):
 
     PROTECTED RUNTIME CONTRACT: this endpoint sits behind the same
     LocalControlBoundaryMiddleware as every other API route. The extension
-    authenticates with the per-launch control token passed as a query-string
-    parameter (browsers cannot set custom headers on WebSocket handshakes)
-    plus a chrome-extension:// origin, and the peer must be on loopback.
-    Unauthenticated or wrongly authenticated connections are rejected at the
-    handshake by the middleware before this handler runs.
+    authenticates with the per-launch control token carried in the
+    ``sythion-token.<base64url(token)>`` WebSocket subprotocol (browsers can set
+    subprotocols even though they cannot set arbitrary handshake headers), plus
+    a chrome-extension:// origin and a loopback peer. The query-string token is
+    a deprecated fallback for older extensions. Unauthenticated or wrongly
+    authenticated connections are rejected at the handshake by the middleware
+    before this handler runs.
     """
-    await websocket.accept()
+    from backend.core.auth import extract_websocket_token, negotiate_token_subprotocol
+
+    await websocket.accept(
+        subprotocol=negotiate_token_subprotocol(
+            websocket.scope, extract_websocket_token(websocket.scope)
+        )
+    )
     service = BrowserBridgeService.get_instance()
     
     try:

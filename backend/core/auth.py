@@ -3,6 +3,8 @@ Authentication middleware for Sythion (Synth) API.
 Validates the per-launch control token on all requests.
 """
 
+import base64
+import binascii
 import hmac
 from collections.abc import Callable
 from urllib.parse import parse_qs
@@ -51,12 +53,76 @@ def control_origins(development_mode: bool) -> frozenset[str]:
     return PACKAGED_APP_ORIGINS
 
 
-def extract_websocket_token(scope: Scope) -> str:
-    """Extract the control token from a WebSocket handshake query string.
+# WebSocket credentials are carried in a negotiated subprotocol, NOT in the URL.
+# Wire format (must stay byte-for-byte identical to the frontend encoder):
+#
+#   sythion-token.<base64url(utf8(token)) without '=' padding>
+#
+# The stable ``sythion-token.`` prefix makes this unambiguous and cannot be
+# confused with an unrelated protocol. base64url keeps the raw token out of the
+# Sec-WebSocket-Protocol header value (and therefore out of header/proxy logs).
+# Browser JS can set this header via ``new WebSocket(url, [subprotocol])`` even
+# though it cannot set arbitrary custom headers on a WebSocket handshake.
+TOKEN_SUBPROTOCOL_PREFIX = "sythion-token."
 
-    Browsers cannot set custom headers on WebSocket connections, so the
-    browser extension authenticates with ``?token=<per-launch control token>``.
+
+def make_token_subprotocol(token: str) -> str:
+    """Encode a credential as a WebSocket subprotocol name."""
+    payload = base64.urlsafe_b64encode(token.encode("utf-8")).decode("ascii").rstrip("=")
+    return f"{TOKEN_SUBPROTOCOL_PREFIX}{payload}"
+
+
+def token_from_subprotocols(subprotocols) -> str:
+    """Return the first well-formed token subprotocol, or an empty string.
+
+    Malformed/related-but-different protocols are ignored; the caller still
+    performs the exact same constant-time comparison against the expected token.
     """
+    for name in subprotocols or ():
+        if not isinstance(name, str) or not name.startswith(TOKEN_SUBPROTOCOL_PREFIX):
+            continue
+        payload = name[len(TOKEN_SUBPROTOCOL_PREFIX):]
+        if not payload:
+            continue
+        padded = payload + "=" * (-len(payload) % 4)
+        try:
+            decoded = base64.b64decode(padded, altchars=b"-_", validate=True)
+            token = decoded.decode("utf-8")
+        except (ValueError, UnicodeDecodeError, binascii.Error):
+            continue
+        if token:
+            return token
+    return ""
+
+
+def negotiate_token_subprotocol(scope: Scope, token: str) -> Optional[str]:
+    """Subprotocol to echo in ``websocket.accept`` when the client offered it.
+
+    Never invent a subprotocol the client did not offer; legacy query-string
+    clients are accepted without a negotiated subprotocol.
+    """
+    if not token:
+        return None
+    candidate = make_token_subprotocol(token)
+    return candidate if candidate in (scope.get("subprotocols") or ()) else None
+
+
+def extract_websocket_token(scope: Scope) -> str:
+    """Extract the control token from a WebSocket handshake.
+
+    Supported path: the ``sythion-token.<base64url(token)>`` subprotocol (see
+    ``TOKEN_SUBPROTOCOL_PREFIX``), which browsers can set via the WebSocket
+    subprotocol argument and which keeps the credential out of the URL.
+
+    DEPRECATED fallback: ``?token=<per-launch control token>``. Query strings
+    leak credentials into devtools, proxy logs and access logs. This is kept
+    only so older clients are not broken abruptly; new callers MUST use the
+    subprotocol. The token comparison below is unchanged and constant-time.
+    """
+    token = token_from_subprotocols(scope.get("subprotocols"))
+    if token:
+        return token
+    # DEPRECATED: legacy query-string transport. Do not use in new code.
     query_string = scope.get("query_string", b"")
     try:
         params = parse_qs(query_string.decode("latin-1"), keep_blank_values=True)
@@ -97,8 +163,10 @@ class LocalControlBoundaryMiddleware:
             if authorization.lower().startswith("bearer "):
                 token = authorization[7:]
         if not token and scope["type"] == "websocket":
-            # WebSocket handshakes cannot carry custom headers; the browser
-            # extension authenticates via the query string instead.
+            # WebSocket handshakes cannot carry arbitrary custom headers, but
+            # they CAN carry a subprotocol. The supported path is the
+            # sythion-token.<base64url(token)> subprotocol; the query-string
+            # path is a deprecated fallback only (see extract_websocket_token).
             token = extract_websocket_token(scope)
 
         expected_token = self.token_provider()
@@ -163,10 +231,11 @@ class LocalControlBoundaryMiddleware:
     def _is_protected(scope: Scope) -> bool:
         path = scope.get("path", "")
         # Browser-bridge routes are protected like every other API route.
-        # WebSocket handshakes authenticate via query-string token (see
-        # extract_websocket_token); HTTP bridge routes use the standard
-        # X-Control-Token header. There is deliberately no unauthenticated
-        # path into browser-control capabilities.
+        # WebSocket handshakes authenticate via the token subprotocol (see
+        # extract_websocket_token; query-string token is a deprecated
+        # fallback); HTTP bridge routes use the standard X-Control-Token
+        # header. There is deliberately no unauthenticated path into
+        # browser-control capabilities.
         return path.startswith("/api/") or path in PROTECTED_PATHS
 
 

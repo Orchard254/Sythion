@@ -39,6 +39,9 @@ import { taskService } from '../services/api';
 const RUNNING_STATES = new Set(['created', 'running', 'paused']);
 const OPEN_STEP_STATES = new Set(['pending', 'ready', 'running', 'in_progress', 'blocked', 'failed']);
 
+/** Owner-facing status: a plain headline plus an optional human reason. */
+type StatusView = { tone: 'ok' | 'warn' | 'unknown'; headline: string; reason?: string };
+
 function resultSnippet(value: string | null): string {
   const text = value?.replace(/\s+/g, ' ').replace(/\*\*/g, '').trim();
   if (!text) return 'No result was recorded.';
@@ -61,6 +64,7 @@ export function OperationsScreen() {
   const [acknowledgedFailures, setAcknowledgedFailures] = useState<Set<string>>(new Set());
   const [dismissBusy, setDismissBusy] = useState<string | null>(null);
   const [dismissError, setDismissError] = useState<string | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -144,26 +148,65 @@ export function OperationsScreen() {
 
   const taskById = useMemo(() => new Map(allTasks.map((t) => [t.id, t])), [allTasks]);
 
-  /* System status in plain language: only ever what the backend reported. */
-  const systemStatus = useMemo(() => {
+  /* System status in plain language. Raw backend tokens are support-only
+   * detail (below); a degraded or unknown signal is never reported as healthy. */
+  const systemStatus = useMemo<StatusView>(() => {
     const problems: string[] = [];
     const db = health.isError ? undefined : health.data?.database_connected;
-    if (db === false) problems.push('database unreachable');
+    if (db === false) problems.push("Synth can't reach its database.");
     const runtime = health.isError ? undefined : health.data?.status;
-    if (runtime && runtime !== 'ok' && runtime !== 'healthy') problems.push('runtime degraded');
+    if (runtime && runtime !== 'ok' && runtime !== 'healthy') {
+      problems.push("Synth's core services aren't reporting healthy.");
+    }
     const agentState = agent.data?.state;
-    if (agentState && agentState !== 'active') problems.push(`agent ${agentState}`);
+    if (agentState && agentState !== 'active') {
+      problems.push("Synth isn't active right now.");
+    }
     const caps = capabilities.data ?? [];
-    const unavailable = caps.filter((c) => c.status === 'UNAVAILABLE' || c.status === 'DISABLED').length;
+    const unavailable = caps.filter((c) =>
+      c.status === 'UNAVAILABLE' || c.status === 'DISABLED' || c.status === 'DEGRADED'
+    ).length;
     if (caps.length > 0 && unavailable > 0) {
-      problems.push(`${unavailable} ${unavailable === 1 ? 'capability' : 'capabilities'} unavailable`);
+      problems.push('Some capabilities are not working normally.');
     }
-    if (problems.length) return { tone: 'warn' as const, text: problems.join(' · ') };
+    if (problems.length) {
+      return {
+        tone: 'warn',
+        headline: 'Synth needs your attention',
+        reason: problems.join(' '),
+      };
+    }
     if (caps.length === 0 || db === undefined || runtime === undefined || !agentState) {
-      return { tone: 'unknown' as const, text: 'Status unknown' };
+      return { tone: 'unknown', headline: 'Status unknown' };
     }
-    return { tone: 'ok' as const, text: 'Everything working' };
+    return { tone: 'ok', headline: 'Everything working' };
   }, [health.data, health.isError, agent.data, capabilities.data]);
+
+  /* Raw backend values, including step statuses, live only behind the
+   * collapsed support disclosure. The default view never renders them. */
+  const supportDiagnostics = useMemo(() => {
+    const lines: string[] = [];
+    const db = health.isError ? undefined : health.data?.database_connected;
+    const runtime = health.isError ? undefined : health.data?.status;
+    const agentState = agent.data?.state;
+    if (agentState) lines.push(`agent state: ${agentState}`);
+    lines.push(`database: ${db === undefined ? 'unknown' : db ? 'connected' : 'disconnected'}`);
+    lines.push(`runtime status: ${runtime ?? 'unknown'}`);
+    const caps = capabilities.data;
+    if (caps) {
+      lines.push(`capabilities: ${caps.length} recorded`);
+      for (const c of caps.filter((cap) => cap.status !== 'AVAILABLE')) {
+        lines.push(`capability ${c.id}: ${c.status}`);
+      }
+    } else {
+      lines.push('capabilities: unknown');
+    }
+    for (const t of runningTasks) {
+      const step = latestConfirmedStep(t, allObjectives);
+      if (step) lines.push(`step ${step.step_order}: ${step.description} (${step.status})`);
+    }
+    return lines;
+  }, [health.data, health.isError, agent.data, capabilities.data, runningTasks, allObjectives]);
 
   const summary = useMemo(() => {
     const hour = new Date().getHours();
@@ -272,17 +315,13 @@ export function OperationsScreen() {
                             {goal && <span className="t-truncate">{goal.title}</span>}
                             <span title={dateTime(t.updated_at)}>updated {relTime(t.updated_at)}</span>
                           </div>
-                          {/* Latest confirmed step only. Never inferred from elapsed time. */}
+                          {/* Latest confirmed step only, in plain language. The raw
+                           * step status is support-only detail in the disclosure. */}
                           {(step || waiting) && (
                             <span className="op-step">
                               <Icon name="layers" size={11} />
                               {step ? (
-                                <>
-                                  <span className="t-truncate">
-                                    Step {step.step_order}: {step.description}
-                                  </span>
-                                  <span className={`op-step__state op-step__state--${step.status}`}>{step.status}</span>
-                                </>
+                                <span className="t-truncate">Latest step: {step.description}</span>
                               ) : (
                                 <span className="t-warn t-truncate">{waiting}</span>
                               )}
@@ -379,12 +418,33 @@ export function OperationsScreen() {
                     className={`state-dot state-dot--${systemStatus.tone}`}
                     aria-hidden="true"
                   />
-                  <span className="t-body">{systemStatus.text}</span>
+                  <div>
+                    <span className="t-body">{systemStatus.headline}</span>
+                    {systemStatus.reason && (
+                      <div className="t-faint">{systemStatus.reason}</div>
+                    )}
+                  </div>
                 </div>
                 <Button size="sm" variant="ghost" onClick={() => setRoute('system')}>
                   Details
                 </Button>
               </div>
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-expanded={advancedOpen}
+                onClick={() => setAdvancedOpen(!advancedOpen)}
+              >
+                {advancedOpen ? 'Hide advanced details' : 'Advanced / for support'}
+              </Button>
+              {advancedOpen && (
+                <div className="stack stack--tight" data-testid="operations-advanced">
+                  <span className="t-faint">Raw backend values, for support only.</span>
+                  {supportDiagnostics.map((line, i) => (
+                    <span key={i} className="t-faint">{line}</span>
+                  ))}
+                </div>
+              )}
             </Panel>
           </div>
         </div>

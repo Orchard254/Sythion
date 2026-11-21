@@ -198,12 +198,20 @@ def test_ws_open_poll_and_send(test_client, test_db, monkeypatch):
 
         # A poll cannot create new durable messages; verify by DB rather than
         # blocking on a socket frame that is intentionally never sent.
+        # The gateway shares the fixture Session across threads, so wait for a
+        # handler reply before each read: the error frame is sent only after all
+        # of the send path's commits, which removes a pre-existing race where
+        # the main thread queried while the handler was mid-commit.
         from backend.models.database import RelayMessage
 
+        ws.send_text("not json")
+        assert json.loads(ws.receive_text())["reason"] == "invalid_json"
         before = test_db.query(RelayMessage).filter_by(
             session_id=session["session_id"]).count()
         ws.send_text(json.dumps({"type": "poll"}))
         ws.send_text(json.dumps({"type": "ack", "sequence": reply["sequence"]}))
+        ws.send_text("not json")
+        assert json.loads(ws.receive_text())["reason"] == "invalid_json"
         test_db.expire_all()
         after = test_db.query(RelayMessage).filter_by(
             session_id=session["session_id"]).count()

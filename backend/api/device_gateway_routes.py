@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
+from backend.core.auth import negotiate_token_subprotocol
 from backend.core.device_scope import device_query_credentials
 from backend.core.handshake import read_device_channel_config
 from backend.models.database import get_db
@@ -71,7 +72,12 @@ async def device_relay_ws(websocket: WebSocket, db: Session = Depends(get_db)):
     db.commit()
     last_sent = 0
     last_ack = 0
-    await websocket.accept()
+    # Echo the token subprotocol the client offered so the handshake completes
+    # with a negotiated protocol. Legacy query-string clients offered none, so
+    # they keep the prior accept() behaviour (no subprotocol header).
+    await websocket.accept(
+        subprotocol=negotiate_token_subprotocol(websocket.scope, token),
+    )
 
     async def push_new_messages() -> None:
         nonlocal last_sent

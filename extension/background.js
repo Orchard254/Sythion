@@ -41,8 +41,16 @@ async function connectToSythion() {
   }
 
   try {
-    // Loopback only; per-launch token authenticates the handshake.
-    ws = new WebSocket(`ws://127.0.0.1:${config.port}/api/v1/browser/ws?token=${encodeURIComponent(config.token)}`);
+    // Loopback only; the per-launch token travels in a WebSocket subprotocol,
+    // never in the URL where it would leak into logs. Mirrors the backend's
+    // sythion-token.<base64url(token)> format. base64url keeps the raw token
+    // out of the Sec-WebSocket-Protocol header value too.
+    const tokenBytes = new TextEncoder().encode(config.token);
+    let binary = '';
+    for (const byte of tokenBytes) binary += String.fromCharCode(byte);
+    const encoded = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const subprotocol = `sythion-token.${encoded}`;
+    ws = new WebSocket(`ws://127.0.0.1:${config.port}/api/v1/browser/ws`, [subprotocol]);
 
     ws.onopen = () => {
       console.log("[Sythion Bridge] Connected to Sythion backend");

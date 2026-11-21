@@ -34,14 +34,14 @@ def db_session():
     session.close()
 
 
-def _mk_legacy_objective(db, title="Legacy obj", steps=None):
+def _mk_legacy_objective(db, title="Legacy obj", steps=None, status="active"):
     """Create an objective the OLD way (raw rows, plan_id NULL)."""
     from backend.models.database import Objective
     from datetime import datetime
 
     now = datetime.utcnow()
     obj = Objective(id="legacy-" + title.lower().replace(" ", "-")[:12],
-                    title=title, status="active", priority=3,
+                    title=title, status=status, priority=3,
                     created_at=now, updated_at=now)
     db.add(obj)
     db.flush()
@@ -136,6 +136,75 @@ class TestLegacyMigration:
         )
         assert step.status == "completed"
         assert step.evidence_task_id == "task-evidence"
+
+    def test_completed_objective_with_unverified_step_is_demoted(self, db_session):
+        """A legacy objective row marked 'completed' whose step is remapped to a
+        recoverable (non-completed) state must not keep claiming completion."""
+        obj = _mk_legacy_objective(
+            db_session, title="unverified done", status="completed",
+            steps=[("claimed done", "completed")],
+        )
+        report = migrate_legacy_objectives(db_session)
+
+        assert len(report["migrated"]) == 1
+        db_session.refresh(obj)
+        step = (
+            db_session.query(PlanStep)
+            .filter_by(objective_id=obj.id)
+            .filter(PlanStep.plan_id.isnot(None))
+            .first()
+        )
+        assert step.status != "completed"
+        assert obj.status != "completed"
+        assert obj.status == "active"
+
+    def test_completed_objective_with_evidence_stays_completed(self, db_session):
+        """A genuine completion (step completed WITH carried evidence) stays completed."""
+        obj = _mk_legacy_objective(
+            db_session, title="verified done", status="completed",
+            steps=[("really done", "completed")],
+        )
+        legacy = (
+            db_session.query(PlanStep)
+            .filter_by(objective_id=obj.id)
+            .filter(PlanStep.plan_id.is_(None))
+            .first()
+        )
+        legacy.evidence_task_id = "task-evidence"
+        legacy.result_summary = "verified outcome"
+        db_session.commit()
+
+        migrate_legacy_objectives(db_session)
+
+        db_session.refresh(obj)
+        step = (
+            db_session.query(PlanStep)
+            .filter_by(objective_id=obj.id)
+            .filter(PlanStep.plan_id.isnot(None))
+            .first()
+        )
+        assert step.status == "completed"
+        assert step.evidence_task_id == "task-evidence"
+        assert obj.status == "completed"
+
+    def test_status_reconciliation_is_stable_on_repeat(self, db_session):
+        """Objective status reconciliation is idempotent across repeated runs."""
+        obj = _mk_legacy_objective(
+            db_session, title="stable done", status="completed",
+            steps=[("claimed done", "completed")],
+        )
+        first = migrate_legacy_objectives(db_session)
+        db_session.refresh(obj)
+        status_after_first = obj.status
+        plans_after_first = db_session.query(GoalPlan).count()
+        assert status_after_first == "active"
+
+        second = migrate_legacy_objectives(db_session)
+
+        db_session.refresh(obj)
+        assert first["migrated"] and second["migrated"] == []
+        assert obj.status == status_after_first == "active"
+        assert db_session.query(GoalPlan).count() == plans_after_first
 
     def test_failed_carries_reason(self, db_session):
         obj = _mk_legacy_objective(db_session, steps=[("broke", "failed")])

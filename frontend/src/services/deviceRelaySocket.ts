@@ -24,11 +24,37 @@ export interface RelaySocketLike {
 }
 
 /**
- * Build the first-party device gateway URL from the resolved bridge base URL.
- * The device scope is deliberately NOT under /api/v1 (no control token): it
- * authenticates with the per-device credential in the query string.
+ * WebSocket subprotocol carrying the credential. Mirrors
+ * backend.core.auth.TOKEN_SUBPROTOCOL_PREFIX / make_token_subprotocol.
+ *
+ * Wire format: `sythion-token.<base64url(utf8(token)) without '=' padding>`.
+ * The stable prefix cannot be confused with other protocols, and base64url
+ * keeps the raw token out of the Sec-WebSocket-Protocol header value. Browser
+ * JS can set this via `new WebSocket(url, [subprotocol])` even though it cannot
+ * set arbitrary custom headers, so the credential never enters the URL where
+ * it would leak into devtools, proxy logs or access logs.
  */
-export function buildDeviceRelayWsUrl(baseUrl: string, deviceId: string, token: string): string {
+export const TOKEN_SUBPROTOCOL_PREFIX = 'sythion-token.';
+
+function base64UrlEncode(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** Encode a credential as the WebSocket subprotocol the backend expects. */
+export function tokenSubprotocol(token: string): string {
+  return `${TOKEN_SUBPROTOCOL_PREFIX}${base64UrlEncode(token)}`;
+}
+
+/**
+ * Build the first-party device gateway URL from the resolved bridge base URL.
+ * The device scope is deliberately NOT under /api/v1 (no control token). Only
+ * the non-secret device id is a query param; the credential travels in the
+ * negotiated WebSocket subprotocol (see tokenSubprotocol).
+ */
+export function buildDeviceRelayWsUrl(baseUrl: string, deviceId: string): string {
   const withoutApi = baseUrl.replace(/\/api\/v1\/?$/, '');
   let origin: string;
   if (/^https?:\/\//.test(withoutApi)) {
@@ -40,20 +66,27 @@ export function buildDeviceRelayWsUrl(baseUrl: string, deviceId: string, token: 
     origin = `${scheme}://${host}`;
   }
   const wsOrigin = origin.replace(/^http/, 'ws');
-  const params = new URLSearchParams({ device_id: deviceId, token });
+  const params = new URLSearchParams({ device_id: deviceId });
   return `${wsOrigin}/device/relay/ws?${params.toString()}`;
 }
+
+/** Injectable socket constructor; tests record the requested subprotocols. */
+export type RelaySocketFactory = (
+  url: string,
+  subprotocols: string[],
+) => RelaySocketLike;
 
 /** Open the device relay socket and bind handlers. */
 export async function openDeviceRelaySocket(
   deviceId: string,
   token: string,
   handlers: RelaySocketHandlers,
-  socketFactory: (url: string) => RelaySocketLike = (url) => new WebSocket(url) as unknown as RelaySocketLike,
+  socketFactory: RelaySocketFactory = (url, subprotocols) =>
+    new WebSocket(url, subprotocols) as unknown as RelaySocketLike,
 ): Promise<RelaySocketLike> {
   const config = await resolveBridgeConfig();
-  const url = buildDeviceRelayWsUrl(config.baseUrl, deviceId, token);
-  const socket = socketFactory(url);
+  const url = buildDeviceRelayWsUrl(config.baseUrl, deviceId);
+  const socket = socketFactory(url, [tokenSubprotocol(token)]);
   socket.onopen = () => handlers.onOpen?.();
   socket.onmessage = (event) => {
     try {

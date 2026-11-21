@@ -17,6 +17,7 @@ from backend.models.database import Base, MainAgent
 from backend.services.goal_manager import GoalManager
 from backend.services.main_agent import (
     _LAST_WAKE_REASON_CAP,
+    WAKE_RUNNING,
     MainAgentService,
     coalesce_key_for,
 )
@@ -219,3 +220,81 @@ class TestResumeGoalWake:
         # Best-effort: a broken wake worker must never break the resume.
         assert resumed.status == "active"
         assert installed_worker.calls == [("goal.resumed", goal.id)]
+
+
+# ---------------------------------------------------------------------------
+# 4. Recovery audit events reflect THIS wake's outcome, not a cumulative count
+# ---------------------------------------------------------------------------
+
+
+class TestWakeRecoveryAuditTruthfulness:
+    def test_failure_after_a_reclaim_is_audited_as_failed(self, db_session):
+        """A reclaimed wake in the same pass must not relabel a later failure.
+
+        Regression: ``recover_pending_wakes`` chose the ledger event type from
+        the cumulative ``reclaimed`` counter, so once any wake was reclaimed,
+        every subsequent failure in the same pass was recorded as
+        ``agent.wake.reclaimed`` with an untruthful audit trail.
+        """
+        import json
+        from datetime import datetime, timedelta
+
+        from backend.models.database import AgentWake, TaskEvent
+
+        agent = MainAgentService(db_session)
+
+        agent.submit_wake("user.request", wake_key="recover-ok")
+        agent.submit_wake("user.request", wake_key="recover-dead")
+        agent.claim_wake("recover-ok")
+        agent.claim_wake("recover-dead")
+
+        # Recovery iterates RUNNING rows in a stable order. Configure whichever
+        # row it sees first as reclaimable so the cumulative `reclaimed` counter
+        # is already > 0 by the time the failing wake is processed.
+        orphans = (
+            db_session.query(AgentWake)
+            .filter(AgentWake.status == WAKE_RUNNING)
+            .all()
+        )
+        assert len(orphans) == 2
+        first, second = orphans
+        first.attempts = 1  # below the cap -> reclaimed back to PENDING
+        second.attempts = 5  # at the cap -> FAILED
+        stale = datetime.utcnow() - timedelta(minutes=10)
+        for row in orphans:
+            row.claimed_at = stale
+        db_session.commit()
+
+        boot_time = datetime.utcnow() + timedelta(seconds=5)
+        report = agent.recover_pending_wakes(boot_time)
+
+        assert report["reclaimed"] == 1
+        assert report["failed_reclaims"] == 1
+
+        # State transitions and reasons are unchanged.
+        failed = (
+            db_session.query(AgentWake).filter_by(wake_key="recover-dead").one()
+        )
+        assert failed.status == "FAILED"
+        assert failed.outcome == "reclaim_limit"
+        assert failed.stop_reason == "worker crashed repeatedly"
+        assert failed.finished_at is not None
+
+        # Only the event-type label is corrected: the first wake is a reclaim,
+        # the second is a failure -- even though `reclaimed` was already 1.
+        events = (
+            db_session.query(TaskEvent)
+            .filter(
+                TaskEvent.event_type.in_(
+                    ("agent.wake.reclaimed", "agent.wake.failed")
+                )
+            )
+            .order_by(TaskEvent.sequence_num.asc())
+            .all()
+        )
+        event_by_key = {
+            json.loads(event.event_data)["wake_key"]: event.event_type
+            for event in events
+        }
+        assert event_by_key[first.wake_key] == "agent.wake.reclaimed"
+        assert event_by_key[second.wake_key] == "agent.wake.failed"

@@ -14,22 +14,36 @@ from urllib.parse import parse_qs
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from backend.core.auth import LOOPBACK_HOSTS
+from backend.core.auth import LOOPBACK_HOSTS, token_from_subprotocols
 
 DEVICE_SCOPE_PREFIX = "/device/"
 
 
 def device_query_credentials(scope: Scope) -> tuple[str, str]:
-    """Device id/token from a WebSocket handshake query string."""
+    """Device id/token from a WebSocket handshake.
+
+    The device id is a non-secret identifier and stays in the query string.
+    The credential is read from the negotiated ``sythion-token.<b64url>``
+    subprotocol FIRST (browser-settable, and kept out of URL/access logs).
+
+    DEPRECATED fallback: ``?token=`` is honoured only for older clients; new
+    callers must send the subprotocol. Credential validity and grants are still
+    enforced unchanged by the endpoint (``verify_device_credential`` /
+    ``check_access``); this helper never accepts an empty or invalid token on
+    its own.
+    """
     try:
         params = parse_qs(
             scope.get("query_string", b"").decode("latin-1"),
             keep_blank_values=True,
         )
     except Exception:
-        return "", ""
+        params = {}
     device_id = params.get("device_id", [""])[0]
-    token = params.get("token", [""])[0]
+    token = token_from_subprotocols(scope.get("subprotocols"))
+    if not token:
+        # DEPRECATED: legacy query-string transport. Do not use in new code.
+        token = params.get("token", [""])[0]
     return device_id, token
 
 
