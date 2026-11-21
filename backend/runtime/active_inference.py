@@ -217,14 +217,59 @@ def queue_pending_activation(db: Any, provider_id: str, model_id: str) -> None:
     and let :func:`maybe_apply_pending_activation` promote it when work settles.
     """
     binding = _build_verified_binding(db, provider_id, model_id)
+    # Serialize the pending write with the apply path. Apply reads pending,
+    # validates it, checks task state and then clears it under this same lock;
+    # without it a queue landing between apply's read and its clear would be
+    # silently overwritten and the newest verified owner choice lost. The lock
+    # is reentrant and this helper never calls the apply path, so no deadlock.
+    with _PENDING_APPLY_LOCK:
+        try:
+            profile.save_profile({
+                _PENDING_ACTIVATION_KEY: binding,
+                # The latest owner choice wins: drop any queued Ollama operation.
+                _PENDING_OLLAMA_KEY: None,
+            })
+        except Exception:
+            raise ActiveInferenceUnavailable("Could not schedule active provider") from None
+
+
+def _pending_cloud_shape_ok(raw: Any) -> bool:
+    """Fail-closed STRUCTURAL check of a queued cloud binding, no credential.
+
+    Split out of :func:`_valid_pending_cloud` so that a structurally well-formed
+    record whose MAC no longer matches can be told apart from genuine damage and
+    reported as ``blocked_credential`` by :func:`pending_activation_status`.
+    """
+    if not (isinstance(raw, dict) and set(raw) == {
+        "version", "provider_id", "model_id", "nonce", "mac",
+    }):
+        return False
     try:
-        profile.save_profile({
-            _PENDING_ACTIVATION_KEY: binding,
-            # The latest owner choice wins: drop any queued Ollama operation.
-            _PENDING_OLLAMA_KEY: None,
-        })
+        if type(raw["version"]) is not int or raw["version"] != _VERSION:
+            return False
+        _validate_cloud(raw["provider_id"], raw["model_id"])
+        nonce, supplied_mac = raw["nonce"], raw["mac"]
+        if (type(nonce) is not str or re.fullmatch(r"[0-9a-f]{32}", nonce) is None or
+            type(supplied_mac) is not str or re.fullmatch(r"[0-9a-f]{64}", supplied_mac) is None):
+            return False
+        return True
     except Exception:
-        raise ActiveInferenceUnavailable("Could not schedule active provider") from None
+        return False
+
+
+def _pending_cloud_binding_current(raw: Dict[str, Any]) -> bool:
+    """Whether a well-formed binding's MAC matches the CURRENT credential."""
+    try:
+        from backend.core.secrets import resolve_compatible_provider_key
+        credential = resolve_compatible_provider_key(raw["provider_id"])
+        if not credential:
+            return False
+        return hmac.compare_digest(
+            _active_mac(raw["provider_id"], raw["model_id"], raw["nonce"], credential),
+            raw["mac"],
+        )
+    except Exception:
+        return False
 
 
 def _valid_pending_cloud(raw: Any) -> bool:
@@ -237,30 +282,12 @@ def _valid_pending_cloud(raw: Any) -> bool:
     current credential at apply time means a damaged record, an ambiguous extra
     key, or a rotated credential can never be promoted into a live (but broken)
     active selection. On any uncertainty this returns False and leaves the
-    record untouched so a later, corrected sweep can still promote it.
+    record untouched: this path never silently falls back to Ollama. A rotated
+    credential is separately reported as ``blocked_credential`` by
+    :func:`pending_activation_status` so the owner can be notified instead of
+    being silently misled by the earlier "will activate automatically" reply.
     """
-    if not (isinstance(raw, dict) and set(raw) == {
-        "version", "provider_id", "model_id", "nonce", "mac",
-    }):
-        return False
-    try:
-        if type(raw["version"]) is not int or raw["version"] != _VERSION:
-            return False
-        provider_id, model_id = raw["provider_id"], raw["model_id"]
-        _validate_cloud(provider_id, model_id)
-        nonce, supplied_mac = raw["nonce"], raw["mac"]
-        if (type(nonce) is not str or re.fullmatch(r"[0-9a-f]{32}", nonce) is None or
-            type(supplied_mac) is not str or re.fullmatch(r"[0-9a-f]{64}", supplied_mac) is None):
-            return False
-        from backend.core.secrets import resolve_compatible_provider_key
-        credential = resolve_compatible_provider_key(provider_id)
-        if not credential:
-            return False
-        return hmac.compare_digest(
-            _active_mac(provider_id, model_id, nonce, credential), supplied_mac,
-        )
-    except Exception:
-        return False
+    return _pending_cloud_shape_ok(raw) and _pending_cloud_binding_current(raw)
 
 
 def _valid_pending_ollama(raw: Any) -> bool:
@@ -294,14 +321,17 @@ def queue_pending_ollama_activation(
             or kind not in _PENDING_OLLAMA_KINDS):
         raise ActiveInferenceUnavailable("Invalid Ollama selection")
     record = {"version": _VERSION, "model_id": model_id, "kind": kind}
-    try:
-        profile.save_profile({
-            _PENDING_OLLAMA_KEY: record,
-            # The latest owner choice wins across providers as well.
-            _PENDING_ACTIVATION_KEY: None,
-        })
-    except Exception:
-        raise ActiveInferenceUnavailable("Could not schedule Ollama selection") from None
+    # Same lock as the cloud queue and the apply path: the pending keys are one
+    # logical record and every writer must hold this lock while updating them.
+    with _PENDING_APPLY_LOCK:
+        try:
+            profile.save_profile({
+                _PENDING_OLLAMA_KEY: record,
+                # The latest owner choice wins across providers as well.
+                _PENDING_ACTIVATION_KEY: None,
+            })
+        except Exception:
+            raise ActiveInferenceUnavailable("Could not schedule Ollama selection") from None
 
 
 def _refresh_live_ollama_model(model_id: str) -> None:
@@ -478,6 +508,73 @@ def sweep_pending_activation(db: Any) -> bool:
     apply triggers). Returns True when a pending choice was promoted.
     """
     return _maybe_apply_pending_activation(db, include_created=False)
+
+
+# Machine-readable states returned by :func:`pending_activation_status`.
+PENDING_ACTIVATION_STATES = (
+    "none",
+    "ready",
+    "blocked_in_flight",
+    "blocked_credential",
+    "damaged",
+)
+
+
+def pending_activation_status(db: Any = None) -> str:
+    """Report the queued activation's state WITHOUT applying or clearing it.
+
+    Lets the API/UI explain why a choice the owner was told "will activate
+    automatically" has not appeared. Returns one of
+    :data:`PENDING_ACTIVATION_STATES`:
+
+    * ``none`` - no pending record.
+    * ``ready`` - well-formed, credential-current, and no task holds a binding;
+      the safety-net sweep will promote it.
+    * ``blocked_in_flight`` - well-formed and current, but a task still holds a
+      provider binding, so switching now would break it. The record is kept.
+    * ``blocked_credential`` - a structurally well-formed cloud binding whose
+      MAC no longer validates against the current credential (rotation or an
+      unavailable key). Fails closed: it is NEVER promoted and NOT cleared, so
+      restoring the original credential makes it promotable again. This is the
+      state that was previously an invisible, permanent strand.
+    * ``damaged`` - malformed, ambiguous or unreadable pending state.
+
+    No credential, MAC or nonce value is ever returned. ``db`` is optional:
+    without it the task check is skipped and a valid pending record is reported
+    ``ready``. The read is serialized with the queue/apply writers for a
+    consistent snapshot, but it is strictly read-only.
+    """
+    with _PENDING_APPLY_LOCK:
+        try:
+            state = profile.load_profile_strict()
+        except Exception:
+            return "damaged"
+        cloud_raw = state.get(_PENDING_ACTIVATION_KEY)
+        ollama_raw = state.get(_PENDING_OLLAMA_KEY)
+        has_cloud = cloud_raw is not None
+        has_ollama = ollama_raw is not None
+        if not has_cloud and not has_ollama:
+            return "none"
+        # Our writers always clear the other kind; two kinds at once is damage.
+        if has_cloud and has_ollama:
+            return "damaged"
+        if has_cloud:
+            if not _pending_cloud_shape_ok(cloud_raw):
+                return "damaged"
+            if not _pending_cloud_binding_current(cloud_raw):
+                return "blocked_credential"
+        elif not _valid_pending_ollama(ollama_raw):
+            return "damaged"
+        if db is None:
+            return "ready"
+        # Mirror the safety-net sweep's RUNNING-only rule: a merely CREATED task
+        # has no resolved binding and cannot strand the owner's choice.
+        try:
+            if _has_blocking_task(db, include_created=False):
+                return "blocked_in_flight"
+        except Exception:
+            return "blocked_in_flight"
+        return "ready"
 
 
 async def sweep_pending_activation_once(db_manager: Any) -> bool:

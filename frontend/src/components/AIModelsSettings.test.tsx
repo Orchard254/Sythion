@@ -38,6 +38,15 @@ const changeProvider = async (value: string) => {
     target: { value },
   }));
 };
+/** Run timer-driven poll ticks inside act(), flushing the async status() reads. */
+const advancePolls = async (ms: number) => {
+  await act(async () => {
+    vi.advanceTimersByTime(ms);
+    for (let i = 0; i < 25; i++) await Promise.resolve();
+  });
+};
+/** The poll reads status every 2500ms (see AIModelsSettings constants). */
+const POLL_MS = 2500;
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -141,6 +150,84 @@ it('defers a pending cloud model without re-checking status or handing work back
   expect(text()).not.toContain('Refresh');
   expect(text()).not.toContain('Reopen');
   expect(mock.active).not.toHaveBeenCalled();
+});
+
+it('confirms a deferred choice once status reports the newly active model', async () => {
+  vi.useFakeTimers();
+  try {
+    await changeProvider('groq');
+    mock.active.mockClear();
+    // First poll still sees the OLD binding; the second sees the promoted one.
+    mock.active
+      .mockResolvedValueOnce(active())
+      .mockResolvedValueOnce(active('groq', 'groq/new'));
+    await settle(() => view.root.findByType(ActiveCloudSetup)
+      .props.onVerified('groq/new', true));
+    // The immediate pending path must not call status or hand work back.
+    expect(mock.active).not.toHaveBeenCalled();
+    expect(text()).toContain('will activate automatically when current work finishes');
+
+    await advancePolls(POLL_MS); // old model -> keep waiting
+    expect(mock.active).toHaveBeenCalledTimes(1);
+    expect(text()).not.toContain('Active AI model updated');
+
+    await advancePolls(POLL_MS); // new model -> converge
+    expect(mock.active).toHaveBeenCalledTimes(2);
+    expect(text()).toContain('Groq · groq/new');
+    expect(text()).toContain('Active AI model updated');
+    expect(text()).not.toContain('Refresh');
+    expect(text()).not.toContain('Reopen');
+    expect(mock.restore).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('leaves an honest, non-hand-back status when a deferred choice never settles', async () => {
+  vi.useFakeTimers();
+  try {
+    await changeProvider('groq');
+    mock.active.mockClear();
+    // Always report the old binding: the backend never promotes the choice.
+    mock.active.mockResolvedValue(active());
+    await settle(() => view.root.findByType(ActiveCloudSetup)
+      .props.onVerified('groq/new', true));
+    expect(mock.active).not.toHaveBeenCalled();
+
+    for (let i = 0; i < 6; i++) await advancePolls(POLL_MS); // each tick schedules the next after its async read
+    expect(mock.active).toHaveBeenCalledTimes(6);
+    expect(text()).toContain('the active model line will update when it settles');
+    expect(text()).toContain('OpenRouter · unit/model:free'); // old model still shown
+    expect(text()).not.toContain('Active AI model updated');
+    expect(text()).not.toContain('Refresh');
+    expect(text()).not.toContain('Reopen');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('explains a credential-blocked deferred choice instead of repeating the promise', async () => {
+  vi.useFakeTimers();
+  try {
+    await changeProvider('groq');
+    mock.active.mockClear();
+    // Backend reports a structurally valid but no-longer-current binding.
+    mock.active.mockResolvedValue({
+      ...active(), pending_activation: 'blocked_credential',
+    });
+    await settle(() => view.root.findByType(ActiveCloudSetup)
+      .props.onVerified('groq/new', true));
+    expect(mock.active).not.toHaveBeenCalled();
+
+    for (let i = 0; i < 6; i++) await advancePolls(POLL_MS);
+    expect(text()).toContain('provider key changed');
+    expect(text()).toContain('previous model active');
+    expect(text()).not.toContain('will activate automatically');
+    expect(text()).not.toContain('Refresh');
+    expect(text()).not.toContain('Reopen');
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it('does not silently default to Ollama when active selection is invalid', async () => {

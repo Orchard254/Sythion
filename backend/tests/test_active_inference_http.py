@@ -471,3 +471,71 @@ def test_registry_and_self_model_expose_authoritative_active_binding(
     assert models["active_model_id"] == "unit/model:free"
     # Legacy local-provider fields are still present.
     assert "provider_id" in models and "selected_model" in models
+
+
+# --- All model-reporting surfaces report one consistent active binding ------
+
+
+def _assert_all_surfaces_agree(test_client, provider_id, expected_model_id):
+    """Every authoritative active_* reporter must match /inference/active."""
+    active = test_client.get(ENDPOINT)
+    assert active.status_code == 200, active.text
+    assert active.json()["provider_id"] == provider_id
+    assert active.json()["model_id"] == expected_model_id
+
+    health = test_client.get("/api/v1/health")
+    assert health.status_code == 200, health.text
+    registry = test_client.get("/api/v1/models/registry")
+    assert registry.status_code == 200, registry.text
+    self_model = test_client.get("/api/v1/agent/self-model")
+    assert self_model.status_code == 200, self_model.text
+
+    assert health.json()["active_provider_id"] == provider_id
+    assert registry.json()["active_provider_id"] == provider_id
+    assert self_model.json()["models"]["active_provider_id"] == provider_id
+    assert health.json()["active_model_id"] == expected_model_id
+    assert registry.json()["active_model_id"] == expected_model_id
+    assert (
+        self_model.json()["models"]["active_model_id"] == expected_model_id
+    )
+
+
+def test_all_surfaces_agree_on_default_ollama_binding(test_client, test_db, isolated):
+    """The default Ollama sentinel resolves to the selected local model
+    everywhere: /inference/active, /health, /models/registry and self-model."""
+    local_model = "unit/local-ollama:7b"
+    profile.set_selected_model(local_model)
+
+    _assert_all_surfaces_agree(test_client, "ollama-cloud", local_model)
+
+
+def test_all_surfaces_agree_on_cloud_binding(test_client, test_db, isolated):
+    """A bound cloud selection carries its own exact model ID everywhere."""
+    prepare(test_db)
+    assert test_client.post(ENDPOINT, json=BODY).status_code == 200
+
+    _assert_all_surfaces_agree(test_client, "openrouter", "unit/model:free")
+
+
+def test_all_surfaces_fail_closed_on_damaged_binding(test_client, test_db, isolated):
+    """A rotated/damaged binding yields 'unavailable'/'' on every reporting
+    surface, never a guessed local model, including after the sentinel fix.
+    /inference/active keeps its own unchanged 409 fail-closed contract."""
+    prepare(test_db)
+    assert test_client.post(ENDPOINT, json=BODY).status_code == 200
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "rotated-key")
+
+    assert test_client.get(ENDPOINT).status_code == 409
+    health = test_client.get("/api/v1/health")
+    assert health.status_code == 200, health.text
+    registry = test_client.get("/api/v1/models/registry")
+    assert registry.status_code == 200, registry.text
+    self_model = test_client.get("/api/v1/agent/self-model")
+    assert self_model.status_code == 200, self_model.text
+
+    assert health.json()["active_provider_id"] == "unavailable"
+    assert registry.json()["active_provider_id"] == "unavailable"
+    assert self_model.json()["models"]["active_provider_id"] == "unavailable"
+    assert health.json()["active_model_id"] == ""
+    assert registry.json()["active_model_id"] == ""
+    assert self_model.json()["models"]["active_model_id"] == ""

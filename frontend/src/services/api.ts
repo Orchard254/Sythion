@@ -831,7 +831,11 @@ export const activeInferenceService = {
     });
     return response.data;
   },
-  status: async (): Promise<{ provider_id: string; model_id: string; permissions_unchanged: true }> => {
+  status: async (): Promise<{
+    provider_id: string; model_id: string; permissions_unchanged: true;
+    /** Present only while a verified choice is queued; explains a pending switch. */
+    pending_activation?: 'ready' | 'blocked_in_flight' | 'blocked_credential' | 'damaged';
+  }> => {
     const response = await apiClient.get('/inference/active');
     return response.data;
   },

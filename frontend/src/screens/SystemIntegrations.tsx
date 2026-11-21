@@ -292,11 +292,16 @@ export function SystemScreen() {
                 <div className="list">
                   {(models.data ?? []).map((m, i) => {
                     const id = String(m.id ?? m.model ?? m.name ?? `model-${i}`);
-                    const selected = health.data?.active_model_id === id ||
-                      health.data?.selected_model === id || settings.data?.selected_model === id;
+                    // /health is authoritative for the active reasoning binding.
+                    // The registry's active_* fields (when present) are redundant
+                    // with /health and are intentionally not consumed here — see
+                    // api.modelService.registry(), which returns only registry rows.
+                    const active = health.data?.active_model_id === id;
+                    const local = !active &&
+                      (health.data?.selected_model === id || settings.data?.selected_model === id);
                     return (
                       <div className="list__row" key={id}>
-                        <Rail tone={selected ? 'accent' : 'idle'} />
+                        <Rail tone={active ? 'accent' : 'idle'} />
                         <div className="list__main">
                           <span className="t-mono t-title" style={{ fontSize: 12 }}>
                             {id}
@@ -304,7 +309,16 @@ export function SystemScreen() {
                           <span className="list__meta">
                             {m.role !== undefined && <span>role: {String(m.role)}</span>}
                             {m.provider !== undefined && <span>· {String(m.provider)}</span>}
-                            {selected && <Badge tone="accent">selected</Badge>}
+                            {local && (
+                              <Badge tone="plain" title="Configured local model — not the active AI model">
+                                local
+                              </Badge>
+                            )}
+                            {active && (
+                              <Badge tone="accent" title="Active AI model reported by /health">
+                                selected
+                              </Badge>
+                            )}
                           </span>
                         </div>
                       </div>
@@ -314,6 +328,7 @@ export function SystemScreen() {
               )}
               <div className="panel__foot">
                 <span className="t-faint">
+                  “selected” marks the active AI model from /health; “local” marks the configured local model.
                   Registry reports intent and verification only — no cost accounting endpoint exists.
                 </span>
               </div>

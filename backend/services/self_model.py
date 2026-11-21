@@ -106,6 +106,12 @@ def build_self_model(db_session, tool_executor=None) -> Dict[str, Any]:
         _active = get_active_inference_selection()
         _active_provider_id = _active.provider_id
         _active_model_id = _active.model_id
+        if _active.provider_id == "ollama-cloud" and not _active_model_id:
+            # Same sentinel resolution as GET /inference/active and /health:
+            # the default Ollama binding has no model ID of its own, so the
+            # selected local model is the single source of truth for it.
+            from backend.core.config import resolve_selected_model
+            _active_model_id = resolve_selected_model() or ""
     except ActiveInferenceUnavailable:
         _active_provider_id = "unavailable"
         _active_model_id = ""

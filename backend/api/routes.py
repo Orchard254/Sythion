@@ -4099,6 +4099,13 @@ async def model_registry_listing(probe: bool = False, db: Session = Depends(get_
     # The record fields below describe the LOCAL/DEFAULT provider's catalog.
     # Expose the authoritative active reasoning binding separately so consumers
     # never mistake a default-provider `selected` flag for the active model.
+    #
+    # KEEP these active_* fields: they are part of the tested backend contract
+    # (test_registry_and_self_model_expose_authoritative_active_binding) and the
+    # cross-surface guarantee that /health, /models/registry and /agent/self-model
+    # report one consistent active binding. The current frontend's modelService
+    # only projects `models` and does not read them, but they remain a deliberate,
+    # consistent reporting surface rather than half-wired output.
     from backend.runtime.active_inference import (
         get_active_inference_selection, ActiveInferenceUnavailable,
     )
@@ -4106,6 +4113,12 @@ async def model_registry_listing(probe: bool = False, db: Session = Depends(get_
         _active = get_active_inference_selection()
         _active_provider_id = _active.provider_id
         _active_model_id = _active.model_id
+        if _active.provider_id == "ollama-cloud" and not _active_model_id:
+            # Same sentinel resolution as GET /inference/active and /health:
+            # the default Ollama binding has no model ID of its own, so the
+            # selected local model is the single source of truth for it.
+            from backend.core.config import resolve_selected_model
+            _active_model_id = resolve_selected_model() or ""
     except ActiveInferenceUnavailable:
         _active_provider_id = "unavailable"
         _active_model_id = ""
@@ -4926,10 +4939,11 @@ def _require_idle_provider_switch(db: Session) -> None:
 
 
 @router.get("/inference/active")
-async def get_active_inference_selection():
+async def get_active_inference_selection(db: Session = Depends(get_db)):
     """Report actual reasoning provider; never expose credentials or signatures."""
     from backend.runtime.active_inference import (
-        get_active_inference_selection, ActiveInferenceUnavailable,
+        get_active_inference_selection, pending_activation_status,
+        ActiveInferenceUnavailable,
     )
     try:
         selected = get_active_inference_selection()
@@ -4945,11 +4959,18 @@ async def get_active_inference_selection():
         model_id = resolve_selected_model()
     else:
         model_id = selected.model_id
-    return {
+    result = {
         "provider_id": selected.provider_id,
         "model_id": model_id,
         "permissions_unchanged": True,
     }
+    # Only present while a verified choice is queued: lets the UI explain why a
+    # "will activate automatically" choice has not landed (fail-closed states
+    # such as a rotated credential), instead of silently misleading the owner.
+    pending = pending_activation_status(db)
+    if pending != "none":
+        result["pending_activation"] = pending
+    return result
 
 
 @router.post("/inference/active")

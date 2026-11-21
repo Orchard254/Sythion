@@ -17,6 +17,13 @@ const PROVIDERS: Record<AIProvider, string> = {
 };
 const isSupported = (value: string): value is AIProvider => value in PROVIDERS;
 
+/** A deferred ("pending") activation leaves the OLD model active until
+ * in-flight work settles. Poll a bounded number of times so the "Active model"
+ * line and the notice reflect the real backend state once the switch lands,
+ * without ever asking the owner to refresh or reopen anything. */
+const CONFIRM_POLL_INTERVAL_MS = 2500;
+const CONFIRM_POLL_MAX_ATTEMPTS = 6; // ~15s total, first read at ~2.5s
+
 /** The known-good, tool-capable model with no reasoning-token burn. The quick
  * path verifies it through ActiveCloudSetup's existing proof sequence. */
 const RECOMMENDED_PROVIDER: AIProvider = 'nvidia';
@@ -38,10 +45,26 @@ export function AIModelsSettings() {
   const [message, setMessage] = useState('');
   const mounted = useRef(false);
   const inFlight = useRef(false);
+  const pollGeneration = useRef(0);
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** Invalidate any in-flight confirmation poll. Bumping the generation makes
+   * an already-running poll's async result a no-op; clearing the timer stops a
+   * not-yet-fired one. Used on unmount and on provider changes. */
+  const stopPolling = () => {
+    pollGeneration.current += 1;
+    if (pollTimer.current !== null) {
+      clearTimeout(pollTimer.current);
+      pollTimer.current = null;
+    }
+  };
 
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; };
+    return () => {
+      mounted.current = false;
+      stopPolling();
+    };
   }, []);
 
   useEffect(() => {
@@ -77,6 +100,7 @@ export function AIModelsSettings() {
 
   const chooseProvider = (next: AIProvider) => {
     if (inFlight.current || loading) return;
+    stopPolling(); // a provider change must not let a stale poll overwrite the UI
     setProvider(next);
     setError(''); setMessage('');
     setKeyEditor(false);
@@ -84,15 +108,67 @@ export function AIModelsSettings() {
     setQuickDone(false);
   };
 
+  /** Confirm a previously deferred choice. The FIRST read is deliberately
+   * delayed (via setTimeout), so at pending time we do NOT re-check status —
+   * the old model is still legitimately active. A bounded poll then watches
+   * until the backend reports the chosen provider/model and we can honestly
+   * update the "Active model" line, or until attempts run out (honest fallback). */
+  const confirmDeferredActivation = (forProvider: AIProvider, modelId: string) => {
+    const generation = pollGeneration.current;
+    let attempts = 0;
+    const tick = () => {
+      if (!mounted.current || generation !== pollGeneration.current) return;
+      void (async () => {
+        let matched = false;
+        let lastPending: string | undefined;
+        try {
+          const current = await activeInferenceService.status();
+          if (!mounted.current || generation !== pollGeneration.current) return;
+          lastPending = current.pending_activation;
+          if (current.provider_id === forProvider && current.model_id === modelId) {
+            setActive({
+              provider_id: current.provider_id,
+              model_id: current.model_id,
+              permissions_unchanged: true,
+            });
+            setMessage('Active AI model updated. Sythion keeps its existing assistant and permissions.');
+            matched = true;
+          }
+        } catch {
+          // A transient status failure is not a confirmation; keep polling.
+        }
+        if (matched || !mounted.current || generation !== pollGeneration.current) return;
+        attempts += 1;
+        if (attempts >= CONFIRM_POLL_MAX_ATTEMPTS) {
+          // Never claim success that did not happen, and never hand work back
+          // with a refresh/reopen instruction. The backend now tells us WHY a
+          // verified choice has not landed — surface the honest, actionable
+          // state instead of a vague promise that never resolves.
+          if (lastPending === 'blocked_credential') {
+            setMessage('The verified model is ready, but its provider key changed, so Sythion kept your previous model active. Reconnect the key or select the model again to finish the switch.');
+          } else if (lastPending === 'damaged') {
+            setMessage('Sythion could not finish this model switch, so your previous model is still active. Select the model again to retry.');
+          } else {
+            setMessage('Sythion selected the model; the active model line will update when it settles. Existing permissions are unchanged.');
+          }
+          return;
+        }
+        pollTimer.current = setTimeout(tick, CONFIRM_POLL_INTERVAL_MS);
+      })();
+    };
+    pollTimer.current = setTimeout(tick, CONFIRM_POLL_INTERVAL_MS);
+  };
+
   const applyVerified = (forProvider: AIProvider, modelId: string, pending?: boolean) => {
     setError('');
     if (pending) {
       // The backend queued this verified choice because in-flight work still
       // holds the old provider binding. It will apply automatically when work
-      // settles. Do NOT re-check status now — it legitimately still reports the
-      // old model, and telling the owner to refresh would hand work back to
-      // them. The "Active model" line stays honest until the switch lands.
+      // settles. Do NOT re-check status synchronously — it legitimately still
+      // reports the old model, and telling the owner to refresh would hand work
+      // back to them. A bounded poll confirms the switch once it lands.
       setMessage('Model selected. It will activate automatically when current work finishes. Existing permissions are unchanged.');
+      confirmDeferredActivation(forProvider, modelId);
       return;
     }
     // ActiveCloudSetup validates the activate() response against the chosen
@@ -118,6 +194,7 @@ export function AIModelsSettings() {
 
   const startRecommended = () => {
     if (loading || quick) return; // a second click must not clear the result notice
+    stopPolling(); // a provider change must not let a stale poll overwrite the UI
     // Switch to the provider the recommendation actually uses before any
     // proof runs: the dropdown and the active-model line stay honest, and we
     // never verify one provider while claiming another.

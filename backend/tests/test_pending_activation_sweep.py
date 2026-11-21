@@ -5,6 +5,7 @@ the profile lives under a temporary LOCALAPPDATA. The sweep only ever mutates
 local backend state and never dispatches a task or sends an inference request.
 """
 import asyncio
+import threading
 
 import pytest
 
@@ -241,3 +242,180 @@ async def test_terminal_transition_still_applies_pending_activation(
         task.id, TaskState.COMPLETED, "task.execution_completed", {},
     )
     assert test_client.get(ENDPOINT).json() == {**BODY, "permissions_unchanged": True}
+
+
+# --- (a) Queue writes share the apply lock; a queue cannot land in the apply
+#         read -> validate -> clear window and be silently overwritten. --------
+
+
+def _pending_write_kind(patch):
+    """Which pending record a profile.save_profile patch would write, if any."""
+    if isinstance(patch, dict):
+        if isinstance(patch.get(ai._PENDING_ACTIVATION_KEY), dict):
+            return "cloud"
+        if isinstance(patch.get(ai._PENDING_OLLAMA_KEY), dict):
+            return "ollama"
+    return None
+
+
+@pytest.mark.parametrize("kind", ["cloud", "ollama"])
+def test_queue_write_is_serialized_with_apply_lock(kind, isolated, monkeypatch):
+    """A queue cannot write pending state while an apply holds the lock.
+
+    This is the exact window that used to lose the newest owner choice: apply
+    reads pending, then (holding the lock) validates/checks/clears it. A queue
+    landing there must wait for the lock so it lands AFTER the clear and
+    survives for the next sweep instead of being silently overwritten.
+    """
+    started = threading.Event()
+    wrote = threading.Event()
+    errors = []
+    original_save = profile.save_profile
+
+    def guarded_save(patch, *a, **kw):
+        if _pending_write_kind(patch) == kind:
+            wrote.set()
+        return original_save(patch, *a, **kw)
+
+    monkeypatch.setattr(profile, "save_profile", guarded_save)
+
+    if kind == "cloud":
+        # Bypass evidence checks; only the serialized write is under test.
+        binding = {
+            "version": 1,
+            "provider_id": "openrouter",
+            "model_id": "unit/model:free",
+            "nonce": "a" * 32,
+            "mac": ai._active_mac(
+                "openrouter", "unit/model:free", "a" * 32, "synthetic-key-not-real",
+            ),
+        }
+        monkeypatch.setattr(ai, "_build_verified_binding", lambda *a, **kw: dict(binding))
+
+    def run():
+        try:
+            started.set()
+            if kind == "cloud":
+                ai.queue_pending_activation(None, "openrouter", "unit/model:free")
+            else:
+                ai.queue_pending_ollama_activation(
+                    None, model_id="gemma4:31b", kind="restore",
+                )
+        except BaseException as exc:  # surface thread failures in the assertion
+            errors.append(exc)
+
+    with ai._PENDING_APPLY_LOCK:
+        thread = threading.Thread(target=run, name="queue-%s" % kind)
+        thread.start()
+        assert started.wait(5), "queue thread never started"
+        assert not wrote.wait(0.2), (
+            "queue wrote pending state while the apply lock was held"
+        )
+    assert wrote.wait(5), "queue never wrote after the lock was released"
+    thread.join(5)
+    assert not thread.is_alive()
+    assert not errors, errors
+
+    state = profile.load_profile()
+    if kind == "cloud":
+        assert state[ai._PENDING_ACTIVATION_KEY]["nonce"] == "a" * 32
+    else:
+        assert state[ai._PENDING_OLLAMA_KEY]["model_id"] == "gemma4:31b"
+
+
+def test_apply_holds_lock_during_its_pending_clear(isolated, monkeypatch):
+    """The apply side writes its pending clear while holding the same lock."""
+    held = []
+    original_save = profile.save_profile
+
+    def guarded_save(patch, *a, **kw):
+        if ("active_inference_selection" in patch
+                and ai._PENDING_ACTIVATION_KEY in patch):
+            held.append(ai._PENDING_APPLY_LOCK._is_owned())
+        return original_save(patch, *a, **kw)
+
+    monkeypatch.setattr(profile, "save_profile", guarded_save)
+    profile.save_profile({
+        ai._PENDING_ACTIVATION_KEY: {
+            "version": 1, "provider_id": "openrouter", "model_id": "unit/model:free",
+            "nonce": "a" * 32,
+            "mac": ai._active_mac(
+                "openrouter", "unit/model:free", "a" * 32, "synthetic-key-not-real",
+            ),
+        },
+    })
+    # A fake DB that reports no blocking task; the binding is valid against the
+    # synthetic key stored below, so the apply path reaches its clear write.
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "synthetic-key-not-real")
+
+    class _IdleDb:
+        def query(self, *a, **kw):
+            class _Q:
+                def filter(self, *a, **kw):
+                    return self
+
+                def first(self):
+                    return None
+            return _Q()
+
+    assert ai.sweep_pending_activation(_IdleDb()) is True
+    assert held and all(held), "apply cleared pending without holding the lock"
+
+
+# --- (b) Credential rotation is observable and fails closed. -----------------
+
+
+def test_rotated_credential_is_reported_blocked_not_applied(
+    test_client, test_db, isolated,
+):
+    prepare(test_db)
+    ai.queue_pending_activation(test_db, BODY["provider_id"], BODY["model_id"])
+    assert ai.pending_activation_status(test_db) == "ready"
+    record_before = profile.load_profile()[ai._PENDING_ACTIVATION_KEY]
+
+    # The credential rotates between the queue and the apply.
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "rotated-key")
+    assert ai.pending_activation_status(test_db) == "blocked_credential"
+
+    # Both apply triggers fail closed and keep the verified choice intact.
+    assert ai.maybe_apply_pending_activation(test_db) is False
+    assert ai.sweep_pending_activation(test_db) is False
+    assert test_client.get(ENDPOINT).json()["provider_id"] == "ollama-cloud"
+    assert profile.load_profile()[ai._PENDING_ACTIVATION_KEY] == record_before
+
+    # Restoring the original key makes the SAME choice promotable again: it was
+    # neither applied against the wrong key nor silently cleared.
+    secrets.set_secret(secrets.OPENROUTER_API_KEY, "synthetic-key-not-real")
+    assert ai.pending_activation_status(test_db) == "ready"
+    assert ai.sweep_pending_activation(test_db) is True
+    assert test_client.get(ENDPOINT).json() == {**BODY, "permissions_unchanged": True}
+
+
+def test_pending_activation_status_states(test_client, test_db, isolated):
+    assert ai.pending_activation_status(test_db) == "none"
+    assert ai.pending_activation_status() == "none"
+
+    ai.queue_pending_ollama_activation(None, model_id="gemma4:31b", kind="restore")
+    assert ai.pending_activation_status(test_db) == "ready"
+    # Ollama has no credential binding; no MAC or secret is ever surfaced.
+    assert ai.pending_activation_status(test_db) in ai.PENDING_ACTIVATION_STATES
+
+    # A structurally malformed cloud record is damage, not a credential block.
+    profile.save_profile({
+        ai._PENDING_ACTIVATION_KEY: {"version": 1, "mac": "0" * 64},
+    })
+    assert ai.pending_activation_status(test_db) == "damaged"
+
+
+@pytest.mark.parametrize(
+    "state,expected",
+    [("running", "blocked_in_flight"), ("created", "ready")],
+)
+def test_status_uses_sweep_running_only_rule(
+    test_client, test_db, isolated, state, expected,
+):
+    """A RUNNING task blocks; a CREATED one does not (the sweep can promote)."""
+    prepare(test_db)
+    _task(test_db, "t", state)
+    assert test_client.post(ENDPOINT, json=BODY).json()["pending"] is True
+    assert ai.pending_activation_status(test_db) == expected
