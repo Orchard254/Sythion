@@ -5,6 +5,11 @@ import pytest
 from backend.services.conversation_turn_engine import ConversationTurnEngine, ConversationTurnValidationError
 
 
+def _reply(result) -> str:
+    """Answers and runtime notices use separate response channels now."""
+    return f"{getattr(result, 'assistant_text', '')} {getattr(result, 'status_text', '')}".strip()
+
+
 def _empty_discovery(complete):
     payload = {
         "session_id": "empty-session",
@@ -54,10 +59,10 @@ async def test_empty_session_first_normal_reply():
         "Hello", discussion_discovery=_empty_discovery(True)
     )
     assert result.commands == []
-    assert result.assistant_text.startswith(
+    assert _reply(result).startswith(
         "No indexed earlier discussions were found."
     )
-    assert "Hello there." in result.assistant_text
+    assert "Hello there." in _reply(result)
     assert len(model.calls) == 1
     assert "empty commands array" in model.calls[0][-1]["content"]
 
@@ -101,7 +106,7 @@ async def test_empty_session_malformed_output_is_not_retried():
     result = await engine.run_turn("Hello", discussion_discovery=_empty_discovery(True))
     assert result.commands == []
     assert len(model.calls) == 1
-    assert "not json" in result.assistant_text
+    assert "not json" in _reply(result)
 
 
 @pytest.mark.asyncio
@@ -113,7 +118,7 @@ async def test_empty_session_prose_output_is_relaxed_without_retry():
     result = await engine.run_turn("Hello", discussion_discovery=_empty_discovery(True))
     assert result.commands == []
     assert len(model.calls) == 1
-    assert "That is a nice story." in result.assistant_text
+    assert "That is a nice story." in _reply(result)
 
 
 @pytest.mark.asyncio
@@ -126,4 +131,4 @@ async def test_strict_default_unchanged():
     assert result.commands == []
     assert not model.calls
     assert engine.call_count == 0
-    assert "verified discussion discovery" in result.assistant_text.lower()
+    assert "verified discussion discovery" in _reply(result).lower()

@@ -32,10 +32,14 @@ export function SetupScreen({ onComplete }: SetupProps) {
   const [replyMode, setReplyMode] = useState<'text' | 'voice'>(() => localStorage.getItem('sythion.replyMode') === 'text' ? 'text' : 'voice');
   const [ttsVerified, setTtsVerified] = useState(false);
   const [voiceVerified, setVoiceVerified] = useState(false);
+  const [finishFailed, setFinishFailed] = useState(false);
   const voiceCapture = useVoiceCapture();
 
   const mounted = useRef(true);
   const wakePendingSleep = useRef<(() => void) | null>(null);
+  const speechSetupStarted = useRef(false);
+  const autoFinishStarted = useRef(false);
+  const connectAutoAdvanceDone = useRef(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -114,12 +118,13 @@ export function SetupScreen({ onComplete }: SetupProps) {
     return () => { cancelled = true; };
   }, []);
 
-  const run = async (action: () => Promise<void>, failureHint?: string) => {
+  const run = async (action: () => Promise<void>, failureHint?: string, onFailure?: () => void) => {
     setError(null); setMessage(null); setBusy(true);
     try { await action(); }
     catch (e) {
       if (!mounted.current) return;
       setError(failureHint || (e instanceof Error ? e.message : 'That step did not finish. Your setup is unchanged.'));
+      onFailure?.();
     }
     finally { if (mounted.current) setBusy(false); }
   };
@@ -144,22 +149,97 @@ export function SetupScreen({ onComplete }: SetupProps) {
     }
   });
 
-  const finish = () => run(async () => {
-    // Recheck the backend on entry; UI state and old local preferences cannot
-    // establish that credentials or inference still work. Transitive failures
-    // are checked internally rather than sending the owner back a step.
-    const report = await confirmReadiness(canStartChat);
-    if (!report || !canStartChat(report)) {
-      throw new Error('Sythion could not confirm the connection is ready yet. Your setup is unchanged.');
+  /** Local, non-billable speaker check. Returns the truth; never claims success
+   * when playback is unavailable. */
+  const verifySpeaker = useCallback(async (): Promise<boolean> => {
+    const result = await voiceService.speak('Hello, I’m Synth. I’m ready to help.');
+    if (!mounted.current) return false;
+    if (!result.success) {
+      setTtsVerified(false);
+      return false;
     }
-    if (replyMode === 'voice' && (!ttsVerified || !report.checks.tts_voice_ok)) {
-      throw new Error('Test the speaker first, or choose text replies.');
+    setTtsVerified(true);
+    return true;
+  }, []);
+
+  // Voice is an explicit owner choice. Once it is chosen, run the local speaker
+  // check and the pinned, SHA-256-verified STT asset install automatically —
+  // no manual "Test speaker" or "Install speech recognition" click. This stays
+  // tied to the owner's voice choice (never a startup download). On failure,
+  // stay honest: text still works and nothing is faked as installed.
+  useEffect(() => {
+    if (replyMode !== 'voice' || speechSetupStarted.current) return;
+    speechSetupStarted.current = true;
+    void (async () => {
+      setError(null); setMessage(null); setBusy(true);
+      try {
+        const speakerOk = await verifySpeaker();
+        if (!mounted.current) return;
+        if (!speakerOk) {
+          setError('Speaker playback is unavailable. Check your audio output or choose text replies.');
+          return;
+        }
+        setMessage('Speaker is ready. Installing speech recognition…');
+        try {
+          await voiceService.installAssets();
+          if (!mounted.current) return;
+          await refresh();
+          if (!mounted.current) return;
+          setMessage('Speaker and speech recognition are ready.');
+        } catch {
+          if (!mounted.current) return;
+          // STT assets are optional; voice input is unavailable but backend
+          // readiness is re-read so it is never fabricated as installed.
+          setMessage('Speaker is ready, but speech recognition is unavailable. You can type instead.');
+        }
+      } catch {
+        if (!mounted.current) return;
+        setError('Speaker test did not finish. You can use text replies.');
+      } finally {
+        if (mounted.current) setBusy(false);
+      }
+    })();
+  }, [replyMode, refresh, verifySpeaker]);
+
+  const finish = () => {
+    setFinishFailed(false);
+    return run(async () => {
+      // Recheck the backend on entry; UI state and old local preferences cannot
+      // establish that credentials or inference still work. Transitive failures
+      // are checked internally rather than sending the owner back a step.
+      const report = await confirmReadiness(canStartChat);
+      if (!report || !canStartChat(report)) {
+        throw new Error('Sythion could not confirm the connection is ready yet. Your setup is unchanged.');
+      }
+      if (replyMode === 'voice') {
+        // The backend tts_voice_ok flag is the real gate. Also re-run the local,
+        // non-billable check so a failed speaker test is never reported as ready.
+        const speakerOk = ttsVerified || await verifySpeaker();
+        if (!speakerOk || !report.checks.tts_voice_ok) {
+          throw new Error('Speaker playback is unavailable, or spoken replies are not ready. Choose text replies.');
+        }
+      }
+      localStorage.setItem('sythion.replyMode', replyMode);
+      useAppStore.getState().setTranscriptDraft('');
+      useAppStore.getState().setVoiceEnabled(false);
+      onComplete(replyMode === 'text');
+    }, undefined, () => setFinishFailed(true));
+  };
+
+  // Final step: auto-transition into chat once readiness passes. The internal
+  // confirmReadiness(canStartChat) re-check above still gates the transition;
+  // no "Start conversation" confirmation click is required.
+  useEffect(() => {
+    if (step !== 3) {
+      autoFinishStarted.current = false;
+      return;
     }
-    localStorage.setItem('sythion.replyMode', replyMode);
-    useAppStore.getState().setTranscriptDraft('');
-    useAppStore.getState().setVoiceEnabled(false);
-    onComplete(replyMode === 'text');
-  });
+    if (loading || autoFinishStarted.current) return;
+    autoFinishStarted.current = true;
+    void finish();
+    // finish is re-created each render; the ref keeps this to one run per entry.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, loading]);
 
   const modelReady = canUseModel(readiness);
   const selectedModelReady = modelReady && selectedModel === readiness?.selected_model &&
@@ -203,7 +283,11 @@ export function SetupScreen({ onComplete }: SetupProps) {
                 </select>
                 <p className="t-muted">Choose who provides the reasoning model. You will still use the same Sythion assistant. Your key is saved in this computer's secure credential store.</p>
                 <ActiveCloudSetup provider={provider} phase="connect"
-                  onConnected={() => { setError(null); setMessage(null); setStep(1); }} />
+                  autoAdvance={!connectAutoAdvanceDone.current}
+                  onConnected={() => {
+                    connectAutoAdvanceDone.current = true;
+                    setError(null); setMessage(null); setStep(1);
+                  }} />
               </div>
             </Panel>}
             {step === 1 && <Panel title="2. Choose a model" icon="info">
@@ -238,27 +322,25 @@ export function SetupScreen({ onComplete }: SetupProps) {
                   <label className="row" style={{ gap: 8, marginTop: 12 }}><input type="radio" name="reply-mode" checked={replyMode === 'voice'} onChange={() => setReplyMode('voice')} />Voice and text — also read new replies aloud</label>
                 </fieldset>
                 <p className="t-muted">Speech runs locally; the microphone opens only when you tap it. Change in Settings → Voice.</p>
-                {replyMode === 'voice' && <Button disabled={busy} onClick={() => void run(async () => {
-                  setTtsVerified(false);
-                  const result = await voiceService.speak('Hello, I’m Synth. I’m ready to help.');
-                  if (!result.success) throw new Error('Speaker playback is unavailable. Check your audio output or continue with text.');
-                  setTtsVerified(true); await refresh(); setMessage('Speaker test completed.');
-                })}>Test speaker</Button>}
+                <p className="t-muted">When you choose voice replies, Sythion checks the speaker and installs speech recognition automatically — no extra step.</p>
                 <details><summary>Optional: use your microphone</summary><div className="stack" style={{ gap: 12, marginTop: 12 }}>
-                  <p className="t-muted">One-time download, optional. Needed only for spoken replies.</p>
-                  <Button disabled={busy} onClick={() => void run(async () => { await voiceService.installAssets(); await refresh(); setMessage('Speech assets checked. You can test your microphone.'); })}>Install speech recognition</Button>
                   <Button disabled={busy || !readiness?.checks.stt_model_installed} onClick={() => void testMicrophone()}>Test microphone</Button>
                   {voiceVerified && <p>Microphone and speech recognition verified.</p>}
                 </div></details>
-                <div className="row" style={{ gap: 8 }}><Button disabled={busy} onClick={() => { setError(null); setMessage(null); setStep(1); }}>Back</Button><Button variant="primary" disabled={busy || (replyMode === 'voice' && !ttsVerified)} onClick={() => { setMessage(null); setStep(3); }}>Continue</Button></div>
+                <div className="row" style={{ gap: 8 }}><Button disabled={busy} onClick={() => { setError(null); setMessage(null); setStep(1); }}>Back</Button><Button variant="primary" disabled={busy} onClick={() => { setMessage(null); setStep(3); }}>Continue</Button></div>
               </div>
             </Panel>}
             {step === 3 && <Panel title="4. Say hello to Synth" icon="check">
               <div className="stack" style={{ gap: 12 }}>
                 <ul>{checks.map(([label, ok]) => <li key={label}>{ok ? '✓' : 'Needs attention:'} {label}</li>)}</ul>
-                <p>Try “Hello Synth, what can you help me with?” Type and press Enter — or tap the microphone and speak.</p>
+                <p role="status">{finishFailed
+                  ? 'Sythion could not confirm the connection yet. Nothing was started.'
+                  : 'Opening your conversation once the connection is confirmed…'}</p>
                 <p className="t-muted">Progress is shown while sending; your message and the answer appear in the conversation{replyMode === 'voice' ? ', and the answer is read aloud.' : '.'}</p>
-                <div className="row" style={{ gap: 8 }}><Button disabled={busy} onClick={() => { setError(null); setStep(2); }}>Back</Button><Button variant="primary" disabled={busy || !canStartChat(readiness)} onClick={() => void finish()}>Start conversation</Button></div>
+                <div className="row" style={{ gap: 8 }}>
+                  <Button disabled={busy} onClick={() => { setError(null); setStep(2); }}>Back</Button>
+                  {finishFailed && <Button variant="primary" disabled={busy} onClick={() => void finish()}>Try again</Button>}
+                </div>
               </div>
             </Panel>}
           </>}

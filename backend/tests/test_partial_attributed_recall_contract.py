@@ -28,6 +28,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 
+def _reply(result) -> str:
+    """Answers and runtime notices use separate response channels now."""
+    return f"{getattr(result, 'assistant_text', '')} {getattr(result, 'status_text', '')}".strip()
+
+
 class FakeModel:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -90,7 +95,7 @@ async def test_default_strict_real_incomplete_discovery_blocks(db_session):
     engine = ConversationTurnEngine(FakeModel([]))
     result = await engine.run_turn("What was Lantern?", discussion_discovery=discovery)
     assert result.commands == []
-    assert "verified discussion discovery" in result.assistant_text.lower()
+    assert "verified discussion discovery" in _reply(result).lower()
     assert engine.call_count == 0
 
 
@@ -112,7 +117,7 @@ async def test_default_strict_real_complete_discovery_answers(db_session):
         discussion_evidence_reader=lambda ids: read_selected_discussion_evidence(db_session, sid, list(ids)),
     )
     result = await engine.run_turn("What was Lantern?", discussion_discovery=discovery)
-    assert result.assistant_text == "Project Lantern answer."
+    assert _reply(result) == "Project Lantern answer."
     assert result.commands == []
     assert engine.call_count == 2
 

@@ -35,6 +35,15 @@ from backend.services.grounded_discussion_event_source_links import (
 )
 
 
+def _reply(result) -> str:
+    """Answers and runtime notices use separate response channels now.
+
+    These tests only care about the human-facing text, so read both channels.
+    Channel separation itself is covered by dedicated tests.
+    """
+    return f"{result.get('assistant_text', '')} {result.get('status_text', '')}".strip()
+
+
 class FakeModel:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -283,7 +292,7 @@ async def test_source_pair_invalid_declaration_fails_closed(value):
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 
@@ -310,7 +319,7 @@ async def test_source_pair_explicit_false_and_absence_remain_legacy_valid():
             discovery_complete=True,
         )
         result = await engine.run_turn("hello", discussion_discovery=discovery)
-        assert result["assistant_text"] == "legacy valid"
+        assert _reply(result) == "legacy valid"
         assert engine.call_count == 2
 
 
@@ -335,7 +344,7 @@ async def test_source_pair_same_source_and_target_rejected():
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 
@@ -386,7 +395,7 @@ async def test_source_pair_event_identity_duplicates_and_bool_ids_rejected():
         )
         result = await engine.run_turn("hello", discussion_discovery=discovery)
         assert result["commands"] == []
-        assert "structurally complete evidence" in result["assistant_text"]
+        assert "structurally complete evidence" in _reply(result)
         assert engine.call_count == 1
 
     # Boolean event IDs are invalid.
@@ -406,7 +415,7 @@ async def test_source_pair_event_identity_duplicates_and_bool_ids_rejected():
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
 
 
 @pytest.mark.asyncio
@@ -431,7 +440,7 @@ async def test_source_pair_foreign_session_and_discussion_rejected():
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 
@@ -469,7 +478,7 @@ async def test_source_pair_missing_invalid_and_truncated_rejected():
         )
         result = await engine.run_turn("hello", discussion_discovery=discovery)
         assert result["commands"] == []
-        assert "structurally complete evidence" in result["assistant_text"]
+        assert "structurally complete evidence" in _reply(result)
         assert engine.call_count == 1
 
 
@@ -494,7 +503,7 @@ async def test_source_pair_invalid_pair_container_rejected():
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 
@@ -520,7 +529,7 @@ async def test_source_pair_count_mismatch_rejected():
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 
@@ -584,7 +593,7 @@ async def test_source_pair_unverified_multi_event_valid_and_two_call():
         discovery_complete=True,
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
-    assert result["assistant_text"] == "attributed two-pair recall"
+    assert _reply(result) == "attributed two-pair recall"
     assert engine.call_count == 2
 
 
@@ -608,7 +617,7 @@ async def test_real_helper_to_evidence_to_engine_valid(db_session):
     assert engine._evidence_is_structurally_sufficient(evidence) is True
     assert evidence.source_pair_readback is True
     assert evidence.source_pair_event_count == 1
-    assert result["assistant_text"] == "real pair recall"
+    assert _reply(result) == "real pair recall"
     assert engine.call_count == 2
 
 
@@ -635,7 +644,7 @@ async def test_real_helper_to_evidence_missing_pair_does_not_stale_answer(db_ses
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert engine._evidence_is_structurally_sufficient(evidence) is False
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 
@@ -663,5 +672,5 @@ async def test_real_helper_unverified_pair_remains_structurally_valid_and_attrib
     assert evidence.source_pair_readback is True
     assert evidence.source_pair_unverified_count >= 1
     assert engine._evidence_is_structurally_sufficient(evidence) is True
-    assert result["assistant_text"] == "attributed unverified source"
+    assert _reply(result) == "attributed unverified source"
     assert engine.call_count == 2

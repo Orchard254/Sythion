@@ -118,7 +118,12 @@ def test_execute_tool_wrapper_accepts_valid_inner_parameters(engine):
     assert params["params"] == {"value": "ok"}
 
 
-def test_direct_visible_tool_call_is_schema_validated(engine):
+def test_direct_unreviewed_tool_call_is_rejected_as_invalid_decision_type(engine):
+    # A direct tool call is only permitted for model-visible tools (exact
+    # reviewed-safe built-ins). This custom probe tool no longer passes that
+    # fail-closed visibility gate, so the call is rejected as an unknown
+    # decision type before argument validation runs. The malformed arguments
+    # are consequently never forwarded to the execution path.
     with pytest.raises(ModelDecisionError) as exc:
         engine._parse_decision(_response("schema_probe_readonly", '{}'))
-    assert _code(exc) == "INVALID_ARGUMENTS"
+    assert _code(exc) == "INVALID_DECISION_TYPE"

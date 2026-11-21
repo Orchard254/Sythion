@@ -55,6 +55,30 @@ export function AssistantScreen() {
   // replaces (or clears) the previous notice.
   const [turnStatusNotice, setTurnStatusNotice] = useState<string | null>(null);
 
+  // Failures already dismissed in Operations are honored here as receipts only.
+  // This screen never creates acknowledgements on its own; until the receipt
+  // list arrives nothing is hidden, so genuine failures stay visible.
+  const [acknowledgedFailures, setAcknowledgedFailures] = useState<Set<string>>(new Set());
+  const loadAcknowledgedFailures = useCallback(async () => {
+    try {
+      // The guard lives inside the try because a partial module mock can throw
+      // on accessing an undeclared export. Degrade to "no receipts loaded" so
+      // genuine failures stay visible.
+      if (typeof taskService?.acknowledgedFailures !== 'function') return;
+      const ids = await taskService.acknowledgedFailures();
+      if (Array.isArray(ids)) setAcknowledgedFailures(new Set(ids));
+    } catch {
+      // A failed receipt load hides nothing: failures remain visible.
+    }
+  }, []);
+  useEffect(() => {
+    void loadAcknowledgedFailures();
+  }, [loadAcknowledgedFailures]);
+  const isAcknowledgedFailure = useCallback(
+    (task: Task) => task.state === 'failed' && acknowledgedFailures.has(task.id),
+    [acknowledgedFailures]
+  );
+
   const queryClient = useQueryClient();
   const [replyMode] = useState<'text' | 'voice'>(() => localStorage.getItem('sythion.replyMode') === 'text' ? 'text' : 'voice');
   const [playbackTaskId, setPlaybackTaskId] = useState<string | null>(null);
@@ -195,12 +219,13 @@ useLayoutEffect(() => {
   }, [conversationAssociatedTaskIds, recoverTasksById]);
 
   // Poll only recovered terminal tasks whose diagnostic repair is still pending.
-  // Terminal completed/cancelled tasks and repaired failures do not need refresh.
+  // Terminal completed/cancelled tasks, repaired failures, and failures the owner
+  // already acknowledged do not need refresh (honor the receipt, never re-raise).
   const pendingDiagnosticTaskIds = useMemo(
     () => recoveredTasks
-      .filter((task) => task.state === 'failed' && !(task.final_result ?? '').includes('Diagnostic:'))
+      .filter((task) => task.state === 'failed' && !isAcknowledgedFailure(task) && !(task.final_result ?? '').includes('Diagnostic:'))
       .map((task) => task.id),
-    [recoveredTasks]
+    [recoveredTasks, isAcknowledgedFailure]
   );
   // Keep the latest pending ids reachable from the polling interval without
   // changing the interval's identity. Serializing the ids gives a stable key so
@@ -240,12 +265,14 @@ useLayoutEffect(() => {
     const seen = new Set(allTasks.map((task) => task.id));
     return [...allTasks, ...recoveredTasks.filter((task) => !seen.has(task.id))];
   }, [allTasks, recoveredTasks]);
-  const threadItems = useMemo(
-    () => [...allTasksWithRecovered, ...Array.from(
+  const threadItems = useMemo(() => {
+    const merged = [...allTasksWithRecovered, ...Array.from(
       new Map([...storedConversations, ...recentResponses].map((item) => [item.id, item])).values()
-    )],
-    [allTasksWithRecovered, storedConversations, recentResponses]
-  );
+    )];
+    // Acknowledged failures are deliberately absent from the thread. Genuine
+    // unacknowledged failures (and all conversation) remain visible.
+    return merged.filter((task) => !isAcknowledgedFailure(task));
+  }, [allTasksWithRecovered, storedConversations, recentResponses, isAcknowledgedFailure]);
 
   const status = useMemo(
     () =>
@@ -325,6 +352,33 @@ useLayoutEffect(() => {
     }
   }, [thread.length, awaitingTasks.length, transcriptDraft]);
 
+  // Auto-fetch the next history page when a sentinel near the top of the scroll
+  // area becomes visible, preserving the scroll position exactly like the manual
+  // "Load older messages" button (kept as the explicit fallback). The near-top
+  // guard prevents a runaway fetch loop; IntersectionObserver is absent in some
+  // environments, in which case only the button is available.
+  const olderMessagesSentinelRef = useRef<HTMLDivElement | null>(null);
+  const autoPagingRef = useRef(false);
+  useEffect(() => {
+    const sentinel = olderMessagesSentinelRef.current;
+    if (!sentinel || typeof IntersectionObserver === 'undefined') return;
+    if (!conversationQuery.hasNextPage || conversationQuery.isFetchingNextPage || autoPagingRef.current) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (autoPagingRef.current) return;
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      const el = scrollRef.current;
+      if (el && typeof el.scrollTop === 'number' && el.scrollTop > 160) return;
+      autoPagingRef.current = true;
+      if (el) olderScroll.current = { height: el.scrollHeight, top: el.scrollTop };
+      void conversationQuery.fetchNextPage().then((result) => {
+        const pages = result.data?.pages;
+        if (result.isFetchNextPageError || (pages && pages[pages.length - 1]?.conversations.length === 0)) olderScroll.current = null;
+      }).finally(() => { autoPagingRef.current = false; });
+    }, { root: scrollRef.current, rootMargin: '160px 0px 0px 0px' });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [conversationQuery.hasNextPage, conversationQuery.isFetchingNextPage, conversationQuery.fetchNextPage]);
+
   const sttReady = voiceSttAvailable ?? assets.data?.stt_installed ?? false;
   const voiceUnavailable = !sttReady;
   const voiceBlocked = !actions.live;
@@ -397,16 +451,21 @@ useLayoutEffect(() => {
   // but we must not present that as something it confirmed.
   const authorizationLabel = authorization.known ? authorization.label : `${authorization.label} (assumed)`;
 
-  const allUnconfirmedSchedulingTasksCompleted =
+  // A scheduling notice is purely presentational: once every associated task
+  // reaches a terminal state, stop claiming scheduling is still unknown. A
+  // failed or cancelled background task resolves the notice just as a completed
+  // one does. This never retries, restarts, or assumes scheduling was established.
+  const allUnconfirmedSchedulingTasksResolved =
     Array.isArray(unconfirmedSchedulingTaskIds) &&
     unconfirmedSchedulingTaskIds.length > 0 &&
     unconfirmedSchedulingTaskIds.every((id) =>
-      allTasks.some((task) => task.id === id && task.state === 'completed')
+      allTasks.some((task) => task.id === id &&
+        ['completed', 'failed', 'cancelled'].includes(task.state))
     );
   const schedulingWarning: string | null =
     Array.isArray(unconfirmedSchedulingTaskIds) &&
     unconfirmedSchedulingTaskIds.length > 0 &&
-    !allUnconfirmedSchedulingTasksCompleted
+    !allUnconfirmedSchedulingTasksResolved
       ? 'Scheduling is unknown: Sythion could not confirm that this work was ' +
         'scheduled. It was not automatically retried, restarted, cancelled, ' +
         'or assumed to be running.'
@@ -479,6 +538,9 @@ useLayoutEffect(() => {
 
         <div className="chat chat--assistant">
               <div className="chat__scroll" ref={scrollRef}>
+                {conversationQuery.hasNextPage && (
+                  <div ref={olderMessagesSentinelRef} data-testid="older-messages-sentinel" className="ac__older-sentinel" aria-hidden="true" style={{ height: 1 }} />
+                )}
                 {conversationQuery.isError && (
                   <div role="status" aria-live="polite">
                     <p>{historyRetryExhausted
@@ -813,6 +875,24 @@ useLayoutEffect(() => {
           task={allTasks.find((task) => task.id === selected.id) ?? selected}
           onClose={() => setSelected(null)}
           onChanged={tasks.refetch}
+          onDismissFailed={() => {
+            const dismissedId = selected.id;
+            void (async () => {
+              try {
+                if (typeof taskService?.acknowledgeFailure === 'function') {
+                  await taskService.acknowledgeFailure(dismissedId);
+                }
+              } catch {
+                notify({ tone: 'danger', title: 'Could not dismiss', body: 'The failure record was preserved.' });
+                return;
+              }
+              // Hide it now, then reconcile with the authoritative receipt list.
+              setAcknowledgedFailures((current) => new Set([...current, dismissedId]));
+              setSelected(null);
+              void tasks.refetch();
+              void loadAcknowledgedFailures();
+            })();
+          }}
         />
       )}
     </div>

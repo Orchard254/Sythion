@@ -5,7 +5,7 @@ import apiClient from '../services/api';
 
 const mock = vi.hoisted(() => {
   const readiness = vi.fn();
-  return { readiness, applySafeSettings: vi.fn(), speak: vi.fn(),
+  return { readiness, applySafeSettings: vi.fn(), speak: vi.fn(), installAssets: vi.fn(),
     cloudStatus: vi.fn(), cloudSaveCredential: vi.fn(), cloudStage: vi.fn(),
     cloudProbe: vi.fn(), cloudChat: vi.fn(), cloudCatalog: vi.fn(),
     cloudContract: vi.fn(), cloudActivate: vi.fn(), cloudRestore: vi.fn() };
@@ -13,7 +13,7 @@ const mock = vi.hoisted(() => {
 vi.mock('../services/api', async (importOriginal) => ({
   ...await importOriginal<typeof import('../services/api')>(),
   setupService: { readiness: mock.readiness, applySafeSettings: mock.applySafeSettings },
-  voiceService: { speak: mock.speak },
+  voiceService: { speak: mock.speak, installAssets: mock.installAssets },
   cloudPreviewService: {
     status: mock.cloudStatus, saveCredential: mock.cloudSaveCredential,
     stage: mock.cloudStage, probe: mock.cloudProbe, chat: mock.cloudChat,
@@ -33,7 +33,7 @@ const complete = vi.fn();
 const cloudMode = vi.fn();
 const labels = (node: { children: unknown[] }): string => node.children.map((c): string => typeof c === 'string' ? c : c && typeof c === 'object' && 'children' in c ? labels(c as {children:unknown[]}) : '').join('');
 const button = (name: string) => view.root.findAllByType('button').find((b) => labels(b) === name)!;
-const settle = async (action: () => void) => { await act(async () => { action(); for (let i=0;i<15;i++) await Promise.resolve(); }); };
+const settle = async (action: () => void) => { await act(async () => { action(); for (let i=0;i<40;i++) await Promise.resolve(); }); };
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -56,6 +56,7 @@ beforeEach(async () => {
   }));
   mock.applySafeSettings.mockImplementation(async () => { checks.safe_settings_ok = true; return { ok: true }; });
   mock.speak.mockResolvedValue({ success: true });
+  mock.installAssets.mockResolvedValue({ stt_model_installed: true });
   mock.cloudStatus.mockResolvedValue({
     active_provider: 'ollama-cloud', staged: {}, tool_probe_verified: false,
     text_probe_verified: false, ready_for_execution: false,
@@ -94,20 +95,41 @@ beforeEach(async () => {
 });
 afterEach(() => { act(() => view.unmount()); apiClient.defaults.adapter = originalAdapter; vi.unstubAllGlobals(); });
 
+async function goToConnect() {
+  if (view.root.findAllByProps({ id: 'setup-provider' }).length === 0) {
+    await settle(() => button('Back').props.onClick());
+  }
+}
+
 async function useConfiguredKey(provider = 'ollama-cloud') {
   if (provider !== 'ollama-cloud') {
+    await goToConnect();
     await settle(() => view.root.findByProps({ id: 'setup-provider' }).props.onChange({
       target: { value: provider },
     }));
+    await settle(() => {});
+    // After deliberately returning to Connect, the saved-key action is shown
+    // again so the provider decision remains a genuine owner action.
+    await settle(() => button('Use configured key').props.onClick());
   }
-  await settle(() => button('Use configured key').props.onClick());
   await settle(() => view.root.findByProps({ id: 'setup-cloud-model' }).props.onChange({
     target: { value: 'unit/model:free' },
   }));
 }
 
+/** Advance from the model step to chat: apply safe settings, then the final
+ * step auto-transitions once readiness passes (no "Start conversation" click). */
+async function finishOnboarding() {
+  await settle(() => button('Continue').props.onClick());
+  await settle(() => button('Continue').props.onClick());
+  await settle(() => {});
+}
+
 describe('setup to first conversation', () => {
   it('uses the same generic provider flow for Ollama Cloud and other providers', async () => {
+    // A saved key auto-advances past Connect; the provider decision is still
+    // reachable via Back and remains a genuine owner action.
+    await goToConnect();
     expect(view.root.findByProps({ id: 'setup-provider' }).props.value).toBe('ollama-cloud');
     expect(labels(view.root)).toContain('OpenRouter');
     expect(labels(view.root)).toContain('NVIDIA NIM');
@@ -140,11 +162,11 @@ describe('setup to first conversation', () => {
       provider_id: 'openrouter', model_id: 'unit/model:free',
     });
     expect(button('Continue').props.disabled).toBe(false);
-    await settle(() => button('Continue').props.onClick());
-    await settle(() => button('Continue').props.onClick());
-    await settle(() => button('Start conversation').props.onClick());
+    await finishOnboarding();
     expect(complete).toHaveBeenCalledWith(true);
     expect(cloudMode).not.toHaveBeenCalled();
+    // The final transition is automatic: there is no manual start button.
+    expect(view.root.findAllByType('button').some((b) => labels(b) === 'Start conversation')).toBe(false);
   });
 
   it('keeps onboarding on model selection and explains a failed tool requirement', async () => {
@@ -158,7 +180,9 @@ describe('setup to first conversation', () => {
   });
 
   it('explains a provider 402 without bypassing model readiness', async () => {
-    mock.cloudContract.mockRejectedValueOnce({
+    // Every bounded 502/503 recheck still fails, so the honest 402 error shows
+    // instead of a transient failure self-healing away.
+    mock.cloudContract.mockRejectedValue({
       message: 'Inference failed: HTTP error 402 (private-provider-trace)',
       response: { status: 502, data: { detail: 'HTTP error 402 (private-provider-trace)' } },
     });
@@ -176,10 +200,12 @@ describe('setup to first conversation', () => {
     await settle(() => button('Continue').props.onClick());
     expect(mock.applySafeSettings).toHaveBeenCalled();
     await settle(() => button('Continue').props.onClick());
-    await settle(() => button('Start conversation').props.onClick());
+    await settle(() => {});
     expect(complete).toHaveBeenCalledWith(true);
     expect(localStorage.setItem).toHaveBeenCalledWith('sythion.replyMode', 'text');
+    // Text mode never runs the local speaker check or installs STT assets.
     expect(mock.speak).not.toHaveBeenCalled();
+    expect(mock.installAssets).not.toHaveBeenCalled();
   });
 
   it('keeps the active model when verification of a different candidate fails', async () => {
@@ -190,7 +216,13 @@ describe('setup to first conversation', () => {
         { id: 'other/model:free', free_variant: true, tools_listed: false },
       ],
     }));
-    await useConfiguredKey();
+    // Auto-advance loaded the model step in beforeEach; re-enter it so the
+    // two-model catalog above is what the picker actually holds.
+    await goToConnect();
+    await settle(() => button('Use configured key').props.onClick());
+    await settle(() => view.root.findByProps({ id: 'setup-cloud-model' }).props.onChange({
+      target: { value: 'unit/model:free' },
+    }));
     mock.cloudContract.mockRejectedValueOnce(new Error('Invalid provider model'));
     await settle(() => view.root.findByProps({ id: 'setup-cloud-model' }).props.onChange({
       target: { value: 'other/model:free' },
@@ -212,34 +244,96 @@ describe('setup to first conversation', () => {
     expect(complete).not.toHaveBeenCalled();
   });
 
-  it('requires successful speaker playback for voice replies and recovers with text', async () => {
+  it('auto-runs the speaker check and STT install when voice is chosen, with no manual buttons', async () => {
     await useConfiguredKey();
     await settle(() => button('Continue').props.onClick());
     await settle(() => view.root.findAllByType('input').find((n) => n.props.type === 'radio' && !n.props.checked)!.props.onChange());
-    expect(button('Continue').props.disabled).toBe(true);
-    mock.speak.mockResolvedValueOnce({ success: false });
-    await settle(() => button('Test speaker').props.onClick());
-    // Legitimate owner-input carve-out: audio output is not a retry loop.
-    expect(labels(view.root)).toContain('Check your audio output');
-    expect(button('Continue').props.disabled).toBe(true);
-    await settle(() => button('Test speaker').props.onClick());
+    expect(mock.speak).toHaveBeenCalledTimes(1);
+    expect(mock.installAssets).toHaveBeenCalledTimes(1);
+    // Neither check is presented as an owner step any more.
+    expect(view.root.findAllByType('button').some((b) => labels(b) === 'Test speaker')).toBe(false);
+    expect(view.root.findAllByType('button').some((b) => labels(b) === 'Install speech recognition')).toBe(false);
+    // The microphone test remains a genuine owner action.
+    expect(view.root.findAllByType('button').some((b) => labels(b) === 'Test microphone')).toBe(true);
     await settle(() => button('Continue').props.onClick());
-    await settle(() => button('Start conversation').props.onClick());
+    await settle(() => {});
     expect(complete).toHaveBeenCalledWith(false);
     expect(localStorage.setItem).toHaveBeenCalledWith('sythion.replyMode', 'voice');
   });
 
-  it('rechecks readiness before entry and preserves setup on inference loss', async () => {
+  it('stays honest when the automatic speaker check fails, then recovers with text', async () => {
     await useConfiguredKey();
     await settle(() => button('Continue').props.onClick());
+    mock.speak.mockResolvedValueOnce({ success: false });
+    await settle(() => view.root.findAllByType('input').find((n) => n.props.type === 'radio' && !n.props.checked)!.props.onChange());
+    // No readiness is fabricated and the speaker failure is stated plainly.
+    expect(labels(view.root)).toContain('Check your audio output');
+    expect(complete).not.toHaveBeenCalled();
+    expect(mock.installAssets).not.toHaveBeenCalled();
+    expect(view.root.findAllByType('button').some((b) => labels(b) === 'Test speaker')).toBe(false);
+    // Switching to text still lets the owner finish.
+    await settle(() => view.root.findAllByType('input').find((n) => n.props.type === 'radio' && !n.props.checked)!.props.onChange());
+    await settle(() => button('Continue').props.onClick());
+    await settle(() => {});
+    expect(complete).toHaveBeenCalledWith(true);
+  });
+
+  it('reports voice input as unavailable when the STT install fails, without faking readiness', async () => {
+    mock.installAssets.mockRejectedValueOnce(new Error('download failed'));
+    await useConfiguredKey();
+    await settle(() => button('Continue').props.onClick());
+    await settle(() => view.root.findAllByType('input').find((n) => n.props.type === 'radio' && !n.props.checked)!.props.onChange());
+    expect(labels(view.root)).toContain('speech recognition is unavailable');
+    expect(labels(view.root)).not.toContain('speech recognition are ready');
+    expect(mock.readiness).toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it('auto-transitions only after readiness passes and preserves setup on inference loss', async () => {
+    await useConfiguredKey();
     await settle(() => button('Continue').props.onClick());
     checks.inference_verified_ok = false;
-    await settle(() => button('Start conversation').props.onClick());
+    await settle(() => button('Continue').props.onClick());
+    await settle(() => {});
     expect(complete).not.toHaveBeenCalled();
-    expect(button('Start conversation').props.disabled).toBe(true);
+    expect(view.root.findAllByType('button').some((b) => labels(b) === 'Start conversation')).toBe(false);
     // A transitive readiness failure must not send the owner back a step.
     expect(labels(view.root)).not.toContain('Go back and test your model again');
     expect(labels(view.root)).not.toContain('test your model again');
+  });
+
+  it('offers a bounded Try again fallback after the auto-transition fails', async () => {
+    await useConfiguredKey();
+    await settle(() => button('Continue').props.onClick());
+    checks.inference_verified_ok = false;
+    vi.useFakeTimers();
+    try {
+      await settle(() => button('Continue').props.onClick());
+      await act(async () => { await vi.advanceTimersByTimeAsync(6_000); });
+      for (let i = 0; i < 20; i += 1) {
+        await act(async () => { await Promise.resolve(); });
+      }
+      expect(complete).not.toHaveBeenCalled();
+      expect(labels(view.root)).toContain('could not confirm the connection is ready');
+      expect(labels(view.root)).toContain('Nothing was started');
+      expect(button('Try again')).toBeTruthy();
+      // No permanent manual start button on the normal path.
+      expect(view.root.findAllByType('button').some((b) => labels(b) === 'Start conversation')).toBe(false);
+
+      checks.inference_verified_ok = true;
+      await settle(() => button('Try again').props.onClick());
+      await settle(() => {});
+      expect(complete).toHaveBeenCalledWith(true);
+      expect(view.root.findAllByType('button').some((b) => labels(b) === 'Try again')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('auto-advances on a saved configured key without a confirmation click', async () => {
+    await useConfiguredKey();
+    expect(view.root.findByProps({ id: 'setup-cloud-model' })).toBeTruthy();
+    expect(view.root.findAllByType('button').some((b) => labels(b) === 'Use configured key')).toBe(false);
   });
 
   it('self-heals a transient readiness failure during initial load', async () => {
@@ -258,7 +352,9 @@ describe('setup to first conversation', () => {
         await act(async () => { await Promise.resolve(); });
       }
       expect(mock.readiness).toHaveBeenCalledTimes(2);
-      expect(view.root.findAllByProps({ id: 'setup-provider' })).toHaveLength(1);
+      // The wizard renders (a saved key may auto-advance past the provider).
+      expect(view.root.findAllByProps({ id: 'setup-provider' }).length +
+        view.root.findAllByProps({ id: 'setup-cloud-model' }).length).toBeGreaterThan(0);
       expect(labels(view.root)).not.toContain('Checking your setup');
     } finally {
       mock.readiness.mockImplementation(defaultReadiness);

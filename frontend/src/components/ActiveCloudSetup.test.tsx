@@ -116,6 +116,19 @@ it('does not claim success when the activated identity does not match the select
 
 it('self-retries a transient key save and does not hand work back to the owner', async () => {
   await settle(() => view.unmount());
+  // No saved key on arrival, so there is nothing to auto-advance on. Only the
+  // post-save status check confirms the credential.
+  mock.status
+    .mockResolvedValueOnce({
+      providers: [{ provider_id: PROVIDER, credential_configured: false }],
+      staged: {}, text_probe_verified: false, tool_probe_verified: false,
+      ready_for_execution: false,
+    })
+    .mockResolvedValue({
+      providers: [{ provider_id: PROVIDER, credential_configured: true }],
+      staged: {}, text_probe_verified: false, tool_probe_verified: false,
+      ready_for_execution: false,
+    });
   mock.saveCredential
     .mockRejectedValueOnce({ response: { status: 503 } })
     .mockRejectedValueOnce({ response: { status: 503 } })
@@ -151,13 +164,58 @@ it('reports a genuine key rejection without retrying or giving a vague retry ins
   expect(text()).not.toContain('Check your account and retry');
 });
 
-it('does not offer a recheck for a quota outcome', async () => {
+it('keeps a manual Check again for a quota outcome instead of auto-retrying it', async () => {
   mock.activate.mockRejectedValueOnce({ response: { status: 429 } });
 
   await chooseModel();
 
+  // Quota is a genuine decision: never auto-retry (could bill quota), but keep
+  // the explicit owner action.
+  expect(mock.activate).toHaveBeenCalledTimes(1);
   expect(text()).toContain('quota or capacity');
+  expect(text()).toContain('Check again');
+});
+
+it('keeps a manual Check again for a credential failure (401)', async () => {
+  mock.activate.mockRejectedValueOnce({ response: { status: 401 } });
+
+  await chooseModel();
+
+  expect(mock.activate).toHaveBeenCalledTimes(1);
+  expect(text()).toContain('Check again');
+});
+
+it('auto-retries a transient 502 with no manual Check again button', async () => {
+  mock.activate
+    .mockRejectedValueOnce({ response: { status: 502, data: { detail: 'bad gateway' } } })
+    .mockResolvedValueOnce({
+      provider_id: PROVIDER, model_id: MODEL_ID, permissions_unchanged: true,
+    });
+
+  await chooseModel();
+  await settle(() => {});
+
+  expect(mock.activate).toHaveBeenCalledTimes(2);
+  expect(onVerified).toHaveBeenCalledWith(MODEL_ID, false);
   expect(text()).not.toContain('Check again');
+  expect(text()).toContain('Model selected for Sythion');
+});
+
+it('auto-retries a transient 503 and stops after the bounded number of attempts', async () => {
+  mock.activate
+    .mockRejectedValueOnce({ response: { status: 503 } })
+    .mockRejectedValueOnce({ response: { status: 503 } })
+    .mockRejectedValueOnce({ response: { status: 503 } });
+
+  await chooseModel();
+  await settle(() => {});
+
+  // 3 total attempts (initial + 2 bounded rechecks), then an honest error —
+  // no manual button is required for a transient non-billable failure.
+  expect(mock.activate).toHaveBeenCalledTimes(3);
+  expect(onVerified).not.toHaveBeenCalled();
+  expect(text()).not.toContain('Check again');
+  expect(view.root.findAllByProps({ tone: 'danger' })).toHaveLength(1);
 });
 
 it('offers a self-healing Check again when a real model decision is required', async () => {
@@ -167,6 +225,37 @@ it('offers a self-healing Check again when a real model decision is required', a
 
   expect(text()).toContain('Check again');
   expect(text()).not.toContain('Retry selected model');
+});
+
+it('shows free models first by default with no filter control to click', async () => {
+  await settle(() => view.unmount());
+  mock.modelCatalog.mockImplementation(async (provider: string) => ({
+    provider_id: provider, ready_for_execution: false, truncated: false,
+    models: [
+      { id: 'paid/model', free_variant: false, tools_listed: true },
+      { id: MODEL_ID, free_variant: true, tools_listed: false },
+    ],
+  }));
+  await settle(() => {
+    view = create(<ActiveCloudSetup provider={PROVIDER} phase="model" onVerified={onVerified} />);
+  });
+
+  expect(view.root.findAllByProps({ id: 'setup-cloud-filter' })).toHaveLength(0);
+  const options = view.root.findByProps({ id: 'setup-cloud-model' })
+    .findAllByType('option').map((o) => o.props.value);
+  expect(options).toEqual(['', MODEL_ID, 'paid/model']);
+});
+
+it('auto-advances on a backend-confirmed saved key without a confirmation click', async () => {
+  await settle(() => view.unmount());
+  const connected = vi.fn();
+  await settle(() => {
+    view = create(<ActiveCloudSetup provider={PROVIDER} phase="connect" onConnected={connected} />);
+  });
+
+  expect(connected).toHaveBeenCalledTimes(1);
+  expect(view.root.findAllByType('button')
+    .some((b) => JSON.stringify(b.children).includes('Use configured key'))).toBe(false);
 });
 
 // --- Recommended one-click path (reuses verifyModel's exact proof sequence) --

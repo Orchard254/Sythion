@@ -208,6 +208,22 @@ describe('TaskDetailDrawer explicit recovery interaction', () => {
     expect(resumeTask).toHaveBeenCalledTimes(1);
     expect(resumeTask).toHaveBeenCalledWith('t1');
   });
+
+  it('re-reads fresh preflight on Resume before asking the backend to resume', async () => {
+    // There is no manual recheck button anymore; owner-gated consent relies on
+    // the click itself re-reading preflight immediately before the resume call.
+    recoveryMock.data = clearRecovery();
+    resumePreflight.mockResolvedValue(clearRecovery());
+    resumeTask.mockResolvedValue(undefined);
+    const view = create(<TaskDetailDrawer task={task({ state: 'interrupted' })} onClose={() => {}} />);
+    const resume = view.root.findAllByType('button').find((b) => b.children.includes('Resume task'));
+    expect(resume?.props.disabled).toBe(false);
+    await act(async () => { resume?.props.onClick(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(resumePreflight).toHaveBeenCalledTimes(1);
+    expect(resumePreflight).toHaveBeenCalledWith('t1');
+    expect(resumePreflight.mock.invocationCallOrder[0]).toBeLessThan(resumeTask.mock.invocationCallOrder[0]);
+    expect(resumeTask).toHaveBeenCalledWith('t1');
+  });
 });
 
 
@@ -302,7 +318,8 @@ describe('TaskDetailDrawer lazy-user default view', () => {
     expect(text).toContain('not an approval');
     const buttons = view.root.findAllByType('button');
     expect(buttons.some((b) => b.children.includes('Resume task'))).toBe(true);
-    expect(buttons.some((b) => b.children.includes('Recheck recovery'))).toBe(true);
+    // No redundant manual recheck control: the preflight hook auto-polls.
+    expect(buttons.some((b) => b.children.includes('Recheck recovery'))).toBe(false);
 
     // No raw implementation detail in the default view.
     expect(text).not.toContain('task-abc-123');

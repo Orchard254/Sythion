@@ -15,6 +15,8 @@ const mock = vi.hoisted(() => ({
   speak: vi.fn(),
   conversations: vi.fn(),
   morningBriefGet: vi.fn(),
+  acknowledgedFailures: vi.fn(),
+  acknowledgeFailure: vi.fn(),
   taskList: [] as Task[],
 }));
 
@@ -22,6 +24,10 @@ vi.mock('../services/api', () => ({
   assistantService: { turn: mock.turn },
   voiceService: { speak: mock.speak },
   conversationService: { list: mock.conversations },
+  taskService: {
+    acknowledgedFailures: mock.acknowledgedFailures,
+    acknowledgeFailure: mock.acknowledgeFailure,
+  },
   default: { get: mock.morningBriefGet },
 }));
 
@@ -1134,6 +1140,100 @@ describe('assistant turns', () => {
     expect(text()).toContain('could not be verified');
   });
 
+  describe('acknowledged failures and presentational notices', () => {
+    const failedTask = (id: string, request: string): Task => ({
+      ...task,
+      id,
+      state: 'failed',
+      original_request: request,
+      final_result: null,
+      terminal_reason: 'Background work failed',
+    });
+
+    it('hides an acknowledged failure but keeps a genuine unacknowledged failure visible', async () => {
+      mock.acknowledgedFailures.mockResolvedValue(['ack-failed']);
+      await settle(() => { view.unmount(); view = create(<QueryClientProvider client={client}><AssistantScreen /></QueryClientProvider>); });
+      await settle(() => client.setQueryData(['tasks'], [
+        failedTask('ack-failed', 'Acknowledged background work'),
+        failedTask('unack-failed', 'Unacknowledged background work'),
+      ]));
+
+      expect(mock.acknowledgedFailures).toHaveBeenCalled();
+      expect(text()).not.toContain('Acknowledged background work');
+      expect(text()).toContain('Unacknowledged background work');
+      expect(view.root.findAllByProps({ className: 'msg__bubble msg__bubble--fail' })).toHaveLength(1);
+      expect(text()).toContain('This did not finish');
+    });
+
+    it('clears the scheduling warning once an associated task is observed failed', async () => {
+      mock.turn.mockResolvedValueOnce({
+        exchange_id: 'turn-fail', user_text: 'Hello Synth', assistant_text: 'Requested background work.',
+        status: 'completed', background_task_ids: ['task-failed'], scheduling_established: false,
+      });
+      await draft();
+      await send();
+      expect(text()).toContain('Scheduling is unknown');
+      await settle(() => client.setQueryData(['tasks'], [{ ...task, id: 'task-failed', state: 'failed' as const, final_result: null }]));
+      expect(text()).not.toContain('Scheduling is unknown');
+    });
+
+    it('clears the scheduling warning once an associated task is observed cancelled', async () => {
+      mock.turn.mockResolvedValueOnce({
+        exchange_id: 'turn-cancel', user_text: 'Hello Synth', assistant_text: 'Requested background work.',
+        status: 'completed', background_task_ids: ['task-cancelled'], scheduling_established: false,
+      });
+      await draft();
+      await send();
+      expect(text()).toContain('Scheduling is unknown');
+      await settle(() => client.setQueryData(['tasks'], [{ ...task, id: 'task-cancelled', state: 'cancelled' as const, final_result: null }]));
+      expect(text()).not.toContain('Scheduling is unknown');
+    });
+
+    it('auto-fetches the next history page when the older-messages sentinel becomes visible', async () => {
+      mock.conversations.mockImplementation(async (cursor?: string) => cursor
+        ? { conversations: [{ id: 'auto-old', session_id: 's', user_text: 'Auto older question', assistant_text: 'Auto older answer', created_at: '2026-10-20T00:00:00Z' }], next_cursor: null }
+        : { conversations: [], next_cursor: 'older-page' });
+
+      const captured: Array<{ cb: IntersectionObserverCallback }> = [];
+      class FakeIntersectionObserver {
+        constructor(cb: IntersectionObserverCallback) { captured.push({ cb }); }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+        takeRecords(): IntersectionObserverEntry[] { return []; }
+        root = null;
+        rootMargin = '';
+        thresholds: number[] = [];
+      }
+      vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver);
+
+      await settle(() => {
+        view.unmount();
+        view = create(<QueryClientProvider client={client}><AssistantScreen /></QueryClientProvider>, {
+          createNodeMock: (element) => {
+            if (element.props?.['data-testid'] === 'older-messages-sentinel') {
+              return { scrollTop: 0 } as unknown as HTMLDivElement;
+            }
+            if (element.props?.className === 'chat__scroll') {
+              return { scrollTop: 0, scrollHeight: 100, scrollTo: vi.fn() } as unknown as HTMLDivElement;
+            }
+            return null;
+          },
+        });
+      });
+      await settle(() => { void client.invalidateQueries({ queryKey: ['conversation-history'] }); });
+      await vi.waitFor(() => expect(captured.length).toBeGreaterThan(0), { timeout: 1000 });
+      await settle(() => {
+        captured[captured.length - 1].cb(
+          [{ isIntersecting: true } as IntersectionObserverEntry],
+          {} as IntersectionObserver
+        );
+      });
+      expect(mock.conversations).toHaveBeenCalledWith('older-page');
+      expect(text()).toContain('Auto older answer');
+    });
+  });
+
   describe('morning brief delivery', () => {
     const fullMorningBrief: MorningBrief = {
       date: '2026-11-21',
@@ -1238,6 +1338,8 @@ beforeEach(async () => {
   vi.stubGlobal('document', { visibilityState: 'visible' });
   useAppStore.setState({ isConnected: true, isListening: false, isVoiceSpeaking: false, transcriptDraft: '', notifications: [], unreadNotifications: 0 });
   mock.taskList = [];
+  mock.acknowledgedFailures.mockResolvedValue([]);
+  mock.acknowledgeFailure.mockResolvedValue(undefined);
   mock.conversations.mockResolvedValue({ conversations: [], next_cursor: null });
   mock.turn.mockResolvedValue({ exchange_id: 'turn-1', user_text: 'Hello Synth', assistant_text: 'Saved reply', status: 'completed', background_task_ids: [] });
   mock.speak.mockResolvedValue({ success: true });

@@ -25,10 +25,14 @@ import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from backend.models.database import RemoteAction, RemoteActionEvent
+from backend.models.database import (
+    RemoteAction,
+    RemoteActionEvent,
+    RemoteActionReconciliation,
+)
 
 RECEIVED = "received"
 UNDERSTANDING = "understanding"
@@ -309,9 +313,29 @@ class RemoteActionManager:
         return [_to_dict(row) for row in rows]
 
     def list_uncertain(self) -> List[Dict[str, Any]]:
+        """Uncertain actions still awaiting an owner reconciliation decision.
+
+        Read-only owner-facing projection. An uncertain action whose owner has
+        already decided carries a durable ``RemoteActionReconciliation`` record
+        (and a ``marker:reconciled`` event) and is auto-dismissed from this queue:
+        re-asking the owner for a decision they already made is a lazy-user
+        defect. All three outcomes qualify, including ``abandoned`` ("I'm not
+        sure" -> leave the effect unsettled but the decision recorded).
+
+        This does NOT mutate the action or replay it: ``uncertain`` stays a
+        terminal state and reconciliation never authorizes a retry of the
+        original effect. Genuinely unresolved uncertain actions remain visible.
+        """
+        reconciled_ids = select(RemoteActionReconciliation.action_id)
+        reconciled_marker_ids = (
+            select(RemoteActionEvent.action_id)
+            .where(RemoteActionEvent.to_state == "marker:reconciled")
+        )
         rows = (
             self._session.query(RemoteAction)
             .filter(RemoteAction.state == UNCERTAIN)
+            .filter(~RemoteAction.action_id.in_(reconciled_ids))
+            .filter(~RemoteAction.action_id.in_(reconciled_marker_ids))
             .order_by(RemoteAction.updated_at.asc())
             .all()
         )

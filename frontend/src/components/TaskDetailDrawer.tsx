@@ -95,6 +95,13 @@ export function TaskDetailDrawer({
   const revision = resumePreflight.data?.review_binding;
   const hasSnapshot = revision?.binding_status === 'read_only_observation' &&
     /^sha256:[0-9a-f]{64}$/.test(revision.revision);
+  // The preflight hook already re-polls on its own (staleMs: 0, 7s interval).
+  // Derive a read-only freshness label from that poll's timestamp — no manual
+  // recheck control and no extra timer of our own.
+  const lastCheckedAt = resumePreflight.dataUpdatedAt;
+  const lastCheckedSeconds = lastCheckedAt > 0
+    ? Math.max(0, Math.floor((Date.now() - lastCheckedAt) / 1000))
+    : null;
 
   const footer =
     running ? (
@@ -107,15 +114,16 @@ export function TaskDetailDrawer({
         {busy ? 'Cancelling…' : task.state === 'created' ? 'Cancel queued request' : 'Interrupt task'}
       </Button>
     ) : resumeCandidate ? (
-      <div className="row" style={{ gap: 8 }}>
-        <Button
-          variant="subtle"
-          size="sm"
-          disabled={busy || !actions.live || resumePreflight.isFetching}
-          onClick={() => resumePreflight.refetch()}
-        >
-          Recheck recovery
-        </Button>
+      <div className="row row--between" style={{ gap: 8 }}>
+        <span className="t-faint" style={{ fontSize: 12 }}>
+          {resumePreflight.isFetching && !resumePreflight.data
+            ? 'Checking recovery…'
+            : lastCheckedSeconds === null
+              ? 'Recovery status not yet checked'
+              : lastCheckedSeconds === 0
+                ? 'Recovery checked just now'
+                : `Recovery checked ${lastCheckedSeconds}s ago`}
+        </span>
         <Button
           variant="primary"
           icon="play"

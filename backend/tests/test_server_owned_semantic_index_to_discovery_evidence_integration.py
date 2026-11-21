@@ -20,6 +20,11 @@ from backend.services.grounded_discussion_indexed_discovery import read_session_
 from backend.services.grounded_discussion_evidence import read_selected_discussion_evidence
 
 
+def _reply(result) -> str:
+    """Answers and runtime notices use separate response channels now."""
+    return f"{getattr(result, 'assistant_text', '')} {getattr(result, 'status_text', '')}".strip()
+
+
 @pytest.fixture
 def file_backed_context(tmp_path_factory):
     db_path = tmp_path_factory.mktemp("db") / "server_owned_discovery_evidence.db"
@@ -347,7 +352,7 @@ async def test_default_unknown_freshness_fail_closed_zero_engine_calls(file_back
             discussion_discovery=gated,
         )
         assert turn_engine.call_count == 0
-        assert "verified discussion discovery" in result.assistant_text.lower()
+        assert "verified discussion discovery" in _reply(result).lower()
     finally:
         read_session.close()
 
@@ -414,7 +419,7 @@ async def test_unresolved_correction_fail_closed_zero_engine_calls(file_backed_c
             discussion_discovery=gated,
         )
         assert turn_engine.call_count == 0
-        assert "verified discussion discovery" in result.assistant_text.lower()
+        assert "verified discussion discovery" in _reply(result).lower()
     finally:
         read_session.close()
 
@@ -510,7 +515,7 @@ async def test_test_only_verifier_two_call_path_with_structurally_complete_unver
             for event in final_entry["events"]
         )
         assert turn_engine.call_count == 2
-        assert result.assistant_text == "Verified answer"
+        assert _reply(result) == "Verified answer"
         assert result.commands == []
     finally:
         read_session.close()
@@ -569,6 +574,6 @@ async def test_test_only_verifier_clarification_one_call(file_backed_context):
             discussion_discovery=gated,
         )
         assert turn_engine.call_count == 1
-        assert result.assistant_text == "Need clarification"
+        assert _reply(result) == "Need clarification"
     finally:
         read_session.close()

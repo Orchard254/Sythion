@@ -59,6 +59,15 @@ except ImportError:
 CASES = load_cases()
 
 
+def _reply(result) -> str:
+    """Answers and runtime notices use separate response channels now.
+
+    These orchestration tests only care about the human-facing text, so read
+    both channels. Channel separation itself is covered by dedicated tests.
+    """
+    return f"{result.get('assistant_text', '')} {result.get('status_text', '')}".strip()
+
+
 @pytest.fixture(autouse=True)
 def _scrub_environment(monkeypatch):
     import os
@@ -90,11 +99,11 @@ async def test_case_runs_through_real_engine_within_budget(case):
     if not case_is_structurally_complete(case):
         assert record["call_count"] == 1
         assert record["status"] == "completed"
-        assert "structurally complete" in record["assistant_text"].lower() or "enough" in record["assistant_text"].lower()
+        assert "structurally complete" in _reply(record).lower() or "enough" in _reply(record).lower()
         return
 
     assert record["call_count"] == 2
-    assert isinstance(record["assistant_text"], str) and record["assistant_text"].strip()
+    assert isinstance(_reply(record), str) and _reply(record).strip()
     assert isinstance(record["commands"], list)
     assert len(record["commands"]) <= 3
 
@@ -124,7 +133,7 @@ async def test_missing_evidence_reader_fail_closed():
     complete = next(case for case in CASES if case_is_structurally_complete(case))
     record = await run_case(complete, evidence_reader=lambda selected: None)
     assert record["call_count"] == 1
-    assert "insufficient" in record["assistant_text"].lower() or "enough" in record["assistant_text"].lower()
+    assert "insufficient" in _reply(record).lower() or "enough" in _reply(record).lower()
 
 
 @pytest.mark.asyncio
@@ -187,7 +196,7 @@ async def test_malformed_json_retry_budget_is_bounded_two():
     )
     engine = ConversationTurnEngine(model)
     result = await engine.run(complete["current_user_message"], [], [])
-    assert result.assistant_text == "recovered"
+    assert _reply(result) == "recovered"
     assert len(model.calls) <= 2
 
 
@@ -351,7 +360,7 @@ async def test_truncated_missing_source_is_not_fabricated_complete():
     record = await run_case(truncated)
     assert record["call_count"] == 1
     assert record["status"] == "completed"
-    assert "structurally complete" in record["assistant_text"].lower()
+    assert "structurally complete" in _reply(record).lower()
     assert record["exact_answer_evidence_passed_to_model"] is None
 
 
@@ -410,7 +419,7 @@ async def test_no_full_history_is_injected_by_default():
 async def test_uncertainty_is_displayed_for_truncated_evidence():
     truncated = next(case for case in CASES if not case_is_structurally_complete(case))
     record = await run_case(truncated)
-    text = record["assistant_text"].lower()
+    text = _reply(record).lower()
     assert "cannot" in text or "enough" in text or "structurally complete" in text or "reliably" in text
 
 

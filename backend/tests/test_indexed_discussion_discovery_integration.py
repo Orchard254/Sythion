@@ -24,6 +24,11 @@ from backend.services.grounded_discussion_indexed_discovery import (
 )
 
 
+def _reply(result) -> str:
+    """Answers and runtime notices use separate response channels now."""
+    return f"{getattr(result, 'assistant_text', '')} {getattr(result, 'status_text', '')}".strip()
+
+
 @pytest.fixture
 def db_session():
     engine = create_engine("sqlite:///:memory:", future=True)
@@ -186,7 +191,7 @@ async def test_engine_reports_insufficient_when_gated_discovery_incomplete(db_se
         discussion_discovery=gated,
     )
     assert result.commands == []
-    assert "verified discussion discovery" in result.assistant_text.lower() or "not enough" in result.assistant_text.lower()
+    assert "verified discussion discovery" in _reply(result).lower() or "not enough" in _reply(result).lower()
 
 
 @pytest.mark.asyncio
@@ -237,10 +242,10 @@ async def test_engine_two_call_complete_path_with_trusted_verifier(db_session):
         discussion_discovery=gated,
     )
     assert engine.call_count == 2
-    assert result.assistant_text == "Verified answer"
+    assert _reply(result) == "Verified answer"
     assert result.commands == []
     # No foreign/unselected discussion id was accepted in the final answer path.
-    assert did in str(result.assistant_text) or result.assistant_text == "Verified answer"
+    assert did in _reply(result) or _reply(result) == "Verified answer"
 
 def test_combine_fail_closed_for_missing_invalid_foreign_coverage(db_session):
     sid = "session-combine"

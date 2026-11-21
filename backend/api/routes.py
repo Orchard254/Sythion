@@ -3455,6 +3455,95 @@ def _reject_device_auth_for_owner_route(request: Request) -> None:
         )
 
 
+async def _resume_approval_parked_task(
+    db: Session,
+    *,
+    task_id: str,
+    action_id: str,
+    proposal_id: str,
+    decision_id: str,
+) -> bool:
+    """Reopen the task the execution loop parked for ONE verified approval.
+
+    This is strictly the post-consent continuation of a task parked in
+    WAITING_FOR_USER while staging this exact permission proposal. It is called
+    ONLY after the approval service produced a verified, approved receipt, and
+    the caller re-verifies that receipt before invoking it. It grants no
+    authority of its own: the normal execution loop still re-verifies the
+    durable receipt at the executor before any tool effect. It uses the same
+    lease + writer-transaction discipline as the explicit resume/reply paths,
+    and is idempotent - a task that is no longer parked for this exact decision
+    is left untouched (no crash, no false success, no second dispatch).
+
+    Returns True iff a continuation worker was actually scheduled.
+    """
+    from backend.models.database import Task
+
+    runner = get_runner(db)
+    if not await runner.acquire_lease(task_id=task_id):
+        # Another runner owns the lease. Do not steal it or dispatch; the owner
+        # can replay the (already recorded) decision once the lease is free.
+        logger.warning(
+            "Cannot resume approval-parked task %s: runner lease is busy", task_id
+        )
+        return False
+    try:
+        task = db.query(Task).filter_by(id=task_id).populate_existing().first()
+        if task is None:
+            logger.warning("Cannot resume approval-parked task %s: task is gone", task_id)
+            return False
+        if task.state != TaskState.WAITING_FOR_USER.value:
+            # Already resumed, terminal, or moved on by another path. Never a
+            # second dispatch, and never overwrite a genuinely different wait.
+            logger.info(
+                "Approval-parked task %s is in state %s; no continuation scheduled",
+                task_id, task.state,
+            )
+            return False
+
+        raw_pending = getattr(task, "pending_action", None)
+        try:
+            pending = json.loads(raw_pending) if raw_pending else {}
+        except (TypeError, ValueError):
+            pending = {}
+        if not isinstance(pending, dict):
+            return False
+        # The parked pending action must still be the exact one this receipt
+        # decided. A clarification wait or an unrelated action must be ignored.
+        if (
+            str(pending.get("action_id") or "") != str(action_id)
+            or (proposal_id and str(pending.get("proposal_id") or "") != str(proposal_id))
+            or str(pending.get("decision_id") or "") != str(decision_id)
+            or str(pending.get("status") or "") != "approved"
+        ):
+            logger.warning(
+                "Approval-parked task %s no longer matches this decision; no continuation",
+                task_id,
+            )
+            return False
+
+        await runner.transition_state(
+            task_id=task_id,
+            new_state=TaskState.RUNNING,
+            event_type="action.approved",
+            event_data={
+                "action_id": action_id,
+                "proposal_id": proposal_id,
+                "decision_id": decision_id,
+                "reason": "verified_consent_receipt",
+            },
+            pending_question=None,
+        )
+        # Schedule the ordinary continuation exactly as the auto-dispatch paths
+        # do. The loop will pick up the approved pending action and the executor
+        # will verify the receipt again before any tool effect.
+        tool_executor = get_tool_executor()
+        asyncio.create_task(run_task(db, task_id, tool_executor))
+        return True
+    finally:
+        await runner.release_lease()
+
+
 @router.get("/approvals/pending")
 async def list_pending_approvals(request: Request, db: Session = Depends(get_db)):
     """Awaiting, exact permission proposals for the trusted owner UI.
@@ -3560,6 +3649,8 @@ async def decide_approval(request: Request, db: Session = Depends(get_db)):
             "reason": "idempotent replay of recorded decision",
             "authorization_issued": False,
             "receipt_verified": recorded.status == "approved",
+            # A replay never schedules a second continuation.
+            "continuation_scheduled": False,
         }
 
     def owner_authenticator(context):
@@ -3659,6 +3750,59 @@ async def decide_approval(request: Request, db: Session = Depends(get_db)):
     ).update({"status": decided_status}, synchronize_session=False)
 
     db.commit()
+
+    # Post-consent continuation. After a VERIFIED approved receipt, reopen the
+    # task the loop parked for THIS approval and schedule its ordinary worker.
+    # This is NOT a second authorization path: the executor still verifies the
+    # durable receipt (consequential_approval.verify) before every tool effect.
+    # Deny keeps the existing behaviour - no transition, no dispatch.
+    continuation_scheduled = False
+    if (
+        not is_deny
+        and result is not None
+        and bool(result.verified)
+        and receipt is not None
+        and bool(receipt.approved)
+        and str(getattr(receipt, "decision_id", "") or "") == expected_decision_id
+        and str(getattr(receipt, "action_id", "") or "") == str(proposal.action_id)
+    ):
+        # Re-run the exact same read-only verification the executor uses, so a
+        # malformed/mismatched receipt can never drive a dispatch. Close that
+        # read transaction before the runner takes the lease.
+        verified = False
+        try:
+            verification = svc.verify(
+                task_id=proposal.task_id,
+                action_id=proposal.action_id,
+                decision_id=expected_decision_id,
+                proposal_id=proposal.proposal_id,
+            )
+            verified = bool(verification.ok)
+        except Exception:
+            verified = False
+        finally:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        if verified:
+            try:
+                continuation_scheduled = await _resume_approval_parked_task(
+                    db,
+                    task_id=proposal.task_id,
+                    action_id=proposal.action_id,
+                    proposal_id=proposal.proposal_id,
+                    decision_id=expected_decision_id,
+                )
+            except Exception:
+                # A failed resume must not turn a recorded, verified decision
+                # into a failed request or a false success. The task remains
+                # parked and the owner can replay the idempotent decision.
+                logger.exception(
+                    "Could not resume approval-parked task %s after verified decision",
+                    proposal.task_id,
+                )
+
     return {
         "proposal_id": proposal.proposal_id,
         "decision_id": expected_decision_id,
@@ -3672,6 +3816,8 @@ async def decide_approval(request: Request, db: Session = Depends(get_db)):
         # only after the receipt is independently verified.
         "authorization_issued": False,
         "receipt_verified": bool(receipt is not None and receipt.approved),
+        # Honest reporting of the post-consent continuation (never authority).
+        "continuation_scheduled": bool(continuation_scheduled),
     }
 
 

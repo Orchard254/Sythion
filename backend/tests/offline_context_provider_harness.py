@@ -899,6 +899,7 @@ async def run_case(
         )
         record["status"] = "completed"
         record["assistant_text"] = result.assistant_text
+        record["status_text"] = result.status_text
         record["commands"] = list(result.commands)
         record["call_count"] = engine.call_count
     except BaseException as exc:  # returned to caller for assertions

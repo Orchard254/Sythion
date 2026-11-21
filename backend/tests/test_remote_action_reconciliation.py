@@ -1,5 +1,7 @@
 """Owner reconciliation of uncertain remote actions: audited, no replay."""
 
+import pytest
+
 from backend.models.database import (
     RemoteAction,
     RemoteActionEvent,
@@ -158,3 +160,55 @@ def test_unknown_action_returns_404(test_client, test_db):
         json={"decision_id": "d", "outcome": "abandoned"},
     )
     assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "outcome", ["effect_confirmed", "effect_not_performed", "abandoned"],
+)
+def test_reconciled_action_auto_dismissed_from_uncertain_listing(test_db, outcome):
+    """A decided action leaves the owner queue; unrelated ones stay; state is intact."""
+    manager = RemoteActionManager(test_db)
+    resolved_id = _uncertain(test_db, key=f"resolved-{outcome}", device="dev_1")
+    unrelated_id = _uncertain(test_db, key=f"unrelated-{outcome}", device="dev_2")
+
+    before = {a["action_id"] for a in manager.list_uncertain()}
+    assert resolved_id in before
+    assert unrelated_id in before
+
+    result = reconcile_action(
+        test_db, resolved_id,
+        decision_id=f"owner-{outcome}",
+        outcome=outcome,
+    )
+    test_db.commit()
+    assert result["outcome"] == outcome
+
+    after = {a["action_id"] for a in manager.list_uncertain()}
+    assert resolved_id not in after            # auto-dismissed
+    assert unrelated_id in after               # genuinely unresolved stays visible
+
+    # Projection-only: the action is still the same terminal uncertain record.
+    action = test_db.query(RemoteAction).filter_by(action_id=resolved_id).one()
+    assert action.state == UNCERTAIN
+    assert result["original_state"] == UNCERTAIN
+    assert test_db.query(RemoteActionReconciliation).filter_by(
+        action_id=resolved_id).count() == 1
+
+
+def test_reconciled_action_absent_from_uncertain_api(test_client, test_db):
+    """The owner-facing uncertain endpoint reflects the same dismissal."""
+    resolved_id = _uncertain(test_db, key="api-resolved")
+    unrelated_id = _uncertain(test_db, key="api-unrelated")
+
+    before = test_client.get("/api/v1/remote-actions/uncertain").json()["actions"]
+    assert {a["action_id"] for a in before} == {resolved_id, unrelated_id}
+
+    reconcile_action(
+        test_db, resolved_id,
+        decision_id="owner-api-dismiss",
+        outcome="abandoned",
+    )
+    test_db.commit()
+
+    after = test_client.get("/api/v1/remote-actions/uncertain").json()["actions"]
+    assert {a["action_id"] for a in after} == {unrelated_id}

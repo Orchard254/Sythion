@@ -176,6 +176,51 @@ class TestSelfModel:
         assert "decide(" not in src
         assert "execute_tool" not in src
 
+    def test_active_fields_follow_local_sentinel_and_cloud(self, db_session, monkeypatch):
+        """active_* fields reuse the runtime's sentinel policy: the default
+        binding resolves from the selected local model, a bound cloud model
+        keeps its own exact ID, and a damaged binding fails closed."""
+        from backend.core import config
+        from backend.runtime import active_inference
+        from backend.runtime.active_inference import (
+            ActiveInferenceSelection, ActiveInferenceUnavailable,
+        )
+        from backend.services.self_model import build_self_model
+
+        monkeypatch.setattr(
+            config, "resolve_selected_model", lambda: "local/model:tag"
+        )
+
+        # The default binding carries no model ID of its own; the selected
+        # local model is the single source of truth for it.
+        monkeypatch.setattr(
+            active_inference, "get_active_inference_selection",
+            lambda: ActiveInferenceSelection("ollama-cloud", ""),
+        )
+        models = build_self_model(db_session)["models"]
+        assert models["active_provider_id"] == "ollama-cloud"
+        assert models["active_model_id"] == "local/model:tag"
+
+        # A bound cloud selection carries its own exact model ID.
+        monkeypatch.setattr(
+            active_inference, "get_active_inference_selection",
+            lambda: ActiveInferenceSelection("openrouter", "cloud/model:tag"),
+        )
+        models = build_self_model(db_session)["models"]
+        assert models["active_provider_id"] == "openrouter"
+        assert models["active_model_id"] == "cloud/model:tag"
+
+        # A damaged binding fails closed — never a guessed local model.
+        def _unavailable():
+            raise ActiveInferenceUnavailable("damaged binding")
+
+        monkeypatch.setattr(
+            active_inference, "get_active_inference_selection", _unavailable
+        )
+        models = build_self_model(db_session)["models"]
+        assert models["active_provider_id"] == "unavailable"
+        assert models["active_model_id"] == ""
+
 
 # ===========================================================================
 # Model provider abstraction
