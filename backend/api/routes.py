@@ -3385,7 +3385,10 @@ async def decide_approval(request: Request, db: Session = Depends(get_db)):
     explicitly refuses device-channel credentials.
     """
     _reject_device_auth_for_owner_route(request)
-    from backend.runtime.permission_proposal import PermissionProposalManager
+    from backend.models.database import Task, PermissionDecisionReceiptRow
+    from backend.runtime.permission_proposal import (
+        PermissionProposalManager, PermissionProposalRow,
+    )
     from backend.runtime.consequential_approval import ConsequentialApprovalService
     from backend.runtime.events import DbEventLedger
 
@@ -3414,6 +3417,41 @@ async def decide_approval(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="unknown permission proposal")
 
     expected_decision_id = decision_id.strip()
+    is_deny = decision == "deny"
+
+    # A decided proposal is terminal so it stops re-listing. An exact replay of
+    # the SAME decision_id/decision is idempotent: it returns the already
+    # recorded receipt and mints nothing new. Any different decision_id or
+    # decision on a decided proposal is refused, so replay cannot re-authorize.
+    if proposal.status in ("approved", "denied"):
+        recorded = (
+            db.query(PermissionDecisionReceiptRow)
+            .filter_by(
+                source_task_id=proposal.task_id,
+                action_id=proposal.action_id,
+                proposal_digest=proposal.proposal_digest,
+            )
+            .first()
+        )
+        expected_status = "denied" if is_deny else "approved"
+        idempotent = (
+            recorded is not None
+            and recorded.decision_id == expected_decision_id
+            and recorded.decision == expected_status
+        )
+        if not idempotent:
+            raise HTTPException(status_code=409, detail="permission proposal already decided")
+        return {
+            "proposal_id": proposal.proposal_id,
+            "decision_id": expected_decision_id,
+            "decision": decision,
+            "status": recorded.status,
+            "approved": recorded.status == "approved",
+            "allowed": recorded.status == "approved",
+            "reason": "idempotent replay of recorded decision",
+            "authorization_issued": False,
+            "receipt_verified": recorded.status == "approved",
+        }
 
     def owner_authenticator(context):
         # The request already passed the loopback control-token boundary. This
@@ -3425,6 +3463,34 @@ async def decide_approval(request: Request, db: Session = Depends(get_db)):
         )
 
     svc = ConsequentialApprovalService(db=db, authenticator=owner_authenticator)
+
+    # Mark the matching staged pending action with the decided status. On deny
+    # this is what the loop honours to clear the task honestly; on approve it
+    # is the handoff that is released ONLY after receipt verification in the
+    # execution loop. An unrelated/missing pending action is never rewritten.
+    try:
+        task = db.query(Task).filter_by(id=proposal.task_id).populate_existing().first()
+        if task is not None and task.pending_action:
+            try:
+                pending = json.loads(task.pending_action)
+            except (TypeError, ValueError):
+                pending = None
+            if isinstance(pending, dict) and pending.get("action_id") in (
+                None, "", proposal.action_id,
+            ):
+                pending["status"] = "denied" if is_deny else "approved"
+                if not is_deny:
+                    pending["decision_id"] = expected_decision_id
+                    pending["proposal_id"] = proposal.proposal_id
+                task.pending_action = json.dumps(pending)
+                task.updated_at = datetime.utcnow()
+                # Flush so the approval service's populate_existing() reads the
+                # decided status rather than the original awaiting evidence.
+                db.flush()
+    except Exception:
+        db.rollback()
+        raise
+
     try:
         result = svc.record_decision(
             proposal=proposal,
@@ -3432,19 +3498,57 @@ async def decide_approval(request: Request, db: Session = Depends(get_db)):
             action_id=proposal.action_id,
             decision_id=expected_decision_id,
             decision=decision,
+            # Trusted loopback control-boundary provenance only. This is NOT
+            # OS-level human identity or biometrics (native attestation is
+            # future work); it records how the decision reached the service.
+            principal_id="loopback_control_boundary",
+            auth_method="loopback_control_token",
+            authenticator="owner_ui_control_boundary",
+            auth_assurance="control_boundary_no_native_attestation",
+            trusted=True,
+            trust_source="loopback_control_boundary",
         )
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(exc))
 
     receipt = result.receipt
+    decided_status = "denied" if is_deny else "approved"
     DbEventLedger(db).append_event(
-        f"task:{proposal.task_id}", "permission.decision_recorded", {
+        proposal.task_id, "permission.decision_recorded", {
             "proposal_id": proposal.proposal_id,
             "decision_id": expected_decision_id,
             "decision": decision,
             "status": receipt.status if receipt is not None else "unknown",
         },
     )
+    if is_deny:
+        # The loop honours this event (and the staged "denied" status) to clear
+        # the pending action and resume without executing the consequential tool.
+        DbEventLedger(db).append_event(
+            proposal.task_id, "action.denied", {
+                "tool_name": proposal.tool_name,
+                "action_id": proposal.action_id,
+                "proposal_id": proposal.proposal_id,
+                "decision_id": expected_decision_id,
+            },
+        )
+    else:
+        # Evidence event required by the runner's approved handoff. Authority
+        # still comes only from the verified receipt, never from this event.
+        DbEventLedger(db).append_event(
+            proposal.task_id, "action.approved", {
+                "action_id": proposal.action_id,
+                "proposal_id": proposal.proposal_id,
+                "decision_id": expected_decision_id,
+            },
+        )
+
+    # Terminal proposal status: decided items must stop re-listing.
+    db.query(PermissionProposalRow).filter_by(
+        proposal_id=proposal.proposal_id,
+    ).update({"status": decided_status}, synchronize_session=False)
+
     db.commit()
     return {
         "proposal_id": proposal.proposal_id,
@@ -3454,7 +3558,11 @@ async def decide_approval(request: Request, db: Session = Depends(get_db)):
         "approved": bool(result.approved),
         "allowed": bool(result.allowed),
         "reason": result.reason or "",
+        # The route issues a consent receipt but dispatches no effect; keeping
+        # this false is honest. Release happens later in the execution loop and
+        # only after the receipt is independently verified.
         "authorization_issued": False,
+        "receipt_verified": bool(receipt is not None and receipt.approved),
     }
 
 

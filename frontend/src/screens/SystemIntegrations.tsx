@@ -103,7 +103,7 @@ export function SystemScreen() {
             icon="server"
             value={health.data && !health.isError ? (health.data.status === 'degraded' ? 'Degraded' : 'Online') : 'Offline'}
             tone={health.data ? (health.data.status === 'degraded' ? 'warn' : undefined) : 'accent'}
-            foot={health.data && !health.isError ? `v${health.data.version} · ${version.data?.runtime ?? 'uvicorn'}${health.data.status === 'degraded' ? ' · startup incomplete' : ''}` : 'No response'}
+            foot={health.data && !health.isError ? `v${health.data.version} · ${version.data?.runtime ?? '—'}${health.data.status === 'degraded' ? ' · startup incomplete' : ''}` : 'No response'}
           />
           <Stat
             label="Health"

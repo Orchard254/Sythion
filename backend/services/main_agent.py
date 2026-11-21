@@ -68,6 +68,10 @@ _COALESCABLE_TRIGGERS = {
     "goal.updated": "background_work",
 }
 
+# Bound the human-readable "last wake" summary so it can never carry an
+# unbounded string into persisted state or the UI/morning brief.
+_LAST_WAKE_REASON_CAP = 120
+
 
 def coalesce_key_for(trigger_type: str) -> str:
     return _COALESCABLE_TRIGGERS.get(trigger_type, trigger_type)
@@ -365,6 +369,12 @@ class MainAgentService:
         })
         agent = self.get_or_create()
         agent.last_session_outcome = f"{resolved_status}:{stop_reason}" if stop_reason else resolved_status
+        # Truthful "last wake" surface read by the UI and morning brief.
+        # Derived only from controlled fields (trigger_type + stop_reason or
+        # outcome) — never prompt text or secrets — and length-bounded.
+        reason = f"{wake.trigger_type or 'wake'}:{stop_reason or outcome}"
+        agent.last_wake_reason = reason[:_LAST_WAKE_REASON_CAP]
+        agent.last_wake_at = datetime.utcnow()
         self.db.commit()
         self.db.refresh(wake)
         return wake
@@ -372,7 +382,13 @@ class MainAgentService:
     def skip_wake(self, trigger_type: str, reason: str,
                   trigger_reference: Optional[str] = None,
                   wake_key: Optional[str] = None) -> Dict[str, Any]:
-        """Record why a wake did NOT run (policy/state) — auditable no-op."""
+        """Record why a wake did NOT run (policy/state) — auditable no-op.
+
+        Deliberately does NOT update ``last_wake_at``/``last_wake_reason``:
+        those fields are reserved for wakes that actually executed (see
+        :meth:`finish_wake`), so the UI's "Last wake" never reports a no-op as
+        though work happened. Skips remain fully auditable in AgentWake + ledger.
+        """
         row = self.get_or_create()
         key = wake_key or f"{trigger_type}:{trigger_reference or ''}"
         existing = self.db.query(AgentWake).filter_by(wake_key=key).first()

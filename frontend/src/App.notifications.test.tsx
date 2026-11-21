@@ -62,4 +62,21 @@ describe('task notification polling', () => {
     expect(JSON.stringify(view!.toJSON())).toContain('Task failed');
     act(() => { view.unmount(); });
   });
+
+  it('does not raise notifications for terminal tasks already present on first load', async () => {
+    // Historical failures are real state, not new events. A fresh page load
+    // seeds the baseline silently so the demo never opens with stale alerts.
+    mock.tasks = [{ ...task, id: 'old-failure', state: 'failed', terminal_reason: 'Historic failure' }];
+    let view: ReactTestRenderer;
+    await act(async () => { view = create(<App />); });
+    expect(useAppStore.getState().notifications).toHaveLength(0);
+    // A NEW transition after baseline is still notified.
+    await act(async () => {
+      mock.tasks = [...mock.tasks, { ...task, id: 'new-failure', state: 'failed', terminal_reason: 'Fresh failure' }];
+      view.update(<App />);
+    });
+    expect(useAppStore.getState().notifications).toHaveLength(1);
+    expect(useAppStore.getState().notifications[0].body).toBe('Fresh failure');
+    act(() => { view.unmount(); });
+  });
 });

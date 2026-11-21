@@ -59,6 +59,7 @@ try:
         STATUS_PENDING,
         ALL_STATUSES,
         TERMINAL_STATUSES,
+        PROVENANCE_FIELDS,
     )
 except Exception:  # pragma: no cover
     from runtime.permission_decision_receipt import (  # type: ignore
@@ -69,6 +70,7 @@ except Exception:  # pragma: no cover
         STATUS_PENDING,
         ALL_STATUSES,
         TERMINAL_STATUSES,
+        PROVENANCE_FIELDS,
     )
 
 try:
@@ -466,6 +468,46 @@ class ConsequentialApprovalService:
                 return False, "action already owned; replay refused", True
         return True, "", False
 
+    def _version_binding_ok(self, task: Any, proposal: Any, task_id: str) -> bool:
+        """Version binding check that tolerates the legitimate consent park.
+
+        Staging binds the proposal to the live task version.  Parking the task
+        in WAITING_FOR_USER (and later resuming it) advances that audit counter
+        through ordinary runner transitions.  The staged ``pending_action`` is
+        the durable linkage between the parked task and the proposal: when it
+        still carries the exact proposal_id/action_id and the version recorded
+        at staging time, the version advance is the legitimate consent park and
+        is not a stale-proposal mutation.  Every other version difference fails
+        closed.  A forged pending_action cannot manufacture a receipt: receipts
+        are only written by the trusted loopback control boundary.
+        """
+        if task is None or getattr(task, "version", None) is None:
+            return True
+        expected = int(proposal.task_version)
+        if int(task.version) == expected:
+            return True
+        pending_raw = getattr(task, "pending_action", None)
+        if pending_raw in (None, "", b""):
+            return False
+        try:
+            pending = json.loads(pending_raw)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(pending, dict):
+            return False
+        pending_version = pending.get("task_version")
+        if pending_version in (None, ""):
+            return False
+        try:
+            pending_version = int(pending_version)
+        except (TypeError, ValueError):
+            return False
+        return bool(
+            pending_version == expected
+            and str(pending.get("proposal_id") or "") == str(proposal.proposal_id)
+            and str(pending.get("action_id") or "") == str(proposal.action_id)
+        )
+
     # ---------------- proposal stage ----------------
 
     def stage_proposal(self, *args: Any, **kwargs: Any) -> PermissionProposal:
@@ -614,8 +656,8 @@ class ConsequentialApprovalService:
                 tv = _clean_int(fields.get("task_version"), "task version", required=False)
                 if tv is None:
                     fields["task_version"] = int(task.version)
-                if int(task.version) != int(proposal.task_version):
-                    raise ValueError("Task version binding mismatch")
+            if not self._version_binding_ok(task, proposal, task_id):
+                raise ValueError("Task version binding mismatch")
             task_version = int(proposal.task_version)
             tool_name = proposal.tool_name
             schema_version = int(proposal.schema_version)
@@ -655,6 +697,14 @@ class ConsequentialApprovalService:
                 decision_value = STATUS_DENIED
 
             mgr = PermissionDecisionReceiptManager(db=self._session, clock=self._clock)
+            # Additive, non-authorizing provenance from the trusted boundary.
+            # These fields never grant authority and are only recorded when the
+            # caller actually supplies them.
+            provenance = {
+                key: fields[key]
+                for key in PROVENANCE_FIELDS
+                if fields.get(key) is not None
+            }
             receipt = mgr.decide(
                 decision_id=decision_id,
                 task_id=task_id,
@@ -667,6 +717,7 @@ class ConsequentialApprovalService:
                 decision=decision_value,
                 status=decision_value,
                 terminal_reason=None if decision_value in (STATUS_APPROVED, STATUS_PENDING) else "authenticator_or_safeguard_denied",
+                **provenance,
             )
             approved_flag = (decision_value == STATUS_APPROVED and auth_ok and allowed)
             result_allowed = bool(auth_ok and allowed and decision_value == STATUS_APPROVED)
@@ -760,10 +811,9 @@ class ConsequentialApprovalService:
             digest_ok = True
             binding_ok = True
             task = self._load_task(task_id)
-            if task is not None and getattr(task, "version", None) is not None:
-                if int(task.version) != int(proposal.task_version):
-                    version_ok = False
-                    binding_ok = False
+            if not self._version_binding_ok(task, proposal, task_id):
+                version_ok = False
+                binding_ok = False
             if receipt is not None:
                 # At least one task ID must match, and neither may disagree.
                 if (

@@ -557,7 +557,7 @@ export interface PurgeReceipt {
 /* --- Presentation-only types -------------------------------------------- */
 
 /** Where the data on screen came from. Surfaced in the UI, never hidden. */
-export type DataOrigin = 'live' | 'demo';
+export type DataOrigin = 'live';
 
 export type Tone = 'ok' | 'warn' | 'danger' | 'info' | 'idle' | 'accent' | 'plain';
 

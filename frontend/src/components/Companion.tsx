@@ -48,8 +48,11 @@ export interface CompanionProps {
   caption?: string | null;
   /** True only while audio playback is genuinely active. */
   speaking?: boolean;
-  /** Real STT availability from GET /voice/assets. */
-  sttAvailable: boolean;
+  /**
+   * Real STT availability from GET /voice/assets. `undefined` while the query
+   * is still in flight - which must not be presented as "unavailable".
+   */
+  sttAvailable: boolean | undefined;
   /** A real error from a real attempt. */
   error?: string | null;
   /** Forces the capsule open, e.g. to review a state that needs attention. */
@@ -92,7 +95,6 @@ export function Companion({
   const isVoiceEnabled = useAppStore((s) => s.isVoiceEnabled);
   const setVoiceEnabled = useAppStore((s) => s.setVoiceEnabled);
   const isListening = useAppStore((s) => s.isListening);
-  const isSpeakingNow = useAppStore((s) => s.isVoiceSpeaking);
 
   const { toggleListening } = useVoiceCapture();
 
@@ -145,12 +147,10 @@ export function Companion({
       : submitting
         ? 'thinking'
         : isListening
-          ? isSpeakingNow
-            ? 'listening'
-            : 'listening'
-          : sttAvailable
-            ? 'idle'
-            : 'unavailable';
+          ? 'listening'
+          : sttAvailable === false
+            ? 'unavailable'
+            : 'idle';
 
   const statusLine = error ?? micError ?? null;
 
@@ -164,7 +164,7 @@ export function Companion({
           className="companion__robot-button"
           aria-expanded={visible}
           aria-label={visible ? 'Hide Sythion input' : 'Show Sythion input'}
-          title="Show Sythion input"
+          title={visible ? 'Hide Sythion input' : 'Show Sythion input'}
           onPointerDown={(e) => {
             pressedRef.current = true;
             draggedRef.current = false;
@@ -234,7 +234,7 @@ export function Companion({
               work, so the input and send are always present. Only the
               microphone is withheld. Hiding the input on an error would also
               make a failed send impossible to retry. */}
-          {!sttAvailable && !micError && (
+          {sttAvailable === false && !micError && (
             <div className="companion__unavailable">
               <Icon name="alert" size={13} />
               <span>Speech recognition is not available on this machine. Type instead.</span>
@@ -270,13 +270,15 @@ export function Companion({
                 aria-pressed={isListening}
                 aria-label={isListening ? 'Stop listening' : 'Start voice input'}
                 title={
-                  sttAvailable
-                    ? isListening
-                      ? 'Stop listening'
-                      : 'Start voice input'
-                    : 'Speech recognition is not available on this machine'
+                  sttAvailable === undefined
+                    ? 'Checking speech recognition…'
+                    : sttAvailable
+                      ? isListening
+                        ? 'Stop listening'
+                        : 'Start voice input'
+                      : 'Speech recognition is not available on this machine'
                 }
-                disabled={!sttAvailable || submitting}
+                disabled={sttAvailable !== true || submitting}
                 onClick={() => void onToggleVoice()}
               >
                 <Icon name="microphone" size={15} />

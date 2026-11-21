@@ -1038,11 +1038,9 @@ class TaskRunner:
         """
         self._refuse_caller_owned_pending_transaction()
 
-        # The ``binding`` argument and any authentication-claiming keyword are
-        # intentionally ignored: no self-supplied identifier or claim is trusted
-        # as human consent.  Keeping the signature preserves callers, but it
-        # cannot influence the fail-closed result.
-        _ = binding, kwargs
+        # ``binding``/``decision_id`` are only lookup hints for an EXISTING
+        # durable receipt; they never grant consent by themselves. Every
+        # "approved" transition below is verified against a real receipt.
 
         if not self._verify_lease():
             raise RuntimeError("Runner lease not held")
@@ -1062,21 +1060,40 @@ class TaskRunner:
             if not isinstance(data, dict):
                 raise RuntimeError("Pending action evidence is malformed")
 
-            # Fail closed on manufacturing approval. A bare status flip has no
-            # authorization effect. Matching identifiers (action_id, binding
-            # tokens, and similar staged fields) are execution linkage only:
-            # they are self-supplied/unauthenticated evidence and do NOT
-            # constitute human consent. Self-supplied claims of authentication
-            # (binding, authenticated_binding, etc.) are likewise unverified.
-            # Until an independently verified receipt/authentication integration
-            # exists, every approval transition is rejected, regardless of
-            # matching identifiers.
+            # Deny is always safe to record. Approval is fail-closed: a bare
+            # status flip, matching identifiers, or a self-supplied claim has no
+            # authorization effect. Only a verified durable PermissionDecisionReceipt
+            # (bound to this exact task/action/proposal) may release the action.
             if status == "approved":
-                raise RuntimeError(
-                    "Pending approval requires independently authenticated binding "
-                    "proof; approval transition fail-closed without authenticated "
-                    "human consent"
-                )
+                decision_id = binding if isinstance(binding, str) and binding.strip() else None
+                kw_decision = kwargs.get("decision_id")
+                if isinstance(kw_decision, str) and kw_decision.strip():
+                    decision_id = kw_decision.strip()
+
+                # Stage the intended status in-session so the verifier sees a
+                # resolved (non-awaiting) self-park. This is rolled back unless
+                # a verified receipt proves the approval.
+                data["status"] = "approved"
+                task.pending_action = json.dumps(data)
+                self.db.flush()
+                try:
+                    from backend.runtime.consequential_approval import ConsequentialApprovalService
+
+                    verification = ConsequentialApprovalService(db=self.db).verify(
+                        task_id=task_id,
+                        action_id=str(data.get("action_id") or ""),
+                        decision_id=decision_id,
+                        proposal_id=data.get("proposal_id"),
+                    )
+                except Exception:
+                    verification = None
+                if verification is None or not verification.ok:
+                    self.db.rollback()
+                    raise RuntimeError(
+                        "Pending approval requires a verified durable consent receipt / "
+                        "independently authenticated binding proof; "
+                        "approval transition fail-closed"
+                    )
 
             data["status"] = status
             task.pending_action = json.dumps(data)

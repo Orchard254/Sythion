@@ -169,30 +169,36 @@ function AppContent() {
   const pendingApprovals = usePendingApprovals();
   const uncertainActions = useUncertainRemoteActions();
 
-  const [seenTaskStates, setSeenTaskStates] = useState<Record<string, string>>({});
+  // null = baseline not yet established. Historical terminal states that are
+  // already present on first load are NOT new events and must not raise a
+  // notification on every page load.
+  const [seenTaskStates, setSeenTaskStates] = useState<Record<string, string> | null>(null);
 
-  // Raise an in-app notification whenever a task enters an interesting
-  // terminal state. Derived from polled backend state, not fabricated.
+  // Raise an in-app notification when a task ENTERS an interesting state
+  // during this session. Derived from polled backend state, not fabricated.
   useEffect(() => {
     const interesting = new Set(['failed', 'waiting_for_user', 'interrupted']);
-    const next = { ...seenTaskStates };
+    const baseline = seenTaskStates ?? {};
+    const next: Record<string, string> = { ...baseline };
     let changed = false;
     for (const t of tasks.data ?? []) {
-      const prev = seenTaskStates[t.id];
+      const prev = baseline[t.id];
       if (prev !== t.state) {
         next[t.id] = t.state;
         changed = true;
-      }
-      if (prev !== t.state && interesting.has(t.state)) {
-        notify({
-          tone: t.state === 'failed' ? 'danger' : 'warn',
-          title: `Task ${t.state === 'failed' ? 'failed' : 'needs your input'}`,
-          body: t.terminal_reason ?? t.pending_question ?? t.normalized_goal ?? t.original_request,
-          route: 'assistant',
-        });
+        // Only notify on a real transition seen live; the first poll seeds the
+        // baseline and stays silent for pre-existing terminal states.
+        if (seenTaskStates !== null && interesting.has(t.state)) {
+          notify({
+            tone: t.state === 'failed' ? 'danger' : 'warn',
+            title: `Task ${t.state === 'failed' ? 'failed' : 'needs your input'}`,
+            body: t.terminal_reason ?? t.pending_question ?? t.normalized_goal ?? t.original_request,
+            route: 'assistant',
+          });
+        }
       }
     }
-    if (changed) {
+    if (changed || seenTaskStates === null) {
       setSeenTaskStates(next);
     }
   }, [tasks.data, notify, seenTaskStates]);

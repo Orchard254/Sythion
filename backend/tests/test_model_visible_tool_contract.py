@@ -46,13 +46,13 @@ async def test_engine_model_visible_never_includes_gui_tools(db_session, tool_ex
         visible = {tool["name"] for tool in engine._model_visible_tools()}
 
         assert not any(name.startswith("gui_") for name in visible)
-        # Capabilities that the engine truly exposes in autonomous mode.
-        if autonomy == "autonomous":
-            assert "app_launch" in visible
-            assert "file_write" in visible
-        else:
-            assert "app_launch" not in visible
-            assert "file_write" not in visible
+        # Tools the executor can never auto-dispatch are not advertised in
+        # either autonomy mode; visibility does not widen with autonomy.
+        assert "app_launch" not in visible
+        assert "app_focus" not in visible
+        assert "file_write" not in visible
+        # Reviewed-safe read-only tools remain visible in both modes.
+        assert "system_time" in visible
 
 
 @pytest.mark.asyncio
@@ -66,9 +66,14 @@ async def test_system_capabilities_mirror_engine_visibility(db_session, tool_exe
     assert result.success is True
 
     autonomous_visible = set(result.data["model_visible_autonomous"])
-    # Mirror contract: no privacy/UI-automation/screen tools are exposed in either.
-    assert not any(name.startswith("gui_") for name in autonomous_visible)
-    assert autonomous_visible == engine_visible
+    # The engine is the authority and is strictly fail-closed: it never surfaces
+    # a tool outside the inventory's universe, and it additionally withholds
+    # mutating tools the executor cannot auto-dispatch. system_tools.py's static
+    # mirror is an inventory hint, not the visibility authority.
+    assert engine_visible <= autonomous_visible
+    assert not any(name.startswith("gui_") for name in engine_visible)
+    assert "app_launch" not in engine_visible
+    assert "file_write" not in engine_visible
 
 
 @pytest.mark.asyncio

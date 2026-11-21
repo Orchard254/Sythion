@@ -4,6 +4,7 @@ import { useActions, useVoiceAssets } from '../hooks/useBackend';
 import { useAppStore } from '../store/appStore';
 import { voiceService } from '../services/api';
 import { isTauri } from '../services/bridge';
+import { hideCompanion } from '../services/companion';
 
 /* Companion overlay surface.
  *
@@ -88,10 +89,11 @@ export function CompanionSurface() {
     }
   }, []);
 
-  // STT availability is a real reported value. `null` means the assets query has
-  // not answered yet, which is not the same as "unavailable", so the Companion
-  // is told the truth once known rather than guessing early.
-  const sttAvailable = assets.data?.stt_installed ?? false;
+  // STT availability is a real reported value. `undefined` means the assets
+  // query has not answered yet, which is NOT the same as "unavailable". Pass it
+  // through untouched so the Companion stays silent while loading and only
+  // claims speech is missing once the backend definitively returns false.
+  const sttAvailable = assets.data?.stt_installed;
 
   const onSubmit = useCallback(
     async (text: string) => {
@@ -254,8 +256,9 @@ useEffect(() => {
     if (!isTauri()) return;
     void (async () => {
       try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        await invoke('set_companion_visible', { visible: false });
+        // Session-only hide: the Settings checkbox stays the single persisted
+        // source of truth, so closing here does not disable startup restore.
+        await hideCompanion();
       } catch (err) {
         // Hiding is best-effort, but a swallowed failure would leave the user
         // with no explanation of why the overlay stayed visible. Surface it both

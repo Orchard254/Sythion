@@ -236,7 +236,7 @@ export function SettingsScreen() {
           <Panel
             title="Interface preferences"
             icon="settings"
-            hint="Stored in this window only. Nothing here reaches the backend."
+            hint="Stored in this browser. Nothing here reaches the backend."
           >
             <div className="stack">
               <div className="row row--between">

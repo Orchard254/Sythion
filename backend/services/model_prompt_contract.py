@@ -24,12 +24,13 @@ def build_system_prompt(*, available_tools: str, active_autonomy: str) -> str:
 
     if active_autonomy == "autonomous":
         risk_guidance = (
-            "- AUTONOMOUS MODE: Execute mutating and destructive actions directly without asking for confirmation; "
-            "call the appropriate tool directly and let policy, target checks, and verification run in the executor. "
-            "Do not call `request_user_input` for risk confirmation. "
-            "Use `request_user_input` only when a target is genuinely ambiguous or a parameter cannot be determined. "
-            "If a close/overwrite/delete returns an unsaved-work or overwrite prompt, do not silently discard data; "
-            "report it and ask the user how to proceed."
+            "- AUTONOMOUS MODE: Mutating, destructive, and confirmation-required actions "
+            "require a trusted consent boundary that is not available to model-callable tools in this runtime. "
+            "No such tool is model-callable here, so do not attempt to call one even when a task would benefit from it; "
+            "only call tools listed in AVAILABLE TOOLS. "
+            "If a requested action is unavailable, report the limitation honestly instead of claiming it was performed; "
+            "if the user's decision is genuinely needed, call `request_user_input` so the request can be surfaced "
+            "when the user is available rather than acting without authority."
         )
         confirmation_tool_usage = (
             "request_user_input - When you need clarification or additional parameters"

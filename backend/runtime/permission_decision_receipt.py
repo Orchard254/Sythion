@@ -718,6 +718,45 @@ class PermissionDecisionReceiptManager:
             except Exception:
                 return None
 
+    def _version_binding_ok(self, task: Optional[Any], values: dict[str, Any]) -> bool:
+        """Version binding that tolerates the legitimate consent park.
+
+        A consequential park advances the task's audit version through ordinary
+        runner transitions after the proposal was staged.  The staged
+        ``pending_action`` is the durable linkage to that proposal: when it
+        still carries the original version and the exact action id, the version
+        advance is the park, not a stale-proposal mutation.  Everything else
+        fails closed.
+        """
+        if task is None or getattr(task, "version", None) is None:
+            return True
+        try:
+            expected = int(values["task_version"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if int(task.version) == expected:
+            return True
+        pending_raw = getattr(task, "pending_action", None)
+        if pending_raw in (None, "", b""):
+            return False
+        try:
+            pending = json.loads(pending_raw)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(pending, dict):
+            return False
+        pending_version = pending.get("task_version")
+        if pending_version in (None, ""):
+            return False
+        try:
+            pending_version = int(pending_version)
+        except (TypeError, ValueError):
+            return False
+        return bool(
+            pending_version == expected
+            and str(pending.get("action_id") or "") == str(values.get("action_id") or "")
+        )
+
     def _validate_binding(self, values: dict[str, Any]) -> None:
         # Required validated fields.
         decision_id = self._clean_id(values.get("decision_id"), "permission decision identity")
@@ -755,17 +794,7 @@ class PermissionDecisionReceiptManager:
         task_id_for_lookup = values.get("task_id") or source_task_id
         task = self._load_task(task_id_for_lookup)
         if task is not None:
-            expected_tv = values.get("expected_task_version", task_version)
-            try:
-                if expected_tv is not None and int(task.version) != int(expected_tv):
-                    raise ValueError("Task version binding mismatch")
-            except (TypeError, ValueError):
-                raise ValueError("Task version binding mismatch")
-            # Task version authoritative check against proposed task version.
-            try:
-                if int(task.version) != int(task_version):
-                    raise ValueError("Task version binding mismatch")
-            except (TypeError, ValueError):
+            if not self._version_binding_ok(task, values):
                 raise ValueError("Task version binding mismatch")
 
             pending_raw = getattr(task, "pending_action", None)

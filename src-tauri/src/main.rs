@@ -596,37 +596,18 @@ fn create_companion_window(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/* Companion visibility persistence.
+/* Companion visibility is session-only at the shell level.
  * ---------------------------------------------------------------------------
- * The frontend's `localStorage['sythion.companionEnabled']` cannot be read from
- * Rust. The desktop command that reveals/hides the overlay already runs on
- * every change to that preference, so it mirrors the value into a tiny flag in
- * the profile directory. The shell reads that flag during setup and restores
- * visibility without depending on the main UI's own coordination effect. A
- * missing/unreadable flag means OFF, which keeps the first-run setup form
- * unobstructed.
+ * The single persisted preference is the Settings checkbox in the frontend
+ * (`localStorage['sythion.companionEnabled']`). Rust never reads it at startup
+ * and never mirrors it into the profile directory: showing an always-on-top
+ * overlay from the shell would override the first-run setup gate before the
+ * frontend has confirmed setup is complete. The Control Center calls
+ * `set_companion_visible` only after that gate passes, so returning users are
+ * still restored from the preference - just through the frontend, not here.
+ * Both the hotkey toggle and the on-capsule close button are therefore
+ * session-only and leave the persisted preference untouched.
  */
-const COMPANION_PREF_FILE: &str = "companion_visible";
-
-fn companion_pref_path(profile_dir: &std::path::Path) -> PathBuf {
-    profile_dir.join(COMPANION_PREF_FILE)
-}
-
-fn read_companion_visible(profile_dir: &std::path::Path) -> bool {
-    std::fs::read_to_string(companion_pref_path(profile_dir))
-        .map(|s| s.trim() == "1")
-        .unwrap_or(false)
-}
-
-fn write_companion_visible(app: &tauri::AppHandle, visible: bool) {
-    let Some(dir) = app.state::<AppState>().profile_dir.lock().unwrap().clone() else {
-        return;
-    };
-    let path = companion_pref_path(&dir);
-    if let Err(e) = std::fs::write(&path, if visible { "1\n" } else { "0\n" }) {
-        shell_log(&format!("[sythion] could not persist Companion visibility: {e}"));
-    }
-}
 
 /// Toggle the Companion overlay from the global hotkey.
 ///
@@ -647,11 +628,13 @@ fn toggle_companion_from_hotkey(app: &tauri::AppHandle) {
     }
 }
 
-/// Show or hide the Companion overlay.
+/// Show or hide the Companion overlay for this session only.
 ///
 /// The overlay is created hidden during startup so it cannot float above the
 /// first-run setup form. This command is how the Control Center reveals it
-/// once the setup gate has been cleared.
+/// once the setup gate has been cleared. It deliberately persists nothing:
+/// the Settings checkbox is the single source of truth for startup restore,
+/// and session-level hide (hotkey or capsule close button) must not change it.
 ///
 /// Showing and hiding an existing window is a message to the event loop, not a
 /// window creation, so it is safe to call from a command.
@@ -669,9 +652,9 @@ fn set_companion_visible(app: tauri::AppHandle, visible: bool) -> Result<(), Str
             .map_err(|e| format!("could not hide the Companion overlay: {e}"))?;
         shell_log("[sythion] Companion overlay hidden");
     }
-    // Mirror the preference into the profile dir so the shell can restore
-    // this state at the next startup (Rust cannot read localStorage).
-    write_companion_visible(&app, visible);
+    // No persistence here. The Settings checkbox (localStorage) is the only
+    // persisted preference; this command is a session-level show/hide so the
+    // hotkey and the capsule close button cannot rewrite it.
     Ok(())
 }
 
@@ -801,25 +784,14 @@ fn main() {
                 // The Companion overlay is created hidden. It is an always-on-top
                 // window with no taskbar button, and during the first-run setup it
                 // would float above the setup form and hide it. The Control Center
-                // reveals it through `set_companion_visible` once the setup gate
-                // has been cleared.
+                // reveals it through `set_companion_visible` only after the
+                // frontend's setup gate passes. The shell never shows it from a
+                // persisted flag: doing so would bypass that gate for returning
+                // users. Startup restore is driven by the frontend, which reads
+                // the Settings preference and calls `set_companion_visible` once
+                // setup is known to be complete.
                 create_companion_window(app)
                     .map_err(|e| format!("the Companion overlay could not be created: {e}"))?;
-                // Restore the persisted Settings preference at the shell level
-                // so the overlay is available without waiting for the main UI's
-                // own coordination effect. A missing flag means OFF, which keeps
-                // the first-run setup form unobstructed.
-                if read_companion_visible(&profile_dir) {
-                    if let Some(window) = app.get_webview_window("companion") {
-                        if let Err(e) = window.show() {
-                            shell_log(&format!(
-                                "[sythion] could not restore Companion visibility: {e}"
-                            ));
-                        } else {
-                            shell_log("[sythion] Companion visibility restored at startup");
-                        }
-                    }
-                }
                 // Must come AFTER create_companion_window: the poller exits as soon
                 // as the overlay window is missing, so starting it earlier would make
                 // it terminate immediately and click-through would never engage.

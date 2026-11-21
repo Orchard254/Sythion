@@ -426,7 +426,9 @@ useLayoutEffect(() => {
                   <EmptyState
                     icon="assistant"
                     title={'Ask Sythion something'}
-                    description="Type a message below, or tap the microphone."
+                    description={voiceUnavailable
+                      ? 'Type a message below.'
+                      : 'Type a message below, or tap the microphone.'}
                   />
                 ) : (
                   thread.map((t) => <Exchange key={t.id} task={t} />)

@@ -84,26 +84,29 @@ class TokenError(RuntimeError):
 # --- Token discovery -------------------------------------------------------
 
 
-def default_token_file() -> Path:
+def default_token_file(data_dir: Optional[str] = None) -> Path:
     """Resolve the token.json path using the Core's documented conventions.
 
     Mirrors backend/core/handshake.py:token_file_path and
     backend/core/storage.py data-dir resolution without importing the backend.
+    An explicit ``data_dir`` (from --data-dir) targets a Core started with a
+    custom profile and takes precedence over the environment conventions.
     """
     explicit = os.environ.get(TOKEN_FILE_ENV, "").strip()
     if explicit:
         return Path(explicit)
 
-    data_dir = (
-        os.environ.get(DATA_DIR_ENV, "").strip()
+    resolved = (
+        (data_dir or "").strip()
+        or os.environ.get(DATA_DIR_ENV, "").strip()
         or os.environ.get(LEGACY_DATA_DIR_ENV, "").strip()
     )
-    if not data_dir:
+    if not resolved:
         local = os.environ.get("LOCALAPPDATA") or os.path.join(
             os.path.expanduser("~"), "AppData", "Local"
         )
-        data_dir = os.path.join(local, DEFAULT_DATA_DIR_NAME)
-    return Path(data_dir) / TOKEN_FILE_NAME
+        resolved = os.path.join(local, DEFAULT_DATA_DIR_NAME)
+    return Path(resolved) / TOKEN_FILE_NAME
 
 
 def read_control_token(path: Path) -> str:
@@ -194,11 +197,30 @@ class CompanionHandler(http.server.BaseHTTPRequestHandler):
     server_version = "SynthCompanion/1.0"
     protocol_version = "HTTP/1.1"
 
-    def __init__(self, *args, root: Path, token: str, core_port: int = CORE_PORT, **kwargs):
+    def __init__(self, *args, root: Path, token: str,
+                 token_path: Optional[Path] = None,
+                 core_port: int = CORE_PORT, **kwargs):
         self._root = root.resolve()
-        self._token = token
+        self._token = token  # literal fallback (e.g. hermetic tests / Vite env)
+        self._token_path = token_path
         self._core_port = core_port
         super().__init__(*args, **kwargs)
+
+    def _current_token(self) -> Optional[str]:
+        """Re-read the Core token for each index.html response.
+
+        The Core rewrites token.json on every start. Capturing it once at
+        process launch leaves a stale token in a long-lived browser session;
+        reading the file here keeps a page reload in step with a restarted Core.
+        A transient read failure returns None so we never overwrite the
+        browser's sessionStorage with an empty token.
+        """
+        if self._token_path is None:
+            return self._token
+        try:
+            return read_control_token(self._token_path)
+        except TokenError:
+            return None
 
     def log_message(self, fmt: str, *args: object) -> None:
         # Never log request lines: headers/URLs could carry the control token.
@@ -276,11 +298,15 @@ class CompanionHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404, "Not Found")
             return
 
-        # Only the root index.html gets the runtime token bootstrap.
+        # Only the root index.html gets the runtime token bootstrap, and the
+        # token is re-read on EVERY response so a Core restart is picked up by
+        # the next reload instead of leaving a stale control token in place.
         if candidate.name == "index.html" and candidate.parent == self._root:
-            data = inject_bootstrap(data.decode("utf-8", errors="replace"), self._token).encode(
-                "utf-8"
-            )
+            token = self._current_token()
+            if token:
+                data = inject_bootstrap(data.decode("utf-8", errors="replace"), token).encode(
+                    "utf-8"
+                )
 
         self.send_response(200)
         self.send_header("Content-Type", self.guess_type(str(candidate)))
@@ -339,9 +365,17 @@ class CompanionHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(data)
 
 
-def build_server(root: Path, token: str, port: int) -> http.server.ThreadingHTTPServer:
-    """Create (do not start) a loopback-only threaded companion server."""
-    handler = functools.partial(CompanionHandler, root=root, token=token)
+def build_server(root: Path, token: str, port: int,
+                 token_path: Optional[Path] = None) -> http.server.ThreadingHTTPServer:
+    """Create (do not start) a loopback-only threaded companion server.
+
+    ``token`` is the startup-validated literal; when ``token_path`` is given the
+    handler re-reads the Core's token from it on every index.html response so a
+    Core restart cannot leave a stale token in the browser.
+    """
+    handler = functools.partial(
+        CompanionHandler, root=root, token=token, token_path=token_path
+    )
     return http.server.ThreadingHTTPServer((LOOPBACK_HOST, port), handler)
 
 
@@ -395,6 +429,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="Path to the headless Core token.json (default: resolved from the Sythion data dir).",
     )
     parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Headless Core data dir holding token.json (for a Core started with a custom profile).",
+    )
+    parser.add_argument(
         "--port",
         type=int,
         default=None,
@@ -407,13 +446,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    token_path = args.token_file or default_token_file()
+    token_path = args.token_file or default_token_file(
+        str(args.data_dir) if args.data_dir else None
+    )
     try:
         token = read_control_token(token_path)
     except TokenError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         print(
-            "Start the headless Core first, or pass --token-file PATH.",
+            "Start the headless Core first, or pass --token-file PATH / --data-dir DIR.",
             file=sys.stderr,
         )
         return 2
@@ -443,7 +484,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     if built:
-        server = build_server(dist, token, port)
+        # Pass the path (not just the captured string) so each index.html
+        # response re-reads the Core token; a Core restart then stops leaving a
+        # stale token behind in a long-lived browser session.
+        server = build_server(dist, token, port, token_path=token_path)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         print(f"Companion surface: {url}")

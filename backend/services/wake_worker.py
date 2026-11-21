@@ -89,18 +89,22 @@ class WakeWorker:
         return self._last_fatal_error
 
     def _bounded_owner_enabled(self) -> bool:
-        """Re-read BOTH real owner switches from persisted state before rearm.
+        """Re-read owner switches AND agent lifecycle state before rearm.
 
-        Mirrors ``apply_owner_policy``: the time switch and the background
-        switch must both be on. Never grants execution authority itself — the
-        single ``may_execute_background`` gate still runs in ``_process``.
+        Mirrors ``apply_owner_policy``: the time switch, the background switch
+        AND a non-paused/non-shutdown agent are all required. ``may_execute_background``
+        subsumes the background switch and the paused/shutdown state, so pausing
+        stops the timer instead of letting it submit wakes that would only be
+        SKIPped. Never grants execution authority itself — the single
+        ``may_execute_background`` gate still runs in ``_process``.
         """
         from backend.services.main_agent import MainAgentService
 
         session = self._db_manager.new_session()
         try:
             svc = MainAgentService(session)
-            return bool(svc.background_enabled() and svc.bounded_wake_enabled())
+            allowed, _ = svc.may_execute_background()
+            return bool(allowed and svc.bounded_wake_enabled())
         finally:
             session.close()
 
@@ -237,18 +241,20 @@ class WakeWorker:
         logger.info("Owner-gated bounded wake loop stopped")
 
     def apply_owner_policy(self, db) -> bool:
-        """Reconcile the bounded loop with BOTH current owner switches.
+        """Reconcile the bounded loop with the owner switches AND agent state.
 
         Idempotent and safe to call after any policy/settings change or at
-        startup. Creates no timer unless both ``background_orchestration_enabled``
-        and ``bounded_wake_enabled`` are on; stops a running loop the moment
-        either is switched off. Returns whether the loop is running afterwards.
+        startup. Creates no timer unless ``background_orchestration_enabled``,
+        ``bounded_wake_enabled`` AND a non-paused/non-shutdown agent all hold;
+        stops a running loop the moment any no longer does (including after
+        POST /agent/pause or shutdown). Returns whether the loop is running.
         """
         from backend.core.config import settings
         from backend.services.main_agent import MainAgentService
 
         svc = MainAgentService(db)
-        if not (svc.background_enabled() and svc.bounded_wake_enabled()):
+        allowed, _ = svc.may_execute_background()
+        if not (allowed and svc.bounded_wake_enabled()):
             self.stop_bounded_loop()
             return False
         if self.bounded_loop_running():

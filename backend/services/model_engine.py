@@ -15,7 +15,11 @@ from sqlalchemy.orm import Session
 from backend.runtime.interfaces import ModelClient
 from backend.runtime.model_client import get_default_model_client
 from backend.adapters.ollama_adapter import format_tools_for_ollama
-from backend.tools.executor import ToolExecutor
+from backend.tools.executor import (
+    ToolExecutor,
+    is_reviewed_safe_builtin,
+    _safe_automatic_dispatch_metadata,
+)
 from backend.core.budgets import TaskBudget, BudgetExceededError
 from backend.services.model_context_builder import ModelContextBuilder
 from backend.services.model_prompt_contract import build_system_prompt
@@ -217,17 +221,21 @@ class ModelDecisionEngine:
     def _model_visible_tools(self) -> List[Dict[str, Any]]:
         """Return the policy-filtered subset of tools safe to expose to the model.
 
-        Phase B exposes only read-only, confirmation-free tools with no screen,
-        UI-tree, or privacy-sensitive output. Mutating and GUI tools remain
-        registered and policy-gated at the executor but are never model-visible
-        until their milestone gate passes (Phase C+). The single exception is
-        app-internal mutations (`app_internal`): they change only Sythion's own
-        persistent memory, are reversible, and are instructed by the system
-        prompt, so they stay callable in normal mode.
+        Visibility is governed by a single fail-closed predicate that does not
+        vary with autonomy mode: a tool is model-callable only if the executor
+        would also auto-dispatch it, i.e. it is an exact reviewed-safe built-in
+        whose policy requirements permit automatic dispatch. Mutating,
+        destructive, confirmation-gated, app-internal, unreviewed, and elevated
+        tools can never be dispatched by a model call, so they must never be
+        advertised to the model either. Privacy-, screen-, and
+        UI-automation-sensitive tools are additionally withheld here.
+
+        Because build_system_prompt derives its advertised tools from this list,
+        keeping this check identical to the executor's dispatch check is what
+        makes the prompt honest: a tool the runtime rejects can never be
+        promised to the model.
         """
         visible = []
-        from backend.core.config import settings
-        active_autonomy = str(os.environ.get("SYTHION_AUTONOMY_LEVEL", settings.autonomy_level) or "").strip()
         for name in self.tool_executor.list_tools():
             tool = self.tool_executor.get_tool(name)
             if not tool:
@@ -241,14 +249,11 @@ class ModelDecisionEngine:
                 or reqs.get("requires_ui_automation")
             ):
                 continue
-            if active_autonomy != "autonomous":
-                if reqs.get("mutating") or reqs.get("destructive"):
-                    if not reqs.get("app_internal"):
-                        continue
-                if reqs.get("requires_confirmation"):
-                    continue
-                if reqs.get("risk_level") in {"medium", "high"}:
-                    continue
+            # The single visibility authority: exactly the tools the executor
+            # will auto-dispatch. No autonomy mode, configuration, app_internal
+            # status, or caller flag can widen this check.
+            if not is_reviewed_safe_builtin(tool) or not _safe_automatic_dispatch_metadata(reqs):
+                continue
 
             visible.append({
                 "name": tool.name,

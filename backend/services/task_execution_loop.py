@@ -998,10 +998,11 @@ class TaskExecutionLoop:
             logger.info(f"Task {task_id} cancelled before tool '{tool_name}'; not executing")
             return False
 
-        # Non-authorizing guard: internally approved pending/evidence status is
-        # not authenticated human consent. Diagnose it truthfully first, then
-        # block before admission, runner handoff, permission consumption, or any
-        # external dispatch. This keeps pending rows recoverable.
+        # Approval gate: an internally approved pending/evidence status is NOT
+        # consent. Diagnose unresolved evidence truthfully first, then require a
+        # verified durable PermissionDecisionReceipt before any admission,
+        # runner handoff, permission consumption, or external dispatch. A bare
+        # UI flag, a bare "approved" string, or model output is refused here.
         if approved_by_user:
             diagnostics_action_id = str(action_id).strip() if isinstance(action_id, str) and action_id.strip() else None
             evidence_error = self.verifier.action_evidence_error(
@@ -1012,12 +1013,54 @@ class TaskExecutionLoop:
             )
             if evidence_error:
                 raise UnresolvedActionEvidenceError(evidence_error)
-            logger.warning(
-                " refusing dispatch for task %s tool '%s': no independently authenticated human consent",
-                task_id,
-                tool_name,
-            )
-            return False
+
+            fresh_task = await self.runner.get_task(task_id)
+            raw_pending = getattr(fresh_task, "pending_action", None) if fresh_task else None
+            try:
+                pending = json.loads(raw_pending) if raw_pending else {}
+            except (TypeError, ValueError):
+                pending = {}
+            if not isinstance(pending, dict):
+                pending = {}
+            decision_id = pending.get("decision_id")
+            proposal_id = pending.get("proposal_id")
+            gate_action_id = diagnostics_action_id or pending.get("action_id")
+            if not (decision_id or proposal_id) or not gate_action_id:
+                logger.warning(
+                    " refusing dispatch for task %s tool '%s': no durable consent receipt reference",
+                    task_id,
+                    tool_name,
+                )
+                return False
+
+            from backend.runtime.consequential_approval import ConsequentialApprovalService
+
+            try:
+                verification = ConsequentialApprovalService(db=self.db).verify(
+                    task_id=task_id,
+                    action_id=gate_action_id,
+                    decision_id=decision_id,
+                    proposal_id=proposal_id,
+                )
+            except Exception as exc:
+                verification = None
+                logger.warning(
+                    " refusing dispatch for task %s tool '%s': consent verification failed (%s)",
+                    task_id, tool_name, type(exc).__name__,
+                )
+            # Verification is read-only. Close its transaction before any runner
+            # handoff so the runner never sees a caller-owned active transaction.
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+            if verification is None or not verification.ok:
+                reason = verification.reason if verification is not None else "unverified"
+                logger.warning(
+                    " refusing dispatch for task %s tool '%s': consent receipt not verified (%s)",
+                    task_id, tool_name, reason or "unverified",
+                )
+                return False
 
         from backend.core.config import settings
         from backend.core.importance_classifier import Importance, classify_action
@@ -1052,20 +1095,60 @@ class TaskExecutionLoop:
                 return False
 
             permission_action_id = str(uuid.uuid4())
-            # This is execution linkage for the proposed action, not a
-            # cryptographic or user-consent binding to the exact parameters or
-            # task version. It gives the approved handoff one stable action ID;
-            # the runner also checks the durable proposal payload before use.
-            pending_data = json.dumps({
+            # A caller-owned transaction must be refused before any staging or
+            # commit/rollback of caller work. This guard was previously just
+            # before the transition; moving it ahead of proposal staging keeps
+            # the same fail-closed boundary for the whole approval stage.
+            self.runner._refuse_caller_owned_pending_transaction()
+            # Link the staged task pending action to a REAL durable permission
+            # proposal so the owner UI can present per-action Allow/Deny and a
+            # decision receipt can later authorize this exact action. Only the
+            # supported consequential tool/parameter shape can be staged; for
+            # anything else we deliberately leave no proposal_id, which keeps
+            # the action un-releasable (fail closed) instead of weakening the
+            # consent binding. The action ID remains execution linkage only.
+            pending_payload = {
                 "kind": "permission",
                 "tool_name": tool_name,
                 "params": tool_params,
                 "status": "awaiting",
                 "action_id": permission_action_id,
-            })
+            }
+            try:
+                from backend.runtime.consequential_approval import ConsequentialApprovalService
+
+                task_version = getattr(task, "version", None)
+                if isinstance(task_version, bool) or not isinstance(task_version, int):
+                    task_version = None
+                stage_service = ConsequentialApprovalService(db=self.db)
+                proposal = stage_service.stage_proposal(
+                    task_id=task_id,
+                    action_id=permission_action_id,
+                    tool_name=tool_name,
+                    task_version=task_version,
+                    params=tool_params,
+                )
+                # The service leaves the caller-owned transaction open; commit
+                # the durable proposal before the runner's writer transition.
+                self.db.commit()
+                pending_payload["proposal_id"] = proposal.proposal_id
+                pending_payload["task_version"] = int(proposal.task_version)
+            except Exception as exc:
+                # A consequential action without a real proposal can never be
+                # released by a verified receipt. Roll back any partial staging
+                # and park it with no proposal reference so it stays blocked.
+                try:
+                    self.db.rollback()
+                except Exception:
+                    pass
+                logger.warning(
+                    "Task %s: could not stage a permission proposal for tool '%s' (%s); "
+                    "action will remain un-releasable",
+                    task_id, tool_name, type(exc).__name__,
+                )
+            pending_data = json.dumps(pending_payload)
             # Staging another permission must not overwrite evidence from an
             # unresolved action. Recheck under the transition's writer lock.
-            self.runner._refuse_caller_owned_pending_transaction()
             started_transaction = self.runner._ensure_transaction()
             try:
                 error = self.verifier.action_evidence_error(task_id, mutation=True)

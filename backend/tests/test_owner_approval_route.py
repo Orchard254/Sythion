@@ -175,4 +175,7 @@ def test_approval_receipt_is_bound_to_proposal(test_client, test_db):
     assert response.status_code == 200
     row = test_db.query(PermissionProposalRow).filter_by(
         proposal_id=proposal.proposal_id).one()
-    assert row.status == "awaiting"  # staging primitive stays non-executing
+    # A decided proposal moves off "awaiting" so it stops re-listing; the
+    # receipt (not this status) is what can later release the action. The
+    # staging primitive itself remains non-executing.
+    assert row.status == "approved"

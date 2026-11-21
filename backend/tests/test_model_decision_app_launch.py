@@ -21,12 +21,9 @@ def _app_launch_response():
     }]}}
 
 
-@pytest.mark.parametrize("autonomy,expected_visible", [
-    ("guarded", False),
-    ("autonomous", True),
-])
-def test_prompt_advertises_app_launch_exactly_when_visible(
-    test_db, tool_executor, monkeypatch, autonomy, expected_visible,
+@pytest.mark.parametrize("autonomy", ["guarded", "autonomous"])
+def test_prompt_never_advertises_app_launch(
+    test_db, tool_executor, monkeypatch, autonomy,
 ):
     monkeypatch.setenv("SYTHION_AUTONOMY_LEVEL", autonomy)
     engine = ModelDecisionEngine(test_db, tool_executor)
@@ -34,11 +31,11 @@ def test_prompt_advertises_app_launch_exactly_when_visible(
     visible = {t["name"] for t in engine._model_visible_tools()}
     prompt = engine._build_system_prompt()
 
-    assert ("app_launch" in visible) is expected_visible
-    # The prompt must name the tool only if the same mode will accept its call.
-    assert ("`app_launch`" in prompt) is expected_visible
-    if not expected_visible:
-        assert "app_launch" not in prompt
+    # The executor can never auto-dispatch app_launch (consequential, requires a
+    # trusted consent boundary that is absent here), so it is not model-visible
+    # in either mode and the prompt must never advertise it.
+    assert "app_launch" not in visible
+    assert "app_launch" not in prompt
 
 
 def test_prompt_without_app_launch_in_available_tools_never_advertises_it():
@@ -49,29 +46,17 @@ def test_prompt_without_app_launch_in_available_tools_never_advertises_it():
     assert "app_focus" not in prompt
 
 
-def test_hidden_app_launch_call_fails_closed_without_parking_a_call(
-    test_db, tool_executor, monkeypatch,
+@pytest.mark.parametrize("autonomy", ["guarded", "autonomous"])
+def test_hidden_app_launch_call_fails_closed_in_every_mode(
+    test_db, tool_executor, monkeypatch, autonomy,
 ):
-    monkeypatch.setenv("SYTHION_AUTONOMY_LEVEL", "guarded")
+    monkeypatch.setenv("SYTHION_AUTONOMY_LEVEL", autonomy)
     engine = ModelDecisionEngine(test_db, tool_executor)
 
     with pytest.raises(ModelDecisionError) as exc:
         engine._parse_decision(_app_launch_response())
 
-    # Fail closed: a hidden tool is treated like an unknown one, so the model
-    # learns nothing about capabilities it cannot use.
+    # Fail closed in both modes: a hidden tool is treated like an unknown one,
+    # so the model learns nothing about capabilities it cannot use.
     assert exc.value.code == "INVALID_DECISION_TYPE"
     assert engine.pop_pending_tool_calls() == []
-
-
-def test_autonomous_app_launch_call_maps_to_execute_tool(
-    test_db, tool_executor, monkeypatch,
-):
-    monkeypatch.setenv("SYTHION_AUTONOMY_LEVEL", "autonomous")
-    engine = ModelDecisionEngine(test_db, tool_executor)
-
-    kind, params = engine._parse_decision(_app_launch_response())
-
-    assert kind == "execute_tool"
-    assert params["tool_name"] == "app_launch"
-    assert params["params"]["app_id"] == "notepad"

@@ -183,7 +183,31 @@ class GoalManager:
         )
 
     def resume_goal(self, goal_id: str) -> Objective:
-        return self.transition_goal(goal_id, "active")
+        goal = self.transition_goal(goal_id, "active")
+        self._request_resume_wake(goal_id)
+        return goal
+
+    def _request_resume_wake(self, goal_id: str) -> None:
+        """Best-effort coalescable wake for a resumed goal (never breaks resume).
+
+        Mirrors ``request_task_terminal_wake``: a missing worker or a submission
+        failure is silently tolerated. Logs only the goal id — never prompt
+        text or secrets.
+        """
+        import logging
+
+        try:
+            from backend.services.wake_worker import get_wake_worker
+
+            worker = get_wake_worker()
+            if worker is None:
+                return
+            worker.submit("goal.resumed", trigger_reference=goal_id)
+        except Exception:  # pragma: no cover - best effort, must not break resume
+            logging.getLogger(__name__).warning(
+                "Could not submit goal.resumed wake for goal %s", goal_id,
+                exc_info=True,
+            )
 
     def abandon_goal(self, goal_id: str, reason: Optional[str] = None) -> Objective:
         return self.transition_goal(

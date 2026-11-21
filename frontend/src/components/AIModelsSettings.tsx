@@ -27,7 +27,7 @@ export function AIModelsSettings() {
   const [hasKey, setHasKey] = useState<Partial<Record<CloudPreviewProviderId, boolean>>>({});
   const [keyEditor, setKeyEditor] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [busy] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const mounted = useRef(false);
@@ -89,6 +89,9 @@ export function AIModelsSettings() {
     if (!provider) return;
     const expected = provider;
     const currentGeneration = generation.current;
+    // Verification is genuinely async: hold the busy guards (picker/key buttons
+    // disabled, status line shown) until the backend confirms the active model.
+    setBusy(true);
     void activeInferenceService.status().then((current) => {
       if (!mounted.current || currentGeneration !== generation.current) return;
       if (current.provider_id !== expected || current.model_id !== modelId ||
@@ -102,6 +105,10 @@ export function AIModelsSettings() {
       if (mounted.current && currentGeneration === generation.current) {
         setError('Could not confirm the active model. Reopen AI Models to review.');
       }
+    }).finally(() => {
+      // A newer verification may have superseded this one; only clear the guard
+      // while mounted. The generation ref keeps stale results from overwriting.
+      if (mounted.current) setBusy(false);
     });
   };
 
