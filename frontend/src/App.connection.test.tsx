@@ -13,9 +13,15 @@ const healthRef = vi.hoisted(() => ({
 }));
 
 const initRef = vi.hoisted(() => ({ isInitialized: true }));
+const rediscoverRef = vi.hoisted(() => ({ requestRediscovery: vi.fn() }));
 
 vi.mock('./hooks/useAppInit', () => ({
-  useAppInit: () => ({ isInitialized: initRef.isInitialized, isBridgeReady: true, retry: vi.fn() }),
+  useAppInit: () => ({
+    isInitialized: initRef.isInitialized,
+    isBridgeReady: true,
+    retry: vi.fn(),
+    requestRediscovery: rediscoverRef.requestRediscovery,
+  }),
 }));
 vi.mock('./hooks/useBackend', () => ({
   useHealth: () => healthRef.current,
@@ -40,6 +46,7 @@ describe('connection gating', () => {
 
   beforeEach(() => {
     initRef.isInitialized = true;
+    rediscoverRef.requestRediscovery.mockClear();
     healthRef.current = { isError: false, data: {}, dataUpdatedAt: Date.now(), error: null };
     useAppStore.setState({ isConnected: true, error: null, notifications: [], unreadNotifications: 0 });
     vi.stubGlobal('document', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
@@ -102,6 +109,31 @@ describe('connection gating', () => {
   it('does not drop the gate for a successful but degraded check (partial degradation)', async () => {
     await act(async () => { view = create(<App />); });
     healthRef.current = { isError: false, data: { status: 'degraded', startup_sequence_status: 'degraded' }, dataUpdatedAt: Date.now(), error: null };
+    await act(async () => { view.update(<App />); });
+    expect(useAppStore.getState().isConnected).toBe(true);
+    expect(JSON.stringify(view.toJSON())).not.toContain('Sythion is still unreachable');
+  });
+
+  it('automatically re-discovers a changed bridge after a later failure and reconnects with no manual action', async () => {
+    await act(async () => { view = create(<App />); });
+    expect(useAppStore.getState().isConnected).toBe(true);
+    expect(rediscoverRef.requestRediscovery).not.toHaveBeenCalled();
+
+    // The backend restarts on a new bridge; the next health poll fails.
+    healthRef.current = { isError: true, data: undefined, dataUpdatedAt: 0, error: new Error('Network Error') };
+    await act(async () => { view.update(<App />); });
+
+    // App asks the bounded quiet chain to re-resolve/re-probe on its own.
+    expect(rediscoverRef.requestRediscovery).toHaveBeenCalled();
+    expect(useAppStore.getState().isConnected).toBe(false);
+    const offlineText = JSON.stringify(view.toJSON());
+    expect(offlineText).toContain('Sythion is still unreachable');
+    expect(offlineText).toContain('checking quietly in the background');
+    expect(offlineText).not.toContain('Retry connection');
+    expect(offlineText).not.toContain('start_sythion.cmd');
+
+    // The re-probe succeeds against the new bridge and the gate recovers.
+    healthRef.current = { isError: false, data: { status: 'healthy' }, dataUpdatedAt: Date.now(), error: null };
     await act(async () => { view.update(<App />); });
     expect(useAppStore.getState().isConnected).toBe(true);
     expect(JSON.stringify(view.toJSON())).not.toContain('Sythion is still unreachable');

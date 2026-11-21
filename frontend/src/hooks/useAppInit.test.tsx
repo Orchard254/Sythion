@@ -7,7 +7,7 @@ import React from 'react';
 import { act, create } from 'react-test-renderer';
 import type { ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { BRIDGE_TIMEOUT_MS, QUIET_RECHECK_MS, useAppInit } from './useAppInit';
+import { BRIDGE_TIMEOUT_MS, MAX_RECONNECT_ATTEMPTS, QUIET_RECHECK_MS, useAppInit } from './useAppInit';
 import { useAppStore } from '../store/appStore';
 import type { Task } from '../types';
 
@@ -350,6 +350,86 @@ describe('useAppInit expanded deterministic guards', () => {
       expect(useAppStore.getState().isConnected).toBe(true);
       expect(useAppStore.getState().error).toBeNull();
       expect(configureBridge).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('re-discovers a changed bridge after a later failure and reconnects without any manual action', async () => {
+    vi.useFakeTimers();
+    const logs: string[] = [];
+    const record = (...args: unknown[]) => { logs.push(args.map(String).join(' ')); };
+    const spyLog = vi.spyOn(console, 'log').mockImplementation(record);
+    const spyError = vi.spyOn(console, 'error').mockImplementation(record);
+    const spyWarn = vi.spyOn(console, 'warn').mockImplementation(record);
+    try {
+      // Successful boot against the original bridge.
+      await act(async () => { view = create(<Harness />); });
+      for (let i = 0; i < 8; i += 1) await act(async () => { await Promise.resolve(); });
+      expect(useAppStore.getState().isConnected).toBe(true);
+      expect(configureBridge).toHaveBeenCalledTimes(1);
+
+      // The backend restarts on a new port with a rotated control token.
+      const rotated = 'rotated-reconnect-token-9f3a';
+      const changedConfig = { baseUrl: 'http://127.0.0.1:61999/api/v1', controlToken: rotated };
+      resolveBridgeConfig.mockResolvedValue(changedConfig);
+
+      // AppContent reports the honest offline state on the later health failure.
+      useAppStore.setState({ isConnected: false, error: 'Network Error' });
+      expect(useAppStore.getState().isConnected).toBe(false);
+
+      await act(async () => { hook.requestRediscovery(); });
+      for (let i = 0; i < 8; i += 1) await act(async () => { await Promise.resolve(); });
+      // No silent claim: still offline until the quiet probe actually re-runs.
+      expect(useAppStore.getState().isConnected).toBe(false);
+      expect(healthCheck).toHaveBeenCalledTimes(1);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(QUIET_RECHECK_MS); });
+      for (let i = 0; i < 8; i += 1) await act(async () => { await Promise.resolve(); });
+
+      // Same quiet machinery re-resolved the bridge, then re-probed health + tasks.
+      expect(configureBridge).toHaveBeenCalledTimes(2);
+      expect(configureBridge).toHaveBeenLastCalledWith(changedConfig);
+      expect(healthCheck).toHaveBeenCalledTimes(2);
+      expect(taskList).toHaveBeenCalledTimes(2);
+      expect(useAppStore.getState().isConnected).toBe(true);
+      expect(useAppStore.getState().error).toBeNull();
+
+      // The rotated token is never logged or surfaced by the reconnect path.
+      expect(logs.join('\n')).not.toContain(rotated);
+    } finally {
+      vi.useRealTimers();
+      spyLog.mockRestore();
+      spyError.mockRestore();
+      spyWarn.mockRestore();
+    }
+  });
+
+  it('bounds quiet re-discovery when the backend stays unreachable', async () => {
+    vi.useFakeTimers();
+    try {
+      await act(async () => { view = create(<Harness />); });
+      for (let i = 0; i < 8; i += 1) await act(async () => { await Promise.resolve(); });
+      const afterBoot = configureBridge.mock.calls.length;
+      expect(afterBoot).toBe(1);
+
+      useAppStore.setState({ isConnected: false, error: 'Network Error' });
+      healthCheck.mockRejectedValue(new Error('still down'));
+      resolveBridgeConfig.mockResolvedValue({ baseUrl: 'http://127.0.0.1:61111/api/v1', controlToken: 'still-down-token' });
+
+      await act(async () => { hook.requestRediscovery(); });
+      for (let i = 0; i < MAX_RECONNECT_ATTEMPTS; i += 1) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(QUIET_RECHECK_MS); });
+        for (let j = 0; j < 8; j += 1) await act(async () => { await Promise.resolve(); });
+      }
+
+      expect(configureBridge.mock.calls.length - afterBoot).toBe(MAX_RECONNECT_ATTEMPTS);
+      expect(useAppStore.getState().isConnected).toBe(false);
+      expect(useAppStore.getState().error).toBe('Network Error');
+
+      // Budget exhausted: no further probes as more quiet intervals elapse.
+      await act(async () => { await vi.advanceTimersByTimeAsync(QUIET_RECHECK_MS * 3); });
+      expect(configureBridge.mock.calls.length - afterBoot).toBe(MAX_RECONNECT_ATTEMPTS);
     } finally {
       vi.useRealTimers();
     }

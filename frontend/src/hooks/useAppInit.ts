@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../store/appStore';
 import { healthService, taskService, configureBridge } from '../services/api';
 import { resolveBridgeConfig, isTauri } from '../services/bridge';
@@ -15,6 +15,15 @@ export const BRIDGE_TIMEOUT_MS = 95_000;
 
 /** Read-only probe used after the startup window elapses, for self-healing. */
 export const QUIET_RECHECK_MS = 5_000;
+
+/**
+ * Bound for a re-discovery chain triggered by a connection failure that happens
+ * after a successful boot. The owner is never asked to retry; if the backend
+ * stays unreachable we stop after this many quiet probes and keep showing the
+ * honest offline state. (The initial-boot handshake keeps its own longer,
+ * unbounded quiet polling until the shell finishes starting the runtime.)
+ */
+export const MAX_RECONNECT_ATTEMPTS = 3;
 
 async function initBridge(signal?: AbortSignal, pollIntervalMs = 500): Promise<void> {
   if (signal?.aborted) return;
@@ -67,9 +76,16 @@ export function useAppInit() {
   const [isBridgeReady, setIsBridgeReady] = useState(false);
   const [attempt, setAttempt] = useState(0);
 
+  // AppContent reports a later health/API connection failure through this ref.
+  // A ref keeps the entry point stable across renders without re-running the
+  // boot effect; the actual work is the same cancellable quiet-recheck chain.
+  const rediscoverRef = useRef<() => void>(() => {});
+
   useEffect(() => {
     const controller = new AbortController();
     let recheckTimer: ReturnType<typeof setTimeout> | undefined;
+    // Guards against a failing health poll starting overlapping chains.
+    let reconnectChainActive = false;
     const isCurrent = () => !controller.signal.aborted;
 
     // Commit the post-handshake sequence. Shared by the initial bootstrap and
@@ -93,29 +109,65 @@ export function useAppInit() {
       return true;
     }
 
-    function scheduleQuietRecheck() {
-      if (!isCurrent()) return;
-      recheckTimer = setTimeout(() => { void quietRecheck(); }, QUIET_RECHECK_MS);
+    function scheduleQuietRecheck(remaining = Infinity, onDone?: () => void) {
+      if (!isCurrent()) {
+        onDone?.();
+        return;
+      }
+      recheckTimer = setTimeout(() => {
+        recheckTimer = undefined;
+        void quietRecheck(remaining, onDone);
+      }, QUIET_RECHECK_MS);
     }
 
     // Read-only self-healing: never bills quota and never mutates consequential
     // state. It only re-reads the bridge config / health / tasks and commits
-    // them if the shell published a working runtime in the meantime.
-    async function quietRecheck() {
-      if (!isCurrent()) return;
+    // them if the shell published a working runtime in the meantime. `remaining`
+    // bounds a post-boot re-discovery chain; the initial-boot failure loop uses
+    // the default Infinity and keeps probing through the startup window.
+    async function quietRecheck(remaining = Infinity, onDone?: () => void) {
+      if (!isCurrent()) {
+        onDone?.();
+        return;
+      }
       try {
         await initBridge(controller.signal, 2_000);
-        if (!isCurrent()) return;
+        if (!isCurrent()) {
+          onDone?.();
+          return;
+        }
         if (await commitRuntime()) {
           setIsInitialized(true);
+          onDone?.();
           return;
         }
       } catch {
-        // Still unreachable. Keep probing; the UI stays honest about the last
-        // definitive check and does not hand the owner a manual retry.
+        // Still unreachable. A bounded chain stops after its budget; the UI
+        // stays honest about the last definitive check and never hands the
+        // owner a manual retry.
       }
-      scheduleQuietRecheck();
+      if (!isCurrent()) {
+        onDone?.();
+        return;
+      }
+      if (remaining <= 1) {
+        onDone?.();
+        return;
+      }
+      scheduleQuietRecheck(remaining - 1, onDone);
     }
+
+    // Wired by AppContent: a health failure after a successful boot can mean the
+    // sidecar restarted on a new port/token. Re-resolve the bridge and re-probe
+    // through the SAME quiet chain - bounded, cancellable, and never claiming a
+    // connection until the re-probe actually succeeds.
+    rediscoverRef.current = () => {
+      if (!isCurrent() || reconnectChainActive) return;
+      reconnectChainActive = true;
+      scheduleQuietRecheck(MAX_RECONNECT_ATTEMPTS, () => {
+        reconnectChainActive = false;
+      });
+    };
 
     async function run() {
       if (!isCurrent()) return;
@@ -154,5 +206,9 @@ export function useAppInit() {
     setAttempt((n) => n + 1);
   }, [setBridgeReady]);
 
-  return { isInitialized, isBridgeReady, retry };
+  // Stable entry point for AppContent's later-failure handler. It only pokes
+  // the existing quiet chain; it does not create a second polling loop.
+  const requestRediscovery = useCallback(() => rediscoverRef.current(), []);
+
+  return { isInitialized, isBridgeReady, retry, requestRediscovery };
 }

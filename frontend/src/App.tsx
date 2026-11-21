@@ -79,7 +79,7 @@ function ScreenFor({ route }: { route: RouteId }) {
 }
 
 function AppContent() {
-  const { isInitialized, isBridgeReady } = useAppInit();
+  const { isInitialized, isBridgeReady, requestRediscovery } = useAppInit();
   const isConnected = useAppStore((s) => s.isConnected);
   const error = useAppStore((s) => s.error);
   const setConnectedStore = useAppStore((s) => s.setConnected);
@@ -122,15 +122,23 @@ function AppContent() {
   // recovered. Partial degradation (a successful check reporting degraded)
   // does not drop the gate, so safe features stay available. The health query
   // itself keeps polling (ignoreConnection) to observe both directions.
+  //
+  // A failure AFTER a successful boot usually means the sidecar restarted on a
+  // new bridge port/token. Ask useAppInit to re-resolve the bridge and re-probe
+  // through its existing bounded quiet chain. We treat any health error as the
+  // trigger because a rotated token can surface as an HTTP rejection (e.g. 401)
+  // rather than a bare network error. The offline state stays honest until the
+  // re-probe actually succeeds - no manual "Retry connection" is ever offered.
   useEffect(() => {
     if (health.isError) {
       setConnectedStore(false);
       if (health.error?.message) setErrorStore(health.error.message);
+      if (isInitialized) requestRediscovery();
     } else if (health.data !== undefined) {
       setConnectedStore(true);
       setErrorStore(null);
     }
-  }, [health.isError, health.data, health.error, setConnectedStore, setErrorStore]);
+  }, [health.isError, health.data, health.error, isInitialized, requestRediscovery, setConnectedStore, setErrorStore]);
 
   const runtimeHealth = useMemo(
     () =>

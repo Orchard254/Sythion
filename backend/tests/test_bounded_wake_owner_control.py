@@ -55,6 +55,12 @@ def test_apply_owner_policy_requires_both_switches(monkeypatch):
         def background_enabled(self):
             return switches["background"]
 
+        def may_execute_background(self):
+            # apply_owner_policy gates on this (allowed, reason) policy check;
+            # keep the fake in sync with the real MainAgentService contract.
+            return (switches["background"],
+                    "ok" if switches["background"] else "background_disabled")
+
         def bounded_wake_enabled(self):
             return switches["bounded"]
 

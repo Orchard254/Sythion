@@ -2899,6 +2899,10 @@ async def pause_agent(db: Session = Depends(get_db)):
     from backend.services.main_agent import MainAgentService
 
     agent = MainAgentService(db).set_state("paused", reason="owner_requested")
+    # Reconcile the bounded wake loop immediately: apply_owner_policy re-reads
+    # the paused state and stops the loop now, instead of letting it churn for
+    # the rest of the current window until the rearm check notices.
+    _apply_bounded_wake_live(db)
     return {"agent_id": agent.agent_id, "state": agent.state}
 
 
@@ -2907,6 +2911,9 @@ async def resume_agent(db: Session = Depends(get_db)):
     from backend.services.main_agent import MainAgentService
 
     agent = MainAgentService(db).set_state("active", reason="owner_requested")
+    # Restart only if owner policy allows (background + bounded switches on);
+    # the helper reuses the existing consent gate, no policy logic duplicated.
+    _apply_bounded_wake_live(db)
     return {"agent_id": agent.agent_id, "state": agent.state}
 
 
@@ -4774,16 +4781,23 @@ async def update_settings(request: Request, db: Session = Depends(get_db)):
     if not data:
         raise HTTPException(status_code=400, detail="A non-empty settings object is required")
     try:
-        updated = persist_settings(db, data, fallback_ack=fallback_ack)
+        persist_settings(db, data, fallback_ack=fallback_ack)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     # Owner policy may have changed through the generic settings surface too.
     _apply_bounded_wake_live(db)
 
+    # Project the write response through the exact same whitelist GET /settings
+    # uses. Reusing that handler keeps a single source of truth for the public
+    # shape, so a settings write can never echo internal rows (MAC evidence,
+    # session state) back to the caller. The write itself persists everything
+    # as before; only the response is projected.
+    public_settings = await get_settings(db)
+
     return {
         "message": "Settings updated",
-        "settings": updated,
+        "settings": public_settings.model_dump(),
     }
 
 

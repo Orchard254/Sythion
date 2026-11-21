@@ -190,3 +190,69 @@ def test_stale_confirmation_rejected_after_root_or_fallback_change(client, monke
     monkeypatch.setattr(settings, 'file_roots', ['environment'])
     assert client.put('/api/v1/settings', json={'file_roots': [], 'file_roots_fallback_acknowledgement': ack}).status_code == 400
     assert client.put('/api/v1/settings', json={'file_roots': []}).status_code == 200
+
+
+# The settings_metadata table also holds internal rows (MAC-bearing evidence
+# records and session state). A settings WRITE must project its response through
+# the same whitelist GET uses, otherwise an authenticated write becomes an
+# offline-verification oracle and leaks private internal state.
+_INTERNAL_ROWS = {
+    "cloud_preview_tool_evidence_v1": '{"mac":"offline-oracle-1","provider_id":"p"}',
+    "cloud_preview_text_evidence_v1": '{"mac":"offline-oracle-2","generation":1}',
+    "cloud_assistant_contract_evidence_v1": '{"mac":"offline-oracle-3","generation":2}',
+    "current_session_id": "private-session-id",
+    "session_started_at": "1700000000",
+}
+
+
+def _seed_internal_rows(db_session):
+    from backend.models.database import SettingsMetadata
+
+    for key, value in _INTERNAL_ROWS.items():
+        db_session.add(SettingsMetadata(key=key, value=value))
+    db_session.commit()
+
+
+def test_put_settings_response_excludes_internal_and_evidence_rows(client, db_session):
+    """A write persists everything but echoes only the whitelisted settings."""
+    _seed_internal_rows(db_session)
+
+    response = client.put(
+        "/api/v1/settings",
+        json={"retention_days": 21, "voice_enabled": True, "voice_tts_voice": "en-US"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["message"] == "Settings updated"
+
+    settings = body["settings"]
+    for key in _INTERNAL_ROWS:
+        assert key not in settings
+    assert "mac" not in settings
+    assert "offline-oracle" not in str(settings)
+
+    # Expected non-secret settings are still reported.
+    assert settings["retention_days"] == 21
+    assert settings["voice_enabled"] is True
+    assert settings["voice_tts_voice"] == "en-US"
+
+    # The write still persists everything: internal rows were not deleted.
+    from backend.models.database import SettingsMetadata
+
+    for key, value in _INTERNAL_ROWS.items():
+        row = db_session.query(SettingsMetadata).filter_by(key=key).first()
+        assert row is not None
+        assert row.value == value
+
+
+def test_put_settings_response_matches_get_shape(client, db_session):
+    """GET and PUT expose the identical whitelisted settings shape."""
+    _seed_internal_rows(db_session)
+
+    put_body = client.put("/api/v1/settings", json={"retention_days": 33}).json()
+    get_body = client.get("/api/v1/settings").json()
+
+    assert put_body["settings"] == get_body
+    assert set(put_body["settings"]) == set(get_body)
+    assert "cloud_preview_tool_evidence_v1" not in put_body["settings"]
+    assert "current_session_id" not in put_body["settings"]
