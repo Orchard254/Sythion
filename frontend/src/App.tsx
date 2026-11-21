@@ -303,9 +303,8 @@ function AppContent() {
                   runtime becomes available. Your settings and data are unchanged.
                 </span>
                 <span className="t-muted">
-                  If it stays unreachable, the startup log records why:{' '}
-                  <span className="t-mono">sidecar.err.log</span> or{' '}
-                  <span className="t-mono">sythion-shell.log</span> in the Sythion profile.
+                  Synth couldn't start this time. Your data is safe, and it will keep trying on its
+                  own — no action is needed from you.
                 </span>
               </div>
             </Panel>

@@ -3,13 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AutomationsScreen } from './Automations';
 import { useAppStore } from '../store/appStore';
 
-const mock = vi.hoisted(() => ({ approve: vi.fn(), reject: vi.fn(), proposalsRefetch: vi.fn(), skillsRefetch: vi.fn(), status: 'proposed' }));
+const mock = vi.hoisted(() => ({
+  approve: vi.fn(), reject: vi.fn(), proposalsRefetch: vi.fn(), skillsRefetch: vi.fn(),
+  status: 'proposed',
+  definition: { name: 'test skill', steps: ['inspect'] } as Record<string, unknown>,
+}));
 vi.mock('../hooks/useBackend', async () => {
   const { useAppStore } = await import('../store/appStore');
   return {
     useBackgroundPolicy: () => ({ data: { enabled: false } }),
     useSkills: () => ({ data: [], refetch: mock.skillsRefetch }),
-    useSkillProposals: () => ({ data: [{ id: 42, status: mock.status, definition: { name: 'test skill', steps: ['inspect'] }, trace_ids: [1, 2] }], refetch: mock.proposalsRefetch }),
+    useSkillProposals: () => ({ data: [{ id: 42, status: mock.status, definition: mock.definition, trace_ids: [1, 2] }], refetch: mock.proposalsRefetch }),
     useAgentActivity: () => ({ data: { wakes: [] } }),
     useActions: () => ({ live: useAppStore((s) => s.isConnected), approveSkillProposal: mock.approve, rejectSkillProposal: mock.reject }),
   };
@@ -22,6 +26,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
   mock.status = 'proposed';
+  mock.definition = { name: 'test skill', steps: ['inspect'] };
   useAppStore.setState({ isConnected: true });
   act(() => { view = create(<AutomationsScreen />); });
 });
@@ -76,6 +81,43 @@ describe('Automations proposal review', () => {
     act(() => useAppStore.setState({ isConnected: true }));
     act(() => view.update(<AutomationsScreen />));
     expect(button('Approve').props.disabled).toBe(true);
+  });
+
+  it('shows a plain-language summary instead of a raw JSON dump', () => {
+    openReview();
+    const rendered = JSON.stringify(view.toJSON());
+    // Readable, labeled summary derived from the definition.
+    expect(rendered).toContain('What this skill would do');
+    expect(rendered).toContain('Name');
+    expect(rendered).toContain('test skill');
+    expect(rendered).toContain('What it does');
+    expect(rendered).toContain('Details unavailable');
+    expect(rendered).toContain('Tools it may use');
+    expect(rendered).toContain('inspect');
+    // No raw definition dump: no <pre> and no JSON structure in the tree.
+    expect(view.root.findAllByType('pre')).toHaveLength(0);
+    expect(rendered).not.toContain('\\"steps\\"');
+    // Consent controls and the "no execution" note are preserved.
+    expect(button('Approve')).toBeTruthy();
+    expect(button('Reject')).toBeTruthy();
+    expect(rendered).toContain('neither decision runs the skill');
+  });
+
+  it('reads the description and declared tools from a fuller definition', () => {
+    mock.definition = {
+      name: 'Nightly cleanup',
+      description: 'Removes stale temporary files',
+      steps: [
+        { step_id: '1', tool: 'file.list', description: 'list stale files' },
+        { step_id: '2', tool: 'file.delete', description: 'delete stale files' },
+      ],
+    };
+    act(() => view.update(<AutomationsScreen />));
+    openReview();
+    const rendered = JSON.stringify(view.toJSON());
+    expect(rendered).toContain('Removes stale temporary files');
+    expect(rendered).toContain('file.list, file.delete');
+    expect(view.root.findAllByType('pre')).toHaveLength(0);
   });
 
 });

@@ -22,7 +22,7 @@ vi.mock('../services/api', () => ({
 vi.mock('./ActiveCloudSetup', () => ({
   ActiveCloudSetup: (props: Record<string, unknown>) =>
     <div id="mock-cloud-picker" data-provider={String(props.provider)}
-      data-phase={String(props.phase)} />,
+      data-phase={String(props.phase)} data-quick={String(props.quickModelId ?? '')} />,
 }));
 
 let view: ReactTestRenderer;
@@ -150,4 +150,42 @@ it('does not silently default to Ollama when active selection is invalid', async
   expect(view.root.findByProps({ id: 'settings-ai-provider' }).props.value).toBe('');
   expect(text()).toContain('active model could not be verified');
   expect(mock.restore).not.toHaveBeenCalled();
+});
+
+it('Recommended for Sythion: one click mounts the recommended verification for nvidia', async () => {
+  await settle(() => view.root.findByProps({ id: 'settings-recommended' }).props.onClick());
+  const picker = view.root.findByProps({ id: 'mock-cloud-picker' });
+  expect(picker.props['data-provider']).toBe('nvidia');
+  expect(picker.props['data-phase']).toBe('recommended');
+  expect(picker.props['data-quick']).toBe('nvidia/nemotron-3.5-bolt-e4b');
+  expect(view.root.findByProps({ id: 'settings-ai-provider' }).props.value).toBe('nvidia');
+  expect(text()).toContain('Recommended for Sythion');
+  // No setup/onboarding inference calls are made to stage the quick path.
+  expect(mock.select).not.toHaveBeenCalled();
+  expect(mock.inference).not.toHaveBeenCalled();
+  expect(mock.restore).not.toHaveBeenCalled();
+});
+
+it('Recommended for Sythion: preserves the deferred activation notice without a status re-check', async () => {
+  await settle(() => view.root.findByProps({ id: 'settings-recommended' }).props.onClick());
+  mock.active.mockClear();
+  await settle(() => view.root.findByType(ActiveCloudSetup)
+    .props.onVerified('nvidia/nemotron-3.5-bolt-e4b', true));
+  expect(text()).toContain('will activate automatically when current work finishes');
+  expect(text()).toContain('Recommended model selected');
+  expect(text()).not.toContain('Refresh');
+  expect(text()).not.toContain('Reopen');
+  expect(mock.active).not.toHaveBeenCalled();
+});
+
+it('Recommended for Sythion: does not claim success when the nvidia key is missing', async () => {
+  // beforeEach reports nvidia credential_configured: false. AIModelsSettings
+  // must hand that case to the recommended phase (which prompts for the key)
+  // and must never fabricate an activated model locally.
+  await settle(() => view.root.findByProps({ id: 'settings-recommended' }).props.onClick());
+  const picker = view.root.findByProps({ id: 'mock-cloud-picker' });
+  expect(picker.props['data-provider']).toBe('nvidia');
+  expect(picker.props['data-phase']).toBe('recommended');
+  expect(text()).not.toContain('Active AI model updated');
+  expect(text()).toContain('OpenRouter · unit/model:free');
 });

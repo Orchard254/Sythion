@@ -16,7 +16,38 @@ const STATE_TONE = {
   uncertain: 'danger',
 } as const;
 
+/** Owner-facing names for lifecycle states — no internal identifiers. */
+const STATE_LABEL: Record<RemoteAction['state'], string> = {
+  received: 'Received',
+  understanding: 'Understanding',
+  planned: 'Planned',
+  awaiting_approval: 'Awaiting your approval',
+  executing: 'Running',
+  verifying: 'Verifying',
+  completed: 'Completed',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+  uncertain: 'Needs review',
+};
+
 type Outcome = 'effect_confirmed' | 'effect_not_performed' | 'abandoned';
+
+/**
+ * The single question an owner is asked, with plain answers mapped to the
+ * backend's existing outcome values. "I'm not sure" fails closed to `abandoned`:
+ * it never asserts the effect succeeded and never starts a fresh action.
+ */
+const CHOICES: Array<{ label: string; outcome: Outcome; hint: string }> = [
+  { label: 'It worked', outcome: 'effect_confirmed', hint: 'The action reached the device.' },
+  { label: "It didn't", outcome: 'effect_not_performed', hint: 'The action did not reach the device.' },
+  { label: "I'm not sure", outcome: 'abandoned', hint: 'Leave it unsettled. Nothing will be retried.' },
+];
+
+const OUTCOME_LABEL: Record<Outcome, string> = {
+  effect_confirmed: 'It worked',
+  effect_not_performed: "It didn't go through",
+  abandoned: 'Left unsettled',
+};
 
 function newDecisionId(): string {
   const random = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -40,15 +71,18 @@ interface Props {
 /**
  * Control Center view of remote-device action lifecycle states.
  *
- * The panel itself only reports state. Reconciliation of an uncertain action is
- * an explicit owner action bound to a UI-generated decision id; it never
- * revives or replays the uncertain effect.
+ * The default view shows only plain language: no action ids, device ids, task
+ * ids, evidence references or idempotency keys. Resolving an uncertain action
+ * is one plain question whose answers map to the backend's existing outcomes;
+ * the decision id and any other backend fields stay hidden implementation
+ * detail. Reconciliation never revives or replays the uncertain effect.
  */
 export function RemoteActionsPanel({ actions, onReconcile, onReconciled, loadHistory }: Props) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [selectedOutcome, setSelectedOutcome] = useState<Outcome | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [historyFor, setHistoryFor] = useState<string | null>(null);
   const [history, setHistory] = useState<Record<string, ReconciliationRecord[]>>({});
-  const [outcome, setOutcome] = useState<Outcome>('effect_not_performed');
   const [evidence, setEvidence] = useState('');
   const [newKey, setNewKey] = useState('');
   const [busy, setBusy] = useState(false);
@@ -74,7 +108,26 @@ export function RemoteActionsPanel({ actions, onReconcile, onReconciled, loadHis
     return (b.updated_at ?? '').localeCompare(a.updated_at ?? '');
   });
 
+  const resetResolve = () => {
+    setExpanded(null);
+    setSelectedOutcome(null);
+    setAdvancedOpen(false);
+    setEvidence('');
+    setNewKey('');
+    setError('');
+  };
+
+  const openResolve = (actionId: string) => {
+    setExpanded(actionId);
+    setSelectedOutcome(null);
+    setAdvancedOpen(false);
+    setEvidence('');
+    setNewKey('');
+    setError('');
+  };
+
   const submit = async (actionId: string) => {
+    if (!selectedOutcome) return;
     const handler = onReconcile ?? reconciliationService.reconcile;
     setBusy(true);
     setError('');
@@ -82,13 +135,11 @@ export function RemoteActionsPanel({ actions, onReconcile, onReconciled, loadHis
       await handler(
         actionId,
         newDecisionId(),
-        outcome,
+        selectedOutcome,
         evidence.trim() || undefined,
         newKey.trim() || undefined,
       );
-      setExpanded(null);
-      setEvidence('');
-      setNewKey('');
+      resetResolve();
       setHistory((old) => {
         const next = { ...old };
         delete next[actionId];
@@ -117,19 +168,12 @@ export function RemoteActionsPanel({ actions, onReconcile, onReconciled, loadHis
           {ordered.map((action) => (
             <div key={action.action_id} className="devices__item">
               <div className="row row--wrap" style={{ gap: 8 }}>
-                <strong>{action.action_id}</strong>
+                <strong>{action.uncertain ? 'Action needs your review' : 'Device action'}</strong>
                 <Badge tone={action.uncertain ? 'danger' : STATE_TONE[action.state]}>
-                  {action.uncertain ? 'uncertain — needs reconciliation' : action.state}
+                  {action.uncertain ? 'Needs review' : STATE_LABEL[action.state]}
                 </Badge>
-                <span className="t-mono t-faint">{action.device_id}</span>
               </div>
-              {action.task_id && (
-                <span className="t-faint">Task: {action.task_id}</span>
-              )}
               {action.reason && <span>{action.reason}</span>}
-              {action.evidence_ref && (
-                <span className="t-faint">Evidence: {action.evidence_ref}</span>
-              )}
 
               <button
                 type="button"
@@ -137,7 +181,7 @@ export function RemoteActionsPanel({ actions, onReconcile, onReconciled, loadHis
                 data-testid={`history-toggle-${action.action_id}`}
                 onClick={() => setHistoryFor(historyFor === action.action_id ? null : action.action_id)}
               >
-                {historyFor === action.action_id ? 'Hide history' : 'View reconciliation history'}
+                {historyFor === action.action_id ? 'Hide past decisions' : 'See past decisions'}
               </button>
 
               {historyFor === action.action_id && (
@@ -145,24 +189,15 @@ export function RemoteActionsPanel({ actions, onReconcile, onReconciled, loadHis
                   {!history[action.action_id] ? (
                     <span className="t-faint">Loading history…</span>
                   ) : history[action.action_id].length === 0 ? (
-                    <EmptyState title="No reconciliations" description="No decisions recorded for this action." />
+                    <EmptyState title="No decisions yet" description="Nothing has been recorded for this action." />
                   ) : (
                     history[action.action_id].map((record) => (
                       <div key={record.id} className="stack stack--tight">
-                        <div className="row row--wrap" style={{ gap: 8 }}>
-                          <Badge tone="info">{record.outcome}</Badge>
-                          <span className="t-mono t-faint">{record.decision_id}</span>
-                        </div>
-                        {record.evidence_ref && (
-                          <span className="t-faint">Evidence: {record.evidence_ref}</span>
-                        )}
+                        <Badge tone="info">
+                          {OUTCOME_LABEL[record.outcome as Outcome] ?? record.outcome}
+                        </Badge>
                         {record.note && <span>{record.note}</span>}
-                        {record.new_action_id && (
-                          <span className="t-faint">Fresh action: {record.new_action_id}</span>
-                        )}
-                        {record.created_at && (
-                          <span className="t-faint">{record.created_at}</span>
-                        )}
+                        {record.created_at && <span className="t-faint">{record.created_at}</span>}
                       </div>
                     ))
                   )}
@@ -172,57 +207,77 @@ export function RemoteActionsPanel({ actions, onReconcile, onReconciled, loadHis
               {action.uncertain && (
                 <div className="stack stack--tight" style={{ marginTop: 8 }}>
                   <Notice tone="warn">
-                    The outcome is uncertain. Reconcile from independent evidence;
-                    this never repeats the original action.
+                    We're not sure this action reached the device. Resolving it
+                    never repeats the original action.
                   </Notice>
                   {expanded === action.action_id ? (
                     <div className="stack stack--tight">
-                      <label>
-                        <span>Established outcome</span>
-                        <select
-                          value={outcome}
-                          onChange={(e) => setOutcome(e.target.value as Outcome)}
-                          aria-label="Established outcome"
-                        >
-                          <option value="effect_not_performed">Effect not performed</option>
-                          <option value="effect_confirmed">Effect confirmed</option>
-                          <option value="abandoned">Abandoned</option>
-                        </select>
-                      </label>
-                      <label>
-                        <span>Independent evidence reference</span>
-                        <input
-                          value={evidence}
-                          onChange={(e) => setEvidence(e.target.value)}
-                          placeholder="evidence:task-system:checked"
-                          aria-label="Independent evidence reference"
-                        />
-                      </label>
-                      <label>
-                        <span>New idempotency key (optional — for a fresh action)</span>
-                        <input
-                          value={newKey}
-                          onChange={(e) => setNewKey(e.target.value)}
-                          placeholder="fresh-key-..."
-                          aria-label="New idempotency key"
-                        />
-                      </label>
+                      <span>Did this action go through?</span>
+                      <div className="row row--wrap" role="group" aria-label="Did this action go through?">
+                        {CHOICES.map((choice) => (
+                          <Button
+                            key={choice.outcome}
+                            size="sm"
+                            variant={selectedOutcome === choice.outcome ? 'primary' : 'default'}
+                            aria-pressed={selectedOutcome === choice.outcome}
+                            title={choice.hint}
+                            onClick={() => { setSelectedOutcome(choice.outcome); setError(''); }}
+                          >
+                            {choice.label}
+                          </Button>
+                        ))}
+                      </div>
+
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-expanded={advancedOpen}
+                        onClick={() => setAdvancedOpen(!advancedOpen)}
+                      >
+                        {advancedOpen ? 'Hide advanced options' : 'Advanced / for support'}
+                      </Button>
+                      {advancedOpen && (
+                        <div className="stack stack--tight" data-testid="reconcile-advanced">
+                          <span className="t-faint">
+                            Optional, for support only. The decision is recorded without these.
+                          </span>
+                          <label>
+                            <span>Evidence reference</span>
+                            <input
+                              value={evidence}
+                              onChange={(e) => setEvidence(e.target.value)}
+                              placeholder="evidence:task-system:checked"
+                              aria-label="Independent evidence reference"
+                            />
+                          </label>
+                          <label>
+                            <span>New idempotency key (starts a fresh action)</span>
+                            <input
+                              value={newKey}
+                              onChange={(e) => setNewKey(e.target.value)}
+                              placeholder="fresh-key-..."
+                              aria-label="New idempotency key"
+                            />
+                          </label>
+                        </div>
+                      )}
+
                       {error && <Notice tone="danger">{error}</Notice>}
                       <div className="row row--wrap" style={{ gap: 8 }}>
-                        <Button size="sm" variant="primary" disabled={busy}
-                          onClick={() => void submit(action.action_id)}>
-                          Record reconciliation
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          disabled={busy || !selectedOutcome}
+                          onClick={() => void submit(action.action_id)}
+                        >
+                          Record decision
                         </Button>
-                        <Button size="sm" disabled={busy}
-                          onClick={() => setExpanded(null)}>Cancel</Button>
+                        <Button size="sm" disabled={busy} onClick={resetResolve}>Cancel</Button>
                       </div>
                     </div>
                   ) : (
-                    <Button size="sm" onClick={() => {
-                      setExpanded(action.action_id);
-                      setError('');
-                    }}>
-                      Reconcile
+                    <Button size="sm" onClick={() => openResolve(action.action_id)}>
+                      Resolve this action
                     </Button>
                   )}
                 </div>

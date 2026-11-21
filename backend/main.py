@@ -5,6 +5,7 @@ FastAPI application for Sythion (Synth) backend.
 from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import asyncio
 import os
 import sys
 import uuid
@@ -186,6 +187,7 @@ async def lifespan(app: FastAPI):
         # them (settings_store: background_orchestration_enabled, default OFF).
         agent_service = None
         wake_worker = None
+        pending_sweep_task = None
         try:
             from .services.main_agent import MainAgentService
             from .services.wake_worker import WakeWorker, set_wake_worker
@@ -222,6 +224,24 @@ async def lifespan(app: FastAPI):
                 await wake_worker.drain_durable()
         except Exception as exc:
             logger.warning(f"Main agent initialization skipped due to error: {exc}")
+
+        # Autonomous lazy-user safety net: ONE bounded asyncio background task
+        # promotes a verified pending model activation when no task is genuinely
+        # RUNNING — including when a task stays CREATED forever and the
+        # terminal-transition hook can never fire. The sweeper offloads its sync
+        # DB work with asyncio.to_thread. We deliberately do NOT reuse the wake
+        # worker: that is an explicit, owner-gated durable wake queue, not a
+        # periodic safety sweep, and conflating them would weaken its consent
+        # semantics. Started once per lifespan, cancelled cleanly on shutdown.
+        try:
+            from .runtime.active_inference import pending_activation_sweeper
+            pending_sweep_task = asyncio.create_task(
+                pending_activation_sweeper(db_manager),
+                name="sythion-pending-activation-sweep",
+            )
+            logger.info("Pending activation sweep started")
+        except Exception as exc:
+            logger.warning(f"Pending activation sweep start skipped: {exc}")
 
         # Stage 2 of SYNTH_OS_DIRECTION.md: register this machine as a device
         # endpoint. Observation only — re-registering never raises trust and
@@ -330,6 +350,23 @@ async def lifespan(app: FastAPI):
                 set_wake_worker(None)
         except Exception as exc:
             logger.warning(f" Wake worker shutdown skipped: {exc}")
+
+        # Stop the single autonomous pending-activation sweep before the DB
+        # manager is torn down. Cancelling this one task is clean and bounded;
+        # if a cycle is mid-flight its to_thread DB work finishes on unwind.
+        try:
+            if pending_sweep_task is not None and not pending_sweep_task.done():
+                pending_sweep_task.cancel()
+                try:
+                    await pending_sweep_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    logger.warning(f"Pending activation sweep shutdown error: {exc}")
+            pending_sweep_task = None
+        except Exception as exc:
+            logger.warning(f"Pending activation sweep shutdown skipped: {exc}")
+
         try:
             from .services.morning_brief_scheduler import stop_morning_brief_scheduler
             await stop_morning_brief_scheduler()

@@ -970,6 +970,11 @@ class TaskRunner:
         # held the old provider binding is applied automatically now that this
         # task is terminal. Non-fatal — a scheduling failure must never turn a
         # completed task into a failure or block its remaining bookkeeping.
+        # This terminal path is additive with the autonomous lifespan sweep
+        # (runtime.active_inference.pending_activation_sweeper): a choice queued
+        # while a task is CREATED that never reaches a terminal state is covered
+        # by the sweep instead of being stranded here. Both paths share the
+        # same fail-closed apply logic and are serialized against double-apply.
         if new_state in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED):
             try:
                 from backend.runtime.active_inference import maybe_apply_pending_activation

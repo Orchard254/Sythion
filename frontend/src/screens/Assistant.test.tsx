@@ -3,18 +3,18 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AssistantScreen } from './Assistant';
 import { useAppStore } from '../store/appStore';
-import type { Task } from '../types';
+import type { Briefing, MorningBrief, Task } from '../types';
 import axios from 'axios';
 
 const mock = vi.hoisted(() => ({
   turn: vi.fn(),
-  createTask: vi.fn(),
   replyToTask: vi.fn(),
   resumeTask: vi.fn(),
   cancelTask: vi.fn(),
   stopCapture: vi.fn(),
   speak: vi.fn(),
   conversations: vi.fn(),
+  morningBriefGet: vi.fn(),
   taskList: [] as Task[],
 }));
 
@@ -22,6 +22,7 @@ vi.mock('../services/api', () => ({
   assistantService: { turn: mock.turn },
   voiceService: { speak: mock.speak },
   conversationService: { list: mock.conversations },
+  default: { get: mock.morningBriefGet },
 }));
 
 vi.mock('../hooks/useVoiceCapture', () => ({
@@ -35,7 +36,7 @@ vi.mock('../hooks/useBackend', async () => {
     useTools: () => ({ data: [] }),
     useAgent: () => ({ data: null }),
     useVoiceAssets: () => ({ data: { stt_installed: false } }),
-    useActions: () => ({ live: true, assistantTurn: mock.turn, createTask: mock.createTask, replyToTask: mock.replyToTask, resumeTask: mock.resumeTask, cancelTask: mock.cancelTask }),
+    useActions: () => ({ live: true, assistantTurn: mock.turn, replyToTask: mock.replyToTask, resumeTask: mock.resumeTask, cancelTask: mock.cancelTask }),
     useTaskEvents: () => ({ data: [], refetch: vi.fn() }),
     useTaskResumePreflight: () => ({ data: null, isError: false, isFetching: false, refetch: vi.fn() }),
   };
@@ -70,33 +71,6 @@ describe('assistant turns', () => {
     expect(useAppStore.getState().notifications).toHaveLength(1);
     expect(useAppStore.getState().notifications[0].title).toBe('Work queued');
     expect(useAppStore.getState().unreadNotifications).toBe(1);
-  });
-
-  it('creates executable work only after a separate visible confirmation', async () => {
-    // This integration case opens the real TaskDetailDrawer. Its Escape
-    // listener needs a window, even in react-test-renderer's node environment.
-    // Stub it only in this case; afterEach unmounts before globals are restored.
-    const windowMock = { addEventListener: vi.fn(), removeEventListener: vi.fn() };
-    vi.stubGlobal('window', windowMock);
-    const stored = new Map<string, string>();
-    vi.stubGlobal('sessionStorage', {
-      getItem: (key: string) => stored.get(key) ?? null,
-      setItem: (key: string, value: string) => { stored.set(key, value); },
-      removeItem: (key: string) => { stored.delete(key); },
-    });
-    mock.createTask.mockResolvedValueOnce({
-      ...task, id: 'work-created', state: 'created', original_request: 'Hello Synth',
-    });
-    await draft();
-    await settle(() => view.root.findByProps({ 'aria-label': 'Create task from message' }).props.onClick());
-    expect(mock.turn).not.toHaveBeenCalled();
-    expect(mock.createTask).not.toHaveBeenCalled();
-    await settle(() => view.root.findByProps({ 'aria-label': 'Confirm create task' }).props.onClick());
-    expect(mock.createTask).toHaveBeenCalledWith('Hello Synth', 'task', expect.any(String));
-    expect(mock.turn).not.toHaveBeenCalled();
-    expect(useAppStore.getState().transcriptDraft).toBe('');
-    expect(text()).toContain('Cancel queued request');
-    expect(windowMock.addEventListener).toHaveBeenCalledWith('keydown', expect.any(Function));
   });
 
   it('preserves a newer draft when an earlier turn completes', async () => {
@@ -369,7 +343,6 @@ describe('assistant turns', () => {
     expect(text()).toContain('Background complete');
     expect(text()).not.toContain('exec-line__toggle');
     expect(text()).not.toContain('exec-line__open');
-    // The new task-creation helper legitimately mentions "Execution".
     // Restrict this assertion to the completed assistant reply, which must
     // remain clean of technical execution metadata.
     const replies = view.root.findAllByProps({ className: 'msg msg--agent' });
@@ -1112,6 +1085,93 @@ describe('assistant turns', () => {
     // persisted data (if any) may be reused, so no reload-time guarantee is
     // made.
     expect(text()).toContain('could not be verified');
+  });
+
+  describe('morning brief delivery', () => {
+    const fullMorningBrief: MorningBrief = {
+      date: '2026-11-21',
+      generated_at: '2026-11-21T09:00:00',
+      headline: 'Good morning — here is your brief for 2026-11-21.',
+      sections: [
+        { key: 'blockers', title: 'Needs your attention', lines: ['Nothing is blocked.'] },
+        { key: 'system', title: 'Local health', lines: ['Overall: HEALTHY.', 'database: HEALTHY'] },
+        { key: 'devices', title: 'Registered devices', lines: ['this-pc [dev_1]: trust=trusted, last_seen=recent'] },
+        { key: 'receipts', title: 'Delivery receipts', lines: ['No delivery receipts recorded.'] },
+      ],
+      text: 'read-only text',
+      authorized: false,
+      approval_issued: false,
+      execution_started: false,
+      note: 'This is a read-only brief from local state. It is not an approval.',
+    };
+
+    const blockerBriefing: Briefing = {
+      headline: 'Heads up — 1 item(s) need your attention.',
+      items: [{
+        kind: 'task_needs_input',
+        ref: 'brief-task',
+        title: 'A task is waiting for your input',
+        reason: 'Which file should I use?',
+        suggested_action: 'Answer the question in the task view.',
+        authority: 'none',
+        approved: false,
+      }],
+      has_blockers: true,
+      authorized: false,
+      approval_issued: false,
+      execution_started: false,
+      note: 'This is a read-only summary, not an approval.',
+    };
+
+    it('does not surface the full morning brief inline after a normal turn', async () => {
+      // Even if a response still carries the old payload, the chat stays clean.
+      mock.turn.mockResolvedValueOnce({
+        exchange_id: 'turn-brief', user_text: 'Hello Synth', assistant_text: 'Hi there',
+        status: 'completed', background_task_ids: [],
+        briefing: { ...blockerBriefing, has_blockers: false, items: [], morning_brief: fullMorningBrief },
+      });
+      await draft();
+      await send();
+      expect(text()).toContain('Hi there');
+      expect(text()).not.toContain('Good morning — here is your brief');
+      expect(text()).not.toContain('Local health');
+      expect(text()).not.toContain('Registered devices');
+      expect(text()).not.toContain('Delivery receipts');
+      expect(view.root.findAllByProps({ 'data-testid': 'morning-brief-card' })).toHaveLength(0);
+    });
+
+    it('keeps genuine blockers pinned even though the informational brief is gone', async () => {
+      mock.turn.mockResolvedValueOnce({
+        exchange_id: 'turn-blockers', user_text: 'Hello Synth', assistant_text: 'Noted',
+        status: 'completed', background_task_ids: [],
+        briefing: { ...blockerBriefing, morning_brief: fullMorningBrief },
+      });
+      await draft();
+      await send();
+      expect(text()).toContain('Which file should I use?');
+      expect(text()).toContain('Needs your decision');
+      const pinned = view.root.findByProps({ 'aria-label': 'Needs your decision' });
+      expect(pinned.findAllByProps({ 'data-testid': 'briefing-card' }).length).toBeGreaterThan(0);
+      expect(view.root.findAllByProps({ 'data-testid': 'morning-brief-card' })).toHaveLength(0);
+    });
+
+    it('still exposes the brief through its explicit on-demand affordance', async () => {
+      mock.morningBriefGet.mockResolvedValueOnce({ data: fullMorningBrief });
+      await settle(() => view.root.findByProps({ 'aria-label': 'Show morning brief' }).props.onClick());
+      expect(mock.morningBriefGet).toHaveBeenCalledWith('/briefing/morning');
+      expect(text()).toContain('Good morning — here is your brief');
+      // It can be collapsed again, and a later turn does not re-open it.
+      await settle(() => view.root.findByProps({ 'aria-label': 'Hide morning brief' }).props.onClick());
+      expect(text()).not.toContain('Good morning — here is your brief');
+      mock.turn.mockResolvedValueOnce({
+        exchange_id: 'turn-after', user_text: 'Hello Synth', assistant_text: 'Still here',
+        status: 'completed', background_task_ids: [],
+      });
+      await draft();
+      await send();
+      expect(text()).toContain('Still here');
+      expect(text()).not.toContain('Good morning — here is your brief');
+    });
   });
 
 });

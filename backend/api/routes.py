@@ -1590,16 +1590,20 @@ async def assistant_turn(
 
 
 def _build_turn_briefing(db) -> dict | None:
-    """Best-effort read-only briefing; never fail a completed turn over it."""
+    """Best-effort, actionable blocked-work briefing for a completed turn.
+
+    A turn response carries only the genuinely actionable "heads up" items
+    (tasks awaiting input, held work, pending approvals, paused agent). The
+    full morning brief is a once-per-day, read-only note: it is served by the
+    dedicated ``/briefing/morning`` endpoint and seeded once when a relay
+    session opens (``backend.services.relay.open_session``). It is deliberately
+    NOT attached to conversational turns — replaying its informational
+    sections (health, devices, receipts, agent state) after every message
+    floods the conversation with noise the owner did not ask for.
+    """
     try:
         from backend.services.user_briefing import build_user_briefing
-        briefing = build_user_briefing(db)
-        try:
-            from backend.services.morning_brief import read_morning_brief
-            briefing["morning_brief"] = read_morning_brief(db)
-        except Exception:  # pragma: no cover - morning brief is non-critical
-            briefing["morning_brief"] = None
-        return briefing
+        return build_user_briefing(db)
     except Exception as exc:  # pragma: no cover - briefing is non-critical
         logger.warning("Could not build turn briefing: %s", exc)
         return None
@@ -5766,23 +5770,25 @@ async def select_model(body: ModelSelectRequest, db=Depends(get_db)):
 
 @router.post("/chat/completions")
 async def chat_completion(request: Request):
-    """Send a chat completion request to the configured provider."""
+    """LEGACY, local-only diagnostic passthrough to the default provider (Ollama).
+
+    This dormant endpoint simply forwards a raw chat payload to
+    ``get_default_provider().chat()``. It is NOT a user-facing reasoning path:
+    no frontend or test caller uses it, and it sits behind the local control-token
+    middleware purely for debugging. It does NOT honor the active cloud provider
+    selection, and tool definitions supplied in the request are ignored.
+    """
     from backend.runtime.model_provider import get_default_provider
-    from backend.adapters.ollama_adapter import format_tools_for_ollama
 
     provider = get_default_provider()
     data = await request.json()
 
     messages = data.get("messages", [])
-    tools = data.get("tools", [])
 
     if not messages:
         raise HTTPException(status_code=400, detail="Messages are required")
 
     try:
-        # Format tools if provided
-        formatted_tools = format_tools_for_ollama(tools) if tools else []
-
         response = await provider.chat(
             messages=messages,
             max_tokens=data.get("max_tokens", 4000),
@@ -5790,8 +5796,8 @@ async def chat_completion(request: Request):
 
         return response
     except Exception as e:
-        logger.error(f"Chat completion failed: {e}")
-        raise HTTPException(status_code=502, detail=f"Ollama Cloud request failed: {str(e)}")
+        logger.error(f"Legacy chat completion failed: {e}")
+        raise HTTPException(status_code=502, detail="Legacy local Ollama request failed.") from None
 
 
 # Voice API Endpoints

@@ -11,12 +11,14 @@ fails closed rather than silently switching to an unrelated provider.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
 import logging
 import re
 import secrets
+import threading
 from dataclasses import dataclass
 from typing import Any, Dict
 
@@ -99,6 +101,16 @@ _PENDING_ACTIVATION_KEY = "pending_inference_selection"
 # record format stays untouched. Damaged/ambiguous records fail closed.
 _PENDING_OLLAMA_KEY = "pending_ollama_selection"
 _PENDING_OLLAMA_KINDS = ("activate", "restore", "select")
+
+# Serializes the "read pending -> validate -> check task state -> apply+clear"
+# sequence across BOTH apply triggers (the task-terminal hook and the autonomous
+# sweep, which run on different threads). The pending record is also cleared on
+# success, so a promotion is a one-shot; this lock closes the concurrent
+# double-apply window as well.
+_PENDING_APPLY_LOCK = threading.RLock()
+# Safety-net sweep cadence. Bounded, low-frequency, and cheap (one indexed task
+# query when a pending record exists) so it never scales with request volume.
+_PENDING_SWEEP_INTERVAL_SECONDS = 5.0
 
 
 def clear_pending_selections() -> Dict[str, Any]:
@@ -213,6 +225,42 @@ def queue_pending_activation(db: Any, provider_id: str, model_id: str) -> None:
         })
     except Exception:
         raise ActiveInferenceUnavailable("Could not schedule active provider") from None
+
+
+def _valid_pending_cloud(raw: Any) -> bool:
+    """Fail-closed validation of a queued credential-bound cloud binding.
+
+    Such a record is only ever written by :func:`_build_verified_binding`, after
+    the owner's staged choice passed text + tool + structured-contract
+    qualification and was bound to the exact build-scoped credential via the
+    domain-separated HMAC. Re-checking shape, version and the HMAC against the
+    current credential at apply time means a damaged record, an ambiguous extra
+    key, or a rotated credential can never be promoted into a live (but broken)
+    active selection. On any uncertainty this returns False and leaves the
+    record untouched so a later, corrected sweep can still promote it.
+    """
+    if not (isinstance(raw, dict) and set(raw) == {
+        "version", "provider_id", "model_id", "nonce", "mac",
+    }):
+        return False
+    try:
+        if type(raw["version"]) is not int or raw["version"] != _VERSION:
+            return False
+        provider_id, model_id = raw["provider_id"], raw["model_id"]
+        _validate_cloud(provider_id, model_id)
+        nonce, supplied_mac = raw["nonce"], raw["mac"]
+        if (type(nonce) is not str or re.fullmatch(r"[0-9a-f]{32}", nonce) is None or
+            type(supplied_mac) is not str or re.fullmatch(r"[0-9a-f]{64}", supplied_mac) is None):
+            return False
+        from backend.core.secrets import resolve_compatible_provider_key
+        credential = resolve_compatible_provider_key(provider_id)
+        if not credential:
+            return False
+        return hmac.compare_digest(
+            _active_mac(provider_id, model_id, nonce, credential), supplied_mac,
+        )
+    except Exception:
+        return False
 
 
 def _valid_pending_ollama(raw: Any) -> bool:
@@ -333,46 +381,141 @@ def _apply_pending_ollama(db: Any, raw: Dict[str, Any]) -> bool:
     return True
 
 
+def _has_blocking_task(db: Any, *, include_created: bool) -> bool:
+    """Whether a task that can hold a provider binding is in flight.
+
+    ``include_created=True`` is the QUEUE decision: a CREATED task is about to
+    resolve its first model call, so defer the owner's switch until it settles.
+    ``include_created=False`` is the SWEEP's APPLY decision (see
+    :func:`sweep_pending_activation` for why CREATED must not block there).
+    Uncertain task state always fails closed (returns True).
+    """
+    try:
+        from backend.models.database import Task
+        from backend.api.schemas import TaskState
+        states = [TaskState.RUNNING.value]
+        if include_created:
+            states.append(TaskState.CREATED.value)
+        return (db.query(Task.id).filter(Task.state.in_(states)).first()) is not None
+    except Exception:
+        return True
+
+
+def _maybe_apply_pending_activation(db: Any, *, include_created: bool) -> bool:
+    """Shared, serialized apply path for the terminal hook and the sweep.
+
+    The lock makes the whole "read pending -> validate -> check task state ->
+    apply and clear" sequence atomic with respect to the other apply trigger.
+    Without it the sweep (a worker thread) and a task terminal transition could
+    both observe the same pending record and both promote it.
+    """
+    with _PENDING_APPLY_LOCK:
+        state = profile.load_profile()
+        cloud_raw = state.get(_PENDING_ACTIVATION_KEY)
+        ollama_raw = state.get(_PENDING_OLLAMA_KEY)
+        cloud_ok = _valid_pending_cloud(cloud_raw)
+        ollama_ok = _valid_pending_ollama(ollama_raw)
+        if not cloud_ok and not ollama_ok:
+            return False
+        # Two queued choices cannot both represent the owner's intent. Only our
+        # own code writes these keys and it always clears the other kind, so
+        # this means external damage — refuse to guess which one to apply.
+        if cloud_ok and ollama_ok:
+            return False
+        try:
+            if _has_blocking_task(db, include_created=include_created):
+                return False
+            if cloud_ok:
+                profile.save_profile({
+                    "active_inference_selection": cloud_raw,
+                    _PENDING_ACTIVATION_KEY: None,
+                })
+                return True
+            return _apply_pending_ollama(db, ollama_raw)
+        except Exception:
+            return False
+
+
 def maybe_apply_pending_activation(db: Any) -> bool:
     """Apply queued model choices once no task can hold the old binding.
 
     Called from the task terminal transition. Handles both a credential-bound
     cloud selection and the Ollama restore/select/activate operations, each
-    under its own key. Returns True when a pending choice was promoted. Fails
-    closed: damaged or ambiguous records are ignored and a still-in-flight
-    task defers the switch rather than breaking its binding.
+    under its own key. Keeps the original CREATED+RUNNING safety check so the
+    existing path is unchanged; the autonomous sweep uses
+    :func:`sweep_pending_activation` to cover a permanently CREATED task.
+    Returns True when a pending choice was promoted. Fails closed: damaged or
+    ambiguous records are ignored and a still-in-flight task defers the switch
+    rather than breaking its binding.
     """
-    state = profile.load_profile()
-    cloud_raw = state.get(_PENDING_ACTIVATION_KEY)
-    ollama_raw = state.get(_PENDING_OLLAMA_KEY)
-    cloud_ok = isinstance(cloud_raw, dict) and set(cloud_raw) == {
-        "version", "provider_id", "model_id", "nonce", "mac",
-    }
-    ollama_ok = _valid_pending_ollama(ollama_raw)
-    if not cloud_ok and not ollama_ok:
-        return False
-    # Two queued choices cannot both represent the owner's intent. Only our own
-    # code writes these keys and it always clears the other kind, so this means
-    # external damage — refuse to guess which one to apply.
-    if cloud_ok and ollama_ok:
-        return False
+    return _maybe_apply_pending_activation(db, include_created=True)
+
+
+def sweep_pending_activation(db: Any) -> bool:
+    """Autonomous safety-net apply for the background sweep.
+
+    Uses a RUNNING-only safety check on purpose:
+
+    * A CREATED task has not resolved a model binding yet. The decision client
+      resolves the active selection lazily at the first ``decide()``/chat call,
+      and the persisted active binding is HMAC-rechecked before and after every
+      call. Promoting while a task is merely CREATED therefore cannot break a
+      live binding, and that task will pick up the freshly promoted selection
+      when it actually starts. This is exactly the stuck-CREATED hole the sweep
+      closes: blocking on CREATED here would strand the owner's verified choice
+      forever because no terminal transition would ever fire.
+    * A genuinely RUNNING task HAS resolved its client against the old active
+      binding. Promoting underneath it would make its HMAC recheck fail
+      mid-call, so RUNNING still defers the switch.
+
+    The QUEUE decision (:func:`has_in_flight_task`, used by the HTTP handlers)
+    intentionally keeps CREATED+RUNNING: while work is merely queued the owner
+    is honestly told "pending", avoiding needless mid-flight churn. Only this
+    apply-time sweep relaxes CREATED, and only because it is provably safe.
+
+    Fails closed on damaged/ambiguous records and never applies twice (the
+    pending record is cleared on success and the shared lock serializes both
+    apply triggers). Returns True when a pending choice was promoted.
+    """
+    return _maybe_apply_pending_activation(db, include_created=False)
+
+
+async def sweep_pending_activation_once(db_manager: Any) -> bool:
+    """One sweep cycle: a short-lived session from the app DB manager, with the
+    synchronous DB work offloaded to a worker thread so the loop never blocks.
+    """
+    session = None
     try:
-        from backend.models.database import Task
-        from backend.api.schemas import TaskState
-        blocking = (db.query(Task.id)
-                    .filter(Task.state.in_((TaskState.CREATED.value, TaskState.RUNNING.value)))
-                    .first())
-        if blocking is not None:
-            return False
-        if cloud_ok:
-            profile.save_profile({
-                "active_inference_selection": cloud_raw,
-                _PENDING_ACTIVATION_KEY: None,
-            })
-            return True
-        return _apply_pending_ollama(db, ollama_raw)
-    except Exception:
-        return False
+        session = await asyncio.to_thread(db_manager.new_session)
+        return await asyncio.to_thread(sweep_pending_activation, session)
+    finally:
+        if session is not None:
+            try:
+                await asyncio.to_thread(session.close)
+            except Exception:
+                pass
+
+
+async def pending_activation_sweeper(
+    db_manager: Any, *, interval_seconds: float = _PENDING_SWEEP_INTERVAL_SECONDS,
+) -> None:
+    """Bounded asyncio background task started once from the app lifespan.
+
+    Periodically promotes an idle pending activation with no owner action.
+    Every failure is contained (logged, retried next tick); only cancellation
+    ends the loop, which lets the lifespan shut it down cleanly.
+    """
+    while True:
+        try:
+            await sweep_pending_activation_once(db_manager)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Pending active-model sweep failed", exc_info=True)
+        try:
+            await asyncio.sleep(interval_seconds)
+        except asyncio.CancelledError:
+            raise
 
 
 def require_active_selection_unchanged(expected: ActiveInferenceSelection) -> None:

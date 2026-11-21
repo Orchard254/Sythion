@@ -40,6 +40,54 @@ function isTransientReviewError(error: unknown): boolean {
   return typeof status === 'number' && status >= 500;
 }
 
+/** Read a single human-friendly value without guessing at what it means. */
+function asDetail(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return null;
+}
+
+/** Only the tools the definition actually declares, in a stable order. */
+function declaredTools(steps: unknown): string[] {
+  if (!Array.isArray(steps)) return [];
+  const tools: string[] = [];
+  for (const step of steps) {
+    const tool = typeof step === 'string'
+      ? asDetail(step)
+      : step && typeof step === 'object'
+        ? asDetail((step as Record<string, unknown>).tool)
+        : null;
+    if (tool && !tools.includes(tool)) tools.push(tool);
+  }
+  return tools;
+}
+
+/** A plain-language summary for an owner. It states only what the definition
+ * declares — missing details are reported honestly, never filled in with a
+ * guess, and the raw definition is never rendered. */
+function definitionSummary(definition: SkillProposal['definition']): Array<{ k: string; v: string }> {
+  if (!definition || typeof definition !== 'object') {
+    return [
+      { k: 'Name', v: 'Details unavailable' },
+      { k: 'What it does', v: 'Details unavailable' },
+      { k: 'Tools it may use', v: 'Details unavailable' },
+    ];
+  }
+  const d = definition as Record<string, unknown>;
+  const steps = d.steps;
+  const tools = declaredTools(steps);
+  return [
+    { k: 'Name', v: asDetail(d.name) ?? 'Details unavailable' },
+    { k: 'What it does', v: asDetail(d.description) ?? 'Details unavailable' },
+    {
+      k: 'Tools it may use',
+      v: Array.isArray(steps)
+        ? (tools.length ? tools.join(', ') : 'None declared in this definition')
+        : 'Details unavailable',
+    },
+  ];
+}
+
 export function AutomationsScreen() {
   const background = useBackgroundPolicy();
   const skills = useSkills();
@@ -300,7 +348,8 @@ function ProposalDrawer({ proposal, refresh, onClose }: { proposal: SkillProposa
           { k: 'Status', v: humanize(proposal.status ?? 'unknown') },
           { k: 'Evidence', v: typeof proposal.evidence_count === 'number' ? String(proposal.evidence_count) : Array.isArray(proposal.trace_ids) ? String(proposal.trace_ids.length) : '—' },
         ]} />
-        {proposal.definition != null && <><span className="field__label">Proposed definition</span><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(proposal.definition, null, 2)}</pre></>}
+        <span className="field__label">What this skill would do</span>
+        <KV items={definitionSummary(proposal.definition)} />
         {Array.isArray(proposal.validation_errors) && proposal.validation_errors.length > 0 && <p className="t-warn">Validation: {proposal.validation_errors.map(String).join('; ')}</p>}
       </>}
       {error && <Notice tone="danger" icon="alert"><span>{error}</span></Notice>}

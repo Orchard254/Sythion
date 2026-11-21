@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
-import { conversationService, taskService, voiceService } from '../services/api';
+import apiClient, { conversationService, taskService, voiceService } from '../services/api';
 import { conversationTasks, nextSpokenReply } from '../lib/firstConversation';
 import { Icon } from '../components/icons';
 import { TaskDetailDrawer } from '../components/TaskDetailDrawer';
-import { WorkEntry } from '../components/WorkEntry';
 import { AssistantStatusIndicator } from '../components/AssistantStatus';
 import { BriefingCard } from '../components/BriefingCard';
 import { MorningBriefCard } from '../components/MorningBriefCard';
@@ -19,7 +18,7 @@ import { useAppStore } from '../store/appStore';
 import { useNavStore } from '../store/navStore';
 import { deriveAuthorization } from '../lib/autonomy';
 import { awaitingReason, deriveAssistantStatus, findAwaitingTasks } from '../lib/assistantStatus';
-import type { Briefing, Task } from '../types';
+import type { Briefing, MorningBrief, Task } from '../types';
 
 /* AI Assistant.
  *
@@ -275,6 +274,32 @@ useLayoutEffect(() => {
   // authority; decisions stay in the task drawer / settings review surfaces.
   const [briefing, setBriefing] = useState<Briefing | null>(null);
 
+  // The daily morning brief is a once-per-day note, not part of a turn. It is
+  // opened explicitly from the existing /briefing/morning endpoint and can be
+  // collapsed again, so it never reappears over an ordinary reply.
+  const [morningBrief, setMorningBrief] = useState<MorningBrief | null>(null);
+  const [morningBriefOpen, setMorningBriefOpen] = useState(false);
+  const [morningBriefLoading, setMorningBriefLoading] = useState(false);
+  const [morningBriefError, setMorningBriefError] = useState<string | null>(null);
+
+  const toggleMorningBrief = useCallback(async () => {
+    if (morningBrief) {
+      setMorningBriefOpen((open) => !open);
+      return;
+    }
+    setMorningBriefLoading(true);
+    setMorningBriefError(null);
+    try {
+      const response = await apiClient.get<MorningBrief>('/briefing/morning');
+      setMorningBrief(response.data);
+      setMorningBriefOpen(true);
+    } catch {
+      setMorningBriefError('The morning brief could not be loaded. It was not retried automatically.');
+    } finally {
+      setMorningBriefLoading(false);
+    }
+  }, [morningBrief]);
+
   // The thread. Completed work and genuine failures read as conversation;
   // anything waiting on the owner is pinned above instead.
   const thread = useMemo(
@@ -392,7 +417,14 @@ useLayoutEffect(() => {
           <h1 className="sr-only">Talk to Sythion</h1>
           <AssistantStatusIndicator status={status} />
           <span className="spacer" />
-                  </div>
+          {/* Explicit, on-demand access to the once-per-day brief. It is never
+              injected after a message. */}
+          <Button size="sm" variant="ghost" aria-label="Show morning brief"
+            disabled={morningBriefLoading}
+            onClick={() => void toggleMorningBrief()}>
+            Morning brief
+          </Button>
+        </div>
 
         {/* Essential safety information, pinned and always visible. */}
         {(visibleAwaiting.length > 0 || briefing?.has_blockers) && (
@@ -404,14 +436,22 @@ useLayoutEffect(() => {
           </div>
         )}
 
-        {/* Proactive morning brief: a message from the Core in the same
-            conversation. It is read-only and never authorizes anything. */}
-        {briefing?.morning_brief && (
+        {/* The full morning brief is a once-per-day, read-only note. It is NOT
+            rendered from a turn response: replaying its informational sections
+            (health, devices, receipts) after every message floods the chat. It
+            is available only when the owner opens it from the bar above. */}
+        {morningBriefOpen && morningBrief && (
           <div className="assistant__morning" role="region" aria-label="Morning brief">
-            <MorningBriefCard brief={briefing.morning_brief} />
+            <MorningBriefCard brief={morningBrief} />
+            <Button size="sm" variant="subtle" aria-label="Hide morning brief"
+              onClick={() => setMorningBriefOpen(false)}>
+              Hide
+            </Button>
           </div>
         )}
-
+        {morningBriefError && (
+          <p role="status" className="assistant__morning-error">{morningBriefError}</p>
+        )}
 
         {schedulingWarning && (
           <div className="ac__scheduling-warning" role="status" aria-live="polite">
@@ -731,37 +771,6 @@ useLayoutEffect(() => {
                     } finally {
                       setSubmitting(false);
                     }
-                  }}
-                />
-                <WorkEntry
-                  text={transcriptDraft}
-                  disabled={submitting || captureBusy || isListening || !actions.live}
-                  createTask={actions.createTask}
-                  lookupTask={(requestText) => {
-                    // Read-only reconciliation against the real task list. The
-                    // backend does not expose idempotency keys on Task, so an
-                    // exact original_request match is the strongest available
-                    // evidence; the most recent match is the best candidate.
-                    if (typeof taskService?.list !== 'function') return Promise.resolve(null);
-                    return taskService.list().then((list) => {
-                      if (!Array.isArray(list)) return null;
-                      const matches = list.filter((item) =>
-                        item && typeof item.id === 'string' && item.original_request === requestText);
-                      if (!matches.length) return null;
-                      return matches.reduce((latest, item) =>
-                        String(item.created_at ?? '') > String(latest.created_at ?? '') ? item : latest);
-                    });
-                  }}
-                  onCreated={(task, submittedText) => {
-                    // The task can be running already: show its actual persisted
-                    // state, never call a "start" route a second time.
-                    if (useAppStore.getState().transcriptDraft.trim() === submittedText) {
-                      setTranscriptDraft('');
-                    }
-                    setSelected(task);
-                    void tasks.refetch();
-                    void queryClient.invalidateQueries({ queryKey: ['objectives'] });
-                    void queryClient.invalidateQueries({ queryKey: ['goals'] });
                   }}
                 />
               </div>

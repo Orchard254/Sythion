@@ -17,6 +17,11 @@ const PROVIDERS: Record<AIProvider, string> = {
 };
 const isSupported = (value: string): value is AIProvider => value in PROVIDERS;
 
+/** The known-good, tool-capable model with no reasoning-token burn. The quick
+ * path verifies it through ActiveCloudSetup's existing proof sequence. */
+const RECOMMENDED_PROVIDER: AIProvider = 'nvidia';
+const RECOMMENDED_MODEL_ID = 'nvidia/nemotron-3.5-bolt-e4b';
+
 /** First-time configuration belongs in onboarding; later changes belong here.
  * Only the existing Sythion runtime is used. Provider preview chat is never
  * mounted and selecting a provider does not authorize actions or send probes.
@@ -24,6 +29,8 @@ const isSupported = (value: string): value is AIProvider => value in PROVIDERS;
 export function AIModelsSettings() {
   const [active, setActive] = useState<ActiveModel | null>(null);
   const [provider, setProvider] = useState<AIProvider | null>(null);
+  const [quick, setQuick] = useState(false);
+  const [quickDone, setQuickDone] = useState(false);
   const [hasKey, setHasKey] = useState<Partial<Record<CloudPreviewProviderId, boolean>>>({});
   const [keyEditor, setKeyEditor] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -73,17 +80,11 @@ export function AIModelsSettings() {
     setProvider(next);
     setError(''); setMessage('');
     setKeyEditor(false);
+    setQuick(false);
+    setQuickDone(false);
   };
 
-  const onCloudConnected = () => {
-    if (!provider) return;
-    setHasKey((previous) => ({ ...previous, [provider]: true }));
-    setKeyEditor(false);
-    setError(''); setMessage('');
-  };
-
-  const onCloudVerified = (modelId: string, pending?: boolean) => {
-    if (!provider) return;
+  const applyVerified = (forProvider: AIProvider, modelId: string, pending?: boolean) => {
     setError('');
     if (pending) {
       // The backend queued this verified choice because in-flight work still
@@ -99,9 +100,49 @@ export function AIModelsSettings() {
     // authoritative, so a redundant status() re-check here only produced
     // stale "refresh/reopen" hand-backs — it is removed. Trust the verified
     // result and update the displayed selection from what was confirmed.
-    setActive({ provider_id: provider, model_id: modelId, permissions_unchanged: true });
+    setActive({ provider_id: forProvider, model_id: modelId, permissions_unchanged: true });
     setMessage('Active AI model updated. Sythion keeps its existing assistant and permissions.');
   };
+
+  const onCloudConnected = () => {
+    if (!provider) return;
+    setHasKey((previous) => ({ ...previous, [provider]: true }));
+    setKeyEditor(false);
+    setError(''); setMessage('');
+  };
+
+  const onCloudVerified = (modelId: string, pending?: boolean) => {
+    if (!provider) return;
+    applyVerified(provider, modelId, pending);
+  };
+
+  const startRecommended = () => {
+    if (loading || quick) return; // a second click must not clear the result notice
+    // Switch to the provider the recommendation actually uses before any
+    // proof runs: the dropdown and the active-model line stay honest, and we
+    // never verify one provider while claiming another.
+    setProvider(RECOMMENDED_PROVIDER);
+    setQuick(true);
+    setQuickDone(false);
+    setError(''); setMessage('');
+    setKeyEditor(false);
+  };
+
+  const onRecommendedConnected = () => {
+    setHasKey((previous) => ({ ...previous, [RECOMMENDED_PROVIDER]: true }));
+    setError(''); setMessage('');
+  };
+
+  const onRecommendedVerified = (modelId: string, pending?: boolean) => {
+    // ActiveCloudSetup already validated the activate() response against this
+    // exact provider/model by the time this fires — reuse the same deferred
+    // activation handling as the manual path.
+    setQuickDone(true);
+    setHasKey((previous) => ({ ...previous, [RECOMMENDED_PROVIDER]: true }));
+    applyVerified(RECOMMENDED_PROVIDER, modelId, pending);
+  };
+
+  const effectiveProvider: AIProvider | null = quick ? RECOMMENDED_PROVIDER : provider;
 
   return (
     <Panel title="AI Models" icon="assistant">
@@ -111,6 +152,21 @@ export function AIModelsSettings() {
           permissions and the main Assistant are unchanged.
         </p>
         {loading ? <p role="status">Checking the active AI model…</p> : <>
+          <div className="stack" style={{ gap: 8 }}>
+            <p className="t-muted">
+              <strong>Recommended for Sythion</strong> — one click fully verifies
+              and activates {RECOMMENDED_MODEL_ID} on {PROVIDERS[RECOMMENDED_PROVIDER]},
+              a tool-capable model with zero reasoning-token burn. No tools or
+              permissions are granted; the usual text, function-call and
+              Assistant-contract proofs still run.
+            </p>
+            <Button id="settings-recommended" variant="primary" disabled={quick && !quickDone}
+              onClick={startRecommended}>
+              {quickDone ? 'Recommended model selected'
+                : `Use recommended model (${RECOMMENDED_MODEL_ID})`}
+            </Button>
+          </div>
+          <p className="t-muted">Or choose a provider and model manually:</p>
           <p className="t-muted" role="status">
             Active model: {active ? `${PROVIDERS[active.provider_id as AIProvider] || active.provider_id} · ${active.model_id || 'not selected'}`
               : 'Not verified'}
@@ -122,17 +178,18 @@ export function AIModelsSettings() {
             {Object.entries(PROVIDERS).map(([id, label]) =>
               <option key={id} value={id}>{label}</option>)}
           </select>
-          {provider && <>
-            {hasKey[provider] && !keyEditor &&
+          {effectiveProvider && <>
+            {!quick && hasKey[effectiveProvider] && !keyEditor &&
               <Button variant="subtle" onClick={() => setKeyEditor(true)}>
                 Change saved API key
               </Button>}
             <ActiveCloudSetup
-              key={`${provider}:${hasKey[provider] && !keyEditor ? 'model' : 'connect'}`}
-              provider={provider}
-              phase={hasKey[provider] && !keyEditor ? 'model' : 'connect'}
-              onConnected={onCloudConnected}
-              onVerified={onCloudVerified}
+              key={quick ? 'recommended' : `${effectiveProvider}:${hasKey[effectiveProvider] && !keyEditor ? 'model' : 'connect'}`}
+              provider={effectiveProvider}
+              phase={quick ? 'recommended' : (hasKey[effectiveProvider] && !keyEditor ? 'model' : 'connect')}
+              quickModelId={quick ? RECOMMENDED_MODEL_ID : undefined}
+              onConnected={quick ? onRecommendedConnected : onCloudConnected}
+              onVerified={quick ? onRecommendedVerified : onCloudVerified}
             />
           </>}
         </>}

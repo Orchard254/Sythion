@@ -25,6 +25,9 @@ async function click(label: string) {
   expect(target).toBeDefined();
   await act(async () => { target!.props.onClick(); });
 }
+function rendered() {
+  return JSON.stringify(view.toJSON());
+}
 
 beforeEach(() => {
   store = new Map();
@@ -45,27 +48,50 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('explicit executable work', () => {
-  it('does not dispatch from ordinary chat or before confirmation', async () => {
-    expect(button('Create task from message')).toBeDefined();
+describe('lazy-user composer', () => {
+  it('shows no Create task button or developer copy by default', () => {
+    const buttons = view.root.findAllByType('button');
+    expect(buttons).toHaveLength(1);
+    // The single control is a deliberately secondary, icon-only affordance —
+    // not a labelled "Create task" action in the user's face.
+    const entry = buttons[0];
+    expect(entry.props['aria-label']).toBe('Create task from message');
+    expect(entry.props['className']).toContain('btn--ghost');
+    expect(entry.props['title']).toBe('Run a specific action from this message');
+    expect(entry.children.every((child) => typeof child !== 'string')).toBe(true);
+
+    const json = rendered();
+    expect(json).not.toContain('Separate from Send message');
+    expect(json).not.toContain('Execution may start after confirmation');
+    expect(json).not.toContain('Confirm task');
+    expect(json).not.toContain('Run this request with Synth?');
+    expect(json).not.toContain('Permissions and approval rules');
+    expect(createTask).not.toHaveBeenCalled();
+  });
+
+  it('reaches explicit work only through the secondary control and still requires confirmation', async () => {
     expect(createTask).not.toHaveBeenCalled();
     await click('Create task from message');
+    // Opening the secondary control only asks for intent; nothing is sent.
     expect(createTask).not.toHaveBeenCalled();
-    expect(JSON.stringify(view.toJSON())).toContain(request);
+    expect(rendered()).toContain(request);
+    expect(button('Confirm create task')).toBeDefined();
     await click('Confirm create task');
     expect(createTask).toHaveBeenCalledTimes(1);
     expect(createTask).toHaveBeenCalledWith(request, 'task', expect.any(String));
     expect(created).toHaveBeenCalledWith(task, request);
     expect(store.size).toBe(0);
   });
+});
 
+describe('fail-closed executable work', () => {
   it('does not automatically retry an unknown result; a manual retry reuses the id', async () => {
     createTask.mockRejectedValueOnce(new Error('PRIVATE BACKEND STACK DETAIL'));
     await click('Create task from message');
     await click('Confirm create task');
     expect(createTask).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(view.toJSON())).toContain('Task outcome is not confirmed');
-    expect(JSON.stringify(view.toJSON())).not.toContain('PRIVATE BACKEND STACK DETAIL');
+    expect(rendered()).toContain('Task outcome is not confirmed');
+    expect(rendered()).not.toContain('PRIVATE BACKEND STACK DETAIL');
     expect(created).not.toHaveBeenCalled();
     const id = createTask.mock.calls[0][2];
     await click('Confirm create task');
@@ -81,7 +107,7 @@ describe('explicit executable work', () => {
     await click('Create task from message');
     await click('Confirm create task');
     expect(created).not.toHaveBeenCalled();
-    expect(JSON.stringify(view.toJSON())).toContain('No executable task was created');
+    expect(rendered()).toContain('No executable task was created');
     await click('Confirm create task');
     expect(createTask).toHaveBeenCalledTimes(1);
   });
@@ -103,7 +129,7 @@ describe('explicit executable work', () => {
     await click('Create task from message');
     await click('Confirm create task');
     expect(createTask).not.toHaveBeenCalled();
-    expect(JSON.stringify(view.toJSON())).toContain('Task safety storage is unavailable');
+    expect(rendered()).toContain('Task safety storage is unavailable');
   });
 
   it('never offers execution while disconnected', async () => {
@@ -130,7 +156,7 @@ describe('internal resolution of uncertain work', () => {
     expect(createTask).toHaveBeenCalledTimes(1);
     expect(lookupTask).toHaveBeenCalledWith(request);
     expect(created).toHaveBeenCalledWith(task, request);
-    const json = JSON.stringify(view.toJSON());
+    const json = rendered();
     expect(json).not.toContain('PRIVATE BACKEND DETAIL');
     expect(json).not.toContain('Check Tasks');
     expect(json).not.toContain('retrying');
@@ -148,7 +174,7 @@ describe('internal resolution of uncertain work', () => {
     await click('Confirm create task');
 
     expect(created).not.toHaveBeenCalled();
-    const json = JSON.stringify(view.toJSON());
+    const json = rendered();
     expect(json).toContain('not confirmed');
     expect(json).not.toContain('PRIVATE BACKEND DETAIL');
     expect(json).not.toContain('Check Tasks');
@@ -172,7 +198,7 @@ describe('internal resolution of uncertain work', () => {
     await click('Confirm create task');
 
     expect(created).toHaveBeenCalledWith(task, request);
-    const json = JSON.stringify(view.toJSON());
+    const json = rendered();
     expect(json).toContain('Task was recorded');
     expect(json).not.toContain('Review Tasks');
     expect(json).not.toContain('review it before retrying');
@@ -190,7 +216,7 @@ describe('internal resolution of uncertain work', () => {
     await click('Confirm create task');
 
     expect(created).not.toHaveBeenCalled();
-    const json = JSON.stringify(view.toJSON());
+    const json = rendered();
     expect(json).toContain('conversation');
     expect(json).not.toContain('PRIVATE BACKEND DETAIL');
     expect(json).not.toContain('retrying');

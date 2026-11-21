@@ -168,3 +168,121 @@ it('offers a self-healing Check again when a real model decision is required', a
   expect(text()).toContain('Check again');
   expect(text()).not.toContain('Retry selected model');
 });
+
+// --- Recommended one-click path (reuses verifyModel's exact proof sequence) --
+
+const RECOMMENDED = 'nvidia/nemotron-3.5-bolt-e4b';
+const NVIDIA_PROVIDER = 'nvidia';
+
+it('recommended path: one click runs the full stage/text/tool/contract/activate sequence', async () => {
+  await settle(() => view.unmount());
+  // No proofs are pre-confirmed, so every step of the existing flow must run.
+  mock.status.mockResolvedValue({
+    providers: [{ provider_id: NVIDIA_PROVIDER, credential_configured: true }],
+    staged: { provider_id: NVIDIA_PROVIDER, model_id: RECOMMENDED },
+    text_probe_verified: false, tool_probe_verified: false,
+    ready_for_execution: false,
+  });
+  mock.chat.mockImplementation(async (selection: { provider_id: string; model_id: string }) => ({
+    ...selection, assistant_text: 'Hello.', active: false,
+    ready_for_execution: false, persisted: false, task_executed: false,
+  }));
+  mock.probe.mockImplementation(async (selection: { provider_id: string; model_id: string }) => ({
+    ...selection, tool_probe_verified: true, active: false,
+    ready_for_execution: false, evidence_persisted: true,
+  }));
+  mock.activate.mockResolvedValue({
+    provider_id: NVIDIA_PROVIDER, model_id: RECOMMENDED, permissions_unchanged: true,
+  });
+
+  // Mounting the recommended phase is the parent's single click: no second
+  // selection or button press is required.
+  await settle(() => {
+    view = create(<ActiveCloudSetup provider={NVIDIA_PROVIDER} phase="recommended"
+      quickModelId={RECOMMENDED} onVerified={onVerified} />);
+  });
+  await settle(() => {});
+
+  const selection = { provider_id: NVIDIA_PROVIDER, model_id: RECOMMENDED };
+  expect(mock.stage).toHaveBeenCalledWith(selection);
+  expect(mock.chat).toHaveBeenCalledWith(selection, 'Say hello in one short plain-text sentence.');
+  expect(mock.probe).toHaveBeenCalledWith(selection);
+  expect(mock.assistantContract).toHaveBeenCalledWith(selection);
+  expect(mock.activate).toHaveBeenCalledWith(selection);
+  expect(onVerified).toHaveBeenCalledWith(RECOMMENDED, false);
+  expect(text()).toContain('Model selected for Sythion');
+});
+
+it('recommended path: preserves the deferred activation notice and pending flag', async () => {
+  await settle(() => view.unmount());
+  mock.status.mockResolvedValue({
+    providers: [{ provider_id: NVIDIA_PROVIDER, credential_configured: true }],
+    staged: { provider_id: NVIDIA_PROVIDER, model_id: RECOMMENDED },
+    text_probe_verified: true, tool_probe_verified: true,
+    ready_for_execution: false,
+  });
+  mock.activate.mockResolvedValue({
+    provider_id: NVIDIA_PROVIDER, model_id: RECOMMENDED,
+    permissions_unchanged: true, pending: true, message: PENDING_MESSAGE,
+  });
+
+  await settle(() => {
+    view = create(<ActiveCloudSetup provider={NVIDIA_PROVIDER} phase="recommended"
+      quickModelId={RECOMMENDED} onVerified={onVerified} />);
+  });
+  await settle(() => {});
+
+  expect(mock.activate).toHaveBeenCalledWith({ provider_id: NVIDIA_PROVIDER, model_id: RECOMMENDED });
+  expect(onVerified).toHaveBeenCalledWith(RECOMMENDED, true);
+  expect(text()).toContain('will activate automatically when current work finishes');
+  expect(text()).toContain(PENDING_MESSAGE);
+  expect(view.root.findAllByProps({ tone: 'danger' })).toHaveLength(0);
+  expect(text()).not.toContain('could not verify');
+});
+
+it('recommended path: missing credential prompts for the key once, then continues automatically', async () => {
+  await settle(() => view.unmount());
+  mock.status
+    .mockResolvedValueOnce({
+      providers: [{ provider_id: NVIDIA_PROVIDER, credential_configured: false }],
+      staged: {}, text_probe_verified: false, tool_probe_verified: false,
+      ready_for_execution: false,
+    })
+    .mockResolvedValue({
+      providers: [{ provider_id: NVIDIA_PROVIDER, credential_configured: true }],
+      staged: { provider_id: NVIDIA_PROVIDER, model_id: RECOMMENDED },
+      text_probe_verified: true, tool_probe_verified: true,
+      ready_for_execution: false,
+    });
+  mock.saveCredential.mockResolvedValue(undefined);
+  mock.activate.mockResolvedValue({
+    provider_id: NVIDIA_PROVIDER, model_id: RECOMMENDED, permissions_unchanged: true,
+  });
+  const connected = vi.fn();
+
+  await settle(() => {
+    view = create(<ActiveCloudSetup provider={NVIDIA_PROVIDER} phase="recommended"
+      quickModelId={RECOMMENDED} onConnected={connected} onVerified={onVerified} />);
+  });
+
+  // Honest prompt, not a fabricated success.
+  expect(text()).toContain('Save it below and verification continues automatically');
+  expect(text()).toContain('NVIDIA NIM');
+  expect(mock.activate).not.toHaveBeenCalled();
+  expect(mock.stage).toHaveBeenCalledTimes(0);
+  expect(onVerified).not.toHaveBeenCalled();
+  expect(text()).not.toContain('Model selected for Sythion');
+
+  // Owner supplies the key; saving it triggers verification with no extra click.
+  await settle(() => view.root.findByProps({ id: 'setup-cloud-key' })
+    .props.onChange({ target: { value: 'inert-test-key' } }));
+  await settle(() => view.root.findAllByType('button')
+    .find((n) => JSON.stringify(n.children).includes('Connect and continue'))!.props.onClick());
+  await settle(() => {});
+
+  expect(mock.saveCredential).toHaveBeenCalledWith(NVIDIA_PROVIDER, 'inert-test-key');
+  expect(connected).toHaveBeenCalledTimes(1);
+  expect(mock.activate).toHaveBeenCalledWith({ provider_id: NVIDIA_PROVIDER, model_id: RECOMMENDED });
+  expect(onVerified).toHaveBeenCalledWith(RECOMMENDED, false);
+  expect(text()).not.toContain('inert-test-key');
+});

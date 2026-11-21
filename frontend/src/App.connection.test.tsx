@@ -64,6 +64,13 @@ describe('connection gating', () => {
     const text = JSON.stringify(view.toJSON());
     expect(text).toContain('Sythion is still unreachable');
     expect(text).toContain('checking quietly in the background');
+    // Plain, honest reassurance for a non-technical owner: no developer log
+    // filenames or jargon, and no fake "send a report" action.
+    expect(text).toContain("Synth couldn't start this time");
+    expect(text).toContain('Your data is safe');
+    expect(text).toContain('keep trying');
+    expect(text).not.toContain('sidecar.err.log');
+    expect(text).not.toContain('sythion-shell.log');
     // The owner is never told to launch the backend or to retry by hand.
     expect(text).not.toContain('Start the local backend');
     expect(text).not.toContain('start_sythion.cmd');

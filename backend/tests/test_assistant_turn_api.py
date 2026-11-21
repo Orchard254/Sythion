@@ -130,7 +130,11 @@ async def test_ordinary_conversation_works(request, _patch_engine):
 
 @pytest.mark.asyncio
 async def test_turn_carries_read_only_briefing(request, _patch_engine):
-    """A completed turn includes a non-authorizing briefing from local state."""
+    """A completed turn includes only genuinely actionable blocked-work items.
+
+    The full morning brief is a once-per-day note served by
+    ``/briefing/morning``; it must NOT be attached to a conversational turn.
+    """
     import uuid
 
     db = request.getfixturevalue("test_db")
@@ -154,11 +158,20 @@ async def test_turn_carries_read_only_briefing(request, _patch_engine):
     assert resp.briefing["approval_issued"] is False
     assert resp.briefing["execution_started"] is False
     assert all(i["authority"] == "none" for i in resp.briefing["items"])
-    morning = resp.briefing.get("morning_brief")
-    assert morning is not None
-    assert morning["authorized"] is False
-    assert morning["approval_issued"] is False
-    assert any(s["key"] == "blockers" for s in morning["sections"])
+    # No informational morning-brief wall is injected into the chat turn.
+    assert "morning_brief" not in resp.briefing
+
+
+@pytest.mark.asyncio
+async def test_morning_brief_remains_available_on_its_own_endpoint(request):
+    """The unsolicited injection is removed, not the brief itself."""
+    client = request.getfixturevalue("test_client")
+    response = client.get("/api/v1/briefing/morning")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["authorized"] is False
+    assert body["approval_issued"] is False
+    assert any(s["key"] == "blockers" for s in body["sections"])
 
 
 @pytest.mark.asyncio

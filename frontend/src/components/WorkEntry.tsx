@@ -3,11 +3,17 @@ import { Button } from './ui';
 import type { Task } from '../types';
 
 /**
- * User-initiated task creation, separate from normal conversation.
+ * Deliberately secondary, opt-in request for executable work.
  *
- * This UI confirms the user's intent; it does not authorize tool calls,
- * bypass backend task classification, or enable background autonomy.
- * The backend can still classify a request as conversation (no Task row).
+ * The normal path is the message composer's Send button: one message, and the
+ * backend decides conversation vs. executable work (see /assistant/interpret
+ * and the auto-classification in the /tasks create route). This control is NOT
+ * the primary action — it is a small, unobtrusive escape hatch for the rare
+ * case where the owner wants to ask for a specific action explicitly.
+ *
+ * It confirms the user's intent; it does not authorize tool calls, bypass
+ * backend task classification, or enable background autonomy. The backend can
+ * still classify a request as conversation (no Task row).
  */
 export type CreateWorkTask = (
   request: string,
@@ -179,33 +185,33 @@ export function WorkEntry({
   };
 
   return (
-    <section className="ac-work" aria-label="Create executable work">
+    <section className="ac-work" aria-label="Run a specific action">
       {!candidate ? (
+        /* Secondary, icon-only control: no "Create task" label, no developer
+           jargon. Ordinary messages are handled by Send + backend routing. */
         <div className="ac-work__entry">
           <Button
-            variant="subtle"
+            variant="ghost"
             size="sm"
             icon="layers"
             disabled={disabled || !requestText}
             aria-label="Create task from message"
+            title="Run a specific action from this message"
             onClick={() => {
               if (disabled || !requestText) return;
               setCandidate(requestText);
               setFeedback(null);
             }}
-          >
-            Create task
-          </Button>
-          <span>Separate from Send message. Execution may start after confirmation and is subject to backend permissions.</span>
+          />
         </div>
       ) : (
         <div className="ac-work__confirm" role="group" aria-label="Confirm executable task">
-          <strong>Start work with Synth?</strong>
+          <strong>Run this request with Synth?</strong>
           <p className="ac-work__request">{candidate}</p>
-          <p>Creating a task can start execution immediately. Backend tool permissions and approval rules still apply.</p>
+          <p>Synth may use tools to do this. Permissions and approval rules still apply.</p>
           {hasChanged && <p role="status">The message changed. Cancel and review the new draft before creating a task.</p>}
           {conversationOnly === requestText &&
-            <p role="status">This request was already classified as conversation. Edit it to request a specific action.</p>}
+            <p role="status">Synth handled this as a question, not an action. Edit it to request something specific.</p>}
           <div className="ac-work__controls">
             <Button
               variant="primary"
@@ -214,7 +220,7 @@ export function WorkEntry({
               aria-label="Confirm create task"
               onClick={() => { void confirm(); }}
             >
-              {busy ? 'Creating…' : 'Confirm task'}
+              {busy ? 'Running…' : 'Run request'}
             </Button>
             <Button
               variant="ghost"
