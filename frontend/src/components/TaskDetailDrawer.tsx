@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Icon } from './icons';
 import { Badge, Bar, Button, Drawer, KV, LoadingBlock, Notice, Rail } from './ui';
 import { useActions, useTaskEvents, useTaskResumePreflight } from '../hooks/useBackend';
@@ -20,6 +20,33 @@ const EVENT_TONE: Record<string, string> = {
   'action.failed': 'danger',
   'question.asked': 'warn',
 };
+
+/**
+ * Single collapsed "Advanced / for support" disclosure for this drawer. Raw
+ * backend fields (task id, versions, evidence hashes, event-data dumps) live
+ * here so the default view stays meaningful to an owner. Closed by default.
+ */
+function AdvancedDetails({ id, children }: { id: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="stack stack--tight" style={{ marginTop: 12 }}>
+      <Button
+        size="sm"
+        variant="ghost"
+        aria-expanded={open}
+        data-testid={`advanced-toggle-${id}`}
+        onClick={() => setOpen(!open)}
+      >
+        {open ? 'Hide advanced options' : 'Advanced / for support'}
+      </Button>
+      {open && (
+        <div className="stack stack--tight" data-testid={`advanced-${id}`}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function TaskDetailDrawer({
   task,
@@ -64,6 +91,10 @@ export function TaskDetailDrawer({
       setBusy(false);
     }
   };
+
+  const revision = resumePreflight.data?.review_binding;
+  const hasSnapshot = revision?.binding_status === 'read_only_observation' &&
+    /^sha256:[0-9a-f]{64}$/.test(revision.revision);
 
   const footer =
     running ? (
@@ -123,7 +154,6 @@ export function TaskDetailDrawer({
       subtitle={
         <span className="row" style={{ gap: 8 }}>
           <Badge tone={tone}>{taskLabel(task.state)}</Badge>
-          <span className="t-mono">{task.id}</span>
         </span>
       }
       onClose={onClose}
@@ -156,17 +186,8 @@ export function TaskDetailDrawer({
                     ))}
                   </ul>
                 )}
-                {resumePreflight.data.review_binding?.binding_status === 'read_only_observation' &&
-                  /^sha256:[0-9a-f]{64}$/.test(resumePreflight.data.review_binding.revision) && (
-                    <span className="t-faint t-mono" title="Snapshot revision, not an approval">
-                      Evidence snapshot {resumePreflight.data.review_binding.revision.slice(7, 19)}
-                      {' · '}Task v{resumePreflight.data.review_binding.task_version}
-                      {' · '}Event #{resumePreflight.data.review_binding.last_event_sequence}
-                    </span>
-                  )}
                 <span className="t-faint">
                   Read-only guidance. This is not an approval or a guarantee that resumption is safe.
-                  The backend will verify again before changing task state.
                 </span>
               </>
             )}
@@ -263,18 +284,6 @@ export function TaskDetailDrawer({
         </Notice>
       )}
 
-      <KV
-        items={[
-          { k: 'State', v: taskLabel(task.state) },
-          { k: 'Started', v: dateTime(task.created_at) },
-          { k: 'Updated', v: `${dateTime(task.updated_at)} · ${relTime(task.updated_at)}` },
-          { k: 'Elapsed', v: duration(task.created_at, task.state === 'completed' || task.state === 'failed' ? task.updated_at : null) },
-          { k: 'Current action', v: task.active_action_id || '—' },
-          { k: 'Objective', v: task.objective_id ?? '—' },
-          { k: 'Version', v: `v${task.version}` },
-        ]}
-      />
-
       <div className="stack stack--tight">
         <div className="row row--between">
           <span className="field__label">Event timeline</span>
@@ -295,23 +304,12 @@ export function TaskDetailDrawer({
                   {i < timeline.length - 1 && <span className="timeline__line" />}
                 </div>
                 <div className="timeline__body">
-                  <div className="row row--between" style={{ gap: 8 }}>
-                    <span className="t-body" style={{ color: 'var(--text-0)', fontSize: 12.5 }}>
-                      {humanize(ev.event_type)}
-                    </span>
-                    <span className="t-faint t-mono">#{ev.sequence_num}</span>
-                  </div>
+                  <span className="t-body" style={{ color: 'var(--text-0)', fontSize: 12.5 }}>
+                    {humanize(ev.event_type)}
+                  </span>
                   <div className="list__meta">
                     <Icon name="clock" size={11} />
                     {clockTime(ev.created_at)}
-                    {Object.keys(ev.event_data ?? {}).length > 0 && (
-                      <span className="t-mono">
-                        {Object.entries(ev.event_data)
-                          .slice(0, 3)
-                          .map(([k, v]) => `${k}=${shortValue(v)}`)
-                          .join('  ')}
-                      </span>
-                    )}
                   </div>
                 </div>
               </div>
@@ -319,6 +317,53 @@ export function TaskDetailDrawer({
           </div>
         )}
       </div>
+
+      <AdvancedDetails id="task-detail">
+        <KV
+          items={[
+            { k: 'Task id', v: <span className="t-mono">{task.id}</span> },
+            { k: 'State', v: taskLabel(task.state) },
+            { k: 'Started', v: dateTime(task.created_at) },
+            { k: 'Updated', v: `${dateTime(task.updated_at)} · ${relTime(task.updated_at)}` },
+            { k: 'Elapsed', v: duration(task.created_at, task.state === 'completed' || task.state === 'failed' ? task.updated_at : null) },
+            { k: 'Current action', v: task.active_action_id || '—' },
+            { k: 'Objective', v: task.objective_id ?? '—' },
+            { k: 'Version', v: `v${task.version}` },
+          ]}
+        />
+        {hasSnapshot && revision && (
+          <div className="stack stack--tight">
+            <span className="t-faint t-mono" title="Snapshot revision, not an approval">
+              Evidence snapshot {revision.revision.slice(7, 19)}
+              {' · '}Task v{revision.task_version}
+              {' · '}Event #{revision.last_event_sequence}
+            </span>
+            <span className="t-faint">
+              The backend will verify again before changing task state.
+            </span>
+          </div>
+        )}
+        <span className="t-faint">Raw event data from the task event ledger.</span>
+        {timeline.length === 0 ? (
+          <span className="t-faint">No raw event data recorded.</span>
+        ) : (
+          <div className="stack stack--tight">
+            {timeline.map((ev) => (
+              <div key={`raw-${ev.sequence_num}`} className="stack stack--tight">
+                <span className="t-mono">{`#${ev.sequence_num} ${humanize(ev.event_type)}`}</span>
+                {Object.keys(ev.event_data ?? {}).length > 0 && (
+                  <span className="t-mono">
+                    {Object.entries(ev.event_data)
+                      .slice(0, 3)
+                      .map(([k, v]) => `${k}=${shortValue(v)}`)
+                      .join('  ')}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </AdvancedDetails>
     </Drawer>
   );
 }

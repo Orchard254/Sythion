@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from backend.models.database import get_db
@@ -507,6 +508,91 @@ async def promote_planning_policy(policy_id: str, payload: dict, db: Session = D
         raise HTTPException(status_code=422, detail=reason)
     pol = result["policy"]
     return {"id": pol.id, "status": pol.status, "policy_version": pol.policy_version}
+
+
+@router.post("/planning/policies/{policy_id}/approve")
+async def approve_planning_policy(
+    policy_id: str,
+    request: Request,
+    payload: Optional[dict] = None,
+    db: Session = Depends(get_db),
+):
+    """Trusted-owner approval that makes ACTIVE promotion reachable (§17).
+
+    This is the ONLY HTTP path that issues a planning-policy owner-approval
+    receipt. It is reachable solely through the existing loopback control-token
+    owner boundary (``LocalControlBoundaryMiddleware`` guards every ``/api/*``
+    path) and explicitly refuses device-channel credentials, so the single
+    explicit POST is a genuine, separate owner action. The receipt is
+    server-issued and SHA-256 bound to the exact policy state, then consumed by
+    the same fail-closed promotion gate. No body boolean is ever treated as
+    approval authority, and the safe-auto opt-in remains default OFF.
+    """
+    # Owner approval is a UI/control-boundary action, never a device channel.
+    if request.headers.get("X-Sythion-Device-Id") or request.headers.get("X-Sythion-Device-Token"):
+        raise HTTPException(
+            status_code=403,
+            detail="Owner approval cannot be submitted through a device channel",
+        )
+
+    from backend.learning.planning_store import (
+        PlanningPolicyApprovalReceipts,
+        PlanningPolicyStore,
+    )
+
+    data = payload if isinstance(payload, dict) else {}
+    # ``decision_id`` is an audit/idempotency identifier, NOT approval authority.
+    # A fresh one is minted when the trusted caller does not supply one.
+    decision_id = data.get("decision_id")
+    if decision_id is not None and (not isinstance(decision_id, str) or not decision_id.strip()):
+        raise HTTPException(status_code=400, detail="decision_id must be a non-empty string")
+    decision_id = decision_id.strip() if isinstance(decision_id, str) else None
+
+    store = PlanningPolicyStore(db)
+    pol = store.get(policy_id)
+    if pol is None:
+        raise HTTPException(status_code=404, detail="policy not found")
+
+    # Issue the durable, state-bound owner approval here, at the trusted boundary.
+    # Promotion never issues its own receipt, so a promoting request cannot
+    # approve itself; only this explicit owner action can.
+    receipts = PlanningPolicyApprovalReceipts(db)
+    try:
+        receipt_id = receipts.issue(
+            pol, "ACTIVE", decision_id=decision_id or str(uuid.uuid4())
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"owner approval receipt could not be issued: {exc}",
+        )
+
+    # Consume the receipt through the same fail-closed promotion gate used by
+    # /promote. On failure, discard the uncommitted receipt so a later valid
+    # approval is never blocked by a stale flushed row.
+    result = store.promote(
+        policy_id, target_status="ACTIVE", owner_approval_receipt_id=receipt_id
+    )
+    if not result.get("ok"):
+        db.rollback()
+        reason = result.get("reason") or "promotion rejected"
+        if reason in ("owner_approval_required", "owner_approval_receipt_invalid"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"ACTIVE promotion requires a verified owner-approval receipt; {reason}",
+            )
+        if reason.startswith("cannot promote") or reason == "policy_not_found":
+            raise HTTPException(status_code=409, detail=reason)
+        raise HTTPException(status_code=422, detail=reason)
+
+    promoted = result["policy"]
+    return {
+        "id": promoted.id,
+        "status": promoted.status,
+        "policy_version": promoted.policy_version,
+        "approval_receipt_id": receipt_id,
+    }
 
 
 @router.post("/planning/policies/{policy_id}/rollback")

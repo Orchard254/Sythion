@@ -22,13 +22,14 @@ const recoveryMock = vi.hoisted(() => ({
   isError: false,
   refetch: vi.fn(),
 }));
+const eventsMock = vi.hoisted(() => ({ data: [] as Array<Record<string, unknown>> }));
 
 vi.mock('../services/api', () => ({
   taskService: { resumePreflight, acknowledgeFailure },
 }));
 
 vi.mock('../hooks/useBackend', () => ({
-  useTaskEvents: () => ({ data: [], refetch: vi.fn(), isLoading: false }),
+  useTaskEvents: () => ({ data: eventsMock.data, refetch: vi.fn(), isLoading: false }),
   useTaskResumePreflight: () => recoveryMock,
   useActions: () => ({ live: true, replyToTask, resumeTask, cancelTask: vi.fn() }),
 }));
@@ -211,7 +212,12 @@ describe('TaskDetailDrawer explicit recovery interaction', () => {
 
 
 describe('TaskDetailDrawer recovery snapshot revision', () => {
-  it('shows the bounded evidence revision without implying permission', () => {
+  afterEach(() => {
+    recoveryMock.data = undefined;
+    eventsMock.data = [];
+  });
+
+  it('shows the bounded evidence revision only under Advanced, without implying permission', async () => {
     recoveryMock.data = {
       ...clearRecovery(),
       review_binding: {
@@ -227,12 +233,20 @@ describe('TaskDetailDrawer recovery snapshot revision', () => {
     };
     const view = create(<TaskDetailDrawer task={task({ state: 'interrupted' })} onClose={() => {}} />);
     const rendered = JSON.stringify(view.toJSON());
-    expect(rendered).toContain('Evidence snapshot');
-    expect(rendered).toContain('aaaaaaaaaaaa');
-    expect(rendered).toContain('Task v');
-    expect(rendered).toContain('Event #');
+    // The safety wording stays in the default view; the raw hash does not.
     expect(rendered).toContain('not an approval');
-    recoveryMock.data = undefined;
+    expect(rendered).not.toContain('Evidence snapshot');
+    expect(rendered).not.toContain('aaaaaaaaaaaa');
+
+    const toggle = view.root.findByProps({ 'data-testid': 'advanced-toggle-task-detail' });
+    expect(toggle.props['aria-expanded']).toBe(false);
+    await act(async () => { toggle.props.onClick(); });
+    expect(view.root.findByProps({ 'data-testid': 'advanced-task-detail' })).toBeTruthy();
+    const raw = JSON.stringify(view.toJSON());
+    expect(raw).toContain('Evidence snapshot');
+    expect(raw).toContain('aaaaaaaaaaaa');
+    expect(raw).toContain('Task v');
+    expect(raw).toContain('Event #');
   });
 });
 
@@ -247,5 +261,95 @@ describe('failed task dismissal', () => {
     await act(async () => { action?.props.onClick(); await Promise.resolve(); });
     expect(acknowledgeFailure).toHaveBeenCalledWith('t1');
     expect(close).toHaveBeenCalled();
+  });
+});
+
+describe('TaskDetailDrawer lazy-user default view', () => {
+  const withBinding = (): import('../types').TaskResumePreflight => ({
+    ...clearRecovery(),
+    review_binding: {
+      schema: 'sythion.recovery_review_snapshot.v1',
+      revision: 'sha256:' + 'a'.repeat(64),
+      task_version: 7,
+      last_event_sequence: 42,
+      binding_status: 'read_only_observation' as const,
+      authenticated_human: false, authorization_issued: false,
+      uncertainty_cleared: false, automatic_replay_allowed: false,
+      note: 'Snapshot only',
+    },
+  });
+
+  afterEach(() => {
+    recoveryMock.data = undefined;
+    eventsMock.data = [];
+  });
+
+  it('hides raw ids, versions, hashes and event data in the default view but keeps consent controls', () => {
+    eventsMock.data = [{
+      event_type: 'action.completed',
+      sequence_num: 12,
+      created_at: '2026-10-19T10:00:00',
+      event_data: { tool_name: 'shell.exec' },
+    }];
+    recoveryMock.data = withBinding();
+    const view = create(
+      <TaskDetailDrawer task={task({ id: 'task-abc-123', state: 'interrupted' })} onClose={() => {}} />,
+    );
+    const text = JSON.stringify(view.toJSON());
+
+    // Plain, owner-meaningful status and consent controls remain visible.
+    expect(text).toContain('Recovery review');
+    expect(text).toContain('not an approval');
+    const buttons = view.root.findAllByType('button');
+    expect(buttons.some((b) => b.children.includes('Resume task'))).toBe(true);
+    expect(buttons.some((b) => b.children.includes('Recheck recovery'))).toBe(true);
+
+    // No raw implementation detail in the default view.
+    expect(text).not.toContain('task-abc-123');
+    expect(text).not.toContain('Evidence snapshot');
+    expect(text).not.toContain('aaaaaaaaaaaa');
+    expect(text).not.toContain('Task v');
+    expect(text).not.toContain('Event #');
+    expect(text).not.toContain('The backend will verify again');
+    expect(text).not.toContain('Current action');
+    expect(text).not.toContain('Objective');
+    expect(text).not.toContain('Version');
+    expect(text).not.toContain('tool_name=shell.exec');
+    expect(text).not.toContain('#12');
+  });
+
+  it('has one Advanced disclosure, closed by default, that reveals all raw detail when opened', async () => {
+    eventsMock.data = [{
+      event_type: 'action.completed',
+      sequence_num: 12,
+      created_at: '2026-10-19T10:00:00',
+      event_data: { tool_name: 'shell.exec' },
+    }];
+    recoveryMock.data = withBinding();
+    const view = create(
+      <TaskDetailDrawer task={task({ id: 'task-abc-123', state: 'interrupted', version: 7 })} onClose={() => {}} />,
+    );
+
+    const toggles = view.root.findAllByType('button')
+      .filter((b) => b.children.includes('Advanced / for support'));
+    expect(toggles).toHaveLength(1);
+    expect(toggles[0].props['aria-expanded']).toBe(false);
+    expect(view.root.findAllByProps({ 'data-testid': 'advanced-task-detail' })).toHaveLength(0);
+
+    await act(async () => { toggles[0].props.onClick(); });
+    expect(view.root.findByProps({ 'data-testid': 'advanced-task-detail' })).toBeTruthy();
+    const raw = JSON.stringify(view.toJSON());
+    expect(raw).toContain('task-abc-123');
+    expect(raw).toContain('Evidence snapshot');
+    expect(raw).toContain('aaaaaaaaaaaa');
+    expect(raw).toContain('Task v');
+    expect(raw).toContain('Event #');
+    expect(raw).toContain('The backend will verify again');
+    expect(raw).toContain('Current action');
+    expect(raw).toContain('Objective');
+    expect(raw).toContain('Version');
+    expect(raw).toContain('v7');
+    expect(raw).toContain('tool_name=shell.exec');
+    expect(raw).toContain('#12');
   });
 });

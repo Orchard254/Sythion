@@ -1,6 +1,6 @@
 import { AxiosError, type AxiosAdapter } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import apiClient, { modelService } from './api';
+import apiClient, { API_ERROR_MESSAGES, modelService } from './api';
 
 const originalAdapter = apiClient.defaults.adapter;
 const models = [{ name: 'beam', model: 'beam' }, { model: 'other:exact-tag' }];
@@ -55,8 +55,10 @@ describe('real model discovery service and axios client', () => {
         config, undefined, { data: { detail: 'Failed to fetch models: discovery unavailable' },
           status: 503, statusText: '', headers: {}, config });
     };
+    // The API boundary sanitizes raw backend detail; the failure is still a
+    // failure (never reported as empty success) and the status is preserved.
     await expect(modelService.available()).rejects.toMatchObject({
-      message: 'Failed to fetch models: discovery unavailable', response: { status: 503 },
+      message: API_ERROR_MESSAGES.server, response: { status: 503 },
     });
   });
 });

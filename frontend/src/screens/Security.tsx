@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Icon } from '../components/icons';
 import {
   Badge,
@@ -55,6 +55,33 @@ import { countDecisionsDue } from '../lib/decisionCounts';
 import { DevicesCard } from '../components/DevicesCard';
 import { PendingApprovalsPanel } from '../components/PendingApprovalsPanel';
 
+/**
+ * One collapsed "Advanced / for support" disclosure per panel. Raw backend
+ * fields (ids, enums, event data, versions) and implementation prose live in
+ * here so the default view stays meaningful to an owner. Closed by default.
+ */
+function AdvancedDetails({ id, children }: { id: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="stack stack--tight" style={{ marginTop: 10 }}>
+      <Button
+        size="sm"
+        variant="ghost"
+        aria-expanded={open}
+        data-testid={`advanced-toggle-${id}`}
+        onClick={() => setOpen(!open)}
+      >
+        {open ? 'Hide advanced options' : 'Advanced / for support'}
+      </Button>
+      {open && (
+        <div className="stack stack--tight" data-testid={`advanced-${id}`}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function SecurityScreen() {
   const agent = useAgent();
   const background = useBackgroundPolicy();
@@ -110,6 +137,34 @@ export function SecurityScreen() {
     awaitingYou: heldTasks.length + awaitingInput.length,
   });
   const staleEdges = (edges.data ?? []).filter((e) => e.status === 'stale');
+
+  // Plain, owner-meaningual health status for the default view. A degraded or
+  // failed report is NEVER presented as healthy; raw health enums live in the
+  // Runtime identity panel's Advanced disclosure only.
+  const healthOverall = agentHealth.data?.overall;
+  const hasHealthReport = healthOverall !== undefined;
+  const degradedHealth =
+    healthOverall === 'DEGRADED' ||
+    healthOverall === 'UNAVAILABLE' ||
+    healthOverall === 'UNKNOWN' ||
+    health.isError;
+  const attention = degradedHealth;
+  const statusHeadline = attention
+    ? 'Synth needs attention'
+    : !hasHealthReport
+      ? "Checking Synth's health"
+      : pendingCount > 0
+        ? 'Synth needs your review'
+        : 'Synth is healthy';
+  const statusDetail = attention
+    ? 'Something in the runtime needs a closer look. The raw health details are under Advanced / for support.'
+    : !hasHealthReport
+      ? 'The health report is still loading.'
+      : pendingCount > 0
+        ? `${pendingCount} decision${pendingCount === 1 ? '' : 's'} ${pendingCount === 1 ? 'is' : 'are'} waiting for you below.`
+        : 'No decisions are waiting and the agent reports healthy.';
+  const statusTone = attention ? 'warn' : pendingCount > 0 ? 'accent' : 'info';
+  const statusIcon = attention ? 'alert' : pendingCount > 0 ? 'lock' : 'check';
 
   const run = async (key: string, fn: () => Promise<unknown>, onOk: () => void) => {
     setBusy(key);
@@ -223,6 +278,14 @@ export function SecurityScreen() {
           description="What Sythion may do, must ask about, and never does."
           actions={<Badge tone="accent">{pendingCount} awaiting you</Badge>}
         />
+
+        {/* --- Plain status first ------------------------------------- */}
+        <Notice tone={statusTone} icon={statusIcon}>
+          <div className="stack stack--tight">
+            <span className="t-title">{statusHeadline}</span>
+            <span>{statusDetail}</span>
+          </div>
+        </Notice>
 
         {/* --- Emergency controls ------------------------------------- */}
         <Panel
@@ -341,11 +404,7 @@ export function SecurityScreen() {
         />
 
         {/* --- Autonomy modes ----------------------------------------- */}
-        <Panel
-          title="Autonomy mode"
-          icon="key"
-          hint="Derived from two backend switches. Cards without a backing endpoint are labelled proposed and cannot be selected."
-        >
+        <Panel title="Autonomy mode" icon="key">
           {/* --- Real authorization axis, reported read-only ----------- */}
           <div className="notice notice--accent" style={{ marginBottom: 14 }}>
             <span className="notice__icon">
@@ -359,32 +418,8 @@ export function SecurityScreen() {
                 <Badge tone={authorization.tone} icon={authorization.tone === 'ok' ? 'lock' : 'unlock'}>
                   {authorization.known ? authorization.label : 'Unknown'}
                 </Badge>
-                <span className="t-mono t-faint">{authorization.level}</span>
               </div>
               <p>{authorization.summary}</p>
-              <p className="t-faint" style={{ marginTop: 5 }}>
-                {authorization.readOnlyReason}
-              </p>
-              {agent.data?.policies && (
-                <div style={{ marginTop: 8 }}>
-                  <KV
-                    items={[
-                      {
-                        k: 'Step attempts',
-                        v: String(agent.data.policies.step_max_attempts),
-                      },
-                      {
-                        k: 'Steps / background cycle',
-                        v: String(agent.data.policies.max_steps_per_background_cycle),
-                      },
-                      {
-                        k: 'Background policy',
-                        v: agent.data.policies.background_orchestration_enabled ? 'enabled' : 'disabled',
-                      },
-                    ]}
-                  />
-                </div>
-              )}
             </div>
           </div>
 
@@ -461,11 +496,38 @@ export function SecurityScreen() {
             </div>
           </div>
 
-          <Notice tone="accent" icon="shield">
-            <span>
+          <AdvancedDetails id="autonomy">
+            <span className="t-faint">
+              Derived from two backend switches. Cards without a backing endpoint are labelled proposed and cannot be selected.
+            </span>
+            <KV
+              items={[
+                { k: 'Authorization level (raw)', v: <span className="t-mono">{authorization.level}</span> },
+                { k: 'Source', v: authorization.readOnlyReason },
+              ]}
+            />
+            {agent.data?.policies && (
+              <KV
+                items={[
+                  {
+                    k: 'Step attempts',
+                    v: String(agent.data.policies.step_max_attempts),
+                  },
+                  {
+                    k: 'Steps / background cycle',
+                    v: String(agent.data.policies.max_steps_per_background_cycle),
+                  },
+                  {
+                    k: 'Background policy',
+                    v: agent.data.policies.background_orchestration_enabled ? 'enabled' : 'disabled',
+                  },
+                ]}
+              />
+            )}
+            <span className="t-muted">
               Authorization is enforced by backend execution policy — no card or toggle here grants a capability.
             </span>
-          </Notice>
+          </AdvancedDetails>
         </Panel>
 
         {/* --- Summary ------------------------------------------------ */}
@@ -481,7 +543,7 @@ export function SecurityScreen() {
             label="Permission-gated"
             icon="key"
             value={counts.gated}
-            foot="Capabilities flagged requires_permission"
+            foot="Need your approval first"
           />
           <Stat label="High risk" icon="alert" value={caps.filter((c) => c.risk_class === 'HIGH').length} foot="Require owner authorization" />
           <Stat
@@ -511,7 +573,6 @@ export function SecurityScreen() {
             title="Pending authorization"
             icon="lock"
             flush
-           
           >
             {pendingSkill.length + pendingTools.length + heldTasks.length === 0 ? (
               <EmptyState
@@ -563,7 +624,6 @@ export function SecurityScreen() {
                       <span className="list__meta">
                         <Badge tone="warn">proposal</Badge>
                         {typeof p.evidence_count === 'number' && <span>· {p.evidence_count} runs</span>}
-                        {p.status !== 'proposed' && <span>· This status cannot be decided by the backend</span>}
                       </span>
                     </div>
                     <div className="list__trail">
@@ -611,9 +671,6 @@ export function SecurityScreen() {
                           <span className="t-muted t-clamp-2">{p.description}</span>
                           <span className="list__meta">
                             <Badge tone="danger">new capability</Badge>
-                            {p.validation_errors.length > 0 && (
-                              <span className="t-danger">· {p.validation_errors.length} validation problems</span>
-                            )}
                           </span>
                         </div>
                         <div className="list__trail">
@@ -635,20 +692,6 @@ export function SecurityScreen() {
                             <p className="t-muted">
                               {p.description || 'No description was supplied with this proposal.'}
                             </p>
-                            <KV
-                              items={[
-                                { k: 'Proposal id', v: <span className="t-mono">{p.id}</span> },
-                                { k: 'Status', v: humanize(p.status) },
-                                { k: 'Enabled mode', v: p.enabled_mode ?? '—' },
-                                { k: 'Successful uses', v: String(p.successful_uses) },
-                                { k: 'Created', v: relTime(p.created_at) },
-                              ]}
-                            />
-                            {p.validation_errors.length > 0 && (
-                              <Notice tone="danger" icon="alert">
-                                <span>Validation problems: {p.validation_errors.join('; ')}</span>
-                              </Notice>
-                            )}
                             <p className="t-warn">
                               Approving registers this tool as an approved capability; rejecting refuses the proposal.
                               No tool runs from this screen.
@@ -693,12 +736,40 @@ export function SecurityScreen() {
                 })}
               </div>
             )}
+            <AdvancedDetails id="proposals">
+              <span className="t-faint">Raw backend fields for the proposals and held tasks listed above.</span>
+              {heldTasks.map((t) => (
+                <KV key={`raw-t-${t.id}`} items={[
+                  { k: 'Held task', v: <span className="t-mono">{t.id}</span> },
+                  { k: 'State', v: t.state },
+                ]} />
+              ))}
+              {pendingSkill.map((p) => (
+                <KV key={`raw-s-${p.id}`} items={[
+                  { k: 'Skill proposal', v: <span className="t-mono">{p.id}</span> },
+                  { k: 'Status', v: String(p.status) },
+                  { k: 'Evidence', v: String(p.evidence_count ?? '—') },
+                ]} />
+              ))}
+              {pendingTools.map((p) => (
+                <KV key={`raw-p-${p.id}`} items={[
+                  { k: 'Tool proposal', v: <span className="t-mono">{p.id}</span> },
+                  { k: 'Status', v: String(p.status) },
+                  { k: 'Enabled mode', v: p.enabled_mode ?? '—' },
+                  { k: 'Successful uses', v: String(p.successful_uses) },
+                  { k: 'Created', v: relTime(p.created_at) },
+                  { k: 'Validation problems', v: p.validation_errors.join('; ') || 'none' },
+                ]} />
+              ))}
+              {pendingSkill.some((p) => p.status !== 'proposed') && (
+                <span className="t-warn">This status cannot be decided by the backend.</span>
+              )}
+            </AdvancedDetails>
           </Panel>
 
           <Panel
             title="Privacy controls"
             icon="eye"
-           
           >
             <div className="stack stack--tight">
               <KV
@@ -731,61 +802,69 @@ export function SecurityScreen() {
           title="Capability permissions"
           icon="shield"
           flush
-          hint="Reported by the backend; this table only displays it."
-         
         >
           {capabilities.isLoading ? (
             <div className="panel__body">
               <LoadingBlock rows={5} />
             </div>
           ) : (
-            <div className="table__scroll" style={{ maxHeight: 420 }}>
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Capability</th>
-                    <th>Status</th>
-                    <th>Risk</th>
-                    <th>Permission</th>
-                    <th>External service</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {caps.map((c) => (
-                    <tr key={c.id}>
-                      <td>
-                        <div className="t-body" style={{ color: 'var(--text-0)' }}>
-                          {c.name}
-                        </div>
-                        <div className="t-faint">{c.category}</div>
-                      </td>
-                      <td>
-                        <Badge tone={CAPABILITY_TONE[c.status] ?? 'idle'}>{humanize(c.status)}</Badge>
-                      </td>
-                      <td>
-                        <Badge tone={RISK_TONE[c.risk_class] ?? 'idle'}>{c.risk_class}</Badge>
-                      </td>
-                      <td>
-                        {c.requires_permission ? (
-                          <Badge tone="warn" icon="lock">
-                            required
-                          </Badge>
-                        ) : (
-                          <Badge tone="ok">open</Badge>
-                        )}
-                      </td>
-                      <td>
-                        {c.requires_external_service ? (
-                          <Badge tone="info">yes</Badge>
-                        ) : (
-                          <Badge tone="idle">no</Badge>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <>
+              <p className="t-muted" style={{ marginTop: 0 }}>
+                {caps.length === 0
+                  ? 'No capabilities have been reported by the backend.'
+                  : `${caps.length} capabilities reported. ${counts.gated} need your approval first; ${caps.filter((c) => c.risk_class === 'HIGH').length} are high risk; ${counts.unavailable} are unavailable.`}
+              </p>
+              <AdvancedDetails id="capabilities">
+                <span className="t-faint">Reported by the backend; this table only displays it.</span>
+                <div className="table__scroll" style={{ maxHeight: 420 }}>
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Capability</th>
+                        <th>Status</th>
+                        <th>Risk</th>
+                        <th>Permission</th>
+                        <th>External service</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {caps.map((c) => (
+                        <tr key={c.id}>
+                          <td>
+                            <div className="t-body" style={{ color: 'var(--text-0)' }}>
+                              {c.name}
+                            </div>
+                            <div className="t-faint">{c.category}</div>
+                          </td>
+                          <td>
+                            <Badge tone={CAPABILITY_TONE[c.status] ?? 'idle'}>{humanize(c.status)}</Badge>
+                          </td>
+                          <td>
+                            <Badge tone={RISK_TONE[c.risk_class] ?? 'idle'}>{c.risk_class}</Badge>
+                          </td>
+                          <td>
+                            {c.requires_permission ? (
+                              <Badge tone="warn" icon="lock">
+                                required
+                              </Badge>
+                            ) : (
+                              <Badge tone="ok">open</Badge>
+                            )}
+                          </td>
+                          <td>
+                            {c.requires_external_service ? (
+                              <Badge tone="info">yes</Badge>
+                            ) : (
+                              <Badge tone="idle">no</Badge>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </AdvancedDetails>
+            </>
           )}
           {unavailable.length > 0 && (
             <div className="panel__foot">
@@ -803,7 +882,6 @@ export function SecurityScreen() {
           title="Activity & audit log"
           icon="activity"
           flush
-         
         >
           {audit.length === 0 ? (
             <EmptyState
@@ -820,13 +898,26 @@ export function SecurityScreen() {
                     <span className="t-body" style={{ color: 'var(--text-0)' }}>
                       {a.title}
                     </span>
-                    {a.detail && <span className="t-mono t-clamp-2">{a.detail}</span>}
                   </div>
                   <div className="list__trail t-faint">{relTime(a.at)}</div>
                 </div>
               ))}
             </div>
           )}
+          <AdvancedDetails id="audit">
+            <span className="t-faint">Raw event data from the backend event ledger.</span>
+            {audit.length === 0 ? (
+              <span className="t-faint">No raw event data recorded.</span>
+            ) : (
+              <div className="stack stack--tight">
+                {audit.slice(0, 16).map((a) => (
+                  <div key={`raw-${a.id}`}>
+                    <span className="t-mono t-clamp-2">{a.detail}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </AdvancedDetails>
         </Panel>
 
         {awaitingInput.length > 0 && (
@@ -854,31 +945,42 @@ export function SecurityScreen() {
 
         <div className="grid grid--2">
           <Panel title="Runtime identity" icon="server">
-            <KV
-              items={[
-                { k: 'Agent id', v: <span className="t-mono">{agent.data?.agent_id ?? '—'}</span> },
-                { k: 'State', v: humanize(autonomy.agentState) },
-                { k: 'Backend', v: health.data && !health.isError ? `v${health.data.version}` : 'unreachable' },
-                { k: 'Health', v: humanize(agentHealth.data?.overall ?? 'UNKNOWN') },
-                { k: 'Last wake', v: relTime(agent.data?.last_wake_at) },
-              ]}
-            />
+            <div className="stack stack--tight">
+              <span className="t-title">{statusHeadline}</span>
+              <span className="t-muted">{statusDetail}</span>
+            </div>
+            <AdvancedDetails id="runtime">
+              <KV
+                items={[
+                  { k: 'Agent id', v: <span className="t-mono">{agent.data?.agent_id ?? '—'}</span> },
+                  { k: 'State', v: humanize(autonomy.agentState) },
+                  { k: 'Backend', v: health.data && !health.isError ? `v${health.data.version}` : 'unreachable' },
+                  { k: 'Health', v: humanize(agentHealth.data?.overall ?? 'UNKNOWN') },
+                  { k: 'Last wake', v: relTime(agent.data?.last_wake_at) },
+                ]}
+              />
+            </AdvancedDetails>
           </Panel>
 
           <Panel title="What this screen cannot do" icon="info">
-            <div className="stack stack--tight">
-              <span className="t-muted">
-                Permissions are declared by the backend capability registry and enforced by the executor — this interface
-                cannot widen them.
-              </span>
-              <span className="t-muted">
-                Device credentials and trust grants are listed in the Devices panel above and can be changed there.
-                There is no separate browser-style session list to revoke — Sythion runs as a single local process.
-              </span>
-              <span className="t-muted">
-                Pausing stops new work; it does not abort a tool already executing.
-              </span>
-            </div>
+            <span className="t-muted">
+              This screen shows status and records decisions; it cannot widen what the backend permits.
+            </span>
+            <AdvancedDetails id="limits">
+              <div className="stack stack--tight">
+                <span className="t-muted">
+                  Permissions are declared by the backend capability registry and enforced by the executor — this interface
+                  cannot widen them.
+                </span>
+                <span className="t-muted">
+                  Device credentials and trust grants are listed in the Devices panel above and can be changed there.
+                  There is no separate browser-style session list to revoke — Sythion runs as a single local process.
+                </span>
+                <span className="t-muted">
+                  Pausing stops new work; it does not abort a tool already executing.
+                </span>
+              </div>
+            </AdvancedDetails>
           </Panel>
         </div>
       </div>

@@ -87,7 +87,10 @@ export function CompanionSurface() {
   // runtime is reachable again. An exception after dispatch is NOT held — its
   // outcome is unknown and must never be auto-resent (quota/double-action
   // safety). See sendNow / the reconnect effect below.
-  const heldTurnRef = useRef<{ text: string; id: string } | null>(null);
+  // A QUEUE, not a single slot: several drafts may be submitted while offline.
+  // Each is demonstrably unsent and keeps its own stable identity; the reconnect
+  // effect drains them in order so no earlier draft is silently overwritten.
+  const heldTurnsRef = useRef<{ text: string; id: string }[]>([]);
 
   // Honour the OS reduced-motion setting. Read once here rather than adding a
   // media-query listener, because the robot's only motion is decorative and a
@@ -107,15 +110,13 @@ export function CompanionSurface() {
   // Reuse the identity of an identical held or unresolved turn. A different
   // draft never inherits an identity that may already have been dispatched.
   const reserveTurn = useCallback((text: string): { text: string; id: string } => {
-    const existing = heldTurnRef.current?.text === text
-      ? heldTurnRef.current
-      : pendingTurnRef.current?.text === text
-        ? pendingTurnRef.current
-        : null;
+    const held = heldTurnsRef.current.find((t) => t.text === text);
+    const existing = held
+      || (pendingTurnRef.current?.text === text ? pendingTurnRef.current : null);
     if (existing) {
       // Adopting a held turn for an explicit send means the reconnect effect
       // must not send it a second time.
-      if (heldTurnRef.current === existing) heldTurnRef.current = null;
+      if (held) heldTurnsRef.current = heldTurnsRef.current.filter((t) => t !== held);
       return existing;
     }
     return {
@@ -129,7 +130,7 @@ export function CompanionSurface() {
   const sendNow = useCallback(
     async (turn: { text: string; id: string }) => {
       // A held turn was never dispatched, so it is cleared before the send.
-      if (heldTurnRef.current === turn) heldTurnRef.current = null;
+      heldTurnsRef.current = heldTurnsRef.current.filter((t) => t !== turn);
       setSubmitting(true);
       setSurfaceError(null);
       pendingTurnRef.current = turn;
@@ -189,9 +190,15 @@ export function CompanionSurface() {
         // automatically when the runtime returns — no instruction to the owner.
         // The manual send control stays available as a fallback, and the held
         // state is reported honestly in the capsule's status line.
-        heldTurnRef.current = reserveTurn(text);
+        // Reserve FIRST: it removes an identical already-held turn from the
+        // queue, so spreading the ref must happen after that mutation.
+        const turn = reserveTurn(text);
+        heldTurnsRef.current = [...heldTurnsRef.current, turn];
+        const count = heldTurnsRef.current.length;
         setSurfaceError(
-          'Sythion is not reachable right now, so nothing was sent. Your message is held and will be sent automatically when Sythion is back.'
+          count === 1
+            ? 'Sythion is not reachable right now, so nothing was sent. Your message is held and will be sent automatically when Sythion is back.'
+            : `Sythion is not reachable right now, so nothing was sent. Your ${count} messages are held and will be sent automatically when Sythion is back.`
         );
         return;
       }
@@ -200,15 +207,20 @@ export function CompanionSurface() {
     [live, reserveTurn, sendNow]
   );
 
-  // When the runtime becomes reachable, dispatch the held (never-dispatched)
-  // turn once. The ref is cleared before the send so a re-render cannot send it
-  // twice, and a failure leaves it for an explicit retry only.
+  // When the runtime becomes reachable, dispatch ALL held (never-dispatched)
+  // turns in order. The queue is drained before the sends so a re-render cannot
+  // send any turn twice, and a failure leaves that turn for an explicit retry
+  // only. Sends run sequentially to preserve request order.
   useEffect(() => {
     if (!live) return;
-    const held = heldTurnRef.current;
-    if (!held) return;
-    heldTurnRef.current = null;
-    void sendNow(held);
+    const held = heldTurnsRef.current;
+    if (!held.length) return;
+    heldTurnsRef.current = [];
+    void (async () => {
+      for (const turn of held) {
+        await sendNow(turn);
+      }
+    })();
   }, [live, sendNow]);
 
   /* Publish the interactive rectangles to the native hit-test poller.

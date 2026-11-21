@@ -37,6 +37,15 @@ except ImportError:  # pragma: no cover - alternate import roots
     from services.grounded_discussion_evidence import read_selected_discussion_evidence
 
 
+def _reply(result) -> str:
+    """Genuine answers and runtime notices travel on separate channels now.
+
+    These retrieval-validation tests only care about the human-facing text, so
+    read both channels. Channel separation itself is covered by dedicated tests.
+    """
+    return f"{result.get('assistant_text', '')} {result.get('status_text', '')}".strip()
+
+
 class FakeModelClient:
     def __init__(self, responses: list[Any] | None = None, exc: Exception | None = None):
         self.responses = list(responses or [])
@@ -135,7 +144,7 @@ async def test_default_path_preserves_existing_behavior():
     client = FakeModelClient(['{"assistant_text":"hi","commands":[]}'])
     engine = ConversationTurnEngine(client)
     result = await engine.run_turn("hello", recent_turns=[])
-    assert result["assistant_text"] == "hi"
+    assert _reply(result) == "hi"
     assert result["commands"] == []
     assert engine.call_count == 1
 
@@ -195,7 +204,7 @@ async def test_resolver_clarification_is_terminal_with_one_call():
         discovery_complete=True,
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
-    assert result["assistant_text"] == "I need to know which Lantern budget you mean."
+    assert _reply(result) == "I need to know which Lantern budget you mean."
     assert result["commands"] == []
     assert engine.call_count == 1
     assert reader_calls == []
@@ -228,7 +237,7 @@ async def test_valid_selection_calls_reader_and_answers_with_two_calls():
         discovery_complete=True,
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
-    assert result["assistant_text"] == "Lantern remains $9 with no cafés."
+    assert _reply(result) == "Lantern remains $9 with no cafés."
     assert result["commands"] == []
     assert engine.call_count == 2
     assert reader_calls == [("disc",)]
@@ -263,7 +272,7 @@ async def test_selected_recall_excludes_legacy_context_and_its_coverage_only_in_
     assert payload["discussion_context_coverage"] == (None if read_only else coverage)
     assert result["commands"] == []
     if read_only:
-        assert "may be incomplete" in result["assistant_text"]
+        assert "may be incomplete" in _reply(result)
 
 
 @pytest.mark.asyncio
@@ -450,7 +459,7 @@ async def test_structurally_insufficient_evidence_blocks_final_call(mutation):
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 
@@ -478,7 +487,7 @@ async def test_unverified_but_structurally_complete_evidence_supports_recall():
         discovery_complete=True,
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
-    assert result["assistant_text"] == "Recalled Lantern context, unverified."
+    assert _reply(result) == "Recalled Lantern context, unverified."
     assert engine.call_count == 2
 
 
@@ -596,7 +605,7 @@ async def test_real_discovery_and_evidence_readers_engine_path(db_session):
         "What was Lantern?",
         discussion_discovery=discovery,
     )
-    assert result["assistant_text"] == "Project Lantern is an indoor museum visit for $9 with no cafés."
+    assert _reply(result) == "Project Lantern is an indoor museum visit for $9 with no cafés."
     assert result["commands"] == []
     assert engine.call_count == 2
     user_message = json.loads(client.calls[1][1]["content"])
@@ -628,7 +637,7 @@ async def test_real_readers_with_unresolved_link_do_not_claim_latest_agreement(d
     result = await engine.run_turn("latest agreement?", discussion_discovery=discovery)
     assert result["commands"] == []
     assert engine.call_count == 0
-    assert "enough verified discussion discovery" in result["assistant_text"]
+    assert "enough verified discussion discovery" in _reply(result)
 
 
 @pytest.mark.asyncio
@@ -699,7 +708,7 @@ async def test_contradictory_entry_structural_state_blocks_final_call():
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 
@@ -726,7 +735,7 @@ async def test_selected_id_inconsistency_blocks_final_call():
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 
@@ -824,7 +833,7 @@ async def test_supplied_count_invalid_does_not_pass_structural_gate(field):
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 
@@ -847,7 +856,7 @@ async def test_aggregate_reconciliation_invalid_per_field_blocks_final_call():
         )
         result = await engine.run_turn("hello", discussion_discovery=discovery)
         assert result["commands"] == []
-        assert "structurally complete evidence" in result["assistant_text"]
+        assert "structurally complete evidence" in _reply(result)
         assert engine.call_count == 1
 
 
@@ -958,7 +967,7 @@ async def test_invalid_supplied_coverage_container_does_not_pass_structural_gate
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 
@@ -996,7 +1005,7 @@ async def test_conflicting_aggregate_count_escapes_reconciliation_rejected():
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 
@@ -1018,7 +1027,7 @@ async def test_unverified_semantic_recall_with_real_style_shape_supports_attribu
         unresolved_task_proof_count=0, discovery_complete=True,
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
-    assert result["assistant_text"] == "Attributed recall from unverified evidence."
+    assert _reply(result) == "Attributed recall from unverified evidence."
     assert engine.call_count == 2
 
 
@@ -1038,7 +1047,7 @@ async def test_aggregate_false_source_completeness_blocks_final_call():
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 
@@ -1062,7 +1071,7 @@ async def test_bool_nested_coverage_counts_do_not_pass_structural_gate():
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 
@@ -1082,7 +1091,7 @@ async def test_invalid_or_unidentified_entries_do_not_pass_selected_ids():
         )
         result = await engine.run_turn("hello", discussion_discovery=discovery)
         assert result["commands"] == []
-        assert "structurally complete evidence" in result["assistant_text"]
+        assert "structurally complete evidence" in _reply(result)
 
 
 @pytest.mark.asyncio
@@ -1114,7 +1123,7 @@ async def test_available_source_requires_exact_canonical_projected_pair():
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 
@@ -1137,7 +1146,7 @@ async def test_false_event_target_source_completeness_blocks_final_call():
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 
@@ -1188,5 +1197,5 @@ async def test_reconciled_entry_coverage_total_mismatch_blocks_final_call():
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1

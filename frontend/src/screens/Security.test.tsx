@@ -8,6 +8,9 @@ const mock = vi.hoisted(() => ({
   permissions: [] as Array<Record<string, unknown>>,
   uncertain: [] as Array<Record<string, unknown>>,
   skills: [] as Array<Record<string, unknown>>,
+  agentHealthData: undefined as { overall: string } | undefined,
+  capabilitiesData: [] as Array<Record<string, unknown>>,
+  activityData: undefined as { events: Array<Record<string, unknown>> } | undefined,
   approveTool: vi.fn(),
   rejectTool: vi.fn(),
   approveSkill: vi.fn(),
@@ -26,14 +29,14 @@ vi.mock('../hooks/useBackend', () => {
   return {
     useAgent: () => ({ data: undefined, refetch }),
     useBackgroundPolicy: () => ({ data: undefined, refetch }),
-    useCapabilities: () => ({ data: [], isLoading: false, refetch: mock.capabilitiesRefetch }),
+    useCapabilities: () => ({ data: mock.capabilitiesData, isLoading: false, refetch: mock.capabilitiesRefetch }),
     useCapabilityConsistency: () => ({ data: [], isLoading: false, refetch: mock.consistencyRefetch }),
     useTools: () => ({ data: [], refetch: mock.toolsRefetch }),
     useSkills: () => ({ data: [], refetch: mock.skillsRefetch }),
-    useAgentHealth: () => ({ data: undefined, refetch }),
+    useAgentHealth: () => ({ data: mock.agentHealthData, refetch }),
     useHealth: () => ({ data: undefined, isError: false, refetch }),
     useTasks: () => ({ data: mock.tasks, refetch }),
-    useAgentActivity: () => ({ data: undefined, refetch }),
+    useAgentActivity: () => ({ data: mock.activityData, refetch }),
     useMemoryEdges: () => ({ data: [], refetch }),
     useSkillProposals: () => ({ data: mock.skills, refetch: mock.skillProposalsRefetch }),
     useToolProposals: () => ({ data: mock.toolProposals, refetch: mock.toolProposalsRefetch }),
@@ -98,6 +101,9 @@ describe('Security screen presentability', () => {
     mock.permissions = [];
     mock.uncertain = [];
     mock.skills = [];
+    mock.agentHealthData = undefined;
+    mock.capabilitiesData = [];
+    mock.activityData = undefined;
     vi.clearAllMocks();
     mock.approveTool.mockResolvedValue(undefined);
     mock.rejectTool.mockResolvedValue(undefined);
@@ -131,7 +137,12 @@ describe('Security screen presentability', () => {
     await act(async () => { view = create(<SecurityScreen />); });
     const text = JSON.stringify(view.toJSON());
     expect(text).not.toContain('there are no remote sessions to revoke');
-    expect(text).toContain('Device credentials and trust grants');
+    // The backend-capability prose is implementation detail: available under
+    // the limits panel's Advanced disclosure, never in the default view.
+    const toggle = view.root.findByProps({ 'data-testid': 'advanced-toggle-limits' });
+    await act(async () => { toggle.props.onClick(); });
+    expect(view.root.findByProps({ 'data-testid': 'advanced-limits' })).toBeTruthy();
+    expect(JSON.stringify(view.toJSON())).toContain('Device credentials and trust grants');
   });
 
   it('counts permission proposals, waiting tasks and uncertain actions as awaiting the owner', async () => {
@@ -205,5 +216,112 @@ describe('Security screen presentability', () => {
     expect(mock.skillProposalsRefetch).not.toHaveBeenCalled();
     expect(mock.skillsRefetch).not.toHaveBeenCalled();
     expect(mock.capabilitiesRefetch).not.toHaveBeenCalled();
+  });
+
+  it('default view shows plain health status and no raw backend detail', async () => {
+    mock.agentHealthData = { overall: 'HEALTHY' };
+    mock.capabilitiesData = [{
+      id: 'cap-1',
+      name: 'Shell',
+      category: 'system',
+      status: 'REQUIRES_PERMISSION',
+      risk_class: 'HIGH',
+      requires_permission: true,
+      requires_external_service: true,
+    }];
+    mock.activityData = {
+      events: [{
+        event_type: 'action.completed',
+        sequence_num: 9,
+        created_at: '2026-11-01T00:00:00Z',
+        event_data: { tool_name: 'shell.exec' },
+      }],
+    };
+    await act(async () => { view = create(<SecurityScreen />); });
+    const text = JSON.stringify(view.toJSON());
+
+    expect(text).toContain('Synth is healthy');
+    // Human-readable capability decisions stay in the default view.
+    expect(text).toContain('need your approval first');
+    expect(text).toContain('high risk');
+
+    // No raw ids, enums, event-data dumps, versions or backend prose by default.
+    expect(text).not.toContain('Agent id');
+    expect(text).not.toContain('DEGRADED');
+    expect(text).not.toContain('Last wake');
+    expect(text).not.toContain('Proposal id');
+    expect(text).not.toContain('Enabled mode');
+    expect(text).not.toContain('Successful uses');
+    expect(text).not.toContain('Validation problems');
+    expect(text).not.toContain('This status cannot be decided by the backend');
+    expect(text).not.toContain('Derived from two backend switches');
+    expect(text).not.toContain('requires_permission');
+    expect(text).not.toContain('tool_name: shell.exec');
+  });
+
+  it('never claims healthy when health is degraded; raw health sits under Advanced', async () => {
+    mock.agentHealthData = { overall: 'DEGRADED' };
+    await act(async () => { view = create(<SecurityScreen />); });
+    const text = JSON.stringify(view.toJSON());
+    expect(text).toContain('Synth needs attention');
+    expect(text).not.toContain('Synth is healthy');
+
+    const toggle = view.root.findByProps({ 'data-testid': 'advanced-toggle-runtime' });
+    expect(toggle.props['aria-expanded']).toBe(false);
+    await act(async () => { toggle.props.onClick(); });
+    expect(view.root.findByProps({ 'data-testid': 'advanced-runtime' })).toBeTruthy();
+    const opened = JSON.stringify(view.toJSON());
+    expect(opened).toContain('DEGRADED');
+    expect(opened).toContain('Agent id');
+  });
+
+  it('every Advanced / for support disclosure is closed by default and reveals detail when opened', async () => {
+    await act(async () => { view = create(<SecurityScreen />); });
+    const advancedButtons = view.root.findAllByType('button')
+      .filter((b) => b.children.includes('Advanced / for support'));
+    expect(advancedButtons.length).toBeGreaterThan(0);
+    advancedButtons.forEach((b) => expect(b.props['aria-expanded']).toBe(false));
+
+    // No raw detail panels are mounted while every disclosure is closed.
+    expect(view.root.findAllByProps({ 'data-testid': 'advanced-runtime' })).toHaveLength(0);
+    expect(view.root.findAllByProps({ 'data-testid': 'advanced-capabilities' })).toHaveLength(0);
+    expect(view.root.findAllByProps({ 'data-testid': 'advanced-audit' })).toHaveLength(0);
+
+    for (const b of advancedButtons) {
+      await act(async () => { b.props.onClick(); });
+    }
+    expect(view.root.findAllByProps({ 'data-testid': 'advanced-autonomy' })).toHaveLength(1);
+    expect(view.root.findAllByProps({ 'data-testid': 'advanced-proposals' })).toHaveLength(1);
+    expect(view.root.findAllByProps({ 'data-testid': 'advanced-capabilities' })).toHaveLength(1);
+    expect(view.root.findAllByProps({ 'data-testid': 'advanced-audit' })).toHaveLength(1);
+    expect(view.root.findAllByProps({ 'data-testid': 'advanced-runtime' })).toHaveLength(1);
+    expect(view.root.findAllByProps({ 'data-testid': 'advanced-limits' })).toHaveLength(1);
+  });
+
+  it('keeps all owner consent and pause controls visible in the default view', async () => {
+    mock.toolProposals = [toolProposal];
+    mock.permissions = [{ proposal_id: 'p1', tool_name: 'x', task_id: 't', target_canonical: 'y' }];
+    mock.skills = [{ id: 3, name: 'draft skill', status: 'proposed', evidence_count: 2, validation_errors: [] }];
+    mock.tasks = [{
+      id: 't1',
+      state: 'interrupted',
+      updated_at: '2026-11-01T00:00:00Z',
+      original_request: 'Held task',
+      normalized_goal: null,
+      terminal_reason: 'Needs a decision',
+    }];
+    await act(async () => { view = create(<SecurityScreen />); });
+    const buttons = view.root.findAllByType('button');
+    const hasButton = (label: string) => buttons.some((b) => b.children.includes(label));
+    expect(hasButton('Approve')).toBe(true);
+    expect(hasButton('Reject')).toBe(true);
+    expect(hasButton('Deny')).toBe(true);
+    expect(hasButton('Review')).toBe(true);
+    expect(hasButton('Resume if safe')).toBe(true);
+    expect(hasButton('Pause everything')).toBe(true);
+    expect(hasButton('Resume agent')).toBe(true);
+    const text = JSON.stringify(view.toJSON());
+    expect(text).toContain('Owner decisions');
+    expect(text).toContain('Resuming is not permission approval');
   });
 });

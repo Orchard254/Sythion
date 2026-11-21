@@ -144,6 +144,25 @@ describe('Companion offline hold', () => {
     view.unmount();
   });
 
+  it('holds multiple different offline drafts and sends them all on reconnect', async () => {
+    harness.live = false;
+    harness.turn.mockResolvedValue({ assistant_text: '' });
+
+    const view = create(<CompanionSurface />);
+    await act(async () => {});
+    const companion = view.root.findByType(Companion);
+    await act(async () => { await companion.props.onSubmit('First draft'); });
+    await act(async () => { await companion.props.onSubmit('Second draft'); });
+    expect(harness.turn).not.toHaveBeenCalled();
+    expect(companion.props.error).toContain('2 messages are held');
+
+    harness.live = true;
+    await act(async () => { view.update(<CompanionSurface />); });
+    await vi.waitFor(() => expect(harness.turn).toHaveBeenCalledTimes(2));
+    expect(harness.turn.mock.calls.map((c) => c[0])).toEqual(['First draft', 'Second draft']);
+    view.unmount();
+  });
+
   it('keeps a single held turn across repeated sends while offline', async () => {
     harness.live = false;
     harness.draft = 'Held message';

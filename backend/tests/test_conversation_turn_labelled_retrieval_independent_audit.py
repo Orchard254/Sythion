@@ -22,6 +22,11 @@ except ImportError:  # pragma: no cover - alternate import roots
     )
 
 
+def _reply(result) -> str:
+    """Answers and runtime notices use separate response channels now."""
+    return f"{result.get('assistant_text', '')} {result.get('status_text', '')}".strip()
+
+
 class FakeModelClient:
     def __init__(self, responses=None, exc=None):
         self.responses = list(responses or [])
@@ -71,6 +76,7 @@ async def test_canonical_resolver_clarification_preserves_raw_text():
         discovery_complete=True,
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
+    # Genuine answers keep their exact whitespace on the assistant channel.
     assert result["assistant_text"] == "  Keep this exact text.  "
     assert result["commands"] == []
     assert engine.call_count == 1
@@ -230,7 +236,7 @@ async def test_real_unverified_structurally_complete_allows_attribution():
         discovery_complete=True,
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
-    assert result["assistant_text"] == "Attributed recall."
+    assert _reply(result) == "Attributed recall."
     assert engine.call_count == 2
 
 
@@ -279,7 +285,7 @@ async def test_structural_gaps_block_final_call(mutation):
     )
     result = await engine.run_turn("hello", discussion_discovery=discovery)
     assert result["commands"] == []
-    assert "structurally complete evidence" in result["assistant_text"]
+    assert "structurally complete evidence" in _reply(result)
     assert engine.call_count == 1
 
 

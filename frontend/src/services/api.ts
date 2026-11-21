@@ -159,7 +159,24 @@ apiClient.interceptors.request.use((config) => {
 // response and the config stay reachable for any caller that wants them.
 interface ApiRejection {
   message?: string;
-  response?: { data?: unknown };
+  response?: { status?: number; data?: unknown };
+}
+
+/**
+ * Typed view of a rejected API call. The response interceptor attaches the
+ * structured fields below to the SAME error object it re-rejects.
+ *
+ * - `status` / `detail` are the raw structured fields. Screens that must
+ *   branch on the exact status or 409 detail can read them; they are never
+ *   safe to render directly.
+ * - `safeDetail` is the allowlisted subset that IS safe to render.
+ * - `message` is always a sanitized, plain-language, human-facing string.
+ */
+export interface ApiError extends Error {
+  status?: number;
+  detail?: string;
+  safeDetail?: string;
+  response?: { status?: number; data?: unknown };
 }
 
 // The `msg` of one FastAPI validation entry, or '' when there is none.
@@ -171,9 +188,10 @@ const messageOf = (entry: unknown): string => {
   return '';
 };
 
-// A human-readable reason out of a structured error body. Only JSON fields
-// are used: a raw body (an HTML error page, a Python traceback) is never
-// surfaced, so the operator never sees a stack trace in the UI.
+// A reason out of a structured error body. Only JSON fields are used: a raw
+// body (an HTML error page, a Python traceback) is never read. This value is
+// kept verbatim on `ApiError.detail` for structured branching; it is NOT
+// rendered as a message unless it passes the allowlist below.
 const detailToText = (detail: unknown): string => {
   if (typeof detail === 'string') {
     return detail.trim();
@@ -187,35 +205,101 @@ const detailToText = (detail: unknown): string => {
   return messageOf(detail);
 };
 
-// The reason to show for a failed request: the backend's `detail` first,
-// then its `error` slug. An empty result means "say nothing", and the
-// caller's own message (axios's "Request failed with status code NNN" or
-// "Network Error") is kept.
-const errorReason = (body: unknown): string => {
+// Read `detail` only from a structured JSON object body. A string body (raw
+// HTML, a Python traceback, `str(exc)`) never qualifies.
+const responseDetail = (body: unknown): string => {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return '';
   }
-  const record = body as Record<string, unknown>;
-  const detail = detailToText(record.detail);
-  if (detail) {
-    return detail;
-  }
-  const slug = record.error;
-  return typeof slug === 'string' ? slug.trim() : '';
+  return detailToText((body as Record<string, unknown>).detail);
 };
 
-// Surface the backend's own reason instead of axios's generic message. The
-// error is never swallowed: the same error object is re-rejected with only
-// its message replaced, and a successful response is passed through
-// unchanged.
+/**
+ * Known-safe, owner-actionable backend phrases. These are the ONLY raw
+ * details allowed to reach a human-facing message, so genuinely actionable
+ * failures (rejected/limited key, restricted model, missing credit) stay
+ * clear instead of being replaced by a generic message. Keep in sync with
+ * the phrase checks in the cloud setup screens.
+ */
+const SAFE_API_DETAILS: ReadonlySet<string> = new Set([
+  'Stored OpenRouter key rejected (upstream HTTP 401)',
+  'Stored OpenRouter key lacks access (upstream HTTP 403)',
+  'Cloud provider rejected stored credential (upstream HTTP 401)',
+  'Cloud provider denied access (upstream HTTP 403)',
+  'Cloud model requires an eligible agentic harness (upstream HTTP 403)',
+  'Cloud provider rejected text request parameters (upstream HTTP 400)',
+  'Cloud provider requires payment or credits (upstream HTTP 402)',
+  'Cloud model or endpoint unavailable (upstream HTTP 404)',
+  'Cloud provider rejected text request format (upstream HTTP 422)',
+]);
+
+/** Markers for stack traces, absolute paths and `str(exc)` remnants. */
+const UNSAFE_DETAIL_PATTERN =
+  /(?:Traceback\b|Stack\s*[Tt]race|\bFile\s*["']|\bline\s+\d+|\b0x[0-9a-fA-F]{4,}\b|[A-Za-z]:[\\/]|(?:^|[\s(])[\\/]{1,2}(?:home|Users|var|tmp|root|usr|opt|mnt|srv|app|workspace|private)(?:[\\/]|$)|<class\s|str\s*\(|\b\w*(?:Exception|Error)\s*\()/i;
+
+/** True only for an exact, known-safe, non-internal phrase. */
+export const isSafeApiDetail = (detail: string): boolean =>
+  SAFE_API_DETAILS.has(detail) && !UNSAFE_DETAIL_PATTERN.test(detail);
+
+/** Honest, plain-language messages. Raw backend text is never one of these. */
+export const API_ERROR_MESSAGES = {
+  badRequest: 'Sythion could not accept that request. Please check what you entered.',
+  signIn: 'Your session has ended or you need to sign in. Please sign in again to continue.',
+  forbidden: 'You are not allowed to do that with the current account or permissions.',
+  notFound: 'We couldn’t find what you were looking for.',
+  conflict: 'This action conflicts with the current state. Refresh and try again.',
+  invalidInput: 'Some of the information you provided is invalid. Please check it and try again.',
+  quota: 'You’ve reached a quota or rate limit. Please wait before trying again.',
+  server: 'Sythion had a problem; it was not retried.',
+} as const;
+
+/**
+ * The single boundary sanitizer: map a failure to an honest, plain-language
+ * message. An allowlisted actionable detail wins (it is already safe and
+ * plain-language); otherwise the HTTP status decides. Raw internal detail,
+ * absolute paths, stack traces and `str(exc)` remnants are never returned.
+ * An empty result means "keep axios's own message" (network failures and
+ * unmapped statuses, whose default text contains no backend internals).
+ */
+const sanitizeErrorMessage = (status: number | undefined, rawDetail: string): string => {
+  const safe = isSafeApiDetail(rawDetail) ? rawDetail : '';
+  if (safe) return safe;
+  switch (status) {
+    case 400: return API_ERROR_MESSAGES.badRequest;
+    case 401: return API_ERROR_MESSAGES.signIn;
+    case 403: return API_ERROR_MESSAGES.forbidden;
+    case 404: return API_ERROR_MESSAGES.notFound;
+    case 409: return API_ERROR_MESSAGES.conflict;
+    case 422: return API_ERROR_MESSAGES.invalidInput;
+    case 429: return API_ERROR_MESSAGES.quota;
+    default:
+      if (typeof status === 'number' && status >= 500) return API_ERROR_MESSAGES.server;
+      return '';
+  }
+};
+
+// Replace only the human-facing message. The same error object is re-rejected
+// with its structured fields intact, and successful responses pass through.
 apiClient.interceptors.response.use(
   (response) => response,
   (error: ApiRejection) => {
-    const reason = errorReason(error?.response?.data);
-    if (reason) {
-      error.message = reason;
+    const apiError = error as ApiError;
+    const status = typeof error?.response?.status === 'number'
+      ? error.response.status
+      : undefined;
+    const rawDetail = responseDetail(error?.response?.data);
+    const safeDetail = isSafeApiDetail(rawDetail) ? rawDetail : '';
+
+    // Preserve the structured fields screens legitimately branch on.
+    apiError.status = status;
+    apiError.detail = rawDetail;
+    apiError.safeDetail = safeDetail;
+
+    const message = sanitizeErrorMessage(status, rawDetail);
+    if (message) {
+      apiError.message = message;
     }
-    return Promise.reject(error);
+    return Promise.reject(apiError);
   }
 );
 

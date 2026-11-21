@@ -34,6 +34,11 @@ FULL_RECALL_FACT = ("juniper", "yellow", "perch", "beside", "window")
 FACT_TEXT = "my parrot Juniper prefers a yellow perch beside the window."
 
 
+def _reply(result) -> str:
+    """Genuine answers and runtime notices use separate channels now."""
+    return f"{getattr(result, 'assistant_text', '')} {getattr(result, 'status_text', '')}".strip()
+
+
 def _payloads(*, resolver_label: str, resolver_preview: str) -> tuple[dict, dict]:
     discovery_payload = {
         "session_id": "s",
@@ -291,7 +296,7 @@ async def test_final_selected_evidence_injects_full_recall_fact_offline():
         discussion_contexts=None,
     )
 
-    assert result.assistant_text.startswith("Juniper prefers")
+    assert _reply(result).startswith("Juniper prefers")
     assert engine.call_count == 2
     final_call = model.calls[-1]
     final_payload = json.loads(final_call["messages"][-1]["content"])
@@ -377,7 +382,7 @@ async def test_omitted_or_truncated_evidence_does_not_inject_full_fact_offline()
         discussion_contexts=None,
     )
     assert engine.call_count == 1
-    assert "insufficient" in result.assistant_text.lower() or "enough" in result.assistant_text.lower()
+    assert "insufficient" in _reply(result).lower() or "enough" in _reply(result).lower()
 
     # Truncated evidence case: structurally complete proof fails.
     truncated = _structurally_complete_evidence(full_fact_present=True)
@@ -401,7 +406,7 @@ async def test_omitted_or_truncated_evidence_does_not_inject_full_fact_offline()
         discussion_contexts=None,
     )
     assert engine.call_count == 1
-    assert "insufficient" in result.assistant_text.lower() or "enough" in result.assistant_text.lower()
+    assert "insufficient" in _reply(result).lower() or "enough" in _reply(result).lower()
 
 
 @pytest.mark.asyncio

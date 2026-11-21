@@ -6,6 +6,8 @@ import {
 } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import apiClient, {
+  API_ERROR_MESSAGES,
+  type ApiError,
   approvalService, assistantService, deviceAccessService, deviceCapabilityService,
   goalService, reconciliationService, relayAckService, relayService, taskService,
 } from './api';
@@ -62,6 +64,11 @@ async function rejectedWith(promise: Promise<unknown>): Promise<AxiosError> {
   expect(outcome.resolved).toBe(false);
   expect(outcome.error).toBeInstanceOf(AxiosError);
   return outcome.error as AxiosError;
+}
+
+/** Typed view of the structured fields the boundary interceptor attaches. */
+function asApiError(error: AxiosError): ApiError {
+  return error as unknown as ApiError;
 }
 
 beforeEach(() => {
@@ -295,7 +302,7 @@ describe('trusted owner approval service', () => {
 });
 
 describe('the axios response interceptor', () => {
-  it('surfaces the backend detail for an error response', async () => {
+  it('sanitizes a 5xx detail but preserves the raw detail on the typed error', async () => {
     const adapter = errorAdapter(
       502,
       JSON.stringify({ detail: 'Inference returned an empty response' })
@@ -303,11 +310,18 @@ describe('the axios response interceptor', () => {
     const error = await rejectedWith(
       apiClient.post('/onboarding/inference', { model_id: 'm1' }, { adapter })
     );
-    expect(error.message).toBe('Inference returned an empty response');
+    const apiError = asApiError(error);
+    expect(error.message).toBe(API_ERROR_MESSAGES.server);
+    expect(error.message).not.toContain('Inference returned an empty response');
+    // Structured fields survive for legitimate branching; only the message
+    // is sanitized.
+    expect(apiError.detail).toBe('Inference returned an empty response');
+    expect(apiError.safeDetail).toBe('');
+    expect(apiError.status).toBe(502);
     expect(error.response?.status).toBe(502);
   });
 
-  it('prefers the detail over the error slug', async () => {
+  it('does not prefer an unsafe detail over the error slug or status', async () => {
     const adapter = errorAdapter(
       500,
       JSON.stringify({ error: 'INTERNAL_ERROR', detail: 'boom', code: '500' })
@@ -315,23 +329,27 @@ describe('the axios response interceptor', () => {
     const error = await rejectedWith(
       apiClient.post('/onboarding/inference', { model_id: 'm1' }, { adapter })
     );
-    expect(error.message).toBe('boom');
+    expect(error.message).toBe(API_ERROR_MESSAGES.server);
+    expect(error.message).not.toContain('INTERNAL_ERROR');
+    expect(asApiError(error).detail).toBe('boom');
   });
 
-  it('falls back to the error slug when there is no detail', async () => {
+  it('does not surface a raw error slug for a 409', async () => {
     const adapter = errorAdapter(409, JSON.stringify({ error: 'VAULT_WRITE_BLOCKED', code: '409' }));
     const error = await rejectedWith(
       apiClient.post('/onboarding/inference', { model_id: 'm1' }, { adapter })
     );
-    expect(error.message).toBe('VAULT_WRITE_BLOCKED');
+    expect(error.message).toBe(API_ERROR_MESSAGES.conflict);
+    expect(error.message).not.toContain('VAULT_WRITE_BLOCKED');
+    expect(error.response?.status).toBe(409);
   });
 
-  it('falls back to the generic message when the body carries no detail', async () => {
+  it('maps a 5xx with no detail to the honest server message', async () => {
     const adapter = errorAdapter(502, '');
     const error = await rejectedWith(
       apiClient.post('/onboarding/inference', { model_id: 'm1' }, { adapter })
     );
-    expect(error.message).toBe('Request failed with status code 502');
+    expect(error.message).toBe(API_ERROR_MESSAGES.server);
   });
 
   it('never surfaces a raw body', async () => {
@@ -342,8 +360,9 @@ describe('the axios response interceptor', () => {
     const error = await rejectedWith(
       apiClient.post('/onboarding/inference', { model_id: 'm1' }, { adapter })
     );
-    expect(error.message).toBe('Request failed with status code 500');
+    expect(error.message).toBe(API_ERROR_MESSAGES.server);
     expect(error.message).not.toContain('Traceback');
+    expect(error.message).not.toContain('backend/main.py');
   });
 
   it('passes a successful response through unchanged', async () => {
@@ -360,6 +379,7 @@ describe('the axios response interceptor', () => {
     );
     expect(error.message).toBe('Network Error');
     expect(error.response).toBeUndefined();
+    expect(asApiError(error).status).toBeUndefined();
   });
 
   it('does not change the request side', async () => {
@@ -390,7 +410,7 @@ describe('the axios response interceptor', () => {
     const error = await rejectedWith(
       apiClient.post('/onboarding/inference', { model_id: 'm1' }, { adapter })
     );
-    expect(error.message).toBe('Inference returned an empty response');
+    expect(error.message).toBe(API_ERROR_MESSAGES.server);
     expect(seen).toHaveLength(1);
     // The request interceptor still ran: the control token is on the way out.
     expect(seen[0].headers['X-Control-Token']).toBe(CONTROL_TOKEN);
@@ -411,6 +431,96 @@ describe('the axios response interceptor', () => {
       apiClient.post('/onboarding/inference', { model_id: 'm1' }, { adapter })
     );
     expect(error.message).not.toContain(CONTROL_TOKEN);
+  });
+});
+
+describe('boundary error-message sanitizer', () => {
+  const rejectWith = async (status: number, detail: string): Promise<ApiError> => {
+    const adapter = errorAdapter(status, JSON.stringify({ detail }));
+    const error = await rejectedWith(
+      apiClient.post('/onboarding/inference', { model_id: 'm1' }, { adapter })
+    );
+    return asApiError(error);
+  };
+
+  it('maps every documented status to an honest plain-language message', async () => {
+    const cases: Array<[number, string]> = [
+      [401, API_ERROR_MESSAGES.signIn],
+      [403, API_ERROR_MESSAGES.forbidden],
+      [404, API_ERROR_MESSAGES.notFound],
+      [409, API_ERROR_MESSAGES.conflict],
+      [422, API_ERROR_MESSAGES.invalidInput],
+      [429, API_ERROR_MESSAGES.quota],
+      [500, API_ERROR_MESSAGES.server],
+      [502, API_ERROR_MESSAGES.server],
+      [503, API_ERROR_MESSAGES.server],
+    ];
+    for (const [status, expected] of cases) {
+      const error = await rejectWith(status, 'Some untrusted backend detail');
+      expect(error.message, `status ${status}`).toBe(expected);
+      expect(error.message, `status ${status}`).not.toContain('untrusted');
+    }
+  });
+
+  it('preserves the correct status on every flow that branches on it', async () => {
+    for (const status of [400, 401, 403, 404, 409, 422, 429, 500, 502, 503]) {
+      const error = await rejectWith(status, 'detail');
+      expect(error.status, `typed status ${status}`).toBe(status);
+      expect(error.response?.status, `response status ${status}`).toBe(status);
+    }
+  });
+
+  it('keeps the exact raw 409 detail on the typed error for structured branching', async () => {
+    const detail = 'Verification evidence changed; re-read staged status before retrying';
+    const error = await rejectWith(409, detail);
+    expect(error.status).toBe(409);
+    expect(error.detail).toBe(detail);
+    // It is not allowlisted, so it is NOT rendered in the message.
+    expect(error.safeDetail).toBe('');
+    expect(error.message).toBe(API_ERROR_MESSAGES.conflict);
+    expect(error.message).not.toContain(detail);
+  });
+
+  it('preserves a known-safe actionable 409 detail in the message for the relevant screen', async () => {
+    const detail = 'Cloud model requires an eligible agentic harness (upstream HTTP 403)';
+    const error = await rejectWith(409, detail);
+    expect(error.status).toBe(409);
+    expect(error.detail).toBe(detail);
+    expect(error.safeDetail).toBe(detail);
+    expect(error.message).toBe(detail);
+  });
+
+  it('keeps owner-required failures clear and actionable, even on a 5xx', async () => {
+    const detail = 'Cloud provider requires payment or credits (upstream HTTP 402)';
+    const error = await rejectWith(502, detail);
+    expect(error.status).toBe(502);
+    expect(error.safeDetail).toBe(detail);
+    expect(error.message).toBe(detail);
+    expect(error.message).not.toBe(API_ERROR_MESSAGES.server);
+  });
+
+  it.each([
+    'Traceback (most recent call last):\n  File "backend/main.py", line 1',
+    'SQLite error at /home/sythion/.local/share/db.sqlite3',
+    'Could not open C:\\Users\\orcha\\AppData\\data.db',
+    "ValueError('bad key: sk-abcdefghijklmnop')",
+    "str(exc) -> KeyError('ollama_api_key')",
+  ])('never renders raw internal detail: %s', async (detail) => {
+    const error = await rejectWith(500, detail);
+    expect(error.message).toBe(API_ERROR_MESSAGES.server);
+    expect(error.message).not.toContain('Traceback');
+    expect(error.message).not.toContain('C:\\');
+    expect(error.message).not.toContain('/home/');
+    expect(error.message).not.toContain('str(');
+    expect(error.message).not.toContain('ValueError');
+  });
+
+  it('does not let a stack-trace-like string into a message even if it resembles an allowed phrase', async () => {
+    const detail = 'Cloud provider denied access (upstream HTTP 403)\n  at /usr/local/lib/provider.py';
+    const error = await rejectWith(403, detail);
+    expect(error.safeDetail).toBe('');
+    expect(error.message).toBe(API_ERROR_MESSAGES.forbidden);
+    expect(error.message).not.toContain('provider.py');
   });
 });
 
@@ -436,11 +546,11 @@ describe('assistantService.turn transport boundary', () => {
     await expect(assistantService.turn('hello', 'request-1')).rejects.toThrow(TRANSPORT_MESSAGE);
   });
 
-  it('preserves a known 503 detail unchanged', async () => {
+  it('sanitizes a 503 detail but keeps the response status', async () => {
     const adapter = errorAdapter(503, JSON.stringify({ detail: 'Service Unavailable' }));
     apiClient.defaults.adapter = adapter;
     await expect(assistantService.turn('hello', 'request-1')).rejects.toMatchObject({
-      message: 'Service Unavailable',
+      message: API_ERROR_MESSAGES.server,
       response: { status: 503 },
     });
   });
@@ -457,7 +567,7 @@ describe('assistantService.turn transport boundary', () => {
     expect(thrown).toBeInstanceOf(Error);
     const error = thrown as { message: string; response?: { status?: number } };
     expect(error.message).not.toBe(TRANSPORT_MESSAGE);
-    expect(error.message).toBe('Authentication required');
+    expect(error.message).toBe(API_ERROR_MESSAGES.signIn);
     expect(error.response?.status).toBe(401);
   });
 });
