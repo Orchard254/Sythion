@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Icon } from '../components/icons';
 import {
   Badge,
@@ -28,6 +28,7 @@ import {
   useSkillProposals,
   useTasks,
   useToolProposals,
+  useUncertainRemoteActions,
 } from '../hooks/useBackend';
 import { useAppStore } from '../store/appStore';
 import {
@@ -47,6 +48,7 @@ import {
   taskTone,
 } from '../lib/format';
 import { useNavStore } from '../store/navStore';
+import { countDecisionsDue } from '../lib/decisionCounts';
 import { DevicesCard } from '../components/DevicesCard';
 import { PendingApprovalsPanel } from '../components/PendingApprovalsPanel';
 
@@ -63,12 +65,15 @@ export function SecurityScreen() {
   const toolProposals = useToolProposals();
   const devices = useDevices();
   const pendingApprovals = usePendingApprovals();
+  const uncertainActions = useUncertainRemoteActions();
   const actions = useActions();
   const notify = useAppStore((s) => s.notify);
   const navigate = useNavStore((s) => s.setRoute);
 
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmPause, setConfirmPause] = useState(false);
+  // Which tool proposal is expanded into its review/detail view (if any).
+  const [reviewingTool, setReviewingTool] = useState<number | null>(null);
   // Optimistic mirror of the background switch so the control responds to the
   // click immediately instead of waiting for the refetch round-trip.
   const [bgOptimistic, setBgOptimistic] = useState<boolean | null>(null);
@@ -89,7 +94,15 @@ export function SecurityScreen() {
   const sensitive = (tasks.data ?? []).filter((t) => t.state === 'failed' || t.state === 'cancelled');
 
   const permissionProposals = pendingApprovals.data?.proposals ?? [];
-  const pendingCount = pendingSkill.length + pendingTools.length + heldTasks.length + permissionProposals.length;
+  const uncertain = uncertainActions.data?.actions ?? [];
+  // Same decision inputs as the navigation badge in App.tsx: proposals,
+  // permission requests, held/waiting tasks, and uncertain remote actions.
+  const pendingCount = countDecisionsDue({
+    proposalApprovals: pendingSkill.length + pendingTools.length,
+    ownerApprovals: permissionProposals.length,
+    needsReconciliation: uncertain.length,
+    awaitingYou: heldTasks.length + awaitingInput.length,
+  });
   const staleEdges = (edges.data ?? []).filter((e) => e.status === 'stale');
 
   const run = async (key: string, fn: () => Promise<unknown>, onOk: () => void) => {
@@ -566,38 +579,97 @@ export function SecurityScreen() {
                     </div>
                   </div>
                 ))}
-                {pendingTools.map((p) => (
-                  <div className="list__row" key={`tp-${p.id}`}>
-                    <Rail tone="danger" />
-                    <div className="list__main">
-                      <span className="t-body t-truncate" style={{ color: 'var(--text-0)' }}>
-                        Tool: {p.name}
-                      </span>
-                      <span className="t-muted t-clamp-2">{p.description}</span>
-                      <span className="list__meta">
-                        <Badge tone="danger">new capability</Badge>
-                        {p.validation_errors.length > 0 && (
-                          <span className="t-danger">· {p.validation_errors.length} validation problems</span>
-                        )}
-                      </span>
-                    </div>
-                    <div className="list__trail">
-                      <Button
-                        size="sm"
-                        variant="subtle"
-                        disabled={!actions.live}
-                        onClick={() =>
-                          void run(`tp-${p.id}`, () => actions.approveToolProposal(p.id), () => {
-                            toolProposals.refetch();
-                            notify({ tone: 'ok', title: 'Tool proposal reviewed' });
-                          })
-                        }
-                      >
-                        Review
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+                {pendingTools.map((p) => {
+                  const expanded = reviewingTool === p.id;
+                  return (
+                    <Fragment key={`tp-${p.id}`}>
+                      <div className="list__row">
+                        <Rail tone="danger" />
+                        <div className="list__main">
+                          <span className="t-body t-truncate" style={{ color: 'var(--text-0)' }}>
+                            Tool: {p.name}
+                          </span>
+                          <span className="t-muted t-clamp-2">{p.description}</span>
+                          <span className="list__meta">
+                            <Badge tone="danger">new capability</Badge>
+                            {p.validation_errors.length > 0 && (
+                              <span className="t-danger">· {p.validation_errors.length} validation problems</span>
+                            )}
+                          </span>
+                        </div>
+                        <div className="list__trail">
+                          <Button
+                            size="sm"
+                            variant="subtle"
+                            disabled={!actions.live || busy !== null}
+                            title="Open the proposal details, then approve or reject explicitly"
+                            onClick={() => setReviewingTool(expanded ? null : p.id)}
+                          >
+                            {expanded ? 'Hide details' : 'Review'}
+                          </Button>
+                        </div>
+                      </div>
+                      {expanded && (
+                        <div className="panel__body" data-testid={`tool-review-${p.id}`}>
+                          <div className="stack stack--tight">
+                            <span className="t-title">Review tool proposal · {p.name}</span>
+                            <p className="t-muted">
+                              {p.description || 'No description was supplied with this proposal.'}
+                            </p>
+                            <KV
+                              items={[
+                                { k: 'Proposal id', v: <span className="t-mono">{p.id}</span> },
+                                { k: 'Status', v: humanize(p.status) },
+                                { k: 'Enabled mode', v: p.enabled_mode ?? '—' },
+                                { k: 'Successful uses', v: String(p.successful_uses) },
+                                { k: 'Created', v: relTime(p.created_at) },
+                              ]}
+                            />
+                            {p.validation_errors.length > 0 && (
+                              <Notice tone="danger" icon="alert">
+                                <span>Validation problems: {p.validation_errors.join('; ')}</span>
+                              </Notice>
+                            )}
+                            <p className="t-warn">
+                              Approving registers this tool as an approved capability; rejecting refuses the proposal.
+                              No tool runs from this screen.
+                            </p>
+                            <div className="row" style={{ gap: 8 }}>
+                              <Button
+                                size="sm"
+                                variant="primary"
+                                disabled={!actions.live || busy !== null}
+                                onClick={() =>
+                                  void run(`tp-approve-${p.id}`, () => actions.approveToolProposal(p.id), () => {
+                                    setReviewingTool(null);
+                                    toolProposals.refetch();
+                                    notify({ tone: 'ok', title: 'Tool proposal approved' });
+                                  })
+                                }
+                              >
+                                Approve tool
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                disabled={!actions.live || busy !== null}
+                                onClick={() =>
+                                  void run(`tp-reject-${p.id}`, () => actions.rejectToolProposal(p.id), () => {
+                                    setReviewingTool(null);
+                                    toolProposals.refetch();
+                                    notify({ tone: 'ok', title: 'Tool proposal rejected' });
+                                  })
+                                }
+                              >
+                                Reject tool
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </Fragment>
+                  );
+                })}
               </div>
             )}
           </Panel>
@@ -626,8 +698,8 @@ export function SecurityScreen() {
                 </Button>
               </div>
               <p className="t-faint" style={{ marginTop: 4 }}>
-                Individual memory items cannot be edited or deleted — no endpoint exists. Relations can be reinforced
-                or withdrawn on the Memory screen.
+                Editing or deleting individual memory items is not available in this version. Relations can be
+                reinforced or withdrawn on the Memory screen.
               </p>
             </div>
           </Panel>
@@ -779,8 +851,8 @@ export function SecurityScreen() {
                 cannot widen them.
               </span>
               <span className="t-muted">
-                No session or device-access list — Sythion runs as a single local process; there are no remote sessions
-                to revoke.
+                Device credentials and trust grants are listed in the Devices panel above and can be changed there.
+                There is no separate browser-style session list to revoke — Sythion runs as a single local process.
               </span>
               <span className="t-muted">
                 Pausing stops new work; it does not abort a tool already executing.

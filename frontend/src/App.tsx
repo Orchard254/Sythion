@@ -30,11 +30,14 @@ import {
   useAgent,
   useAgentHealth,
   useHealth,
+  usePendingApprovals,
   useSkillProposals,
   useTasks,
   useToolProposals,
+  useUncertainRemoteActions,
   useVersion,
 } from './hooks/useBackend';
+import { countDecisionsDue } from './lib/decisionCounts';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -163,6 +166,8 @@ function AppContent() {
   const tasks = useTasks();
   const skillProposals = useSkillProposals();
   const toolProposals = useToolProposals();
+  const pendingApprovals = usePendingApprovals();
+  const uncertainActions = useUncertainRemoteActions();
 
   const [seenTaskStates, setSeenTaskStates] = useState<Record<string, string>>({});
 
@@ -192,12 +197,26 @@ function AppContent() {
     }
   }, [tasks.data, notify, seenTaskStates]);
 
+  // Every decision that genuinely waits on the owner, from all durable read
+  // APIs: skill/tool proposals, exact permission proposals, tasks held or
+  // waiting for an answer, and remote actions whose outcome is uncertain and
+  // needs reconciliation. Uses the same inputs as Security's "awaiting you"
+  // count so the two can never disagree.
   const attentionCount = useMemo(() => {
     const skillPending = (skillProposals.data ?? []).filter((p) => p.status === 'proposed' || p.status === 'pending_review').length;
     const toolPending = (toolProposals.data ?? []).filter((p) => p.status === 'pending_review').length;
-    const held = (tasks.data ?? []).filter((t) => t.state === 'interrupted').length;
-    return skillPending + toolPending + held;
-  }, [skillProposals.data, toolProposals.data, tasks.data]);
+    const permissionProposals = pendingApprovals.data?.proposals ?? [];
+    const uncertain = uncertainActions.data?.actions ?? [];
+    const awaiting = (tasks.data ?? []).filter(
+      (t) => t.state === 'waiting_for_user' || t.state === 'interrupted'
+    ).length;
+    return countDecisionsDue({
+      proposalApprovals: skillPending + toolPending,
+      ownerApprovals: permissionProposals.length,
+      needsReconciliation: uncertain.length,
+      awaitingYou: awaiting,
+    });
+  }, [skillProposals.data, toolProposals.data, pendingApprovals.data, uncertainActions.data, tasks.data]);
 
   if (!isInitialized) {
     return (

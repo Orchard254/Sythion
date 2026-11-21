@@ -306,32 +306,58 @@ fn set_device_channel_config(
     device_channel::read_config(&dir)
 }
 
+/// The global STOP shortcut (Ctrl+Shift+X). Kept exactly as before.
+fn stop_shortcut() -> Shortcut {
+    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyX)
+}
+
+/// The global Companion toggle (Ctrl+Shift+S). Verified distinct from STOP and
+/// from every other shortcut this shell registers.
+fn companion_shortcut() -> Shortcut {
+    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyS)
+}
+
 fn global_shortcut_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri_plugin_global_shortcut::Builder::new()
-        .with_handler(|app, _shortcut, event| {
+        .with_handler(|app, shortcut, event| {
             if event.state() != ShortcutState::Pressed {
                 return;
             }
-            let handle = app.clone();
-            std::thread::spawn(move || {
-                let config = handle.state::<AppState>().bridge.lock().unwrap().clone();
-                if let Some(cfg) = config {
-                    let url = format!("{}/api/v1/stop", cfg.base_url);
-                    let _ = ureq::post(&url)
-                        .set("X-Control-Token", &cfg.control_token)
-                        .timeout(std::time::Duration::from_secs(5))
-                        .call();
-                }
-            });
+            // This global handler is invoked for EVERY registered shortcut, so
+            // the shortcut must be discriminated here. Without this check the
+            // Companion toggle would also fire the STOP POST.
+            if *shortcut == companion_shortcut() {
+                toggle_companion_from_hotkey(app);
+                return;
+            }
+            if *shortcut == stop_shortcut() {
+                let handle = app.clone();
+                std::thread::spawn(move || {
+                    let config = handle.state::<AppState>().bridge.lock().unwrap().clone();
+                    if let Some(cfg) = config {
+                        let url = format!("{}/api/v1/stop", cfg.base_url);
+                        let _ = ureq::post(&url)
+                            .set("X-Control-Token", &cfg.control_token)
+                            .timeout(std::time::Duration::from_secs(5))
+                            .call();
+                    }
+                });
+            }
         })
         .build()
 }
 
-fn register_stop_shortcut(app: &tauri::App) {
-    let stop = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyX);
-    match app.handle().global_shortcut().register(stop) {
-        Ok(()) => {}
-        Err(e) => shell_log(&format!("[sythion] could not register global stop shortcut: {e}")),
+fn register_shortcuts(app: &tauri::App) {
+    for (shortcut, label) in [
+        (stop_shortcut(), "stop"),
+        (companion_shortcut(), "companion toggle"),
+    ] {
+        match app.handle().global_shortcut().register(shortcut) {
+            Ok(()) => {}
+            Err(e) => shell_log(&format!(
+                "[sythion] could not register global {label} shortcut: {e}"
+            )),
+        }
     }
 }
 
@@ -570,6 +596,57 @@ fn create_companion_window(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/* Companion visibility persistence.
+ * ---------------------------------------------------------------------------
+ * The frontend's `localStorage['sythion.companionEnabled']` cannot be read from
+ * Rust. The desktop command that reveals/hides the overlay already runs on
+ * every change to that preference, so it mirrors the value into a tiny flag in
+ * the profile directory. The shell reads that flag during setup and restores
+ * visibility without depending on the main UI's own coordination effect. A
+ * missing/unreadable flag means OFF, which keeps the first-run setup form
+ * unobstructed.
+ */
+const COMPANION_PREF_FILE: &str = "companion_visible";
+
+fn companion_pref_path(profile_dir: &std::path::Path) -> PathBuf {
+    profile_dir.join(COMPANION_PREF_FILE)
+}
+
+fn read_companion_visible(profile_dir: &std::path::Path) -> bool {
+    std::fs::read_to_string(companion_pref_path(profile_dir))
+        .map(|s| s.trim() == "1")
+        .unwrap_or(false)
+}
+
+fn write_companion_visible(app: &tauri::AppHandle, visible: bool) {
+    let Some(dir) = app.state::<AppState>().profile_dir.lock().unwrap().clone() else {
+        return;
+    };
+    let path = companion_pref_path(&dir);
+    if let Err(e) = std::fs::write(&path, if visible { "1\n" } else { "0\n" }) {
+        shell_log(&format!("[sythion] could not persist Companion visibility: {e}"));
+    }
+}
+
+/// Toggle the Companion overlay from the global hotkey.
+///
+/// This is a session-level show/hide: it deliberately does NOT write the
+/// persisted flag, so the Settings preference remains the single source of
+/// truth for startup restore. The plugin's global handler may run on the
+/// hotkey thread, so this only sends messages to the Tauri event loop.
+fn toggle_companion_from_hotkey(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("companion") else {
+        shell_log("[sythion] Companion hotkey ignored: overlay not available");
+        return;
+    };
+    let next = !window.is_visible().unwrap_or(false);
+    let result = if next { window.show() } else { window.hide() };
+    match result {
+        Ok(()) => shell_log(&format!("[sythion] Companion toggled to {next} by hotkey")),
+        Err(e) => shell_log(&format!("[sythion] could not toggle Companion by hotkey: {e}")),
+    }
+}
+
 /// Show or hide the Companion overlay.
 ///
 /// The overlay is created hidden during startup so it cannot float above the
@@ -592,6 +669,9 @@ fn set_companion_visible(app: tauri::AppHandle, visible: bool) -> Result<(), Str
             .map_err(|e| format!("could not hide the Companion overlay: {e}"))?;
         shell_log("[sythion] Companion overlay hidden");
     }
+    // Mirror the preference into the profile dir so the shell can restore
+    // this state at the next startup (Rust cannot read localStorage).
+    write_companion_visible(&app, visible);
     Ok(())
 }
 
@@ -703,7 +783,7 @@ fn main() {
         ])
         .setup(move |app| {
             let started: Result<(), String> = (|| {
-                register_stop_shortcut(app);
+                register_shortcuts(app);
                 let app_handle = app.handle().clone();
                 let child = sidecar::spawn_sidecar_for_build(
                     &app_handle,
@@ -725,6 +805,21 @@ fn main() {
                 // has been cleared.
                 create_companion_window(app)
                     .map_err(|e| format!("the Companion overlay could not be created: {e}"))?;
+                // Restore the persisted Settings preference at the shell level
+                // so the overlay is available without waiting for the main UI's
+                // own coordination effect. A missing flag means OFF, which keeps
+                // the first-run setup form unobstructed.
+                if read_companion_visible(&profile_dir) {
+                    if let Some(window) = app.get_webview_window("companion") {
+                        if let Err(e) = window.show() {
+                            shell_log(&format!(
+                                "[sythion] could not restore Companion visibility: {e}"
+                            ));
+                        } else {
+                            shell_log("[sythion] Companion visibility restored at startup");
+                        }
+                    }
+                }
                 // Must come AFTER create_companion_window: the poller exits as soon
                 // as the overlay window is missing, so starting it earlier would make
                 // it terminate immediately and click-through would never engage.
@@ -777,7 +872,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_log_in, fit_client_size};
+    use super::{append_log_in, fit_client_size, read_companion_visible};
 
     /// A 1366x768 display with a 48px taskbar leaves a 1366x720 work area.
     /// The preferred 1200x800 client area is taller than that, so it has to be
@@ -827,6 +922,24 @@ mod tests {
         let path = dir.join("logs").join("sythion-shell.log");
         let content = std::fs::read_to_string(&path).expect("diagnostics file");
         assert!(content.contains("[sythion] diagnostic line"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An absent preference means OFF (first-run must not be obstructed), and
+    /// a persisted "1"/"0" round-trips through the tiny flag file.
+    #[test]
+    fn companion_visibility_pref_defaults_off_and_roundtrips() {
+        let dir = std::env::temp_dir().join(format!(
+            "sythion-companion-pref-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp profile dir");
+        assert!(!read_companion_visible(&dir));
+        std::fs::write(dir.join("companion_visible"), "1\n").expect("write pref");
+        assert!(read_companion_visible(&dir));
+        std::fs::write(dir.join("companion_visible"), "0\n").expect("write pref");
+        assert!(!read_companion_visible(&dir));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

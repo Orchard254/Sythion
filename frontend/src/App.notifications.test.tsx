@@ -14,6 +14,8 @@ vi.mock('./hooks/useBackend', () => ({
   useTasks: () => ({ data: mock.tasks }),
   useSkillProposals: () => ({ data: [] }),
   useToolProposals: () => ({ data: [] }),
+  usePendingApprovals: () => ({ data: { proposals: [] } }),
+  useUncertainRemoteActions: () => ({ data: { actions: [] } }),
 }));
 vi.mock('./services/api', () => ({ setupService: { readiness: async () => ({}) } }));
 vi.mock('./lib/setupReadiness', () => ({ canStartChat: () => true }));

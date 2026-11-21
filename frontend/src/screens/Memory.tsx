@@ -21,11 +21,13 @@ import { humanize, relTime } from '../lib/format';
 
 /* Memory & Knowledge.
  *
- * Live: GET /api/v1/memory/report (store counts, injection stats, relation
- * vocabulary) and GET /api/v1/memory/edges (individual relations, with real
- * reinforce/remove review endpoints).
- * Demo: the item browser — there is no REST endpoint that lists individual
- * remembered facts, so the per-item view is illustrative only.
+ * All four panels are backed by real read endpoints:
+ *  - GET /api/v1/memory/report  — store counts, injection stats, relation vocabulary
+ *  - GET /api/v1/memory/edges   — individual relations (real reinforce/withdraw endpoints)
+ *  - GET /api/v1/memory/items   — the "What it remembers" item browser (paged, searchable)
+ *
+ * Only the controls that have no backend counterpart (per-item edit, bulk export)
+ * are labelled as unavailable; nothing on this screen is demo data.
  */
 
 type Tab = 'items' | 'relations' | 'stores';
@@ -55,10 +57,9 @@ export function MemoryScreen() {
     offset,
   });
 
-  // The live /memory/report contract is counts/relation_vocabulary/
-  // memory_context_injection{runs,totals,per_run}; the demo dataset ships
-  // stores/relations/mean_items_injected instead. Read both, demo first so
-  // preview rendering is unchanged, then the live shape.
+  // The current /memory/report contract is counts/memory_context_injection.
+  // Older payloads may also carry stores/relations/mean_items_injected. Read
+  // both shapes so the figures render correctly whichever the backend returns.
   const stores = (report.data?.stores ?? {}) as Record<string, { count?: number }>;
   const storeEntries = Object.entries(stores).filter(([, v]) => typeof v?.count === 'number');
   const counts = (report.data?.counts ?? {}) as { memory_entries?: number };
@@ -201,11 +202,11 @@ export function MemoryScreen() {
                     </span>
                     <span className="row t-muted" style={{ gap: 7, alignItems: 'flex-start' }}>
                       <Icon name="close" size={12} style={{ color: 'var(--text-3)', flex: '0 0 auto', marginTop: 2 }} />
-                      <span>Edit an individual remembered item — no endpoint exists</span>
+                      <span>Edit an individual remembered item — not available in this version</span>
                     </span>
                     <span className="row t-muted" style={{ gap: 7, alignItems: 'flex-start' }}>
                       <Icon name="close" size={12} style={{ color: 'var(--text-3)', flex: '0 0 auto', marginTop: 2 }} />
-                      <span>Bulk export — no endpoint exists</span>
+                      <span>Bulk export — not available in this version</span>
                     </span>
                     <p className="t-faint" style={{ marginTop: 4 }}>
                       Purging is never automatic; purge receipts appear under System &amp; Integrations.
@@ -256,7 +257,12 @@ export function MemoryScreen() {
                           )}
                         </div>
                         <div className="list__trail">
-                          <Button size="sm" variant="ghost" disabled>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled
+                            title="Editing an individual remembered item is not available in this version."
+                          >
                             Edit
                           </Button>
                         </div>

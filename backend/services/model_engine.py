@@ -388,6 +388,21 @@ class ModelDecisionEngine:
         elif name in visible_names:
             tool = self.tool_executor.get_tool(name)
             schema = getattr(tool, "input_schema", None) if tool else None
+        elif self.tool_executor.get_tool(name):
+            # Registered, but excluded by the current policy/autonomy filter.
+            # This is a real capability the model may have seen advertised in
+            # another mode, so report it honestly rather than claiming the
+            # name is unknown. No repair can make a gated tool callable, so
+            # fail closed without ever forwarding the arguments.
+            raise ModelDecisionError(
+                code="TOOL_NOT_AVAILABLE",
+                message=(
+                    f"Tool '{name}' is registered but not available in the current "
+                    "autonomy mode. Do not retry it; check AVAILABLE TOOLS in the "
+                    "system prompt (or system_capabilities) and call only a tool "
+                    "listed there."
+                ),
+            )
         else:
             raise ModelDecisionError(
                 code="INVALID_DECISION_TYPE",
@@ -764,7 +779,16 @@ class ModelDecisionEngine:
                 code="REASONING_JOURNAL_ERROR",
                 message="Reasoning invocation could not be durably recorded",
             ) from exc
-        except ModelDecisionError:
+        except ModelDecisionError as exc:
+            if exc.code == "TOOL_NOT_AVAILABLE":
+                # A registered-but-hidden tool is deterministically invalid: no
+                # repair instruction can make it callable in this mode. Return
+                # an honest terminal failure in a single decision instead of
+                # burning repair attempts on a type that cannot become valid.
+                return DecisionType.FAIL_TASK, {
+                    "code": exc.code,
+                    "reason": exc.message,
+                }
             raise
         except ReasoningResultError:
             # Invalid model output is not a provider outage: never retry or

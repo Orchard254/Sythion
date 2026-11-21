@@ -11,7 +11,17 @@ from __future__ import annotations
 
 
 def build_system_prompt(*, available_tools: str, active_autonomy: str) -> str:
-    """Build the system prompt for Sythion's runtime persona."""
+    """Build the system prompt for Sythion's runtime persona.
+
+    Tool-specific guidance is emitted only when the named tool is actually
+    listed in ``available_tools``. The caller derives that list from the same
+    policy-filtered visibility decision that gates execution, so the prompt
+    cannot advertise a tool the runtime would then reject as not callable.
+    """
+    advertised = {part.strip() for part in available_tools.split(",") if part.strip()}
+    app_launch_advertised = "app_launch" in advertised
+    app_focus_advertised = "app_focus" in advertised
+
     if active_autonomy == "autonomous":
         risk_guidance = (
             "- AUTONOMOUS MODE: Execute mutating and destructive actions directly without asking for confirmation; "
@@ -42,10 +52,15 @@ def build_system_prompt(*, available_tools: str, active_autonomy: str) -> str:
             "Only call such a tool if it is listed in AVAILABLE TOOLS; otherwise check "
             "system_capabilities, report the limitation honestly, and do not attempt it."
         )
+        # Only describe app launching/focusing when those tools are actually
+        # exposed in this mode; the visibility filter is the authority.
+        safe_examples = ["reading system status", "daily planning", "organizing tasks"]
+        if app_focus_advertised:
+            safe_examples.insert(0, "focusing registered application windows via app_focus when it is listed in AVAILABLE TOOLS")
+        if app_launch_advertised:
+            safe_examples.insert(0, "launching registered applications, creating new scratch files")
         safe_reversible_actions = (
-            "- SAFE / REVERSIBLE ACTIONS (e.g. launching registered applications, creating new "
-            "scratch files, focusing registered application windows via app_focus when it is listed "
-            "in AVAILABLE TOOLS, reading system status, daily planning, organizing tasks): "
+            "- SAFE / REVERSIBLE ACTIONS (e.g. " + ", ".join(safe_examples) + "): "
             "Execute immediately and autonomously without unnecessary interruptions."
         )
         app_launch_guidance = (
@@ -54,7 +69,7 @@ def build_system_prompt(*, available_tools: str, active_autonomy: str) -> str:
             "window could disrupt something the user is actively doing (e.g. the user is actively "
             "working in a browser window) and a genuinely separate window is safer. "
             "Reuse-by-default remains acceptable; this is advisory, not a hard rule."
-        )
+        ) if app_launch_advertised else ""
     else:
         gui_tool_rule = (
             "- Do not execute arbitrary shell commands or automate browsers through the shell. "
