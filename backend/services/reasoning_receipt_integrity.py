@@ -66,12 +66,6 @@ def audit_reasoning_receipts(events: Iterable[Mapping[str, Any]]) -> ReasoningRe
             problems.add("unknown_reasoning_event")
             continue
 
-        sequence = row.get("sequence_num")
-        if type(sequence) is not int or sequence <= last_sequence:
-            problems.add("invalid_sequence")
-        else:
-            last_sequence = sequence
-
         data = row.get("event_data")
         if (not isinstance(data, Mapping)
                 or set(data) != {"job_id", "purpose"}
@@ -82,6 +76,16 @@ def audit_reasoning_receipts(events: Iterable[Mapping[str, Any]]) -> ReasoningRe
                 or data["job_id"] != data["job_id"].strip()):
             problems.add("invalid_receipt_metadata")
             continue
+
+        # Only accepted receipts participate in the sequence chronology. A
+        # malformed high-sequence event rejected above must not advance the
+        # watermark and falsely flag every later legitimate receipt as
+        # invalid_sequence — the real fault is its rejected metadata.
+        sequence = row.get("sequence_num")
+        if type(sequence) is not int or sequence <= last_sequence:
+            problems.add("invalid_sequence")
+        else:
+            last_sequence = sequence
 
         job_id = data["job_id"]
         if kind == _START:

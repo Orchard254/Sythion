@@ -113,6 +113,23 @@ def test_invalid_metadata_is_never_accepted(data):
     assert "invalid_receipt_metadata" in result.anomalies
 
 
+def test_invalid_high_sequence_receipt_does_not_poison_later_receipts():
+    """A malformed receipt rejected for bad metadata must not advance the
+    sequence watermark and falsely flag later legitimate receipts as ordered
+    wrong — the real fault is the rejected metadata, not the chronology.
+    """
+    poison = receipt(999, "started")
+    poison["event_data"] = None  # rejected for invalid metadata
+    result = audit_reasoning_receipts([
+        receipt(1, "started", "a"),
+        poison,
+        receipt(2, "response_received", "a"),  # legitimate: 2 > 1
+    ])
+    assert "invalid_receipt_metadata" in result.anomalies
+    assert "invalid_sequence" not in result.anomalies
+    assert (result.starts, result.terminals, result.unresolved_count) == (1, 1, 0)
+
+
 def test_corruption_result_contains_no_job_ids_or_raw_values():
     rows = [receipt(1, "started", "sensitive-private-job-id", secret="PRIVATE")]
     result = audit_reasoning_receipts(rows)

@@ -48,6 +48,13 @@ packages, memory, objectives and device status; goals with evidence and
 blockers; durable wakes; an owner-gated bounded wake; read-only recovery review
 packets; and a versioned authority-free reasoning contract.
 
+**Receipt chronology invariant (2026-11-21):** `audit_reasoning_receipts`
+validates receipt metadata BEFORE sequence numbers, so a malformed high-sequence
+event rejected for bad metadata cannot advance the watermark and falsely flag
+every later legitimate receipt as `invalid_sequence`. Rejected receipts never
+participate in the chronology. Regression test in
+`test_reasoning_receipt_integrity.py`.
+
 **Index-state self-consistency invariant (2026-11-21):**
 `DiscussionIndexManager.transition` never leaves a COMPLETE/INSUFFICIENT row
 with a stale `error_code`, nor an error row with a stale `result_json`. A fresh
